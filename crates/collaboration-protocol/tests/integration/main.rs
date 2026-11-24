@@ -8,7 +8,6 @@ mod delivery_route_evidence;
 mod endpoint_channels;
 mod fleet_launch_policy_conversion;
 mod fleet_session_conversion;
-mod lifecycle_observation;
 mod message_delivery_contract;
 mod native_claude_catalogue_contract;
 mod protocol_type_schemas;

@@ -66,11 +66,6 @@ export const section: LedgerSection = {
       note: "typed ConversationOperationFailure built in local_failure l594; provider calls go through the ProviderConversationBackend port (its implementers own the ACP/app-server sends)",
     },
     {
-      file: "crates/collaboration-service/src/collaboration_application/journal_operations.rs",
-      disposition: { kind: "converts", owners: ["mcp"] },
-      note: "JournalFailure Serialize l185 hand-builds failure bodies (json! l191-196); JournalError mapped onto JournalFailure l60-76, l110-117",
-    },
-    {
       file: "crates/collaboration-service/src/collaboration_application/mod.rs",
       disposition: { kind: "none" },
       note: "module wiring and re-exports; CollaborationApplication l69 holds the operation families",

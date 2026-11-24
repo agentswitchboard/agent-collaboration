@@ -20,7 +20,6 @@ use std::{
     io::{self, Read},
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
 };
 use tokio::net::UnixStream;
 
@@ -363,102 +362,6 @@ impl CollaborationClient {
             return Err(ClientError::Protocol("inconsistent interruption result"));
         }
         Ok(result)
-    }
-
-    pub async fn journal_status(&self) -> Result<crate::JournalStatus, ClientError> {
-        let value = self.connection.call("journal_status", json!({})).await?;
-        serde_json::from_value(value).map_err(|_| ClientError::Protocol("invalid journal status"))
-    }
-
-    /// Reads a captured historical address page without loading any native thread.
-    pub async fn list_addresses(
-        &self,
-        endpoint: &collaboration_protocol::EndpointRef,
-        page_size: u32,
-        cursor: Option<&str>,
-    ) -> Result<collaboration_protocol::AddressPage, ClientError> {
-        if !(1..=100).contains(&page_size)
-            || cursor.is_some_and(|cursor| cursor.is_empty() || cursor.len() > 1024)
-        {
-            return Err(ClientError::InvalidRequest(
-                "invalid address snapshot arguments",
-            ));
-        }
-        let params = json!(collaboration_protocol::AddressListParams {
-            endpoint: endpoint.clone(),
-            page_size,
-            cursor: cursor.map(str::to_owned),
-        });
-        let value = self.connection.call("addresses_list", params).await?;
-        let page: collaboration_protocol::AddressPage = serde_json::from_value(value)
-            .map_err(|_| ClientError::Protocol("invalid address snapshot"))?;
-        if page.coverage.endpoint != *endpoint
-            || page.entries.len() > page_size as usize
-            || page.watermark.sequence > 9_007_199_254_740_991
-            || page.entries.iter().any(|entry| {
-                entry.address.endpoint != *endpoint
-                    || entry.last_observation.journal_id != page.watermark.journal_id
-                    || entry.last_observation.sequence > page.watermark.sequence
-            })
-            || page
-                .next_cursor
-                .as_ref()
-                .is_some_and(|cursor| cursor.is_empty() || cursor.len() > 1024)
-        {
-            return Err(ClientError::Protocol("inconsistent address snapshot"));
-        }
-        Ok(page)
-    }
-
-    pub async fn read_journal(
-        &self,
-        endpoint: &collaboration_protocol::EndpointRef,
-        after: collaboration_protocol::JournalPosition,
-        page_size: u32,
-        wait_milliseconds: u64,
-    ) -> Result<collaboration_protocol::JournalPage, ClientError> {
-        if !(1..=100).contains(&page_size) || wait_milliseconds > 30000 {
-            return Err(ClientError::InvalidRequest(
-                "invalid journal read arguments",
-            ));
-        }
-        let value = self
-            .connection
-            .call_with_timeout(
-                "journal_read",
-                json!(collaboration_protocol::JournalReadParams {
-                    endpoint: endpoint.clone(),
-                    after: after.clone(),
-                    page_size,
-                    wait_milliseconds,
-                }),
-                DEFAULT_CALL_TIMEOUT.saturating_add(Duration::from_millis(wait_milliseconds)),
-            )
-            .await?;
-        let page: collaboration_protocol::JournalPage = serde_json::from_value(value)
-            .map_err(|_| ClientError::Protocol("invalid journal page"))?;
-        if page.bounds.journal_id != after.journal_id
-            || page.next.journal_id != after.journal_id
-            || page.next.sequence < after.sequence
-            || page.next.sequence > page.bounds.last_sequence
-            || page.records.len() > page_size as usize
-        {
-            return Err(ClientError::Protocol("inconsistent journal page"));
-        }
-        let mut previous = after.sequence;
-        for record in &page.records {
-            if record.journal_id != after.journal_id
-                || record.schema_version != 1
-                || record.sequence <= previous
-                || record.sequence > page.next.sequence
-                || record.observation.scope.endpoint != *endpoint
-                || record.observation.validate().is_err()
-            {
-                return Err(ClientError::Protocol("inconsistent journal record"));
-            }
-            previous = record.sequence;
-        }
-        Ok(page)
     }
 
     pub async fn list_endpoints(&self) -> Result<EndpointInventory, ClientError> {

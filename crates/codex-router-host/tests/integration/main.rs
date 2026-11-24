@@ -17,7 +17,6 @@ mod host_replacement_failures;
 mod journal_failure_isolation;
 mod maintenance_authority;
 mod native_claude_catalogue;
-mod native_observer_restart;
 #[path = "../support/operator_client.rs"]
 mod operator_client;
 mod operator_transport_contract;

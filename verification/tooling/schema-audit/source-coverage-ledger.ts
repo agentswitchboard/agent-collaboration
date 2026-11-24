@@ -66,7 +66,6 @@ import { section as collaborationService2 } from "./source-coverage-ledger/colla
 import { section as collaborationService3 } from "./source-coverage-ledger/collaboration-service-3.ts";
 import { section as collaborationService4 } from "./source-coverage-ledger/collaboration-service-4.ts";
 import { section as fleetIdentityProtocol } from "./source-coverage-ledger/fleet-identity-protocol.ts";
-import { section as lifecycleObservation } from "./source-coverage-ledger/lifecycle-observation.ts";
 import { section as messageBoard } from "./source-coverage-ledger/message-board.ts";
 import { section as nodeTestFixture } from "./source-coverage-ledger/node-test-fixture.ts";
 import { section as ownedProcessTestSupport } from "./source-coverage-ledger/owned-process-test-support.ts";
@@ -169,7 +168,6 @@ export const LEDGER_SECTIONS: readonly LedgerSection[] = [
   collaborationService3,
   collaborationService4,
   fleetIdentityProtocol,
-  lifecycleObservation,
   messageBoard,
   nodeTestFixture,
   ownedProcessTestSupport,

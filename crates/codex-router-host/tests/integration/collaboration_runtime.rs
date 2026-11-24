@@ -139,74 +139,6 @@ async fn host_composes_discovery_and_retires_only_owned_communication_sockets() 
         .mode(0o700)
         .create(&root)
         .unwrap_or_else(|e| panic!("directory: {e}"));
-    let inputs = || CollaborationRuntimeInputs {
-        directory: root.clone(),
-        codex_home: root.clone(),
-        backend_socket: root.join("backend.sock"),
-        mcp_bind: std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
-        native_schema: None,
-        peer_registry_directory: None,
-        remote_control_server_name: Some(
-            "remote-control-fixture"
-                .to_owned()
-                .try_into()
-                .expect("valid fixture Remote Control name"),
-        ),
-        owner_human_id: Some(
-            "test-owner"
-                .to_owned()
-                .try_into()
-                .expect("test owner identity"),
-        ),
-    };
-    let mut runtime = CollaborationRuntime::start(inputs())
-        .await
-        .unwrap_or_else(|e| panic!("start: {e}"));
-    assert_eq!(
-        runtime.owner_human_id().map(message_board::HumanId::as_str),
-        Some("test-owner")
-    );
-    assert!(root.join("provider-operations.sqlite").is_file());
-    let manifest: collaboration_protocol::ServiceManifest = serde_json::from_slice(
-        &std::fs::read(root.join("service.json")).unwrap_or_else(|e| panic!("manifest read: {e}")),
-    )
-    .unwrap_or_else(|e| panic!("manifest decode: {e}"));
-    assert_eq!(&manifest.service_id, runtime.service_id());
-    assert_eq!(manifest.machine_label.as_str(), "remote-control-fixture");
-    assert_eq!(manifest.version, 3);
-    assert_eq!(
-        manifest.api.path,
-        collaboration_protocol::ApiSocketPath::ServiceSocket
-    );
-    assert_eq!(manifest.native_schema_digest, None);
-    assert_eq!(
-        manifest.mcp.transport,
-        collaboration_protocol::McpTransport::StreamableHttp
-    );
-    assert!(manifest.mcp.url.starts_with("http://127.0.0.1:"));
-    assert!(manifest.mcp.url.ends_with("/mcp"));
-    assert_eq!(
-        minted_version(&manifest.service_id),
-        7,
-        "fresh-root service id"
-    );
-    assert_eq!(minted_version(&manifest.service_epoch), 7, "service epoch");
-    let control_schema_files = std::fs::read_dir(&root)
-        .unwrap_or_else(|error| panic!("service directory: {error}"))
-        .filter_map(Result::ok)
-        .filter(|entry| {
-            entry
-                .file_name()
-                .to_string_lossy()
-                .starts_with("control-schema-")
-        })
-        .count();
-    assert_eq!(control_schema_files, 0, "no Control schema is published");
-    let original_id = runtime.service_id().clone();
-    let original_epoch = runtime.service_epoch().clone();
-    let client = CollaborationClient::connect(&root, "host-proof", "1")
-        .await
-        .unwrap_or_else(|e| panic!("discovery: {e}"));
     let executable = root.join("schema-generator");
     let mut definitions = serde_json::Map::new();
     for name in [
@@ -236,12 +168,83 @@ async fn host_composes_discovery_and_retires_only_owned_communication_sockets() 
         .await
         .unwrap_or_else(|error| panic!("identity: {error}"));
     let export_directory = root.join("schema-export");
-    let export = codex_native_integration::NativeSchemaExport::generate(
-        &executable_identity,
-        &export_directory,
+    let export = std::sync::Arc::new(
+        codex_native_integration::NativeSchemaExport::generate(
+            &executable_identity,
+            &export_directory,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("export: {error}")),
+    );
+    let inputs = || CollaborationRuntimeInputs {
+        directory: root.clone(),
+        codex_home: root.clone(),
+        backend_socket: root.join("backend.sock"),
+        mcp_bind: std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+        native_schema: Some(export.clone()),
+        peer_registry_directory: None,
+        remote_control_server_name: Some(
+            "remote-control-fixture"
+                .to_owned()
+                .try_into()
+                .expect("valid fixture Remote Control name"),
+        ),
+        owner_human_id: Some(
+            "test-owner"
+                .to_owned()
+                .try_into()
+                .expect("test owner identity"),
+        ),
+    };
+    let clock = crate::provider_test_clock();
+    let mut runtime = CollaborationRuntime::start_with_test_clock(inputs(), clock.clone())
+        .await
+        .unwrap_or_else(|e| panic!("start: {e}"));
+    assert_eq!(
+        runtime.owner_human_id().map(message_board::HumanId::as_str),
+        Some("test-owner")
+    );
+    assert!(root.join("provider-operations.sqlite").is_file());
+    let manifest: collaboration_protocol::ServiceManifest = serde_json::from_slice(
+        &std::fs::read(root.join("service.json")).unwrap_or_else(|e| panic!("manifest read: {e}")),
     )
-    .await
-    .unwrap_or_else(|error| panic!("export: {error}"));
+    .unwrap_or_else(|e| panic!("manifest decode: {e}"));
+    assert_eq!(&manifest.service_id, runtime.service_id());
+    assert_eq!(manifest.machine_label.as_str(), "remote-control-fixture");
+    assert_eq!(manifest.version, 3);
+    assert_eq!(
+        manifest.api.path,
+        collaboration_protocol::ApiSocketPath::ServiceSocket
+    );
+    assert!(manifest.native_schema_digest.is_some());
+    assert_eq!(
+        manifest.mcp.transport,
+        collaboration_protocol::McpTransport::StreamableHttp
+    );
+    assert!(manifest.mcp.url.starts_with("http://127.0.0.1:"));
+    assert!(manifest.mcp.url.ends_with("/mcp"));
+    assert_eq!(
+        minted_version(&manifest.service_id),
+        7,
+        "fresh-root service id"
+    );
+    assert_eq!(minted_version(&manifest.service_epoch), 7, "service epoch");
+    let control_schema_files = std::fs::read_dir(&root)
+        .unwrap_or_else(|error| panic!("service directory: {error}"))
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("control-schema-")
+        })
+        .count();
+    assert_eq!(control_schema_files, 0, "no Control schema is published");
+    let original_id = runtime.service_id().clone();
+    let original_epoch = runtime.service_epoch().clone();
+    let client = CollaborationClient::connect(&root, "host-proof", "1")
+        .await
+        .unwrap_or_else(|e| panic!("discovery: {e}"));
     // A bundle no start has used for 31 days; backend publication retires it.
     let unused_bundle = codex_native_integration::NativeSchemaBundle::from_documents(
         std::collections::BTreeMap::from([(
@@ -253,50 +256,32 @@ async fn host_composes_discovery_and_retires_only_owned_communication_sockets() 
     let unused_bundle_path = unused_bundle
         .publish(
             &root,
-            std::time::SystemTime::now() - std::time::Duration::from_secs(31 * 24 * 60 * 60),
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(1),
         )
         .unwrap_or_else(|error| panic!("unused bundle publish: {error}"));
     let backend = tokio::net::UnixListener::bind(root.join("backend.sock"))
         .unwrap_or_else(|error| panic!("backend fixture: {error}"));
-    let backend_task = tokio::spawn(async move {
-        use futures_util::{SinkExt, StreamExt};
-        let (stream, _) = backend
-            .accept()
-            .await
-            .unwrap_or_else(|error| panic!("accept: {error}"));
-        let mut socket = tokio_tungstenite::accept_async(stream)
-            .await
-            .unwrap_or_else(|error| panic!("upgrade: {error}"));
-        for method in ["initialize", "initialized", "thread/loaded/list"] {
-            let frame = socket
-                .next()
-                .await
-                .unwrap_or_else(|| panic!("frame"))
-                .unwrap_or_else(|error| panic!("read: {error}"));
-            let request: serde_json::Value = serde_json::from_str(
-                frame
-                    .to_text()
-                    .unwrap_or_else(|error| panic!("text: {error}")),
-            )
-            .unwrap_or_else(|error| panic!("JSON: {error}"));
-            assert_eq!(request["method"], method);
-            if method != "initialized" {
-                let result = if method == "initialize" {
-                    serde_json::json!({})
-                } else {
-                    serde_json::json!({"data":[],"nextCursor":null})
-                };
-                socket
-                    .send(tokio_tungstenite::tungstenite::Message::Text(
-                        serde_json::json!({"id":request["id"],"result":result})
-                            .to_string()
-                            .into(),
-                    ))
-                    .await
-                    .unwrap_or_else(|error| panic!("send: {error}"));
+    let backend_stop = tokio_util::sync::CancellationToken::new();
+    let backend_task = tokio::spawn({
+        let stop = backend_stop.clone();
+        async move {
+            let mut connections = 0;
+            let mut handlers = tokio::task::JoinSet::new();
+            loop {
+                tokio::select! {
+                    accepted = backend.accept() => {
+                        let (stream, _) = accepted.expect("accept native fixture connection");
+                        connections += 1;
+                        handlers.spawn(serve_empty_loaded_list(stream));
+                    }
+                    () = stop.cancelled() => break,
+                }
             }
+            while let Some(handler) = handlers.join_next().await {
+                handler.expect("native fixture handler");
+            }
+            connections
         }
-        let _retired = socket.next().await;
     });
     runtime
         .backend_ready(
@@ -343,73 +328,27 @@ async fn host_composes_discovery_and_retires_only_owned_communication_sockets() 
         !unused_bundle_path.exists(),
         "backend publication retires a bundle unused for 31 days"
     );
-    let status = client
-        .journal_status()
-        .await
-        .unwrap_or_else(|e| panic!("journal status: {e}"));
-    let collaboration_client::JournalStatus::Available { bounds } = status else {
-        panic!("journal unavailable");
-    };
-    assert_eq!(minted_version(&bounds.journal_id), 7, "journal identity");
+    let _ = clock.advance(std::time::Duration::from_secs(31));
     let target = endpoints
         .endpoints
         .first()
-        .unwrap_or_else(|| panic!("endpoint"))
+        .expect("native endpoint")
         .endpoint
         .clone();
-    let page = client
-        .read_journal(
-            &target,
-            collaboration_protocol::JournalPosition {
-                journal_id: bounds.journal_id,
-                sequence: 0,
-            },
-            100,
-            0,
-        )
+    let loaded = client
+        .list_sessions(collaboration_protocol::NativeSessionListParams {
+            endpoint: target,
+            view: collaboration_protocol::NativeSessionView::Loaded,
+            scope: collaboration_protocol::NativeSessionScope::Any,
+            source: collaboration_protocol::NativeSessionSource::All,
+            include_empty_sessions: false,
+            query: None,
+            page_size: 100,
+            cursor: None,
+        })
         .await
-        .unwrap_or_else(|e| panic!("journal read: {e}"));
-    let addresses = tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        loop {
-            let addresses = client
-                .list_addresses(&target, 100, None)
-                .await
-                .unwrap_or_else(|error| panic!("address snapshot: {error}"));
-            if addresses.coverage.state == collaboration_protocol::CoverageState::Observing {
-                break addresses;
-            }
-            client
-                .read_journal(&target, addresses.watermark, 100, 1000)
-                .await
-                .unwrap_or_else(|error| panic!("wait for coverage: {error}"));
-        }
-    })
-    .await
-    .unwrap_or_else(|error| panic!("coverage deadline: {error}"));
-    assert!(addresses.entries.is_empty());
-    assert_eq!(addresses.coverage.endpoint, target);
-    assert_eq!(
-        minted_version(&addresses.snapshot_id),
-        7,
-        "address snapshot id"
-    );
-    let observer_id = addresses
-        .coverage
-        .observer_id
-        .as_ref()
-        .unwrap_or_else(|| panic!("observing coverage names its observer"));
-    assert_eq!(minted_version(observer_id), 7, "native observer id");
-    assert_ne!(
-        observer_id, &original_epoch,
-        "coverage comes from the native observer, not a Host lifecycle record"
-    );
-    assert!(addresses.watermark.sequence >= page.next.sequence);
-    assert!(page.records.iter().any(|record| matches!(
-        record.observation.change,
-        collaboration_protocol::LifecycleChange::BackendStatus {
-            status: collaboration_protocol::BackendStatus::Ready
-        }
-    )));
+        .expect("the published native generation serves loaded inventory");
+    assert!(loaded.sessions.is_empty());
     runtime
         .backend_unavailable(
             "2026-09-05T12:01:00Z"
@@ -421,19 +360,25 @@ async fn host_composes_discovery_and_retires_only_owned_communication_sockets() 
                 .try_into()
                 .unwrap_or_else(|error| panic!("reason: {error}")),
         )
-        .await
         .unwrap_or_else(|error| panic!("retire: {error}"));
     let retired = client
-        .list_addresses(&target, 100, None)
+        .list_endpoints()
         .await
-        .unwrap_or_else(|error| panic!("retired snapshot: {error}"));
+        .expect("retired endpoint publication");
+    assert!(matches!(
+        retired
+            .endpoints
+            .first()
+            .map(|endpoint| &endpoint.availability),
+        Some(collaboration_protocol::EndpointAvailability::Unavailable { .. })
+    ));
+    drop(client);
+    backend_stop.cancel();
     assert_eq!(
-        retired.coverage.state,
-        collaboration_protocol::CoverageState::Disconnected
+        backend_task.await.expect("backend fixture"),
+        1,
+        "the only native connection is the explicitly requested loaded-list"
     );
-    backend_task
-        .await
-        .unwrap_or_else(|error| panic!("backend fixture: {error}"));
     runtime
         .shutdown()
         .await
@@ -450,8 +395,6 @@ async fn host_composes_discovery_and_retires_only_owned_communication_sockets() 
         .shutdown()
         .await
         .unwrap_or_else(|e| panic!("shutdown: {e}"));
-    std::fs::remove_file(root.join("session-registry.sqlite"))
-        .unwrap_or_else(|e| panic!("database cleanup: {e}"));
     std::fs::remove_file(root.join("service-identity.json"))
         .unwrap_or_else(|e| panic!("identity cleanup: {e}"));
     std::fs::remove_file(root.join("installation-peer.json"))
@@ -469,6 +412,49 @@ async fn host_composes_discovery_and_retires_only_owned_communication_sockets() 
     std::fs::remove_file(root.join("provider-operations.sqlite"))
         .unwrap_or_else(|error| panic!("provider operation database cleanup: {error}"));
     std::fs::remove_dir(root).unwrap_or_else(|e| panic!("directory cleanup: {e}"));
+}
+
+#[expect(
+    clippy::expect_used,
+    clippy::panic,
+    reason = "An unexpected fixture request or transport error fails the Host proof."
+)]
+async fn serve_empty_loaded_list(stream: tokio::net::UnixStream) {
+    use futures_util::{SinkExt, StreamExt};
+    let mut socket = tokio_tungstenite::accept_async(stream)
+        .await
+        .expect("native fixture upgrade");
+    for method in ["initialize", "initialized", "thread/loaded/list"] {
+        let frame = match socket.next().await {
+            Some(Ok(frame)) => frame,
+            None
+            | Some(Err(tokio_tungstenite::tungstenite::Error::Protocol(
+                tokio_tungstenite::tungstenite::error::ProtocolError::ResetWithoutClosingHandshake,
+            ))) => return,
+            Some(Err(error)) => panic!("receive native request: {error}"),
+        };
+        let request: serde_json::Value =
+            serde_json::from_str(frame.to_text().expect("text frame")).expect("request JSON");
+        assert_eq!(
+            request.get("method").and_then(serde_json::Value::as_str),
+            Some(method)
+        );
+        if method != "initialized" {
+            let result = if method == "initialize" {
+                serde_json::json!({})
+            } else {
+                serde_json::json!({"data":[],"nextCursor":null})
+            };
+            socket
+                .send(tokio_tungstenite::tungstenite::Message::Text(
+                    serde_json::json!({"id":request.get("id"),"result":result})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .expect("send fixture response");
+        }
+    }
 }
 
 #[tokio::test]

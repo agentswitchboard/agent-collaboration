@@ -19,7 +19,6 @@ pub struct SessionOperations {
     native: NativeSessionControl,
     codex_inventory: crate::codex_session_inventory::CodexSessionInventory,
     provider_inventory: crate::provider_session_inventory::ProviderSessionInventory,
-    pub(super) journal: super::journal_operations::JournalOperations,
 }
 impl SessionOperations {
     pub fn new(
@@ -28,7 +27,6 @@ impl SessionOperations {
         native: NativeSessionControl,
         codex_inventory: crate::codex_session_inventory::CodexSessionInventory,
         provider_inventory: crate::provider_session_inventory::ProviderSessionInventory,
-        journal: super::journal_operations::JournalOperations,
     ) -> Self {
         Self {
             identity,
@@ -36,7 +34,6 @@ impl SessionOperations {
             native,
             codex_inventory,
             provider_inventory,
-            journal,
         }
     }
     pub fn endpoints_list(&self) -> Result<EndpointInventory, EndpointDirectoryUnavailable> {
@@ -125,23 +122,5 @@ impl CollaborationRejection for EndpointDirectoryUnavailable {
 
     fn published_rejection(&self) -> PublishedRejection {
         PublishedRejection::bare(PublishedRejection::INTERNAL, self.to_string())
-    }
-}
-
-impl SessionOperations {
-    pub async fn journal_status(&self) -> collaboration_protocol::JournalStatus {
-        self.journal.journal_status().await
-    }
-    pub async fn journal_read(
-        &self,
-        request: collaboration_protocol::JournalReadParams,
-    ) -> Result<lifecycle_observation::JournalPage, super::JournalFailure> {
-        self.journal.journal_read(request).await
-    }
-    pub async fn address_list(
-        &self,
-        request: collaboration_protocol::AddressListParams,
-    ) -> Result<lifecycle_observation::AddressPage, super::JournalFailure> {
-        self.journal.address_list(request).await
     }
 }

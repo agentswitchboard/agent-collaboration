@@ -74,7 +74,6 @@ mod unmaterialized_thread_holder;
 pub use unmaterialized_thread_holder::UnmaterializedThreadHolder;
 #[cfg(test)]
 mod captured_warnings_test_support;
-pub mod stored_inventory_observation;
 /// The failed-pass retry lives with SQLite store maintenance; the layers above this crate
 /// reach it here.
 pub use sqlite_storage_maintenance::{FAILED_PASS_BACKOFF, FailedPassBackoff, FailureRetry};

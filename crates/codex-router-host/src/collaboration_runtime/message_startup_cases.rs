@@ -99,7 +99,6 @@ async fn unenrolled_host_refuses_message_custody_and_serves_collaboration() {
             .service_id,
         runtime.service_id()
     );
-    assert!(client.journal_status().await.is_ok());
     drop(client);
     runtime.shutdown().await.expect("shut down unenrolled Host");
     assert!(matches!(front.custody(), Err(FrontRefusal::ShuttingDown)));
