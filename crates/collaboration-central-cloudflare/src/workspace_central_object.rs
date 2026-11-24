@@ -539,13 +539,13 @@ impl DurableObject for CentralObject {
         use crate::workspace_link_entry::{LinkRoute, link_route};
         if let Some(route) = link_route(&request.path()) {
             return match route {
-                Ok(LinkRoute::Machine(target)) if target == organization => {
+                LinkRoute::Machine(Ok(target)) if target == organization => {
                     self.upgrade_machine_link(organization, &request).await
                 }
-                Ok(LinkRoute::Person(target)) if target == organization => {
+                LinkRoute::Person(Ok(target)) if target == organization => {
                     self.upgrade_person_socket(organization, &request).await
                 }
-                Ok(LinkRoute::Machine(_) | LinkRoute::Person(_)) | Err(()) => {
+                LinkRoute::Machine(_) | LinkRoute::Person(_) => {
                     Response::error("wrong organization", 403)
                 }
             };
