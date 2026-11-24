@@ -105,7 +105,7 @@ impl Fixture {
         clock: Arc<ManualClock>,
         keychain: Arc<dyn KeychainAccess>,
         faults: Arc<TestWriteFaults>,
-    ) -> (MachineEnrollmentStore, tokio::task::AbortHandle) {
+    ) -> (MachineEnrollmentStore, futures_util::future::AbortHandle) {
         let core = MachineLocalStore::open(database)
             .await
             .expect("dedicated fixture connection");
@@ -120,7 +120,7 @@ impl Fixture {
     pub(super) async fn another_tracked_worker(
         &self,
         faults: Arc<TestWriteFaults>,
-    ) -> (MachineEnrollmentStore, tokio::task::AbortHandle) {
+    ) -> (MachineEnrollmentStore, futures_util::future::AbortHandle) {
         Self::tracked_worker(
             &self.database,
             self.secret_root.clone(),
