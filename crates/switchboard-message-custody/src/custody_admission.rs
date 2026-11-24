@@ -19,6 +19,7 @@ use crate::{
         Submission, SubmissionPayload, SubmissionRoute, SubmitRefusal, choose_submission_route,
         wire_scope,
     },
+    inbox_read::{AdmittedLocalSession, InboxReadError, RecipientInboxPage, RecipientInboxRead},
 };
 
 /// Custody's command queue has stopped accepting work.
@@ -81,6 +82,15 @@ pub(super) enum CustodyCommand {
         session: SessionRef,
         reply: oneshot::Sender<Result<Vec<MessageRecord>, CustodyLinkError>>,
     },
+    ReadInbox {
+        session: AdmittedLocalSession,
+        reply: oneshot::Sender<Result<RecipientInboxPage, InboxReadError>>,
+    },
+    RecordInboxRead {
+        session: AdmittedLocalSession,
+        read: RecipientInboxRead,
+        reply: oneshot::Sender<Result<(), InboxReadError>>,
+    },
 }
 
 impl CustodyCommand {
@@ -99,6 +109,12 @@ impl CustodyCommand {
             }
             Self::Waiting { reply, .. } => {
                 let _ = reply.send(Err(CustodyLinkError::TaskClosed));
+            }
+            Self::ReadInbox { reply, .. } => {
+                let _ = reply.send(Err(InboxReadError::Closed));
+            }
+            Self::RecordInboxRead { reply, .. } => {
+                let _ = reply.send(Err(InboxReadError::Closed));
             }
         }
     }
@@ -141,6 +157,31 @@ pub(super) fn command_queue(
 }
 
 impl CustodyTaskHandle {
+    pub async fn read_inbox(
+        &self,
+        session: AdmittedLocalSession,
+    ) -> Result<RecipientInboxPage, InboxReadError> {
+        self.reserve()
+            .await
+            .map_err(|_| InboxReadError::Closed)?
+            .read_inbox(session)
+            .resolve()
+            .await
+    }
+
+    pub async fn record_inbox_read(
+        &self,
+        session: AdmittedLocalSession,
+        read: RecipientInboxRead,
+    ) -> Result<(), InboxReadError> {
+        self.reserve()
+            .await
+            .map_err(|_| InboxReadError::Closed)?
+            .record_inbox_read(session, read)
+            .resolve()
+            .await
+    }
+
     pub async fn reserve(&self) -> Result<CustodyAdmission, CustodyQueueClosed> {
         let mut stopped = self.stop.0.subscribe();
         let permit = tokio::select! {
@@ -262,6 +303,33 @@ impl QueuedSubmission {
 }
 
 impl CustodyAdmission {
+    pub fn read_inbox(
+        self,
+        session: AdmittedLocalSession,
+    ) -> PendingCustodyReply<Result<RecipientInboxPage, InboxReadError>> {
+        self.commit(
+            move |reply| CustodyCommand::ReadInbox { session, reply },
+            Err(InboxReadError::Closed),
+            Err(InboxReadError::Closed),
+        )
+    }
+
+    pub fn record_inbox_read(
+        self,
+        session: AdmittedLocalSession,
+        read: RecipientInboxRead,
+    ) -> PendingCustodyReply<Result<(), InboxReadError>> {
+        self.commit(
+            move |reply| CustodyCommand::RecordInboxRead {
+                session,
+                read,
+                reply,
+            },
+            Err(InboxReadError::Closed),
+            Err(InboxReadError::Closed),
+        )
+    }
+
     pub fn submit(
         self,
         caller: Caller,

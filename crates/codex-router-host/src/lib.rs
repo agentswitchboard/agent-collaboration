@@ -41,6 +41,7 @@ mod session_owner_delivery_evidence;
 pub mod session_owner_door;
 pub mod session_owner_execution;
 mod session_owner_ingress;
+mod session_owner_notice;
 #[cfg(any(test, feature = "test-support"))]
 mod session_owner_preparation_fixture;
 pub mod session_owner_publication;
@@ -65,7 +66,8 @@ pub use external_provider_runtime::{
 };
 mod external_provider_supervisor;
 pub use external_provider_supervisor::{
-    ExternalProviderBinding, ExternalProviderSupervisor, ProviderPromptContentsRequest,
+    ExternalProviderBinding, ExternalProviderSupervisor, ManagedClaudeNoticeAdapter,
+    ProviderPromptContentsRequest,
 };
 mod global_claude_executable;
 mod host_configuration;
