@@ -167,8 +167,7 @@ const RETIRED_WAKE_AND_SCHEDULE_TOOLS: [&str; 36] = [
     "wake_wait_until_first_fire",
 ];
 
-const RETIRED_MAIL_AND_INTERACTION_TOOLS: [&str; 9] = [
-    "message_send",
+const RETIRED_MAIL_AND_INTERACTION_TOOLS: [&str; 8] = [
     "message_reply",
     "message_inbox",
     "message_history",
@@ -246,14 +245,16 @@ async fn a_retired_tool_gets_the_ordinary_unknown_tool_answer() {
 fn catalog_has_complete_unique_tools_with_resolvable_schemas() {
     let server = CollaborationMcpServer::catalog_only();
     let tools = server.resolved_tools();
-    assert_eq!(tools.len(), 24);
+    assert_eq!(tools.len(), 26);
     let mut names = tools
         .iter()
         .map(|tool| tool.name.as_ref())
         .collect::<Vec<_>>();
     names.sort_unstable();
     names.dedup();
-    assert_eq!(names.len(), 24);
+    assert_eq!(names.len(), 26);
+    assert!(names.contains(&"message_send"));
+    assert!(names.contains(&"message_status"));
     assert!(names.contains(&"conversation_resume"));
     assert!(names.contains(&"installation_show"));
     assert!(names.contains(&"conversation_close"));

@@ -13,6 +13,8 @@ workspace = true
 test-support = []
 
 [dependencies]
+central-link-protocol.workspace = true
+collaboration-protocol = { path = "../collaboration-protocol", version = "0.1.158" }
 futures-util.workspace = true
 router-clock.workspace = true
 serde.workspace = true
@@ -28,6 +30,7 @@ tokio.workspace = true
 tracing.workspace = true
 url.workspace = true
 uuid = { version = "1.26.0", default-features = false }
+workspace-model.workspace = true
 
 [dev-dependencies]
 hegel = { package = "hegeltest", version = "=0.52.6", features = ["static-engine"] }

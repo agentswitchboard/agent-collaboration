@@ -47,6 +47,9 @@ const USAGE_EXIT: i32 = 2;
 /// honoured. Returns `None` for every other command.
 #[must_use]
 pub fn refuse_retired_command_group(arguments: &[OsString]) -> Option<i32> {
+    if crate::is_message_command(arguments) {
+        return None;
+    }
     let first = arguments.first()?.to_str()?;
     let group = first.split_ascii_whitespace().next()?;
     if !RETIRED_COMMAND_GROUPS.contains(&group) {

@@ -238,7 +238,7 @@ fn advertised_tool_schemas_validate_available_success_and_every_error_sample() {
         .into_iter()
         .filter_map(|tool| tool.output_schema.map(|schema| (tool.name, schema)))
         .collect::<std::collections::BTreeMap<_, _>>();
-    assert_eq!(advertised.len(), 24);
+    assert_eq!(advertised.len(), 26);
 
     let provider_endpoint = serde_json::json!({
         "serviceId":"00000000-0000-4000-8000-000000000001","endpointId":"claude-local"
@@ -265,6 +265,16 @@ fn advertised_tool_schemas_validate_available_success_and_every_error_sample() {
     let mut close_operation = provider_operation.clone();
     close_operation["operation"] = serde_json::json!("conversationClose");
     let valid_instances = std::collections::BTreeMap::from([
+        (
+            "message_send",
+            serde_json::json!({"kind":"returned","value":{"kind":"inOutbox",
+                "requestId":"019a0000-0000-7000-8000-000000000001","flushAt":"2026-11-23T02:00:00Z"}}),
+        ),
+        (
+            "message_status",
+            serde_json::json!({"kind":"returned","value":{"kind":"refused",
+                "reason":{"kind":"centralMail","value":{"kind":"notSession"}}}}),
+        ),
         (
             "conversation_create",
             serde_json::json!({"kind":"pending","operationId":OperationId::generate()}),
@@ -528,7 +538,7 @@ async fn real_tools_list_reports_input_and_output_bytes_separately() {
         output_bytes += serde_json::to_vec(&tool["outputSchema"]).unwrap().len();
         jsonschema::validator_for(&tool["inputSchema"]).expect("all local references resolve");
     }
-    assert_eq!(tools.len(), 24);
+    assert_eq!(tools.len(), 26);
     println!(
         "tools={} input_bytes={input_bytes} output_bytes={output_bytes}",
         tools.len()

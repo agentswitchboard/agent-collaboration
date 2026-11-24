@@ -26,7 +26,7 @@ use crate::{
     UnitPiece, message_system_status,
 };
 use crate::{
-    message_front::FrontPublication,
+    message_front::{ForwardingMessageFront, FrontPublication},
     message_unit::{MessageUnit, MessageUnitBuildError, OwnedLinkTask, UnitBuildInputs},
     stop_part::stop_part,
 };
@@ -265,18 +265,25 @@ impl Interpreter {
             Effect::PublishFront(front) => {
                 let door = match front {
                     Front::Refusing(reason) => Err(reason),
-                    Front::Forwarding(requested) => match self.unit.as_ref() {
-                        Some((held, unit)) if *held == requested => Ok(unit.front.clone()),
-                        held => {
-                            tracing::error!(
-                                class = "forwarding_generation_mismatch",
-                                requested_generation = requested.0.get(),
-                                held_generation = ?held.map(|(generation, _)| generation.0.get()),
-                                "Mac message system could not publish the Supervisor's forwarding front"
-                            );
-                            Err(FrontRefusal::CouldNotStart)
+                    Front::Forwarding(requested) => {
+                        match (self.unit.as_ref(), self.enrollment.as_ref()) {
+                            (Some((held, unit)), Some(enrollment)) if *held == requested => {
+                                Ok(ForwardingMessageFront {
+                                    calls: unit.front.clone(),
+                                    machine_id: enrollment.machine_id.clone(),
+                                })
+                            }
+                            (held, _) => {
+                                tracing::error!(
+                                    class = "forwarding_generation_mismatch",
+                                    requested_generation = requested.0.get(),
+                                    held_generation = ?held.map(|(generation, _)| generation.0.get()),
+                                    "Mac message system could not publish the Supervisor's forwarding front"
+                                );
+                                Err(FrontRefusal::CouldNotStart)
+                            }
                         }
-                    },
+                    }
                 };
                 let _ = self.front.send_replace(door);
             }

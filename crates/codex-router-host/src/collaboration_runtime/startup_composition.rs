@@ -7,6 +7,7 @@ use super::{
     SchemaDigest, SocketAddr, create_private_socket_directory, io, load_installation_peer,
     load_service_identity, new_service_uuid,
 };
+use collaboration_service::collaboration_application::message_operations::MessageOperations;
 use std::sync::Arc;
 use switchboard_message_custody::recipient_sessions::{
     CombinedRecipientSessionDirectory, RecipientSessionSources,
@@ -490,7 +491,7 @@ impl CollaborationRuntime {
                 router_proxy_endpoint,
             },
         )?;
-        let message_system = match message_roots {
+        let (message_system, message_tools) = match message_roots {
             Some(roots) => {
                 let custody_events = Arc::new(HostCustodyEvents);
                 let recipient_directory = Arc::new(CombinedRecipientSessionDirectory::new(
@@ -519,15 +520,26 @@ impl CollaborationRuntime {
                         ),
                     },
                 ));
-                Some(MessageSystem::start(
+                let system = MessageSystem::start(
                     roots,
                     worker_clock.clone(),
-                    recipient_directory,
+                    recipient_directory.clone(),
                     MessageSystemEvents::new(custody_events),
-                ))
+                );
+                let front = system.front();
+                let admission = super::message_startup::v0_message_admission(
+                    front.clone(),
+                    recipient_directory,
+                    worker_clock.clone(),
+                );
+                (
+                    Some(system),
+                    MessageOperations::new(admission, Arc::new(front), worker_clock.clone()),
+                )
             }
-            None => None,
+            None => (None, MessageOperations::default()),
         };
+        let application = application.with_messages(message_tools);
         let shutdown = CancellationToken::new();
         let collaboration_api =
             collaboration_api.serve(&collaboration_mcp::CollaborationApiConfig {

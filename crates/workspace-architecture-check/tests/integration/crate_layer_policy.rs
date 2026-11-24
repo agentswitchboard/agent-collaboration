@@ -57,6 +57,9 @@ const LAYER_POLICY: [(&str, &[&str]); 47] = [
     (
         "switchboard-message-system",
         &[
+            "central-link-protocol",
+            "collaboration-protocol",
+            "workspace-model",
             "router-clock",
             "switchboard-central-link",
             "switchboard-link-lease",
