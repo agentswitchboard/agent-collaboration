@@ -618,7 +618,7 @@ async fn inconclusive_orphan_status_defers_without_surrendering_its_claim_or_dea
             RequestStatusAnswer::CentralUnavailable {},
         );
         let first_probe = peer.hold_next_status();
-        let (calls, stop, mut events, running) = start_worker(campaign.custody);
+        let (calls, group, mut events) = start_worker(campaign.custody);
         first_probe.entered.notified().await;
         first_probe.accepted.send_replace(Some(ClockInstant::ZERO));
 
@@ -682,7 +682,7 @@ async fn inconclusive_orphan_status_defers_without_surrendering_its_claim_or_dea
             peer.batch_commands().is_empty(),
             "the inconclusive status must never allow retransmission"
         );
-        stop.send_replace(true);
-        running.await.unwrap();
+        group.request_stop();
+        group.join().await.unwrap();
     }
 }
