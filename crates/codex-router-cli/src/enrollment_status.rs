@@ -1,11 +1,34 @@
-//! Human-readable copies of the state stored in the Mac's enrollment record.
+//! Human-readable live link status and stored Mac enrollment.
 
 use std::io::{self, Write};
 
+use codex_router_host::MessageSystemStatus;
 use switchboard_machine_enrollment::{EnrollmentEnd, EnrollmentMetadata, InvalidReason};
 use switchboard_machine_enrollment_store::MachineEnrollmentStatus;
 
 pub(crate) const ENROLLED_TEXT: &str = "This Mac is enrolled.";
+
+pub(crate) fn write_router_link_status(
+    output: &mut impl Write,
+    status: Option<MessageSystemStatus>,
+) -> io::Result<()> {
+    use MessageSystemStatus as Status;
+
+    let line = match status {
+        None => "Router has no message link",
+        Some(Status::Starting) => "starting",
+        Some(Status::NotEnrolled) => "not enrolled",
+        Some(Status::EnrollmentEnded) => "enrollment ended",
+        Some(Status::EnrollmentUnreadable) => "could not read enrollment",
+        Some(Status::Connecting) => "enrolled, connecting",
+        Some(Status::Connected) => "enrolled, connected",
+        Some(Status::Stopping) => "stopping",
+        Some(Status::Restarting) => "enrolled, restarting",
+        Some(Status::EnrollmentMismatch) => "enrollment does not match this Router",
+        Some(Status::Stopped) => "link stopped",
+    };
+    writeln!(output, "{line}")
+}
 
 pub(crate) fn write_enrollment_status(
     output: &mut impl Write,
@@ -29,11 +52,7 @@ pub(crate) fn write_enrollment_status(
             writeln!(output, "{ENROLLED_TEXT}")?;
             writeln!(output, "Machine: {}", machine_id.as_str())?;
             writeln!(output, "Organization: {}", key.organization_id)?;
-            writeln!(output, "Sign-in: {}", deployment.origin())?;
-            writeln!(
-                output,
-                "This is what the Mac has stored. It does not show whether the link to central is up."
-            )
+            writeln!(output, "Sign-in: {}", deployment.origin())
         }
         EnrollmentMetadata::Ended { key, why, .. } => {
             writeln!(

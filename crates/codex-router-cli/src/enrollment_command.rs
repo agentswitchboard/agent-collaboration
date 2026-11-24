@@ -15,9 +15,9 @@ use switchboard_machine_enrollment_store::EnrollmentStoreCloseError;
 use crate::enrollment_status::ENROLLED_TEXT;
 
 pub(crate) const ENROLL_HELP: &str = "Usage: codex-router enroll --organization <uuid> --sign-in <https-origin>\n\
-Enroll this Mac in a Switchboard organization. Stop the debug Host before enrolling.\n";
+Enroll this Mac in a Switchboard organization.\n";
 pub(crate) const STATUS_HELP: &str = "Usage: codex-router enrollment status\n\
-Show the enrollment stored on this Mac. Works with the Host running or stopped.\n";
+Show the Router's link status and the enrollment stored on this Mac. Works with the Host running or stopped.\n";
 
 /// The enroll command parses these values from the person's arguments.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -80,6 +80,8 @@ pub enum EnrollCommandError {
     StoreClose(#[source] EnrollmentStoreCloseError),
     #[error("The Mac's stored enrollment could not be read. Details: {0}.")]
     StatusRead(#[source] EnrollmentMetadataReadError),
+    #[error("The Router's link status could not be read. Details: {0}.")]
+    HostStatusRead(#[source] crate::host_command::operator_client::OperatorClientError),
 }
 
 impl EnrollArguments {

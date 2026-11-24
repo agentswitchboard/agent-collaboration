@@ -2,10 +2,10 @@ use std::{os::unix::fs::PermissionsExt as _, path::Path, sync::Arc};
 
 use router_clock::ManualClock;
 use switchboard_machine_core_store::MACHINE_LOCAL_DATABASE;
-use switchboard_message_unit::FrontRefusal;
+use switchboard_message_system::{FrontRefusal, MessageRoots, MessageSystemStatus};
 
 use super::super::{
-    CollaborationRuntime, CollaborationRuntimeInputs, HostCollaborationInputs, HostMessageRoots,
+    CollaborationRuntime, CollaborationRuntimeInputs, HostCollaborationInputs,
     RouterExecutableRelation, SocketAddr,
 };
 
@@ -24,7 +24,7 @@ fn clock() -> Arc<ManualClock> {
 
 async fn start_host(
     root: &Path,
-    roots: HostMessageRoots,
+    roots: MessageRoots,
     clock: Arc<ManualClock>,
 ) -> CollaborationRuntime {
     CollaborationRuntime::start_for_host_with_router_proxy_endpoint(
@@ -58,13 +58,26 @@ async fn start_host(
 #[tokio::test]
 async fn unenrolled_host_refuses_message_custody_and_serves_collaboration() {
     let root = private_root();
-    let roots = HostMessageRoots::new(root.path().to_owned(), root.path().join("secrets"));
+    let roots = MessageRoots::new(root.path().to_owned(), root.path().join("secrets"));
     let runtime = start_host(root.path(), roots, clock()).await;
+    let mut status = runtime
+        .message_system
+        .as_ref()
+        .expect("Router roots configured")
+        .status();
+    status
+        .wait_for(|status| *status == MessageSystemStatus::NotEnrolled)
+        .await
+        .expect("initial metadata observed");
     assert!(
         root.path().join(MACHINE_LOCAL_DATABASE).is_file(),
         "Host read the machine store"
     );
-    let front = runtime.message_front();
+    assert_eq!(
+        runtime.message_status(),
+        Some(MessageSystemStatus::NotEnrolled)
+    );
+    let front = runtime.message_front().expect("Router roots configured");
     assert!(matches!(front.custody(), Err(FrontRefusal::NotEnrolled)));
 
     let client = collaboration_client::CollaborationClient::connect(

@@ -33,7 +33,12 @@ impl CollaborationRuntime {
     pub async fn shutdown(mut self) -> io::Result<()> {
         self.manifest.take();
         self.shutdown.cancel();
-        self.message_runtime.stop().await;
+        if let Some(system) = self.message_system.take() {
+            let report = system.close().await;
+            if report != switchboard_message_system::CloseReport::Closed {
+                tracing::warn!(?report, "Mac message system has unconfirmed shutdown");
+            }
+        }
         if let Some(cache_warm) = self.provider_cache_warm.take() {
             cache_warm.shutdown().await;
         }

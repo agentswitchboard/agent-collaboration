@@ -174,6 +174,12 @@ impl Supervisor {
         self.latest_read
     }
 
+    /// Whether the current timer can still read enrollment metadata.
+    #[must_use]
+    pub fn wants_metadata_read(&self, read: ReadId) -> bool {
+        read == self.latest_read && self.state.observing_metadata()
+    }
+
     fn schedule(
         &mut self,
         after: Duration,
@@ -238,9 +244,7 @@ impl Supervisor {
             Event::MetadataObserved { read, .. } if read > self.latest_read => {
                 return Err(not_allowed);
             }
-            Event::MetadataObserved { read, .. }
-                if read != self.latest_read || !self.state.observing_metadata() =>
-            {
+            Event::MetadataObserved { read, .. } if !self.wants_metadata_read(read) => {
                 return Err(Refused::Stale);
             }
             Event::MetadataObserved { metadata, .. } => {
