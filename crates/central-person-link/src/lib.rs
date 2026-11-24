@@ -168,3 +168,125 @@ impl PersonRevision {
         }
     }
 }
+
+use central_link_protocol::{
+    CentralCall, CorrelationId, DataFrame, FrameDirection, LinkCallRefusal, LinkFrame,
+    ProtocolError, ReplyPayload, RequestRefusal, RequestStatusAnswer, TokenRenewalRefusal,
+    TokenRenewalResult, TypedCallResult, decode_text, person_link_rpc::ListOrganizationWorkspaces,
+};
+use fleet_rpc::Envelope;
+
+pub enum PersonFrame {
+    Reply(Vec<LinkFrame>),
+    ListWorkspaces {
+        correlation: CorrelationId,
+        request: Envelope<OrganizationId, ListOrganizationWorkspaces>,
+    },
+    ProtocolViolation,
+}
+
+pub fn dispatch(connection: &PersonSocketAttachment, text: &str) -> PersonFrame {
+    let frame = match decode_text(text, FrameDirection::ToCentral) {
+        Ok(frame) => frame,
+        Err(ProtocolError::UnknownTypedCall { correlation_id }) => {
+            return refusal(correlation_id, LinkCallRefusal::UnknownCall);
+        }
+        Err(_) => return PersonFrame::ProtocolViolation,
+    };
+    match frame {
+        LinkFrame::Ping => PersonFrame::Reply(vec![LinkFrame::Pong]),
+        LinkFrame::Data(DataFrame::CallCentral {
+            correlation_id,
+            request,
+        }) => match *request {
+            CentralCall::ListOrganizationWorkspaces(request)
+                if &request.target == connection.organization()
+                    && connection.permits(FleetPermission::ViewOrganization) =>
+            {
+                PersonFrame::ListWorkspaces {
+                    correlation: correlation_id,
+                    request,
+                }
+            }
+            CentralCall::ListOrganizationWorkspaces(_)
+            | CentralCall::RegisterRun(_)
+            | CentralCall::Raise(_)
+            | CentralCall::Stop(_)
+            | CentralCall::ListApprovalsForSession(_)
+            | CentralCall::ReadApprovalForSession(_)
+            | CentralCall::DecideApprovalAsSession(_)
+            | CentralCall::PassOnApproval(_)
+            | CentralCall::CreateFleetSession(_)
+            | CentralCall::BindFleetSession(_)
+            | CentralCall::EndFleetSession(_) => {
+                refusal(correlation_id, LinkCallRefusal::WrongTarget)
+            }
+        },
+        LinkFrame::Data(DataFrame::Request { request }) => {
+            PersonFrame::Reply(vec![refuse_request(&request)])
+        }
+        LinkFrame::Data(DataFrame::Batch { requests }) => {
+            PersonFrame::Reply(requests.requests().iter().map(refuse_request).collect())
+        }
+        LinkFrame::Data(DataFrame::RequestStatus { correlation_id, .. }) => {
+            reply(DataFrame::RequestStatusReply {
+                correlation_id,
+                result: Box::new(RequestStatusAnswer::Refused(RequestRefusal::Workspace(
+                    workspace_model::RefusalReason::WorkspaceNotAllowed,
+                ))),
+            })
+        }
+        LinkFrame::Data(DataFrame::Receipts {
+            correlation_id,
+            receipts,
+        }) => reply(DataFrame::ReceiptResults {
+            correlation_id,
+            results: vec![
+                central_link_protocol::ReceiptResult::NotApplicable;
+                receipts.receipts().len()
+            ],
+        }),
+        LinkFrame::Data(DataFrame::RenewMachineToken { correlation_id, .. }) => {
+            reply(DataFrame::MachineTokenRenewal {
+                correlation_id,
+                result: TokenRenewalResult::Refused {
+                    reason: TokenRenewalRefusal::TokenRejected,
+                },
+            })
+        }
+        LinkFrame::Pong
+        | LinkFrame::Data(
+            DataFrame::MacCallReply { .. }
+            | DataFrame::MacCapabilities(_)
+            | DataFrame::Welcome { .. }
+            | DataFrame::Reply { .. }
+            | DataFrame::RequestStatusReply { .. }
+            | DataFrame::Deliver { .. }
+            | DataFrame::ReceiptResults { .. }
+            | DataFrame::CentralCallReply { .. }
+            | DataFrame::CallMac { .. }
+            | DataFrame::MachineTokenRenewal { .. },
+        ) => PersonFrame::ProtocolViolation,
+    }
+}
+
+fn refuse_request(request: &central_link_protocol::LinkRequest) -> LinkFrame {
+    LinkFrame::Data(DataFrame::Reply {
+        correlation_id: request.correlation_id().clone(),
+        result: Box::new(ReplyPayload::workspace_refused(
+            request.payload(),
+            workspace_model::RefusalReason::WorkspaceNotAllowed,
+        )),
+    })
+}
+
+fn refusal(correlation_id: CorrelationId, reason: LinkCallRefusal) -> PersonFrame {
+    reply(DataFrame::CentralCallReply {
+        correlation_id,
+        result: Box::new(TypedCallResult::Refused { reason }),
+    })
+}
+
+fn reply(frame: DataFrame) -> PersonFrame {
+    PersonFrame::Reply(vec![LinkFrame::Data(frame)])
+}

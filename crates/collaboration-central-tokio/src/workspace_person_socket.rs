@@ -33,10 +33,14 @@ struct PersonSocket {
 }
 
 impl PersonSockets {
-    fn register(&self, attachment: PersonSocketAttachment) -> Arc<PersonSocket> {
+    fn register(
+        &self,
+        attachment: PersonSocketAttachment,
+        reconnect: CancellationToken,
+    ) -> Arc<PersonSocket> {
         let socket = Arc::new(PersonSocket {
             connection: Mutex::new(PersonConnectionState::Admitted(attachment)),
-            reconnect: CancellationToken::new(),
+            reconnect,
         });
         let mut sockets = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         sockets.retain(|existing| existing.strong_count() > 0);
@@ -101,16 +105,19 @@ async fn serve(
     runtime: Arc<Runtime>,
     attachment: PersonSocketAttachment,
 ) {
+    let reconnect_requested = CancellationToken::new();
     let registered = runtime
         .register_person_socket(&attachment, || {
-            state.host.person_sockets.register(attachment.clone())
+            state
+                .host
+                .person_sockets
+                .register(attachment.clone(), reconnect_requested.clone())
         })
         .await;
-    let unsubscribed = CancellationToken::new();
     let closed_machine = OnceLock::new();
     let writes = LinkWrites {
         stop: &state.stop,
-        replaced: &unsubscribed,
+        replaced: &reconnect_requested,
         authority_close: &closed_machine,
         clock: state.host.link_clock(),
         tasks: &state.tasks,
@@ -148,9 +155,14 @@ async fn serve(
             return reconnect(&mut socket, &writes).await;
         };
         match runtime.handle_person_link_text(&attachment, &text).await {
-            Ok(PersonLinkReply::Frame(frame)) => {
-                if !writes.send(&mut socket, &frame).await {
-                    return;
+            Ok(PersonLinkReply::Frames(frames)) => {
+                for frame in frames {
+                    if !writes.send(&mut socket, &frame).await {
+                        if reconnect_requested.is_cancelled() && !state.stop.is_cancelled() {
+                            reconnect(&mut socket, &writes).await;
+                        }
+                        return;
+                    }
                 }
             }
             Ok(PersonLinkReply::Reconnect) => return reconnect(&mut socket, &writes).await,

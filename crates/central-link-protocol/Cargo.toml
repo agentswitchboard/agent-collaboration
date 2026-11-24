@@ -14,6 +14,7 @@ wire-export = ["dep:specta", "dep:specta-serde", "dep:specta-typescript", "works
 approval-request-protocol.workspace = true
 fleet-identity-protocol = { path = "../fleet-identity-protocol", version = "0.1.156" }
 fleet-rpc.workspace = true
+message-board = { path = "../message-board", version = "0.1.93" }
 schemars.workspace = true
 workspace-model.workspace = true
 workspace-ids.workspace = true

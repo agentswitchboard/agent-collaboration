@@ -15,6 +15,7 @@ mod mac_call_address;
 mod mac_call_capabilities;
 #[cfg(test)]
 mod parent_session_rpc_test;
+pub mod person_link_rpc;
 mod request_status;
 pub mod session_lifecycle_rpc;
 mod socket_direct_mail;

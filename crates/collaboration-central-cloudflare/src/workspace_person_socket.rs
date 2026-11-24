@@ -79,11 +79,14 @@ impl CentralObject {
             return Ok(());
         };
         match runtime.handle_person_link_text(attachment, &text).await {
-            Ok(PersonLinkReply::Frame(frame)) => write_central_text(
-                &socket,
-                encode_central_egress(&frame)
-                    .map_err(|error| worker::Error::RustError(error.to_string()))?,
-            ),
+            Ok(PersonLinkReply::Frames(frames)) => {
+                for frame in frames {
+                    let text = encode_central_egress(&frame)
+                        .map_err(|error| worker::Error::RustError(error.to_string()))?;
+                    write_central_text(&socket, text)?;
+                }
+                Ok(())
+            }
             Ok(PersonLinkReply::Reconnect) => reconnect(&socket),
             Ok(PersonLinkReply::ProtocolViolation) => {
                 socket.close(Some(1008), Some("unsupported person frame"))

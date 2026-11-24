@@ -1,8 +1,13 @@
 //! Apply signed person-link authority to the owning organization's live floors.
 
 use crate::{WorkspaceRuntime, organization_authority_cache::StampStanding};
-use central_link_protocol::{FrameDirection, LinkFrame, ProtocolError, decode_text};
-use central_person_link::PersonSocketAttachment;
+use central_link_protocol::{
+    CentralLinkRpc, DataFrame, LinkCallRefusal, LinkFrame, TypedCallResult,
+    person_link_rpc::{
+        ListOrganizationWorkspacesRpc, OrganizationWorkspace, OrganizationWorkspacePage,
+    },
+};
+use central_person_link::{PersonFrame, PersonSocketAttachment, dispatch};
 use central_storage::StoreFailure;
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
 use fleet_signin::{
@@ -21,7 +26,7 @@ pub enum PersonSocketRegistration<T> {
 }
 
 pub enum PersonLinkReply {
-    Frame(LinkFrame),
+    Frames(Vec<LinkFrame>),
     Reconnect,
     ProtocolViolation,
 }
@@ -121,11 +126,47 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         if !self.person_link_is_current(connection).await? {
             return Ok(PersonLinkReply::Reconnect);
         }
-        Ok(match decode_text(text, FrameDirection::ToCentral) {
-            Ok(LinkFrame::Ping) => PersonLinkReply::Frame(LinkFrame::Pong),
-            Ok(LinkFrame::Pong | LinkFrame::Data(_))
-            | Err(ProtocolError::UnknownTypedCall { .. })
-            | Err(_) => PersonLinkReply::ProtocolViolation,
+        Ok(match dispatch(connection, text) {
+            PersonFrame::Reply(frames) => PersonLinkReply::Frames(frames),
+            PersonFrame::ProtocolViolation => PersonLinkReply::ProtocolViolation,
+            PersonFrame::ListWorkspaces {
+                correlation,
+                request,
+            } => {
+                let result = match self
+                    .list_organization_workspaces(
+                        request.body.after.as_ref(),
+                        request.body.limit.into(),
+                    )
+                    .await
+                {
+                    Ok(page) => TypedCallResult::Answered {
+                        reply: ListOrganizationWorkspacesRpc::reply(fleet_rpc::Envelope {
+                            target: request.target,
+                            body: OrganizationWorkspacePage {
+                                next: page.next,
+                                workspaces: page
+                                    .workspaces
+                                    .into_iter()
+                                    .map(|workspace| OrganizationWorkspace {
+                                        workspace_id: workspace.workspace_id,
+                                        name: workspace.name,
+                                        description: workspace.description,
+                                        state: workspace.state,
+                                    })
+                                    .collect(),
+                            },
+                        }),
+                    },
+                    Err(_) => TypedCallResult::Refused {
+                        reason: LinkCallRefusal::CentralFault,
+                    },
+                };
+                PersonLinkReply::Frames(vec![LinkFrame::Data(DataFrame::CentralCallReply {
+                    correlation_id: correlation,
+                    result: Box::new(result),
+                })])
+            }
         })
     }
 }

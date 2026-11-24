@@ -897,6 +897,7 @@ dependencies = [
  "fleet-identity-protocol",
  "fleet-rpc",
  "jsonschema",
+ "message-board",
  "schemars 1.2.2",
  "serde",
  "serde_json",
@@ -913,10 +914,13 @@ dependencies = [
 name = "central-person-link"
 version = "0.1.158"
 dependencies = [
+ "central-link-protocol",
  "fleet-identity-protocol",
+ "fleet-rpc",
  "fleet-signin",
  "serde",
  "workspace-ids",
+ "workspace-model",
 ]
 
 [[package]]

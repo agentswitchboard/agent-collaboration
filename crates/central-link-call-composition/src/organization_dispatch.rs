@@ -288,6 +288,10 @@ where
     ) -> Pin<Box<dyn Future<Output = Result<CentralCallWork, StoreFailure>> + Send + 'call>> {
         Box::pin(async move {
             match request {
+                CentralCall::ListOrganizationWorkspaces(_) => Ok(TypedCallResult::Refused {
+                    reason: LinkCallRefusal::WrongTarget,
+                }
+                .into()),
                 CentralCall::CreateFleetSession(request) => self
                     .apply::<CreateFleetSessionRpc>(
                         machine,

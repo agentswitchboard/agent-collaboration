@@ -62,7 +62,8 @@ pub fn is_approval_holder_call(request: Option<&CentralCall>) -> bool {
     match request {
         Some(CentralCall::RegisterRun(_) | CentralCall::Raise(_) | CentralCall::Stop(_)) => true,
         Some(
-            CentralCall::CreateFleetSession(_)
+            CentralCall::ListOrganizationWorkspaces(_)
+            | CentralCall::CreateFleetSession(_)
             | CentralCall::BindFleetSession(_)
             | CentralCall::EndFleetSession(_)
             | CentralCall::ListApprovalsForSession(_)
