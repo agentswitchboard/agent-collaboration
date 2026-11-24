@@ -362,6 +362,8 @@ pub(super) fn read_effect(
     state: RetirementState,
     event: RetirementEvent<'_>,
 ) -> Result<RetirementEffect, CredentialStoreError> {
+    // The refused-transition mapping cannot fire because each caller feeds the
+    // event its state declares. It stays because transition returns a Result.
     let (_, effects) =
         RetirementMachine::transition(&state, event).map_err(|_| CredentialStoreError::Read)?;
     // All observation and write-return events emit exactly one typed effect.

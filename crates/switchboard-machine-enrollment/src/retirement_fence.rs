@@ -187,7 +187,9 @@ impl RetirementFence {
             return;
         };
         if matches!(next, RetirementState::StaleOwnerEnding(_)) {
-            // Promotion or removal is atomic with settlement for observers.
+            // Both transitions run under this one lock. StaleOwnerEnding is
+            // never stored or observable, so a definitive report cannot
+            // interleave between settlement and promotion or removal.
             let Ok((released, _)) =
                 RetirementMachine::transition(&next, RetirementEvent::ReleaseStaleOwnerEnding)
             else {

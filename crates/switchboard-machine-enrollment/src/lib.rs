@@ -10,7 +10,10 @@ mod enrollment_attempt;
 mod enrollment_binding;
 mod enrollment_identity;
 mod enrollment_outcome;
+mod refresh_lease;
 mod refresh_owner;
+mod renewal_admission;
+mod renewal_machine;
 mod response_object;
 mod retirement_fence;
 mod retirement_machine;
@@ -29,10 +32,8 @@ pub use enrollment_identity::{
     EnrollmentId, EnrollmentIdentifierError, OrganizationId, RouterClientId,
 };
 pub use enrollment_outcome::{DecodeAnswerError, EnrollmentEnd, InvalidReason};
-pub use refresh_owner::{
-    AccessLease, AccessRequest, LeaseConfigurationFault, LeaseUnavailable, RefreshOwner,
-    RefreshSource,
-};
+pub use refresh_lease::{AccessLease, AccessRequest, LeaseConfigurationFault, LeaseUnavailable};
+pub use refresh_owner::{RefreshOwner, RefreshSource};
 pub use retirement_fence::RetirementFence;
 pub use sign_in_answers::{
     DeviceAuthorization, DeviceInstructions, PollAnswer, RefreshAnswer, SignInFailure, TokenGrant,
