@@ -248,17 +248,9 @@ async fn a_checked_answer_before_the_original_deadline_settles_the_write() {
 
 #[tokio::test]
 async fn an_untouched_result_ready_at_the_fence_uses_the_members_original_cutoff() {
-    for (remaining, closes_in, expected) in [
-        (
-            Duration::from_millis(1),
-            Duration::from_millis(1),
-            OutboxCancellation::NotConfirmedWithin15Minutes,
-        ),
-        (
-            Duration::from_secs(10),
-            Duration::from_secs(3),
-            OutboxCancellation::NotSentWithin15Minutes,
-        ),
+    for (remaining, closes_in) in [
+        (Duration::from_millis(1), Duration::from_millis(1)),
+        (Duration::from_secs(10), Duration::from_secs(3)),
     ] {
         let until_mark = AGENT_WINDOW - remaining;
         let start = LAST_MARK_MS - i64::try_from(until_mark.as_millis()).unwrap();
@@ -293,8 +285,9 @@ async fn an_untouched_result_ready_at_the_fence_uses_the_members_original_cutoff
             worker.advance(remaining - closes_in).await.unwrap().ended
         };
         assert!(
-            matches!(endings.as_slice(), [ended] if ended.request_id == item.request && ended.reason == expected),
-            "the driver-held original deadline and earlier mark close must have different endings: {endings:?}"
+            matches!(endings.as_slice(), [ended] if ended.request_id == item.request
+                && ended.reason == OutboxCancellation::NotSentWithin15Minutes),
+            "an untouched first attempt ends as not sent at its original deadline: {endings:?}"
         );
         assert!(
             worker

@@ -21,6 +21,7 @@ use crate::{
         AdmittedLanePolicy, LaneEffect, LaneInput, LaneResult, LaneState, SocketReply,
     },
     link_lane::{CommandIntake, LaneRequest, LinkLaneOwner},
+    wire_write_fence::WireWriteFence,
 };
 
 const CONNECTION_CORRELATION_LIMIT: usize = 4096;
@@ -36,7 +37,8 @@ pub(super) enum ReadAdmission {
     Admitted(mpsc::Sender<LinkLaneEvent>),
 }
 
-pub(super) struct AdmittedSocketLane {
+pub(super) struct AdmittedSocketLane<'fence> {
+    write_fence: &'fence WireWriteFence,
     state: LaneState,
     admitted: watch::Sender<Option<AdmittedConnection>>,
     intake: Arc<CommandIntake>,
@@ -63,9 +65,10 @@ pub(super) enum FrameOffer {
     Reconnect,
 }
 
-impl AdmittedSocketLane {
-    pub(super) fn new(owner: &LinkLaneOwner) -> Self {
+impl<'fence> AdmittedSocketLane<'fence> {
+    pub(super) fn new(owner: &LinkLaneOwner, write_fence: &'fence WireWriteFence) -> Self {
         Self {
+            write_fence,
             state: LaneState::WaitingForAdmission,
             admitted: owner.admitted.clone(),
             intake: owner.intake.clone(),
@@ -344,13 +347,18 @@ impl AdmittedSocketLane {
     }
 }
 
-impl Drop for AdmittedSocketLane {
+impl Drop for AdmittedSocketLane<'_> {
     fn drop(&mut self) {
         // This is the fence that linearizes retirement against enqueue. The
         // owner drains the receiver after the socket scope returns.
         self.intake.close();
         if let Some(admitted) = self.state.admitted() {
             let connection = admitted.connection.clone();
+            // Cancellation can drop the writer before the driver observes its
+            // result. Retire the lane with the transport's first-byte evidence.
+            if self.write_fence.crossed() {
+                self.start_write();
+            }
             self.admitted.send_replace(None);
             self.apply(LaneInput::Close {
                 connection: connection.clone(),

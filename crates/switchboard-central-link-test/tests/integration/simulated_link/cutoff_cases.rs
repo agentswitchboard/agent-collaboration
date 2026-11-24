@@ -13,6 +13,102 @@ use super::{
 use crate::simulated_link::packet_flight::decode_segment;
 
 #[test]
+fn an_untouched_first_batch_at_the_write_cutoff_ends_not_sent() {
+    run_link_case(|link| async move {
+        let mut case = NetworkCustody::start(link).await;
+        let anchor = case.link.admission.clock_anchor;
+        let mark = next_mark_after(shared_time_at(anchor, case.link.clock.monotonic_now()));
+        let wake = wake_for_mark(anchor, mark, case.jitter.jitter_millis(mark));
+        let cutoff = wake + Duration::from_millis(1);
+        let created_at_ms = shared_time_at(anchor, cutoff).unix_millis() - 15 * 60 * 1_000;
+        let request = request_id(1);
+        let caller = case.caller();
+        let mut store = MachineLocalStore::open(
+            &case
+                .link
+                .central
+                .root_path()
+                .join("simulated-custody.sqlite"),
+        )
+        .await
+        .unwrap();
+        let item = NewOutboxItem {
+            request: request.clone(),
+            caller: caller.clone(),
+            payload: OutboxQueuedWrite::SendMessage {
+                request_id: request.clone(),
+                message: SendMessageRequest {
+                    to: case.session.clone(),
+                    body: PostText::try_from(
+                        "first attempt expires before the socket accepts it".to_owned(),
+                    )
+                    .unwrap(),
+                    delivery: super::MessageDelivery::Auto,
+                    reply_to: None,
+                },
+            },
+            flush_at_ms: mark.unix_millis(),
+        };
+        assert_eq!(
+            MacOutbox::new(&mut store)
+                .insert(&item, created_at_ms)
+                .await
+                .unwrap(),
+            OutboxInsert::Stored,
+        );
+        assert_eq!(
+            case.status(request.clone()).await,
+            CustodyRequestStatus::InOutbox { flush_at: mark },
+        );
+
+        let raw_ready = case.link.writer_gate.hold();
+        case.first_flush(&OutboxReceipt {
+            id: request.clone(),
+            flush_at: mark,
+        })
+        .await;
+        let staged = raw_ready.await.unwrap();
+        assert!(matches!(
+            decode_segment(&staged, true).as_slice(),
+            [LinkFrame::Data(DataFrame::Batch { requests })]
+                if requests.requests().len() == 1
+                    && requests.requests()[0].payload().write_request_id() == Some(&request)
+        ));
+        assert_eq!(case.link.clock.monotonic_now(), wake);
+        assert_eq!(
+            case.status(request.clone()).await,
+            CustodyRequestStatus::Sent
+        );
+
+        // Cross inside the driver's first-byte select so it can publish the
+        // untouched disposition before custody samples the same due cutoff.
+        case.link.driver_clock.cross_after_pending_poll(cutoff);
+        case.link.writer_gate.release();
+        let report = case.next_write_report().await;
+        assert_eq!(case.link.clock.monotonic_now(), cutoff);
+        assert!(report.issues.is_empty() && report.answered.is_empty());
+        assert_eq!(
+            case.status(request.clone()).await,
+            CustodyRequestStatus::Ended {
+                reason: OutboxCancellation::NotSentWithin15Minutes,
+            },
+        );
+        assert!(matches!(report.ended.as_slice(), [event]
+            if event.request_id == request && event.caller == caller
+                && event.reason == OutboxCancellation::NotSentWithin15Minutes));
+        assert!(
+            case.link
+                .network
+                .frames()
+                .iter()
+                .all(|frame| frame.kind != FrameKind::Batch)
+        );
+        assert!(case.direct_message_rows(&request).await.is_empty());
+        case.close().await;
+    });
+}
+
+#[test]
 fn held_second_reply_crosses_cutoff_without_changing_how_either_answer_is_read() {
     run_link_case(|link| async move {
         let mut case = NetworkCustody::start(link).await;

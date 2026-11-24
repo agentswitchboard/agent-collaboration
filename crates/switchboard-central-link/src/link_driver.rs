@@ -448,7 +448,7 @@ where
         let mut acquiring: Option<LeaseFuture<'_, Binding>> = None;
         let mut renewal_sent_at = None;
         let mut priority = SocketPriority::ReadFrame;
-        let mut admitted_lane = AdmittedSocketLane::new(lane_owner);
+        let mut admitted_lane = AdmittedSocketLane::new(lane_owner, timing.writes);
         let mut read_paused_at = None;
         let mut delivery_stall_at = None;
         let clock = self.clock.clone();

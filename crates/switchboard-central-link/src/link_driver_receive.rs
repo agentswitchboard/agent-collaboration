@@ -42,7 +42,7 @@ where
         text: &str,
         started: ClockInstant,
         renewal_sent_at: Option<ClockInstant>,
-        admitted_lane: &mut AdmittedSocketLane,
+        admitted_lane: &mut AdmittedSocketLane<'_>,
         permit: Option<EventPermit>,
     ) -> SocketReceive {
         match decode_text(text, FrameDirection::ToRouter) {
@@ -68,7 +68,7 @@ where
         received: SocketReceive,
         socket: &mut (impl Sink<Message, Error = WebSocketError> + Unpin),
         control: &mut Control<'_, Binding>,
-        admitted_lane: &mut AdmittedSocketLane,
+        admitted_lane: &mut AdmittedSocketLane<'_>,
         writes: &WireWriteFence,
     ) -> Result<bool, Interrupted> {
         match received {
@@ -101,7 +101,7 @@ where
         frame: DataFrame,
         socket: &mut (impl Sink<Message, Error = WebSocketError> + Unpin),
         control: &mut Control<'_, Binding>,
-        admitted_lane: &mut AdmittedSocketLane,
+        admitted_lane: &mut AdmittedSocketLane<'_>,
         writes: &WireWriteFence,
     ) -> Result<bool, Interrupted> {
         let Some(authority_until) = self.state.renewal_deadline() else {
@@ -134,7 +134,7 @@ where
         frame: LinkFrame,
         started: ClockInstant,
         renewal_sent_at: Option<ClockInstant>,
-        admitted_lane: &mut AdmittedSocketLane,
+        admitted_lane: &mut AdmittedSocketLane<'_>,
         permit: Option<EventPermit>,
     ) -> SocketReceive {
         let reply = match frame {
@@ -193,7 +193,7 @@ where
         event: ClientEvent,
         started: ClockInstant,
         renewal_sent_at: Option<ClockInstant>,
-        admitted_lane: &mut AdmittedSocketLane,
+        admitted_lane: &mut AdmittedSocketLane<'_>,
         permit: Option<EventPermit>,
     ) -> SocketReceive {
         match event {
