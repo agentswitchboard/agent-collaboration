@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT approval_row_id, organization_id, machine_id, enrollment_id, router_run_id,\n       request_id, record_state, ended_at, erase_after_ms\nFROM approval_requests\nWHERE organization_id=?1 AND machine_id=?2 AND enrollment_id=?3 AND router_run_id=?4\n  AND record_state='ended' AND delivery_state='owed' AND erase_after_ms<=?5\nORDER BY erase_after_ms DESC LIMIT 1\n",
+  "query": "SELECT requests.approval_row_id, requests.organization_id, requests.machine_id, requests.enrollment_id,\n       requests.router_run_id, requests.request_id, requests.record_state, requests.ended_at\nFROM approval_request_destinations AS destination\nJOIN approval_requests AS requests ON requests.approval_row_id = destination.approval_row_id\nWHERE destination.organization_id = ?1 AND destination.destination_kind = 'people'\n  AND destination.approval_row_id > ?2 AND requests.organization_id = ?1\n  AND CASE WHEN ?4 = 1\n      THEN requests.record_state = 'ended' AND requests.ended_at IS NOT NULL\n           AND (?3 IS NULL OR requests.ended_at <= ?3)\n      ELSE requests.record_state <> 'ended' OR requests.ended_at IS NULL\n           OR (?3 IS NOT NULL AND requests.ended_at > ?3)\n  END\nORDER BY CASE WHEN ?4 = 1 THEN requests.ended_at END DESC, destination.approval_row_id\nLIMIT ?5\n",
   "describe": {
     "columns": [
       {
@@ -90,17 +90,6 @@
             "name": "ended_at"
           }
         }
-      },
-      {
-        "name": "erase_after_ms",
-        "ordinal": 8,
-        "type_info": "Integer",
-        "origin": {
-          "Table": {
-            "table": "approval_requests",
-            "name": "erase_after_ms"
-          }
-        }
       }
     ],
     "parameters": {
@@ -114,9 +103,8 @@
       false,
       false,
       false,
-      true,
       true
     ]
   },
-  "hash": "8124a7d3ce939b96ebf6312923daa42f85e168198c204f3d4fffe49dddc22828"
+  "hash": "63aabd1c7e8794829741c2ce6b88b260a3c529ccb65ca7408740d99567778ce1"
 }

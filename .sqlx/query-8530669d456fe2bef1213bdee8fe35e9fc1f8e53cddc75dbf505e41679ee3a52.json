@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT requests.approval_row_id, requests.organization_id, requests.machine_id, requests.enrollment_id,\n       requests.router_run_id, requests.request_id, requests.record_state, requests.ended_at, requests.erase_after_ms\nFROM approval_request_destinations AS destination INDEXED BY approval_destinations_people_lookup\nCROSS JOIN approval_requests AS requests ON requests.approval_row_id = destination.approval_row_id\nWHERE destination.organization_id = ?1\n  AND destination.request_id = ?2\n  AND destination.destination_kind = 'people'\n  AND requests.organization_id = destination.organization_id\n  AND requests.request_id = destination.request_id\n",
+  "query": "SELECT requests.approval_row_id, requests.organization_id, requests.machine_id, requests.enrollment_id,\n       requests.router_run_id, requests.request_id, requests.record_state, requests.ended_at\nFROM approval_request_destinations AS destination INDEXED BY approval_destinations_people_lookup\nCROSS JOIN approval_requests AS requests ON requests.approval_row_id = destination.approval_row_id\nWHERE destination.organization_id = ?1\n  AND destination.request_id = ?2\n  AND destination.destination_kind = 'people'\n  AND requests.organization_id = destination.organization_id\n  AND requests.request_id = destination.request_id\n",
   "describe": {
     "columns": [
       {
@@ -90,17 +90,6 @@
             "name": "ended_at"
           }
         }
-      },
-      {
-        "name": "erase_after_ms",
-        "ordinal": 8,
-        "type_info": "Integer",
-        "origin": {
-          "Table": {
-            "table": "approval_requests",
-            "name": "erase_after_ms"
-          }
-        }
       }
     ],
     "parameters": {
@@ -114,9 +103,8 @@
       false,
       false,
       false,
-      true,
       true
     ]
   },
-  "hash": "5ca28a11b841b42b0615699c95e9f2d9e7853dd0cd359e85104d98abd65b1e9a"
+  "hash": "8530669d456fe2bef1213bdee8fe35e9fc1f8e53cddc75dbf505e41679ee3a52"
 }

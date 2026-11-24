@@ -7,7 +7,10 @@ use central_storage::StoreFailure;
 #[cfg(test)]
 use fleet_engine::owner_sql::CheckedStorage;
 use fleet_engine::{checked_engine_statement, checked_subject_projection};
-use fleet_runtime_ports::{stored_values::json, workspace_decode_error::corrupt};
+use fleet_runtime_ports::{
+    stored_values::{format_utc_millis, json},
+    workspace_decode_error::corrupt,
+};
 
 use crate::{ApprovalHolderScope, ApprovalStoreTransaction};
 
@@ -84,4 +87,19 @@ pub(crate) fn cutoff_at(ended_at: CentralTime) -> Result<CentralTime, StoreFailu
     CentralTime::from_timestamp_millis(cutoff)
         .filter(|time| supported_time(*time))
         .ok_or_else(|| corrupt("approval_requests.erase_after_ms"))
+}
+
+/// The latest ending that has reached its cutoff at this applying time.
+/// The SQL readers compare canonical UTC millisecond text, which sorts in
+/// time order across the portable engine range. At saturation all endings
+/// have reached their cutoff, so the bound is absent.
+pub(crate) fn expired_ending_bound(at: CentralTime) -> Result<Option<String>, StoreFailure> {
+    let now = at.timestamp_millis();
+    if now >= LAST_ALARM_GRID_UNIX_MILLIS {
+        return Ok(None);
+    }
+    CentralTime::from_timestamp_millis(now.saturating_sub(CENTRAL_RECORD_RETENTION_MILLIS))
+        .map(format_utc_millis)
+        .map(Some)
+        .ok_or_else(|| corrupt("approval_requests.ended_at"))
 }

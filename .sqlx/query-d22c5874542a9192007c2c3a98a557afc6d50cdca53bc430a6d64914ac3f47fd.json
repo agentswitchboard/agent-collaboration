@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT requests.approval_row_id, requests.organization_id, requests.machine_id, requests.enrollment_id,\n       requests.router_run_id, requests.request_id, requests.record_state, requests.ended_at, requests.erase_after_ms\nFROM approval_requests AS requests\nWHERE requests.organization_id = ?1\n  AND (?2 = '' OR requests.request_id < ?2)\n  AND (?3 = 1 OR requests.record_state = 'waiting')\n  AND CASE WHEN ?5 = 1\n      THEN requests.record_state = 'ended' AND requests.erase_after_ms <= ?4\n      ELSE requests.record_state <> 'ended' OR requests.erase_after_ms IS NULL OR requests.erase_after_ms > ?4\n  END\n  AND EXISTS (\n      SELECT 1 FROM approval_request_destinations AS destination\n      WHERE destination.approval_row_id = requests.approval_row_id\n        AND destination.organization_id = requests.organization_id\n        AND destination.destination_kind = 'people'\n  )\nORDER BY CASE WHEN ?5 = 1 THEN requests.erase_after_ms END DESC, requests.request_id DESC\nLIMIT ?6\n",
+  "query": "SELECT requests.approval_row_id, requests.organization_id, requests.machine_id, requests.enrollment_id,\n       requests.router_run_id, requests.request_id, requests.record_state, requests.ended_at\nFROM approval_requests AS requests\nWHERE organization_id = ?1 AND request_id = ?2\n",
   "describe": {
     "columns": [
       {
@@ -90,21 +90,10 @@
             "name": "ended_at"
           }
         }
-      },
-      {
-        "name": "erase_after_ms",
-        "ordinal": 8,
-        "type_info": "Integer",
-        "origin": {
-          "Table": {
-            "table": "approval_requests",
-            "name": "erase_after_ms"
-          }
-        }
       }
     ],
     "parameters": {
-      "Right": 6
+      "Right": 2
     },
     "nullable": [
       false,
@@ -114,9 +103,8 @@
       false,
       false,
       false,
-      true,
       true
     ]
   },
-  "hash": "81420af31a2a4f0707bd7989da01c4554e176295afe50a83390ceee87339974e"
+  "hash": "d22c5874542a9192007c2c3a98a557afc6d50cdca53bc430a6d64914ac3f47fd"
 }

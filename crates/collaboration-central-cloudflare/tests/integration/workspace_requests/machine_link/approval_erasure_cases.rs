@@ -59,3 +59,19 @@ async fn workerd_corrupt_cleanup_is_charged_without_stopping_healthy_work() -> R
     fixture.close().await?;
     observed
 }
+
+#[tokio::test]
+async fn workerd_session_page_uses_the_ending_when_stored_cutoff_is_corrupt() -> Result<()> {
+    let fixture = Fixture::with_production_dispatcher().await?;
+    let observed = collaboration_central_conformance::parent_approval_scenarios::session_page_uses_the_ending_when_stored_cutoff_is_corrupt(&fixture).await;
+    fixture.close().await?;
+    observed
+}
+
+#[tokio::test]
+async fn workerd_corrupt_parked_anchor_does_not_undo_the_marker_page() -> Result<()> {
+    let fixture = Fixture::with_production_dispatcher().await?;
+    let observed = collaboration_central_conformance::approval_cleanup_fairness::corrupt_parked_anchor_does_not_undo_the_marker_page(&fixture).await;
+    fixture.close().await?;
+    observed
+}

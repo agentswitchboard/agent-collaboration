@@ -121,6 +121,86 @@ pub async fn session_page_and_durable_cutoff(fixture: &impl ApprovalLinkFixture)
     Ok(())
 }
 
+pub async fn session_page_uses_the_ending_when_stored_cutoff_is_corrupt(
+    fixture: &impl ApprovalLinkFixture,
+) -> Result<()> {
+    let mut setup = ParentSetup::open(fixture, Chain::Direct).await?;
+    let organization = setup.target.organization_id.clone();
+    setup.socket.close(CloseCode::Normal, None).await?;
+    setup.socket = fixture.connect_without_capabilities().await?;
+    register_run(&mut setup.socket, &organization, &setup.target.router_run).await?;
+    let second = provider_raise(
+        &setup.target,
+        &setup.child.session_id,
+        4,
+        ProviderAsk::Approval,
+    )?;
+    require_receipt(raise(&mut setup.socket, &organization, second.clone()).await?)?;
+    let first_id = setup.approval.request_id().clone();
+    let second_id = second.request_id().clone();
+    let now = fixture.now_seconds() * 1000;
+    let cutoff = now + SIXTY_DAYS_MS;
+    for (request, ended_at) in [(&setup.approval, now), (&second, now + 1)] {
+        fixture.set_wall_millis(ended_at).await?;
+        assert!(matches!(
+            stop(&mut setup.socket, &organization, stop_request(request)?).await?,
+            central_link_protocol::TypedCallResult::Answered {
+                reply: approval_request_protocol::StopReply::Stands { .. },
+            }
+        ));
+    }
+    setup.socket.close(CloseCode::Normal, None).await?;
+    fixture.fixture_write(Statement {
+        sql: "UPDATE approval_requests SET erase_after_ms=?1 WHERE request_id=?2 AND erase_after_ms=?3",
+        args: vec![
+            SqlValue::Integer(SafeInteger::new(cutoff - 1)?),
+            SqlValue::Text(second_id.to_string()),
+            SqlValue::Integer(SafeInteger::new(cutoff + 1)?),
+        ],
+    }).await?;
+    let stored = fixture
+        .read(Statement {
+            sql: "SELECT erase_after_ms FROM approval_requests WHERE request_id=?",
+            args: vec![SqlValue::Text(second_id.to_string())],
+        })
+        .await?;
+    assert_eq!(
+        stored.rows,
+        [vec![SqlValue::Integer(SafeInteger::new(cutoff - 1)?)]]
+    );
+
+    fixture.set_wall_millis(cutoff - 1).await?;
+    setup.socket = fixture.connect_without_capabilities().await?;
+    register_run(&mut setup.socket, &organization, &setup.target.router_run).await?;
+    fixture.set_wall_millis(cutoff).await?;
+
+    let ListApprovalsForSessionReply::Page { items, next } = setup.list().await?;
+    assert_eq!(
+        items
+            .iter()
+            .map(|item| &item.request_id)
+            .collect::<Vec<_>>(),
+        [&second_id],
+        "the stored cutoff must not hide the approval that ended one millisecond later",
+    );
+    assert_eq!(next, None);
+    assert_eq!(floor(fixture).await?, cutoff);
+    assert_eq!(
+        setup.read(first_id.clone()).await?,
+        ReadApprovalForSessionReply::NotVisible {}
+    );
+    assert!(matches!(
+        setup.read(second_id.clone()).await?,
+        ReadApprovalForSessionReply::Request { .. }
+    ));
+    fixture.set_wall_millis(cutoff + 1).await?;
+    let ListApprovalsForSessionReply::Page { items, next } = setup.list().await?;
+    assert!(items.is_empty());
+    assert_eq!(next, None);
+    setup.socket.close(CloseCode::Normal, None).await?;
+    Ok(())
+}
+
 pub async fn queued_ending_uses_persisted_cutoff(fixture: &impl LedgerFixture) -> Result<()> {
     let mut setup = ParentSetup::open(fixture, Chain::Direct).await?;
     let id = setup.approval.request_id().clone();

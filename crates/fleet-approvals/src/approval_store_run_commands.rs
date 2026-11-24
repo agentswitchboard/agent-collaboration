@@ -9,7 +9,7 @@ use crate::{
     ApprovalEvent, ApprovalReplyAddress, ApprovalSession, ApprovalSessionFacts,
     PendingApprovalReply,
     approval_store_reads::{
-        read_approval_due_subject, read_approval_run, read_last_approval_run,
+        read_approval_by_row_id, read_approval_run, read_last_approval_run,
         read_outstanding_approval_rows, read_waiting_approval_session_rows,
     },
     approval_store_scope::{
@@ -203,7 +203,7 @@ where
         deadline: CentralTime,
     ) -> Result<ApprovalTransitionOutput<()>, ApprovalApplyFailure> {
         let row_id = ApprovalRequestRowId::parse(&subject.0)?;
-        let record = read_approval_due_subject(self.transaction, &row_id).await?;
+        let record = read_approval_by_row_id(self.transaction, &row_id).await?;
         let Some(record) = record else {
             return Ok(ApprovalTransitionOutput::with_reply(()));
         };

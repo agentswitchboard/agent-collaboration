@@ -1,7 +1,7 @@
 //! Admission and retention are decided before any approval payload is read.
 use approval_request_protocol::{ApprovalRequestId, ErasedApprovalMarker};
 use central_engine_model::EngineTime;
-use central_storage::{ReadOutcome, SafeInteger, SqlValue, StoreFailure};
+use central_storage::{ReadOutcome, SqlValue, StoreFailure};
 #[cfg(test)]
 use fleet_engine::owner_sql::CheckedStorage;
 use fleet_engine::{checked_engine_statement, checked_subject_projection};
@@ -9,7 +9,8 @@ use fleet_runtime_ports::{SyncTime, stored_values::json, workspace_decode_error:
 
 use crate::{
     ApprovalApplyingTime, ApprovalHolderScope, ApprovalRequestRowId, ApprovalStoreTransaction,
-    approval_retention::cutoff_at, approval_store_scope::decode_holder_scope,
+    approval_retention::{cutoff_at, expired_ending_bound},
+    approval_store_scope::decode_holder_scope,
     approval_stored_tags::parse_stored_time,
 };
 
@@ -22,7 +23,6 @@ checked_subject_projection!(StoredApprovalHeader {
     request_id: String,
     record_state: String,
     ended_at: Option<String>,
-    erase_after_ms: Option<i64>,
 });
 
 checked_subject_projection!(StoredCompactEnding { compact_ending_json: Option<String> });
@@ -78,19 +78,10 @@ impl ApprovalLookup {
         let cutoff = match stored.record_state.stored_text()? {
             "ended" => {
                 let ending = parse_stored_time(stored.ended_at.stored_text()?, "ended_at")?;
-                let cutoff = cutoff_at(ending)?;
-                if !matches!(stored.erase_after_ms.raw(), SqlValue::Integer(value)
-                    if value.get() == cutoff.timestamp_millis())
-                {
-                    return Err(corrupt("approval_requests.erase_after_ms"));
-                }
-                Some(cutoff)
+                Some(cutoff_at(ending)?)
             }
             "waiting" | "stopped_before_raise"
-                if matches!(
-                    (stored.ended_at.raw(), stored.erase_after_ms.raw()),
-                    (SqlValue::Null, SqlValue::Null)
-                ) =>
+                if matches!(stored.ended_at.raw(), SqlValue::Null) =>
             {
                 None
             }
@@ -185,8 +176,7 @@ pub(crate) async fn observe_owed_cutoff(
         machine = scope.run.enrollment.machine_id.as_str().to_owned(),
         enrollment = scope.run.enrollment.enrollment_id.as_str().to_owned(),
         run = scope.run.router_run.as_str().to_owned(),
-        at = SafeInteger::new(at.timestamp_millis())
-            .map_err(|_| corrupt("approval_requests.erase_after_ms"))?,
+        ending_bound = expired_ending_bound(at)?,
     );
     let result = transaction.read_approval_statement(observation).await?;
     match result.rows.as_slice() {

@@ -13,7 +13,6 @@ use crate::{
     ApprovalActor, ApprovalDestinations, ApprovalEnrollment, ApprovalRequestKey, ApprovalRun,
     ApprovalSession, ApprovalState, EndedApproval, RetainedApproval,
     approval_lifecycle_admission::is_destination,
-    approval_retention::cutoff_at,
     approval_store_scope::{
         ApprovalDestinationRowId, ApprovalHolderScope, ApprovalRequestRowId, decode_holder_scope,
     },
@@ -195,12 +194,6 @@ pub(super) fn decode_request_row(
             let state = match ended_at {
                 None => ApprovalState::Waiting { saved },
                 Some(ended_at) => {
-                    let SqlValue::Integer(cutoff) = stored.erase_after_ms.raw() else {
-                        return Err(corrupt("approval_requests.erase_after_ms"));
-                    };
-                    if cutoff.get() != cutoff_at(ended_at)?.timestamp_millis() {
-                        return Err(corrupt("approval_requests.erase_after_ms"));
-                    }
                     let closed = decode_ending(&stored, &saved, ended_at)?;
                     let compact: approval_request_protocol::StopReceiptEnding = json(
                         stored.compact_ending_json.stored_text()?,
@@ -234,7 +227,6 @@ fn require_unended(stored: &StoredApprovalRow) -> Result<(), StoreFailure> {
     require_null(
         &[
             stored.ended_at.raw(),
-            stored.erase_after_ms.raw(),
             stored.ending_json.raw(),
             stored.compact_ending_json.raw(),
             stored.decided_operation_id.raw(),

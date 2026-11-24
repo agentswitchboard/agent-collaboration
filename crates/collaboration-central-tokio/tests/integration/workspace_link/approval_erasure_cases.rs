@@ -103,3 +103,31 @@ async fn tokio_corrupt_cleanup_is_charged_without_stopping_healthy_work() -> Res
     fixture.link.close().await?;
     observed
 }
+
+#[tokio::test]
+async fn tokio_session_page_uses_the_ending_when_stored_cutoff_is_corrupt() -> Result<()> {
+    let fixture = NativeApprovalFixture {
+        link: start_session_link_fixture(signed_clock()?).await?,
+        before_alarm: Cell::new(0),
+        delivery_answer: RefCell::default(),
+        before_write: RefCell::default(),
+        notice_recovery: RefCell::default(),
+    };
+    let observed = collaboration_central_conformance::parent_approval_scenarios::session_page_uses_the_ending_when_stored_cutoff_is_corrupt(&fixture).await;
+    fixture.link.close().await?;
+    observed
+}
+
+#[tokio::test]
+async fn tokio_corrupt_parked_anchor_does_not_undo_the_marker_page() -> Result<()> {
+    let fixture = NativeApprovalFixture {
+        link: start_session_link_fixture(signed_clock()?).await?,
+        before_alarm: Cell::new(0),
+        delivery_answer: RefCell::default(),
+        before_write: RefCell::default(),
+        notice_recovery: RefCell::default(),
+    };
+    let observed = collaboration_central_conformance::approval_cleanup_fairness::corrupt_parked_anchor_does_not_undo_the_marker_page(&fixture).await;
+    fixture.link.close().await?;
+    observed
+}

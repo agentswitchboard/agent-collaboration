@@ -13,11 +13,13 @@ use workspace_ids::{ApprovalRequestId, RouterRunId};
 
 use crate::{
     ApprovalSession, ApprovalState, MAX_OUTSTANDING_PER_RUN,
+    approval_retention::{cutoff_at, expired_ending_bound},
     approval_store_scope::{
         ApprovalDestinationRowId, ApprovalEnrollmentScope, ApprovalHolderScope,
         ApprovalRequestRowId,
     },
     approval_store_transaction::ApprovalStoreTransaction,
+    approval_stored_tags::parse_stored_time,
 };
 
 checked_subject_projection!(StoredRunRow {
@@ -259,7 +261,7 @@ pub(crate) async fn read_session_approval_page(
             enrollment = session.enrollment.enrollment_id.as_str().to_owned(),
             session = session.session_id.as_str().to_owned(),
             cursor = cursor.map(|request| request.as_str().to_owned()),
-            at = portable_integer(at.timestamp_millis(), "approval_requests.erase_after_ms")?,
+            ending_bound = expired_ending_bound(at)?,
             expired = portable_integer(expired, "approval_requests.page_mode")?,
             limit = portable_integer(count, "approval_request_destinations.session_page_limit")?,
         ))
@@ -274,10 +276,49 @@ pub(crate) async fn read_session_approval_page(
     .await
 }
 
-pub(crate) async fn read_approval_due_subject(
+pub(crate) async fn read_indexed_approval_due_subject(
     transaction: &mut impl ApprovalStoreTransaction,
     row_id: &ApprovalRequestRowId,
 ) -> Result<Option<ApprovalReadRecord>, StoreFailure> {
+    let Some(row) = read_approval_row(transaction, row_id).await? else {
+        return Ok(None);
+    };
+    // The scheduling projection is checked when the due lane consumes it.
+    // Visibility and pagination derive the cutoff directly from the ending.
+    match row.record_state.stored_text()? {
+        "ended" => {
+            let ended_at =
+                parse_stored_time(row.ended_at.stored_text()?, "approval_requests.ended_at")?;
+            let cutoff = cutoff_at(ended_at)?.timestamp_millis();
+            if !matches!(row.erase_after_ms.raw(), SqlValue::Integer(indexed) if indexed.get() == cutoff)
+            {
+                return Err(corrupt("approval_requests.erase_after_ms"));
+            }
+        }
+        "waiting" | "stopped_before_raise"
+            if !matches!(row.erase_after_ms.raw(), SqlValue::Null) =>
+        {
+            return Err(corrupt("approval_requests.erase_after_ms"));
+        }
+        _ => {}
+    }
+    load_request_record(transaction, row).await.map(Some)
+}
+
+pub(crate) async fn read_approval_by_row_id(
+    transaction: &mut impl ApprovalStoreTransaction,
+    row_id: &ApprovalRequestRowId,
+) -> Result<Option<ApprovalReadRecord>, StoreFailure> {
+    let Some(stored) = read_approval_row(transaction, row_id).await? else {
+        return Ok(None);
+    };
+    load_request_record(transaction, stored).await.map(Some)
+}
+
+async fn read_approval_row(
+    transaction: &mut impl ApprovalStoreTransaction,
+    row_id: &ApprovalRequestRowId,
+) -> Result<Option<StoredApprovalRow>, StoreFailure> {
     let organization = transaction.organization_id();
     let statement = checked_engine_statement!(
         query_file_as,
@@ -286,7 +327,10 @@ pub(crate) async fn read_approval_due_subject(
         row_id = row_id.as_str().to_owned(),
         organization_id = organization.as_str().to_owned(),
     );
-    read_request_record(transaction, statement).await
+    let result = transaction.read_approval_statement(statement).await?;
+    only_row(&result)?
+        .map(|cells| StoredApprovalRow::read_named(&result, cells))
+        .transpose()
 }
 
 pub(crate) async fn count_outstanding_approvals(
@@ -303,7 +347,7 @@ pub(crate) async fn count_outstanding_approvals(
         machine_id = scope.run.enrollment.machine_id.as_str().to_owned(),
         enrollment_id = scope.run.enrollment.enrollment_id.as_str().to_owned(),
         router_run_id = scope.run.router_run.as_str().to_owned(),
-        at = portable_integer(at.timestamp_millis(), "approval_requests.erase_after_ms")?,
+        ending_bound = expired_ending_bound(at)?,
         limit = outstanding_limit()?,
     );
     let outcome = transaction.read_approval_statement(statement).await?;
@@ -332,7 +376,7 @@ pub(crate) async fn read_outstanding_approval_rows(
         machine_id = scope.run.enrollment.machine_id.as_str().to_owned(),
         enrollment_id = scope.run.enrollment.enrollment_id.as_str().to_owned(),
         router_run_id = scope.run.router_run.as_str().to_owned(),
-        at = portable_integer(at.timestamp_millis(), "approval_requests.erase_after_ms")?,
+        ending_bound = expired_ending_bound(at)?,
         limit = outstanding_limit()?,
     );
     read_request_records(transaction, statement, MAX_OUTSTANDING_PER_RUN).await
@@ -353,6 +397,7 @@ pub(crate) async fn read_recoverable_approval_rows(
         enrollment_id = scope.run.enrollment.enrollment_id.as_str().to_owned(),
         router_run_id = scope.run.router_run.as_str().to_owned(),
         at = portable_integer(at.timestamp_millis(), "approval_requests.deadline_ms")?,
+        ending_bound = expired_ending_bound(at)?,
         limit = outstanding_limit()?,
     );
     read_request_records(transaction, statement, MAX_OUTSTANDING_PER_RUN).await
@@ -392,7 +437,7 @@ pub(crate) async fn read_person_approval_page(
             "src/queries/read_person_approval_page.sql",
             organization_id = organization.as_str().to_owned(),
             after = after.map_or("", ApprovalRequestRowId::as_str).to_owned(),
-            at = portable_integer(at.timestamp_millis(), "approval_requests.erase_after_ms")?,
+            ending_bound = expired_ending_bound(at)?,
             expired = portable_integer(expired, "approval_requests.page_mode")?,
             limit = portable_integer(count, "approval_requests.page_limit")?,
         ))
@@ -427,7 +472,7 @@ pub(crate) async fn read_approval_request_page_for_person(
                 i64::from(matches!(filter, ApprovalListFilter::All)),
                 "approval_requests.include_ended"
             )?,
-            at = portable_integer(at.timestamp_millis(), "approval_requests.erase_after_ms")?,
+            ending_bound = expired_ending_bound(at)?,
             expired = portable_integer(expired, "approval_requests.page_mode")?,
             limit = portable_integer(count, "approval_requests.page_limit")?,
         ))
@@ -505,7 +550,7 @@ async fn load_admitted_request(
     approval: BeforeApprovalCutoff,
 ) -> Result<ApprovalReadRecord, StoreFailure> {
     let (row_id, scope, request_id) = approval.identity();
-    let record = read_approval_due_subject(transaction, &row_id)
+    let record = read_approval_by_row_id(transaction, &row_id)
         .await?
         .ok_or_else(|| corrupt("approval_requests.admitted_row"))?;
     if record.scope != scope
@@ -517,18 +562,6 @@ async fn load_admitted_request(
         return Err(corrupt("approval_requests.admitted_row"));
     }
     Ok(record)
-}
-
-async fn read_request_record(
-    transaction: &mut impl ApprovalStoreTransaction,
-    statement: Statement,
-) -> Result<Option<ApprovalReadRecord>, StoreFailure> {
-    let outcome = transaction.read_approval_statement(statement).await?;
-    let Some(cells) = only_row(&outcome)? else {
-        return Ok(None);
-    };
-    let stored = StoredApprovalRow::read_named(&outcome, cells)?;
-    load_request_record(transaction, stored).await.map(Some)
 }
 
 async fn read_request_records(

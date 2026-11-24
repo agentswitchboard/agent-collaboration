@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT requests.approval_row_id, requests.organization_id, requests.machine_id, requests.enrollment_id,\n       requests.router_run_id, requests.request_id, requests.record_state, requests.ended_at, requests.erase_after_ms\nFROM approval_request_destinations AS destination\nJOIN approval_requests AS requests ON requests.approval_row_id = destination.approval_row_id\nWHERE destination.organization_id = ?1 AND requests.organization_id = ?1\n  AND destination.destination_kind = 'parent_session' AND destination.session_machine_id = ?2\n  AND destination.session_enrollment_id = ?3 AND destination.session_id = ?4\n  AND (?5 IS NULL OR requests.request_id < ?5)\n  AND CASE WHEN ?7 = 1\n      THEN requests.record_state = 'ended' AND requests.erase_after_ms <= ?6\n      ELSE requests.record_state <> 'ended' OR requests.erase_after_ms IS NULL OR requests.erase_after_ms > ?6\n  END\nORDER BY CASE WHEN ?7 = 1 THEN requests.erase_after_ms END DESC, requests.request_id DESC\nLIMIT ?8\n",
+  "query": "SELECT requests.approval_row_id, requests.organization_id, requests.machine_id, requests.enrollment_id,\n       requests.router_run_id, requests.request_id, requests.record_state, requests.ended_at\nFROM approval_request_destinations AS destination\nJOIN approval_requests AS requests ON requests.approval_row_id = destination.approval_row_id\nWHERE destination.organization_id = ?1 AND requests.organization_id = ?1\n  AND destination.destination_kind = 'parent_session' AND destination.session_machine_id = ?2\n  AND destination.session_enrollment_id = ?3 AND destination.session_id = ?4\n  AND (?5 IS NULL OR requests.request_id < ?5)\n  AND CASE WHEN ?7 = 1\n      THEN requests.record_state = 'ended' AND requests.ended_at IS NOT NULL\n           AND (?6 IS NULL OR requests.ended_at <= ?6)\n      ELSE requests.record_state <> 'ended' OR requests.ended_at IS NULL\n           OR (?6 IS NOT NULL AND requests.ended_at > ?6)\n  END\nORDER BY CASE WHEN ?7 = 1 THEN requests.ended_at END DESC, requests.request_id DESC\nLIMIT ?8\n",
   "describe": {
     "columns": [
       {
@@ -90,17 +90,6 @@
             "name": "ended_at"
           }
         }
-      },
-      {
-        "name": "erase_after_ms",
-        "ordinal": 8,
-        "type_info": "Integer",
-        "origin": {
-          "Table": {
-            "table": "approval_requests",
-            "name": "erase_after_ms"
-          }
-        }
       }
     ],
     "parameters": {
@@ -114,9 +103,8 @@
       false,
       false,
       false,
-      true,
       true
     ]
   },
-  "hash": "a875d3ff2f8c51c2fb364d5f65f5c40b016d065554f748c6034ee1c143fc52ab"
+  "hash": "ad46d5c812a74c608bb40995798ada14a67112e531d7c58436e59b5a3842ded5"
 }

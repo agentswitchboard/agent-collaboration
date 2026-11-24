@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT requests.*\nFROM approval_requests AS requests\nWHERE organization_id = ?1 AND machine_id = ?2 AND enrollment_id = ?3\n  AND router_run_id = ?4\n  AND (record_state = 'waiting' OR (record_state = 'ended' AND delivery_state = 'owed'\n       AND (erase_after_ms IS NULL OR erase_after_ms > ?5)))\nORDER BY approval_row_id\nLIMIT ?6\n",
+  "query": "SELECT requests.*\nFROM approval_requests AS requests\nWHERE organization_id = ?1 AND machine_id = ?2 AND enrollment_id = ?3\n  AND router_run_id = ?4\n  AND (record_state = 'waiting' OR (record_state = 'ended' AND delivery_state = 'owed'\n       AND (ended_at IS NULL OR (?5 IS NOT NULL AND ended_at > ?5))))\nORDER BY approval_row_id\nLIMIT ?6\n",
   "describe": {
     "columns": [
       {
@@ -310,5 +310,5 @@
       true
     ]
   },
-  "hash": "d2052d6be69bb0a0527ac9525c37d069219564913b843725cf0731016ce23bd8"
+  "hash": "9356aec74ef42dc238e3375584a80abaea43370babb58240140cb4a0497718b7"
 }

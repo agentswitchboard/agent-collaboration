@@ -13,6 +13,7 @@ mod expanded_coverage;
 mod holder_delivery;
 mod request;
 mod retained_cases;
+mod retention_page;
 pub use expanded_coverage::{ClockBoundary, ExpandedCase, SignedMutation};
 #[cfg(feature = "session-link-test-support")]
 use request::decide_in_organization;
@@ -36,6 +37,7 @@ pub enum Case {
     DecideTimeout,
     DecideCancelled,
     ErasureCutoff,
+    ListWithCorruptStoredCutoff,
     ApplyingTimeFloor,
     AlreadyDecided,
     InvalidAnswer,
@@ -186,6 +188,7 @@ pub async fn check(host: &impl PersonApprovalHarness, case: Case) -> Conformance
                 .await?;
             }
         }
+        Case::ListWithCorruptStoredCutoff => retention_page::check(host, &owner).await?,
         Case::ErasureCutoff => {
             let ending = time(1 - 5_184_000)?;
             let request = seed(

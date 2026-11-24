@@ -88,6 +88,10 @@ macro_rules! approval_case {
 
 person_approval_cases!(approval_case);
 approval_case!(
+    person_page_uses_the_ending_when_stored_cutoff_is_corrupt,
+    Case::ListWithCorruptStoredCutoff
+);
+approval_case!(
     ended_person_approval_is_hidden_at_the_retention_cutoff,
     Case::ErasureCutoff
 );

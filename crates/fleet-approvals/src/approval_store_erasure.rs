@@ -1,7 +1,9 @@
 //! Approval retention and retired-marker cleanup on the applying loan.
 use approval_request_protocol::{ApprovalRequestId, CentralTime, StopReceiptEnding};
 use central_engine_model::{InstanceKey, next_five_minute_mark};
-use central_storage::{GuardedStatement, RowExpectation, SafeInteger, Statement, StoreFailure};
+use central_storage::{
+    GuardedStatement, RowExpectation, SafeInteger, SqlValue, Statement, StoreFailure,
+};
 use fleet_engine::{
     DueItemKey, DueKind, DueTableChange, checked_engine_statement, plan_due_item_attempt_clear,
     plan_due_table_change,
@@ -16,7 +18,7 @@ use crate::{
     approval_lifecycle_effects::standing,
     approval_retention::cutoff_at,
     approval_store_reads::{
-        ApprovalReadRecord, ApprovalRunRecord, read_approval_due_subject, read_approval_run,
+        ApprovalReadRecord, ApprovalRunRecord, read_approval_run, read_indexed_approval_due_subject,
     },
     approval_store_writes::{
         approval_due_key, approval_grid_mark, encode_stored_json, plan_approval_due_at,
@@ -59,10 +61,10 @@ fn retired_run_key(run: &RouterRunId) -> DueItemKey {
     }
 }
 
-fn ended_enrollment_key(anchor: &RouterRunId) -> DueItemKey {
+fn ended_enrollment_key(anchor: &str) -> DueItemKey {
     DueItemKey {
         kind: DueKind::ApprovalRequestExpiry,
-        subject: InstanceKey(format!("{ENDED_ENROLLMENT_PREFIX}{}", anchor.as_str())),
+        subject: InstanceKey(format!("{ENDED_ENROLLMENT_PREFIX}{anchor}")),
     }
 }
 
@@ -135,7 +137,9 @@ where
         let at = self.sample_applying_time()?;
         match ApprovalDueSubject::from_key(key)? {
             ApprovalDueSubject::Request(row_id) => {
-                if let Some(record) = read_approval_due_subject(self.transaction, &row_id).await? {
+                if let Some(record) =
+                    read_indexed_approval_due_subject(self.transaction, &row_id).await?
+                {
                     if matches!(record.state, ApprovalState::Waiting { .. }) {
                         return self.apply_approval_deadline(key, occurrence).await;
                     }
@@ -336,7 +340,7 @@ where
         self.execute_guarded_write(guarded(mark, RowExpectation::Exactly(1)))
             .await?;
         self.schedule_cleanup(
-            ended_enrollment_key(&anchor.run.router_run),
+            ended_enrollment_key(anchor.run.router_run.as_str()),
             at,
             Some(due),
             at,
@@ -355,7 +359,9 @@ where
         let enrollment = anchor.run.enrollment.enrollment_id.as_str();
         if self.enrollment_has_markers(anchor).await? {
             // The final marker page republishes this subject. Until then it owns no lane slot.
-            return self.set_enrollment_due(run, occurrence, None, at).await;
+            return self
+                .set_enrollment_due(run.as_str(), occurrence, None, at)
+                .await;
         }
         let delete = checked_engine_statement!(
             query_file,
@@ -385,7 +391,7 @@ where
             .is_empty()
         {
             return self
-                .set_enrollment_due(run, occurrence, Some(later_mark(at)?), at)
+                .set_enrollment_due(run.as_str(), occurrence, Some(later_mark(at)?), at)
                 .await;
         }
         let last = checked_engine_statement!(
@@ -399,7 +405,7 @@ where
         );
         self.execute_guarded_write(guarded(last, RowExpectation::Exactly(1)))
             .await?;
-        self.remove_approval_due(ended_enrollment_key(run), at)
+        self.remove_approval_due(ended_enrollment_key(run.as_str()), at)
             .await
     }
 
@@ -442,26 +448,26 @@ where
         let [cells] = result.rows.as_slice() else {
             return Ok(());
         };
-        let run: RouterRunId =
-            fleet_runtime_ports::stored_values::string(&result, cells, "router_run_id")?
-                .parse()
-                .map_err(|_| corrupt("approval_router_runs.router_run_id"))?;
-        let anchor = read_approval_run(self.transaction, &run)
-            .await?
-            .ok_or_else(|| corrupt("approval_router_runs.router_run_id"))?;
-        let occurrence = anchor
-            .enrollment_cleanup_at
-            .ok_or_else(|| corrupt("approval_router_runs.enrollment_cleanup_ms"))?;
-        if !self.enrollment_has_markers(&anchor.scope).await? {
-            self.set_enrollment_due(&run, occurrence, Some(later_mark(at)?), at)
-                .await?;
+        if self.enrollment_has_markers(owner).await? {
+            return Ok(());
         }
-        Ok(())
+        // This is a handoff of indexed work. The anchor's own attempt validates
+        // the run; the healthy marker page owns only the scheduling fields.
+        let run = fleet_runtime_ports::stored_values::string(&result, cells, "router_run_id")?;
+        let SqlValue::Integer(occurrence) =
+            fleet_runtime_ports::stored_values::column(&result, cells, "enrollment_cleanup_ms")?
+        else {
+            return Err(corrupt("approval_router_runs.enrollment_cleanup_ms").into());
+        };
+        let occurrence = CentralTime::from_timestamp_millis(occurrence.get())
+            .ok_or_else(|| corrupt("approval_router_runs.enrollment_cleanup_ms"))?;
+        self.set_enrollment_due(run, occurrence, Some(later_mark(at)?), at)
+            .await
     }
 
     async fn set_enrollment_due(
         &mut self,
-        anchor: &RouterRunId,
+        anchor: &str,
         occurrence: CentralTime,
         due: Option<CentralTime>,
         at: CentralTime,
@@ -471,7 +477,7 @@ where
             [],
             "src/queries/set_enrollment_cleanup_due.sql",
             due = due.map(time_bind).transpose()?,
-            anchor = anchor.as_str().to_owned(),
+            anchor = anchor.to_owned(),
             occurrence = time_bind(occurrence)?,
         );
         self.execute_guarded_write(guarded(statement, RowExpectation::Exactly(1)))
