@@ -28,11 +28,15 @@ pub async fn check_person_link_admission(
     let mut person = Person::owner(fixture.organization, NOW_SECONDS)?;
     let normal = claims(&person, NOW_SECONDS, 100, 140)?;
     let mut wrong_audience = normal.clone();
-    wrong_audience["aud"] = json!(ADMIN_AUDIENCE);
+    *wrong_audience
+        .get_mut("aud")
+        .ok_or("missing fixture audience")? = json!(ADMIN_AUDIENCE);
     let mut wrong_organization = normal.clone();
-    wrong_organization["organization_id"] = json!("019f0000-0000-7000-8000-00000000c800");
+    *wrong_organization
+        .get_mut("organization_id")
+        .ok_or("missing fixture organization")? = json!("019f0000-0000-7000-8000-00000000c800");
     let mut expired = normal.clone();
-    expired["exp"] = json!(NOW_SECONDS);
+    *expired.get_mut("exp").ok_or("missing fixture expiry")? = json!(NOW_SECONDS);
     let admin_token = person.token(NOW_SECONDS, &|_| {})?;
     let person_token = sign_bearer(&normal)?;
 
