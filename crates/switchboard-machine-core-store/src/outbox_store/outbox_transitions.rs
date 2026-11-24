@@ -1,25 +1,23 @@
-//! Transactional outbox claim, settlement, expiry and retention.
+//! Transactions that present decoded rows and evidence to the outbox machine.
 use super::{
     ANSWERED_RETENTION_MILLIS, MacOutbox, OutboxStoreError, StoredOutboxWrite,
-    outbox_row_machine::{
-        OutboxRowEffect, OutboxRowEvent, OutboxRowMachine, OutboxRowRefusal, OutboxRowState,
-    },
+    outbox_row_effects::{RowTransition, apply_row_event, unexpected},
+    outbox_row_machine::OutboxRowEvent,
+    outbox_row_state::OutboxRowState,
     outbox_rows::{
-        DecodedRow, StoredPayload, corrupt_row, decode_row, expect_one, in_flight_rows,
-        outbox_content, payload_content_digest, read_row, select_outbox_rows, waiting_page,
-        waiting_rows,
+        corrupt_row, decode_row, in_flight_rows, read_owned_outbox, read_row, select_outbox_rows,
+        waiting_page, waiting_rows,
     },
     validate_write_timestamp,
 };
 use crate::{
-    EndedWrite, OutboxCancellation, OutboxRequestStatus, OutboxWriteOutcome, StoreScan,
-    outbox_item_state::OutboxItemState, outbox_receipt_profile::AnsweredWrite,
-    outbox_settlement::SettledWrite,
+    EndedWrite, OutboxWriteOutcome, StoreScan, StoredSenderOutcome,
+    outbox_item_state::OutboxItemState,
 };
 use sqlite_storage_maintenance::TransactionStart;
-use state_machine_core::{StateMachine, TransitionError};
 use std::collections::BTreeSet;
 use workspace_ids::RequestId;
+use workspace_model::Caller;
 
 impl MacOutbox<'_> {
     /// Deletes ended writes (answered, refused, cancelled or given up) 60 days
@@ -52,13 +50,12 @@ impl MacOutbox<'_> {
         } = rows.iter().map(decode_row).collect();
         let mut removed = 0;
         for row in healthy {
-            removed += sqlx::query!(
-                "DELETE FROM outbox_items WHERE request_id = ?",
-                row.request.as_str()
-            )
-            .execute(&mut *transaction)
-            .await?
-            .rows_affected();
+            let event = OutboxRowEvent::Prune { cutoff_ms: cutoff };
+            if let RowTransition::Removed(count) =
+                apply_row_event(&mut transaction, &row, event, "retained after ending").await?
+            {
+                removed += count;
+            }
         }
         transaction.commit().await?;
         Ok(StoreScan {
@@ -129,13 +126,7 @@ impl MacOutbox<'_> {
                     continue;
                 }
                 if row.deadline_ms <= now_ms {
-                    collect_ending(
-                        &mut transaction,
-                        &row,
-                        OutboxRowEvent::EndDue { now_ms },
-                        &mut ended,
-                    )
-                    .await?;
+                    collect_ending(&mut transaction, &row, now_ms, &mut ended).await?;
                 } else if writes.len() < usize::from(limit)
                     && let Some(write) = claim_row(
                         &mut transaction,
@@ -161,10 +152,7 @@ impl MacOutbox<'_> {
         })
     }
 
-    /// Keeps central's answer for one sent write and, in the same transaction,
-    /// drops its text: the stored payload becomes the body-free answered record
-    /// (owner, 2026-11-15: unsent text stays on the Mac only until central
-    /// answers).
+    /// Keeps Central's checked answer, dropping the queued text in the same transaction.
     pub async fn record_outcome(
         &mut self,
         request: &RequestId,
@@ -172,105 +160,67 @@ impl MacOutbox<'_> {
         now_ms: i64,
     ) -> Result<(), OutboxStoreError> {
         validate_write_timestamp(now_ms, "updated_at")?;
-        let request_id = request.as_str();
         let mut transaction = self.store.transaction(TransactionStart::Immediate).await?;
-        let row = read_in_flight(&mut transaction, request).await?;
-        let StoredPayload::Unanswered(payload) = row.payload else {
-            return Err(corrupt_row(request_id, "payload_json"));
-        };
-        let target = outbox_content(request_id, &payload)?.target;
-        let (state, outcome_json) = match outcome.for_claim(request, &target).map_err(|_| {
-            OutboxStoreError::InvalidOutcome {
-                request: request.clone(),
-            }
-        })? {
-            SettledWrite::Answered(reply) => {
-                (OutboxItemState::Answered, serde_json::to_string(reply)?)
-            }
-            SettledWrite::Refused(reason) => {
-                (OutboxItemState::Refused, serde_json::to_string(reason)?)
-            }
-        };
-        let to = state.as_str();
-        let answered = AnsweredWrite {
-            delivery_outcome: None,
-            request_id: request.clone(),
-            target,
-            content_digest: payload_content_digest(&payload)?,
-        };
-        let payload_json = serde_json::to_string(&answered)?;
-        let from = row.state.as_str();
-        let changed = sqlx::query!(
-            "UPDATE outbox_items SET item_state = ?, outcome_json = ?, payload_json = ?,
-                    updated_at = ?
-             WHERE request_id = ? AND item_state = ?",
-            to,
-            outcome_json,
-            payload_json,
+        let row = read_request(&mut transaction, request, "sent").await?;
+        let event = OutboxRowEvent::RecordOutcome {
+            outcome: outcome.clone(),
             now_ms,
-            request_id,
-            from
-        )
-        .execute(&mut *transaction)
-        .await?
-        .rows_affected();
-        expect_one(changed, request, "sent")?;
+        };
+        apply_row_event(&mut transaction, &row, event, "sent").await?;
         transaction.commit().await?;
         Ok(())
     }
 
-    /// Records Central's permanent result for a claim that ended unconfirmed.
-    /// The send state and its cutoff timestamp are kept for expiry and retention.
+    /// Saves a permanent result without changing the unconfirmed state or cutoff stamp.
     pub async fn record_late_outcome(
         &mut self,
         request: &RequestId,
         outcome: &OutboxWriteOutcome,
     ) -> Result<(), OutboxStoreError> {
         let mut transaction = self.store.transaction(TransactionStart::Immediate).await?;
-        let raw = read_row(&mut transaction, request)
-            .await?
-            .ok_or_else(|| unexpected(request, "ended unconfirmed"))?;
-        let row = decode_row(&raw)?;
-        match row.state {
-            OutboxItemState::Unconfirmed => {}
-            OutboxItemState::NotSent => {
-                return Err(OutboxStoreError::LateOutcomeForNotSent {
-                    request: request.clone(),
-                });
-            }
-            _ => return Err(unexpected(request, "ended unconfirmed")),
-        }
-        let StoredPayload::Answered(profile) = row.payload else {
-            return Err(corrupt_row(request.as_str(), "payload_json"));
+        let row = read_request(&mut transaction, request, "ended unconfirmed").await?;
+        let event = OutboxRowEvent::RecordLateOutcome {
+            outcome: outcome.clone(),
         };
-        let settlement = outcome
-            .for_ended(request, &profile.target, &profile.content_digest)
-            .map_err(|_| OutboxStoreError::InvalidOutcome {
-                request: request.clone(),
-            })?;
-        if !matches!(row.status, OutboxRequestStatus::Ended { .. }) {
-            return if row.status == settlement.clone().into_request_status() {
-                Ok(())
-            } else {
-                Err(OutboxStoreError::ContradictoryFinalOutcome {
-                    request: request.clone(),
-                })
-            };
+        if let RowTransition::Applied =
+            apply_row_event(&mut transaction, &row, event, "ended unconfirmed").await?
+        {
+            transaction.commit().await?;
         }
-        let outcome_json = serde_json::to_string(settlement)?;
-        let changed = sqlx::query!(
-            "UPDATE outbox_items SET outcome_json = ?
-             WHERE request_id = ? AND item_state = ? AND outcome_json IS NULL",
-            outcome_json,
-            request.as_str(),
-            OutboxItemState::Unconfirmed.as_str(),
-        )
-        .execute(&mut *transaction)
-        .await?
-        .rows_affected();
-        expect_one(changed, request, "ended unconfirmed")?;
-        transaction.commit().await?;
         Ok(())
+    }
+
+    pub async fn record_sender_delivery(
+        &mut self,
+        caller: &Caller,
+        notice: &StoredSenderOutcome,
+        now_ms: i64,
+    ) -> Result<bool, OutboxStoreError> {
+        validate_write_timestamp(now_ms, "updated_at")?;
+        let mut transaction = self.store.transaction(TransactionStart::Immediate).await?;
+        let Some(row) = read_owned_outbox(&mut transaction, caller, &notice.request_id).await?
+        else {
+            return Ok(false);
+        };
+        let event = OutboxRowEvent::SenderDelivery {
+            notice: notice.clone(),
+            now_ms,
+        };
+        match apply_row_event(
+            &mut transaction,
+            &row,
+            event,
+            "eligible for delivery notice",
+        )
+        .await?
+        {
+            RowTransition::Applied => {
+                transaction.commit().await?;
+                Ok(true)
+            }
+            RowTransition::NoticeUnchanged(retained) => Ok(retained),
+            _ => Err(unexpected(&row.request, "eligible for delivery notice")),
+        }
     }
 
     /// Returns a claim whose frame never left this Mac. A replay still
@@ -282,10 +232,7 @@ impl MacOutbox<'_> {
     ) -> Result<(), OutboxStoreError> {
         validate_write_timestamp(now_ms, "updated_at")?;
         let mut transaction = self.store.transaction(TransactionStart::Immediate).await?;
-        let raw = read_row(&mut transaction, request)
-            .await?
-            .ok_or_else(|| unexpected(request, "sent"))?;
-        let row = decode_row(&raw)?;
+        let row = read_request(&mut transaction, request, "sent").await?;
         apply_row_event(
             &mut transaction,
             &row,
@@ -298,8 +245,7 @@ impl MacOutbox<'_> {
     }
 
     /// Sent writes left unanswered go back to the outbox with their receipt
-    /// mark, marked as possibly already in central. One past its deadline
-    /// ends instead, in the same transaction: it is never replayed (step 9).
+    /// mark, marked as possibly already in Central. A due claim ends instead.
     pub async fn return_unanswered(
         &mut self,
         requests: &[RequestId],
@@ -338,8 +284,7 @@ impl MacOutbox<'_> {
         })
     }
 
-    /// Ends every waiting write past its deadline, for the flush tick: a
-    /// Router that cannot send still tells its agents.
+    /// Ends every waiting write due at the supplied time, even while offline.
     pub async fn end_overdue(
         &mut self,
         now_ms: i64,
@@ -352,13 +297,7 @@ impl MacOutbox<'_> {
             corrupt_rows,
         } = waiting_rows(&mut transaction).await?;
         for row in healthy {
-            collect_ending(
-                &mut transaction,
-                &row,
-                OutboxRowEvent::EndDue { now_ms },
-                &mut ended,
-            )
-            .await?;
+            collect_ending(&mut transaction, &row, now_ms, &mut ended).await?;
         }
         transaction.commit().await?;
         Ok(StoreScan {
@@ -384,13 +323,7 @@ impl MacOutbox<'_> {
             .into_iter()
             .filter(|row| !live_request_ids.contains(&row.request))
         {
-            collect_ending(
-                &mut transaction,
-                &row,
-                OutboxRowEvent::EndDue { now_ms },
-                &mut ended,
-            )
-            .await?;
+            collect_ending(&mut transaction, &row, now_ms, &mut ended).await?;
         }
         transaction.commit().await?;
         Ok(StoreScan {
@@ -407,40 +340,20 @@ pub struct ClaimedBatch {
     pub ended: Vec<EndedWrite>,
 }
 
-async fn read_in_flight(
+async fn read_request(
     connection: &mut sqlx::SqliteConnection,
     request: &RequestId,
-) -> Result<DecodedRow, OutboxStoreError> {
+    expected: &'static str,
+) -> Result<OutboxRowState, OutboxStoreError> {
     let raw = read_row(connection, request)
         .await?
-        .ok_or_else(|| unexpected(request, "sent"))?;
-    require_in_flight(decode_row(&raw)?, request)
-}
-
-fn require_in_flight(row: DecodedRow, request: &RequestId) -> Result<DecodedRow, OutboxStoreError> {
-    if matches!(row.state, OutboxItemState::Sent | OutboxItemState::Resent) {
-        Ok(row)
-    } else {
-        Err(unexpected(request, "sent"))
-    }
-}
-
-async fn update_state(
-    connection: &mut sqlx::SqliteConnection,
-    row: &DecodedRow,
-    next: OutboxItemState,
-    now_ms: i64,
-) -> Result<(), OutboxStoreError> {
-    let changed = sqlx::query!(
-        "UPDATE outbox_items SET item_state = ?, updated_at = ? WHERE request_id = ? AND item_state = ?",
-        next.as_str(), now_ms, row.request.as_str(), row.state.as_str(),
-    ).execute(connection).await?.rows_affected();
-    expect_one(changed, &row.request, "in its previous state")
+        .ok_or_else(|| unexpected(request, expected))?;
+    Ok(decode_row(&raw)?)
 }
 
 async fn claim_row(
     connection: &mut sqlx::SqliteConnection,
-    row: DecodedRow,
+    row: OutboxRowState,
     now_ms: i64,
     eligible_through_ms: i64,
     required_deadline_after_ms: i64,
@@ -455,9 +368,10 @@ async fn claim_row(
     {
         return Ok(None);
     }
-    let StoredPayload::Unanswered(payload) = row.payload else {
-        return Err(corrupt_row(row.request.as_str(), "payload_json"));
-    };
+    let payload = row
+        .phase
+        .into_queued()
+        .ok_or_else(|| corrupt_row(row.request.as_str(), "payload_json"))?;
     Ok(Some(StoredOutboxWrite {
         request: row.request,
         caller: row.caller,
@@ -466,108 +380,21 @@ async fn claim_row(
     }))
 }
 
-enum RowTransition {
-    NotDue,
-    Stamped,
-    Ended(EndedWrite),
-}
-
-async fn apply_row_event(
-    connection: &mut sqlx::SqliteConnection,
-    row: &DecodedRow,
-    event: OutboxRowEvent,
-    expected: &'static str,
-) -> Result<RowTransition, OutboxStoreError> {
-    let snapshot = OutboxRowState {
-        item_state: row.state,
-        flush_at_ms: row.flush_at_ms,
-        deadline_ms: row.deadline_ms,
-    };
-    let (next, effects) = match OutboxRowMachine::transition(&snapshot, event) {
-        Ok(transition) => transition,
-        Err(TransitionError::Domain(OutboxRowRefusal::NotDue)) => return Ok(RowTransition::NotDue),
-        Err(TransitionError::NotAllowed { .. } | TransitionError::Stale) => {
-            return Err(unexpected(&row.request, expected));
-        }
-    };
-    let mut result = RowTransition::Stamped;
-    for effect in effects {
-        match effect {
-            OutboxRowEffect::Stamp { now_ms } => {
-                update_state(connection, row, next.item_state, now_ms).await?
-            }
-            OutboxRowEffect::Finish { now_ms, reason } => {
-                result = RowTransition::Ended(
-                    end_row(connection, row, next.item_state, reason, now_ms).await?,
-                );
-            }
-        }
-    }
-    Ok(result)
-}
-
 async fn collect_ending(
     connection: &mut sqlx::SqliteConnection,
-    row: &DecodedRow,
-    event: OutboxRowEvent,
+    row: &OutboxRowState,
+    now_ms: i64,
     ended: &mut Vec<EndedWrite>,
 ) -> Result<(), OutboxStoreError> {
-    if let RowTransition::Ended(ending) =
-        apply_row_event(connection, row, event, "waiting or sent").await?
+    if let RowTransition::Ended(ending) = apply_row_event(
+        connection,
+        row,
+        OutboxRowEvent::EndDue { now_ms },
+        "waiting or sent",
+    )
+    .await?
     {
         ended.push(ending);
     }
     Ok(())
-}
-
-fn unexpected(request: &RequestId, expected: &'static str) -> OutboxStoreError {
-    OutboxStoreError::UnexpectedState {
-        request: request.clone(),
-        expected,
-    }
-}
-
-/// Moves one overdue row to its end state and drops its text: the stored
-/// payload becomes the text-free record of target and digest, so a resubmit
-/// of the same write is still recognised.
-async fn end_row(
-    transaction: &mut sqlx::SqliteConnection,
-    row: &DecodedRow,
-    next: OutboxItemState,
-    reason: OutboxCancellation,
-    now_ms: i64,
-) -> Result<EndedWrite, OutboxStoreError> {
-    let request = &row.request;
-    let request_id = request.as_str();
-    let StoredPayload::Unanswered(payload) = &row.payload else {
-        return Err(corrupt_row(request_id, "payload_json"));
-    };
-    let target = outbox_content(request_id, payload)?.target;
-    let record = serde_json::to_string(&AnsweredWrite {
-        delivery_outcome: None,
-        request_id: request.clone(),
-        target: target.clone(),
-        content_digest: payload_content_digest(payload)?,
-    })?;
-    let to = next.as_str();
-    let from = row.state.as_str();
-    let changed = sqlx::query!(
-        "UPDATE outbox_items SET item_state = ?, payload_json = ?, updated_at = ?
-         WHERE request_id = ? AND item_state = ?",
-        to,
-        record,
-        now_ms,
-        request_id,
-        from
-    )
-    .execute(&mut *transaction)
-    .await?
-    .rows_affected();
-    expect_one(changed, request, "waiting or sent")?;
-    Ok(EndedWrite {
-        caller: row.caller.clone(),
-        request_id: row.request.clone(),
-        target,
-        reason,
-    })
 }

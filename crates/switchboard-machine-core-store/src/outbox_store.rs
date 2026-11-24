@@ -3,21 +3,20 @@
 //! through Rust types and an invalid row is refused, never coerced.
 use crate::{
     LocalOutboxRefusal, MachineLocalStore, OutboxQueuedWrite, OutboxRequestKey,
-    OutboxRequestStatus, OutboxWriteTarget, RowCorruption, outbox_item_state::OutboxItemState,
+    OutboxRequestStatus, OutboxWriteTarget, RowCorruption,
 };
 use sqlite_storage_maintenance::TransactionStart;
 use workspace_ids::RequestId;
 use workspace_model::{Caller, Timestamp};
 
 mod outbox_queries;
+mod outbox_row_effects;
 mod outbox_row_machine;
+mod outbox_row_state;
 mod outbox_rows;
 mod outbox_transitions;
-mod sender_outcome_store;
 
-use outbox_rows::{
-    StoredPayload, decode_row, outbox_content, payload_content_digest, read_owned_outbox, read_row,
-};
+use outbox_rows::{decode_row, outbox_content, read_owned_outbox, read_row};
 pub use outbox_transitions::ClaimedBatch;
 
 #[derive(Debug, thiserror::Error)]
@@ -136,7 +135,7 @@ impl<'store> MacOutbox<'store> {
         let request_id = item.request.as_str();
         let caller_json = serde_json::to_string(&item.caller)?;
         let payload_json = serde_json::to_string(&item.payload)?;
-        let state = OutboxItemState::InOutbox.as_str();
+        let state = outbox_row_machine::OutboxRowMachine::initial_tag().as_str();
         let flush_at_ms = item.flush_at_ms;
         let mut transaction = self
             .store
@@ -146,23 +145,7 @@ impl<'store> MacOutbox<'store> {
         let existing = read_row(&mut transaction, &item.request).await?;
         if let Some(row) = existing {
             let stored = decode_row(&row)?;
-            let same_write = match &stored.payload {
-                StoredPayload::Unanswered(payload) => payload == &item.payload,
-                // The text is gone once answered. The same write (replay its answer)
-                // has the same target, workspace included, and the same content
-                // digest; any difference is a conflict. The outbox spans workspaces.
-                StoredPayload::Answered(answered) => {
-                    item.payload
-                        .content()
-                        .is_some_and(|content| content.target == answered.target)
-                        && payload_content_digest(&item.payload)? == answered.content_digest
-                }
-            };
-            return Ok(if stored.caller == item.caller && same_write {
-                OutboxInsert::AlreadyStored(stored.status)
-            } else {
-                OutboxInsert::Refused(LocalOutboxRefusal::RequestIdConflict)
-            });
+            return outbox_row_machine::OutboxRowMachine::replay_insert(&stored, item);
         }
         // The creation stamp is the agent's send time (design 2026-11-17).
         outbox_content(request_id, &item.payload)?;
@@ -197,7 +180,7 @@ impl<'store> MacOutbox<'store> {
         else {
             return Ok(OutboxRequestStatus::NotFound);
         };
-        Ok(stored.status)
+        Ok(stored.status())
     }
 }
 fn validate_write_timestamp(value: i64, field: &'static str) -> Result<(), OutboxStoreError> {

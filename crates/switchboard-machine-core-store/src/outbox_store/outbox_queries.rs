@@ -1,17 +1,18 @@
 //! Caller-scoped reads and selection of pending writes.
 use super::{
     MacOutbox, OutboxStoreError, UnansweredOutboxClaim,
+    outbox_row_state::OutboxPhase,
     outbox_rows::{
-        StoredPayload, corrupt_row, decode_owned_row, in_flight_rows, outbox_content,
-        read_owned_outbox, select_outbox_rows, waiting_rows,
+        corrupt_row, decode_owned_row, in_flight_rows, outbox_content, read_owned_outbox,
+        select_outbox_rows, waiting_rows,
     },
 };
 use crate::OutboxRequestKey;
 use crate::{
     OutboxRequestStatus, OutgoingOutcome, OutgoingWrite, PendingWrite, PendingWriteState,
-    RowCorruption, RowCorruptionReason, StoreScan, outbox_item_state::OutboxItemState,
+    RowCorruption, RowCorruptionReason, StoreScan, StoredSenderOutcome,
+    outbox_item_state::OutboxItemState, outbox_settlement::SettledWrite,
 };
-#[cfg(test)]
 use workspace_ids::RequestId;
 use workspace_model::Caller;
 
@@ -26,12 +27,8 @@ impl MacOutbox<'_> {
         else {
             return Ok(OutboxRequestStatus::NotFound);
         };
-        let scope = match &stored.payload {
-            StoredPayload::Unanswered(write) => write.request_scope(),
-            StoredPayload::Answered(profile) => profile.target.request_scope(),
-        };
-        Ok(if scope == key.scope {
-            stored.status
+        Ok(if stored.phase.request_scope() == key.scope {
+            stored.status()
         } else {
             OutboxRequestStatus::NotFound
         })
@@ -64,41 +61,43 @@ impl MacOutbox<'_> {
         let mut pending = Vec::with_capacity(rows.len());
         for row in &rows {
             let stored = decode_owned_row(row, caller)?;
-            let (target, state) = match (stored.state, stored.status, stored.payload) {
-                (OutboxItemState::InOutbox, _, StoredPayload::Unanswered(payload)) => {
+            let (target, state) = match stored.phase {
+                OutboxPhase::InOutbox(payload) => {
                     let content = outbox_content(stored.request.as_str(), &payload)?;
                     (
                         content.target,
                         PendingWriteState::Unsent { body: content.body },
                     )
                 }
-                (
-                    OutboxItemState::SentAnswerLost
-                    | OutboxItemState::Sent
-                    | OutboxItemState::Resent,
-                    _,
-                    StoredPayload::Unanswered(payload),
-                ) => {
+                OutboxPhase::SentAnswerLost(payload)
+                | OutboxPhase::Sent(payload)
+                | OutboxPhase::Resent(payload) => {
                     let content = outbox_content(stored.request.as_str(), &payload)?;
                     let body = content.body;
                     (content.target, PendingWriteState::SentAnswerLost { body })
                 }
-                (
-                    OutboxItemState::Answered | OutboxItemState::Unconfirmed,
-                    OutboxRequestStatus::Answered(reply),
-                    StoredPayload::Answered(answered),
-                ) => (answered.target, PendingWriteState::Answered(reply)),
-                (
-                    OutboxItemState::Unconfirmed,
-                    OutboxRequestStatus::Refused(refusal),
-                    StoredPayload::Answered(profile),
-                ) => (profile.target, PendingWriteState::Refused(refusal)),
-                (
-                    OutboxItemState::NotSent | OutboxItemState::Unconfirmed,
-                    OutboxRequestStatus::Ended { reason },
-                    StoredPayload::Answered(cancelled),
-                ) => (cancelled.target, PendingWriteState::Cancelled { reason }),
-                _ => return Err(corrupt_row(stored.request.as_str(), "item_state")),
+                OutboxPhase::Answered(profile, reply)
+                | OutboxPhase::Unconfirmed(profile, Some(SettledWrite::Answered(reply))) => {
+                    (profile.target, PendingWriteState::Answered(reply))
+                }
+                OutboxPhase::Unconfirmed(profile, Some(SettledWrite::Refused(refusal))) => {
+                    (profile.target, PendingWriteState::Refused(refusal))
+                }
+                OutboxPhase::NotSent(profile) => (
+                    profile.target,
+                    PendingWriteState::Cancelled {
+                        reason: crate::OutboxCancellation::NotSentWithin15Minutes,
+                    },
+                ),
+                OutboxPhase::Unconfirmed(profile, None) => (
+                    profile.target,
+                    PendingWriteState::Cancelled {
+                        reason: crate::OutboxCancellation::NotConfirmedWithin15Minutes,
+                    },
+                ),
+                OutboxPhase::Refused(..) => {
+                    return Err(corrupt_row(stored.request.as_str(), "item_state"));
+                }
             };
             pending.push(PendingWrite {
                 request_id: stored.request,
@@ -138,25 +137,30 @@ impl MacOutbox<'_> {
         let mut outgoing = Vec::with_capacity(rows.len());
         for row in rows {
             let stored = decode_owned_row(&row, caller)?;
-            let request_id = stored.request;
-            let answered_at_ms =
-                (stored.state != OutboxItemState::Unconfirmed).then_some(stored.updated_at_ms);
-            let StoredPayload::Answered(answered) = stored.payload else {
-                return Err(corrupt_row(request_id.as_str(), "payload_json"));
-            };
-            let outcome = match stored.status {
-                OutboxRequestStatus::Answered(reply) => OutgoingOutcome::Answered(reply),
-                OutboxRequestStatus::Refused(reason) => OutgoingOutcome::Refused(reason),
-                OutboxRequestStatus::NotFound
-                | OutboxRequestStatus::InOutbox { .. }
-                | OutboxRequestStatus::Sent
-                | OutboxRequestStatus::Ended { .. } => {
-                    return Err(corrupt_row(request_id.as_str(), "item_state"));
+            let answered_at_ms = (stored.phase.item_state() != OutboxItemState::Unconfirmed)
+                .then_some(stored.updated_at_ms);
+            let (target, outcome) = match stored.phase {
+                OutboxPhase::Answered(profile, reply)
+                | OutboxPhase::Unconfirmed(profile, Some(SettledWrite::Answered(reply))) => {
+                    (profile.target, OutgoingOutcome::Answered(reply))
+                }
+                OutboxPhase::Refused(profile, reason)
+                | OutboxPhase::Unconfirmed(profile, Some(SettledWrite::Refused(reason))) => {
+                    (profile.target, OutgoingOutcome::Refused(reason))
+                }
+                OutboxPhase::NotSent(_) | OutboxPhase::Unconfirmed(_, None) => {
+                    return Err(corrupt_row(stored.request.as_str(), "item_state"));
+                }
+                OutboxPhase::InOutbox(_)
+                | OutboxPhase::SentAnswerLost(_)
+                | OutboxPhase::Sent(_)
+                | OutboxPhase::Resent(_) => {
+                    return Err(corrupt_row(stored.request.as_str(), "payload_json"));
                 }
             };
             outgoing.push(OutgoingWrite {
-                request_id,
-                target: answered.target,
+                request_id: stored.request,
+                target,
                 outcome,
                 answered_at_ms,
             });
@@ -192,7 +196,7 @@ impl MacOutbox<'_> {
         } = in_flight_rows(&mut self.store.connection).await?;
         let mut claims = Vec::with_capacity(healthy.len());
         for row in healthy {
-            let StoredPayload::Unanswered(write) = row.payload else {
+            let Some(write) = row.phase.into_queued() else {
                 corrupt_rows.push(RowCorruption {
                     key: row.request.to_string(),
                     field: "payload_json",
@@ -230,5 +234,15 @@ impl MacOutbox<'_> {
         Ok(waiting_rows(&mut self.store.connection)
             .await?
             .map_healthy(|rows| rows.into_iter().map(|row| row.flush_at_ms).min()))
+    }
+
+    /// A retained sender outcome, scoped to the original caller and request.
+    pub async fn sender_outcome(
+        &mut self,
+        caller: &Caller,
+        request: &RequestId,
+    ) -> Result<Option<StoredSenderOutcome>, OutboxStoreError> {
+        let row = read_owned_outbox(&mut self.store.connection, caller, request).await?;
+        Ok(row.and_then(|row| row.phase.profile()?.delivery_outcome.clone()))
     }
 }
