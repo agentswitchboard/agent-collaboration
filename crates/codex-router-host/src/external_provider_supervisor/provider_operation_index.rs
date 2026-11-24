@@ -10,11 +10,12 @@
 use super::{
     MAX_RETAINED_SETTLEMENTS,
     provider_admission_policy::{
-        AdmissionBlockers, AdmissionRequest, DispatchMark, EarlierOperation,
+        AdmissionBlockers, AdmissionClass, AdmissionMode, AdmissionRequest, DispatchMark,
+        EarlierOperation,
     },
     provider_operation_finish::Retention,
 };
-use crate::binding_dispatch_permit::{BindingOutcomes, BindingUncertainty};
+use crate::binding_dispatch_permit::BindingUncertainty;
 use crate::operation_machines::operation_record_machine::{
     AttemptEnding, DispatchAttempt, OperationRecord, OperationRecordEvent, OperationRecordMachine,
 };
@@ -23,9 +24,11 @@ use crate::provider_operation_custody::{
     OperationLifecycle,
 };
 use collaboration_protocol::{
-    CodexGeneration, ConversationOperationFailure, ConversationOperationSettlement, EndpointRef,
-    OperationId, ProviderBindingIdentity, ProviderOperationKind, SessionRef,
+    CodexGeneration, ConversationOperationFailure, ConversationOperationFailureKind,
+    ConversationOperationFailureStage, ConversationOperationSettlement, EndpointRef, OperationId,
+    ProviderBindingIdentity, ProviderOperationEffect, ProviderOperationKind, SessionRef,
 };
+use provider_session_machines::session_turn_machine::TurnRecordDisposition;
 use state_machine_core::StateMachine;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex as StdMutex, MutexGuard, PoisonError};
@@ -52,11 +55,13 @@ pub(super) enum Reservation {
 pub(super) struct LiveOperation {
     pub(super) result:
         Mutex<Option<Result<ConversationOperationSettlement, ConversationOperationFailure>>>,
+    turn_record: StdMutex<Option<TurnRecordDisposition>>,
     pub(super) changed: Arc<Notify>,
     /// The binding it runs on; none for an operation a test holds.
     binding: Option<(EndpointRef, CodexGeneration)>,
     kind: Option<ProviderOperationKind>,
     mark: DispatchMark,
+    class: AdmissionClass,
     target: StdMutex<Option<SessionRef>>,
     lifecycle: Arc<OperationLifecycle>,
     cancel_target: Option<uuid::Uuid>,
@@ -70,7 +75,7 @@ impl LiveOperation {
             None,
             None,
             None,
-            DispatchMark::Deferred,
+            AdmissionMode::deferred(AdmissionClass::OwnerPlaced),
             OperationRecord::Admitted { queued: false },
         )
     }
@@ -80,23 +85,27 @@ impl LiveOperation {
         binding: &ProviderBindingIdentity,
         target: Option<SessionRef>,
         kind: ProviderOperationKind,
-        mark: DispatchMark,
+        mode: AdmissionMode,
     ) -> Self {
         Self::new(
             Some(binding),
             target,
             Some(kind),
-            mark,
+            mode,
             OperationRecord::Reserving,
         )
     }
 
-    pub(super) fn queued_prompt(binding: &ProviderBindingIdentity, target: SessionRef) -> Self {
+    pub(super) fn queued_prompt(
+        binding: &ProviderBindingIdentity,
+        target: SessionRef,
+        mode: AdmissionMode,
+    ) -> Self {
         Self::new(
             Some(binding),
             Some(target),
             Some(ProviderOperationKind::ConversationPrompt),
-            DispatchMark::Deferred,
+            mode,
             OperationRecord::Admitted { queued: true },
         )
     }
@@ -110,25 +119,22 @@ impl LiveOperation {
         binding: Option<&ProviderBindingIdentity>,
         target: Option<SessionRef>,
         kind: Option<ProviderOperationKind>,
-        mark: DispatchMark,
+        mode: AdmissionMode,
         record: OperationRecord,
     ) -> Self {
         let changed = Arc::new(Notify::new());
         Self {
             result: Mutex::new(None),
+            turn_record: StdMutex::new(None),
             changed: Arc::clone(&changed),
             binding: binding.map(|binding| (binding.endpoint.clone(), binding.generation.clone())),
             kind,
-            mark,
+            mark: mode.mark,
+            class: mode.class,
             target: StdMutex::new(target),
             lifecycle: Arc::new(OperationLifecycle::new(record, changed)),
-            cancel_target: None,
+            cancel_target: mode.cancel_target,
         }
-    }
-
-    pub(super) fn with_cancel_target(mut self, target: Option<uuid::Uuid>) -> Self {
-        self.cancel_target = target;
-        self
     }
 
     /// Applies one event to the operation's record. A move the record no
@@ -291,24 +297,58 @@ impl LiveOperation {
         }
     }
 
-    /// An admitted handoff or marked send whose writer still holds custody.
-    fn in_flight(&self) -> bool {
+    fn blocks_independent_admission(&self) -> bool {
         let lifecycle = self.lifecycle.state();
+        self.blocks_independent_admission_at(&lifecycle)
+    }
+
+    fn blocks_prompt_admission(&self) -> bool {
+        let lifecycle = self.lifecycle.state();
+        !lifecycle.owner_observed_turn_end() && self.blocks_independent_admission_at(&lifecycle)
+    }
+
+    fn blocks_independent_admission_at(
+        &self,
+        lifecycle: &crate::provider_operation_custody::OperationLifecycleState,
+    ) -> bool {
+        !self.is_notice()
+            && ((self.class.holds_admission() && lifecycle.custody.holds_custody())
+                || self.holds_dispatch_at(lifecycle))
+    }
+
+    pub(super) fn is_notice(&self) -> bool {
+        self.class == AdmissionClass::Notice
+    }
+
+    fn holds_prompt_dispatch(&self) -> bool {
+        let lifecycle = self.lifecycle.state();
+        !lifecycle.owner_observed_turn_end() && self.holds_dispatch_at(&lifecycle)
+    }
+
+    fn holds_dispatch(&self) -> bool {
+        self.holds_dispatch_at(&self.lifecycle.state())
+    }
+
+    /// A mark, or a reservation on the Host's mark-before-handoff path,
+    /// can block the owner line. An unmarked prompt can itself be on that line.
+    fn holds_dispatch_at(
+        &self,
+        lifecycle: &crate::provider_operation_custody::OperationLifecycleState,
+    ) -> bool {
         if let Some(marked) = lifecycle.lane_marked() {
             return lifecycle.custody.holds_custody() && marked;
         }
         let record = lifecycle.admission_record();
         lifecycle.custody.holds_custody()
-            && (record == OperationRecord::Reserving && self.mark == DispatchMark::BeforeHandoff
+            && (matches!(
+                record,
+                OperationRecord::Reserving | OperationRecord::Admitted { queued: false }
+            ) && self.mark == DispatchMark::BeforeHandoff
                 || matches!(
                     record,
                     OperationRecord::MayHaveDispatched { .. }
                         | OperationRecord::SettlingUnknown { .. }
-                )
-                || matches!(record, OperationRecord::Admitted { queued: false })
-                    && self
-                        .kind
-                        .is_some_and(|kind| kind != ProviderOperationKind::ConversationPrompt))
+                ))
     }
 }
 
@@ -325,6 +365,60 @@ impl HeldResult {
 }
 
 impl LiveOperations {
+    pub(super) fn turn_record_after_admission_release(
+        &self,
+        operation: &OperationId,
+        generation: &CodexGeneration,
+        target: &SessionRef,
+    ) -> Option<TurnRecordDisposition> {
+        let Some(live) = self.operations.get(operation) else {
+            // Eviction requires released custody and a published result.
+            // The binding cell still owns durable uncertainty for this ID.
+            // Waiting for a new index entry here would strand a fence.
+            return Some(TurnRecordDisposition::Uncertain);
+        };
+        if !live.matches_lane_binding(generation, target) {
+            return None;
+        }
+        {
+            let mut lifecycle = live.lifecycle.state();
+            lifecycle.observe_owner_turn_end();
+            if lifecycle.custody.holds_custody() {
+                return None;
+            }
+        }
+        *live
+            .turn_record
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub(super) fn note_turn_record(
+        live: &LiveOperation,
+        result: &Result<ConversationOperationSettlement, ConversationOperationFailure>,
+    ) {
+        if live.kind != Some(ProviderOperationKind::ConversationPrompt) {
+            return;
+        }
+        let record = match result {
+            Err(error) if error.effect == ProviderOperationEffect::Unknown => {
+                TurnRecordDisposition::Uncertain
+            }
+            Err(error)
+                if error.effect == ProviderOperationEffect::Applied
+                    && error.kind == ConversationOperationFailureKind::Unavailable
+                    && error.stage == ConversationOperationFailureStage::Settlement =>
+            {
+                TurnRecordDisposition::AppliedUnsaved
+            }
+            Ok(_) | Err(_) => TurnRecordDisposition::Saved,
+        };
+        *live
+            .turn_record
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(record);
+    }
+
     pub(super) fn holds_custody_of(&self, operation: &OperationId) -> bool {
         self.operations
             .get(operation)
@@ -351,7 +445,7 @@ impl LiveOperations {
         unknown.retain(|operation| {
             request.blocked_by(operation, EarlierOperation::Unknown, unconfirmed_cancel)
         });
-        let in_flight = self.in_flight_blockers(binding, request);
+        let in_flight = self.admission_blockers(binding, request);
         if !unknown.is_empty() || !in_flight.is_empty() {
             return Err(AdmissionBlockers { unknown, in_flight });
         }
@@ -418,14 +512,20 @@ impl LiveOperations {
         });
     }
 
-    /// Sends still in flight on `binding` that an admission on `target`
-    /// waits behind: the target's own, and binding-wide ones (no target).
-    pub(super) fn in_flight_blockers(
+    /// Holders that overlap this admission on the target or whole binding.
+    pub(super) fn admission_blockers(
         &self,
         binding: &ProviderBindingIdentity,
         request: AdmissionRequest<'_>,
     ) -> Vec<OperationId> {
-        self.overlapping_holders(binding, request)
+        let blocks = if request.mode.class == AdmissionClass::Notice {
+            LiveOperation::holds_custody
+        } else if request.kind == ProviderOperationKind::ConversationPrompt {
+            LiveOperation::blocks_prompt_admission
+        } else {
+            LiveOperation::blocks_independent_admission
+        };
+        self.overlapping_holders(binding, request, blocks)
             .map(|(operation, _)| operation.clone())
             .collect()
     }
@@ -435,7 +535,12 @@ impl LiveOperations {
         binding: &ProviderBindingIdentity,
         request: AdmissionRequest<'_>,
     ) -> Option<OperationId> {
-        self.overlapping_holders(binding, request)
+        let holds = if request.kind == ProviderOperationKind::ConversationPrompt {
+            LiveOperation::holds_prompt_dispatch
+        } else {
+            LiveOperation::holds_dispatch
+        };
+        self.overlapping_holders(binding, request, holds)
             .find(|(_, holder)| !request.is_own_cancel_holder(holder.kind, holder.cancel_target))
             .map(|(operation, _)| operation.clone())
     }
@@ -444,6 +549,7 @@ impl LiveOperations {
         &'a self,
         binding: &'a ProviderBindingIdentity,
         request: AdmissionRequest<'a>,
+        holds: fn(&LiveOperation) -> bool,
     ) -> impl Iterator<Item = (&'a OperationId, &'a Arc<LiveOperation>)> {
         self.operations.iter().filter(move |(id, operation)| {
             operation
@@ -452,7 +558,7 @@ impl LiveOperations {
                 .is_some_and(|(endpoint, generation)| {
                     endpoint == &binding.endpoint && generation == &binding.generation
                 })
-                && operation.in_flight()
+                && holds(operation)
                 && request.blocked_by(
                     id,
                     EarlierOperation::InFlight {
@@ -476,23 +582,6 @@ impl UncertaintyCells {
             .entry(binding.clone())
             .or_default()
             .clone()
-    }
-
-    /// The binding's cell, seeded on first use with `seed`'s rows.
-    pub(super) async fn cell<F, Fut, E>(
-        &self,
-        binding: &EndpointRef,
-        seed: F,
-    ) -> Result<Arc<BindingUncertainty>, E>
-    where
-        F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = Result<BindingOutcomes, E>>,
-    {
-        let cell = self.slot(binding);
-        cell.outcomes
-            .get_or_try_init(|| async { seed().await.map(StdMutex::new) })
-            .await?;
-        Ok(cell)
     }
 }
 

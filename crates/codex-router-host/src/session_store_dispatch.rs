@@ -8,7 +8,9 @@ use crate::binding_dispatch_permit::{BindingOutcomes, PendingDispatch};
 use crate::binding_dispatch_permit::{BindingUncertainty, lock};
 use crate::provider_operation_custody::LaneWriteCustody;
 use collaboration_protocol::{OperationId, ProviderOperationStage};
-use provider_session_machines::session_owner::{OwnerIncarnation, OwnerInput};
+use provider_session_machines::session_owner::{
+    OwnerIncarnation, OwnerInput, TurnAdmissionEvidence,
+};
 use router_clock::RuntimeClock;
 use std::sync::Arc;
 use switchboard_session_store::ProviderOperationStoreError;
@@ -18,6 +20,7 @@ use uuid::Uuid;
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) enum LaneDispatchKind {
     Prompt,
+    QueuedPrompt,
     Steer,
     Undo,
 }
@@ -41,6 +44,29 @@ impl LaneDispatchWrite {
 }
 
 impl SessionStoreLane {
+    pub(crate) fn uses_turn_admission_probe(&self) -> bool {
+        self.inner
+            .binding
+            .get()
+            .is_some_and(|binding| binding.turn_admission.get().is_some())
+    }
+
+    pub(crate) fn turn_admission_evidence(
+        &self,
+        operation: &OperationId,
+    ) -> Option<TurnAdmissionEvidence> {
+        let binding = self.inner.binding.get()?;
+        let record = binding.turn_admission.get()?(operation, &self.inner.target)?;
+        let fenced = lock(binding.outcomes.get()?)
+            .blockers(Some(&self.inner.target), false)
+            .contains(operation);
+        Some(if fenced {
+            TurnAdmissionEvidence::Fenced(record)
+        } else {
+            TurnAdmissionEvidence::Clear(record)
+        })
+    }
+
     pub(crate) fn offer_dispatch(
         &self,
         owner: OwnerIncarnation,
@@ -114,7 +140,10 @@ impl SessionStoreLane {
                 operation: key(blocker)?,
             });
         }
-        if kind == LaneDispatchKind::Prompt {
+        if matches!(
+            kind,
+            LaneDispatchKind::Prompt | LaneDispatchKind::QueuedPrompt
+        ) {
             if let Some(blocker) = outcomes
                 .pending_dispatches_for(&self.inner.target)
                 .find(|held| *held != operation)
@@ -127,7 +156,7 @@ impl SessionStoreLane {
             if let Some(blocker) = binding
                 .live_dispatch_blocker
                 .get()
-                .and_then(|check| check(operation, &self.inner.target))
+                .and_then(|gate| gate(operation, &self.inner.target))
             {
                 return Err(SessionStoreOfferError::DispatchBusy {
                     operation: key(&blocker)?,

@@ -138,7 +138,7 @@ impl SessionEventSink for SessionOwnerIngress {
             return Ok(GenerationPublication::Ended);
         }
         let turn = match snapshot.turn {
-            SessionTurn::Idle => None,
+            SessionTurn::Idle | SessionTurn::Settling(_) => None,
             SessionTurn::Running { turn } | SessionTurn::Cancelling { turn } => Some(turn),
         };
         owner.report_event(OwnerEvent::Stream {

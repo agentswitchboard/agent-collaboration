@@ -611,18 +611,14 @@ impl ConversationClient {
                             ConversationClientError::InvalidInput("invalid create failure message")
                         })?;
                         return Err(ConversationClientError::OperationFailure(Box::new(
-                            ConversationOperationFailure {
+                            ConversationOperationFailure::new(
                                 kind,
-                                stage: ConversationOperationFailureStage::Settlement,
+                                ConversationOperationFailureStage::Settlement,
                                 effect,
                                 message,
-                                operation_id: Some(operation_id.clone()),
-                                invalid_setting: None,
-                                provider_code: None,
-                                target: None,
-                                endpoint: None,
-                                availability: None,
-                            },
+                                Some(operation_id.clone()),
+                                None,
+                            ),
                         )));
                     }
                     Ok::<_, ConversationClientError>(ConversationCreateOutcome::Pending {

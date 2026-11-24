@@ -11,6 +11,8 @@ mod owner_history;
 mod owner_notice;
 #[path = "session_owner/owner_property_test.rs"]
 mod owner_property;
+#[path = "session_owner/owner_settlement_test.rs"]
+mod owner_settlement;
 
 fn uuid(number: u64) -> Uuid {
     // Deterministic UUIDv7 inputs keep clock reads out of the property.
@@ -42,21 +44,30 @@ fn decide(state: &SessionOwnerState, event: OwnerEvent) -> SessionOwnerDecision 
 
 fn apply(state: &mut SessionOwnerState, event: OwnerEvent) -> Vec<OwnerEffect> {
     let mut effects = apply_pending(state, event);
-    let writes: Vec<_> = effects
-        .iter()
-        .filter_map(|effect| match effect {
-            OwnerEffect::Store(SessionStoreRequest::RecordTerminal { write, .. }) => Some(*write),
+    let mut next = 0;
+    while let Some(effect) = effects.get(next) {
+        let receipt = match effect {
+            OwnerEffect::Store(SessionStoreRequest::RecordTerminal { write, .. }) => {
+                Some(OwnerEvent::Store(SessionStoreResult::Terminal {
+                    write: *write,
+                    outcome: EffectOutcome::Applied,
+                }))
+            }
+            OwnerEffect::ObserveTurnAdmission { run, settlement } => {
+                Some(OwnerEvent::TurnAdmissionSettled {
+                    run: *run,
+                    settlement: *settlement,
+                    evidence: TurnAdmissionEvidence::Clear(
+                        crate::session_turn_machine::TurnRecordDisposition::Saved,
+                    ),
+                })
+            }
             _ => None,
-        })
-        .collect();
-    for write in writes {
-        effects.extend(apply_pending(
-            state,
-            OwnerEvent::Store(SessionStoreResult::Terminal {
-                write,
-                outcome: EffectOutcome::Applied,
-            }),
-        ));
+        };
+        next += 1;
+        if let Some(receipt) = receipt {
+            effects.extend(apply_pending(state, receipt));
+        }
     }
     effects
 }
@@ -64,7 +75,14 @@ fn apply(state: &mut SessionOwnerState, event: OwnerEvent) -> Vec<OwnerEffect> {
 fn apply_pending(state: &mut SessionOwnerState, event: OwnerEvent) -> Vec<OwnerEffect> {
     let decision = decide(state, event).expect("fixture event is current and permitted");
     *state = decision.next;
-    decision.effects.effects
+    let mut effects = decision.effects.effects;
+    if let Some(settlement) = decision.effects.continue_after_turn_settlement {
+        let next = decide(state, OwnerEvent::ContinueAfterTurnSettlement(settlement))
+            .expect("fixture settlement continuation is permitted");
+        *state = next.next;
+        effects.extend(next.effects.effects);
+    }
+    effects
 }
 
 fn command(state: &mut SessionOwnerState, command: SessionOwnerCommand) -> Vec<OwnerEffect> {
@@ -241,6 +259,58 @@ fn end_turn(
             }),
         }),
     )
+}
+
+#[test]
+fn auto_queued_during_restore_steers_when_the_first_prompt_takes_wire() {
+    let mut state = fresh();
+    let restoring = open_wire(&mut state, 1);
+    let first = input(restoring.generation, 2);
+    let second = input(restoring.generation, 3);
+    for pending in [&first, &second] {
+        assert!(
+            enqueue_prompt(&mut state, pending)
+                .contains(&OwnerEffect::InputQueued(pending.clone()))
+        );
+    }
+    apply(&mut state, restore_reply(restoring));
+    let restored = finish_preparation(&mut state, restoring);
+    assert!(restored.contains(&OwnerEffect::Store(
+        SessionStoreRequest::MarkQueuedDispatch(first.clone())
+    )));
+    let first_mark = apply(&mut state, mark_prompt(&first));
+    let first_authorization = authorization(&first_mark);
+    assert!(first_mark.contains(&OwnerEffect::Authorize {
+        authorization: first_authorization.clone(),
+        work: AuthorizedWork::Prompt(first.clone()),
+    }));
+
+    let taken = apply(
+        &mut state,
+        OwnerEvent::Dispatch(DispatchResult::Taken(first_authorization)),
+    );
+    let exact_steer = OwnerInput {
+        turn: first.turn,
+        ..second
+    };
+
+    assert!(
+        taken.contains(&OwnerEffect::Store(SessionStoreRequest::MarkSteerDispatch(
+            exact_steer.clone()
+        ))),
+        "the second Auto input must mark a steer on the turn that took the wire: {taken:?}"
+    );
+    let steer_mark = apply(
+        &mut state,
+        OwnerEvent::Store(SessionStoreResult::SteerDispatch {
+            input: exact_steer.clone(),
+            outcome: EffectOutcome::Applied,
+        }),
+    );
+    assert!(steer_mark.contains(&OwnerEffect::Authorize {
+        authorization: authorization(&steer_mark),
+        work: AuthorizedWork::Steer(exact_steer),
+    }));
 }
 
 #[test]

@@ -466,14 +466,17 @@ pub(super) async fn handle_app_server_turn_request(
         .get("threadId")
         .and_then(Value::as_str)
         .ok_or(ThreadMethodError::InvalidParams)?;
-    let session = events
-        .sessions(endpoint)
-        .await
-        .map_err(|_| ThreadMethodError::Unavailable)?
-        .into_iter()
-        .find(|summary| thread_alias(&summary.session) == thread_id)
-        .map(|summary| summary.session)
-        .ok_or(ThreadMethodError::NotFound)?;
+    let session = match find_resident_session(events.as_ref(), endpoint.clone(), thread_id).await? {
+        Some(session) => session,
+        None => events
+            .sessions(endpoint)
+            .await
+            .map_err(|_| ThreadMethodError::Unavailable)?
+            .into_iter()
+            .find(|summary| thread_alias(&summary.session) == thread_id)
+            .map(|summary| summary.session)
+            .ok_or(ThreadMethodError::NotFound)?,
+    };
     match method {
         "thread/settings/update" => {
             let settings =
@@ -563,7 +566,20 @@ pub(super) async fn handle_app_server_turn_request(
     }
 }
 
-fn command_error(error: collaboration_contracts::CommandFailure) -> ThreadMethodError {
+pub(super) async fn find_resident_session(
+    events: &dyn SessionEventHub,
+    endpoint: SessionEndpointRef,
+    thread_id: &str,
+) -> Result<Option<message_board::SessionRef>, ThreadMethodError> {
+    Ok(events
+        .resident_sessions(endpoint)
+        .await
+        .map_err(|_| ThreadMethodError::Unavailable)?
+        .into_iter()
+        .find(|session| thread_alias(session) == thread_id))
+}
+
+pub(super) fn command_error(error: collaboration_contracts::CommandFailure) -> ThreadMethodError {
     use collaboration_contracts::CommandFailure;
     match error {
         CommandFailure::InvalidCreateSetting { target, detail } => {
@@ -585,6 +601,13 @@ fn command_error(error: collaboration_contracts::CommandFailure) -> ThreadMethod
             ThreadMethodError::Unsupported
         }
         CommandFailure::Busy | CommandFailure::NoActiveTurn => ThreadMethodError::Busy,
+        CommandFailure::PreviousTurnSettlementUnresolved {
+            operation,
+            previous_operation,
+        } => ThreadMethodError::PreviousTurnSettlementUnresolved {
+            operation,
+            previous_operation,
+        },
         CommandFailure::SessionNotFound => ThreadMethodError::NotFound,
         CommandFailure::InvalidSetting { .. } | CommandFailure::UnsupportedContent(_) => {
             ThreadMethodError::InvalidParams

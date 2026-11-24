@@ -55,6 +55,50 @@ pub(crate) struct WarmRun {
 }
 
 impl ExternalProviderSupervisor {
+    pub(crate) async fn await_prompt_start_owner(
+        &self,
+        _target: &SessionRef,
+        operation: &OperationId,
+        snapshots: &mut Option<
+            tokio::sync::watch::Receiver<provider_session_machines::session_owner::SessionSnapshot>,
+        >,
+    ) -> Result<(), PromptStartBlock> {
+        use provider_session_machines::session_owner::PromptStartDisposition;
+
+        let Some(owner) = snapshots else {
+            return Ok(());
+        };
+        let id = Uuid::parse_str(operation.as_str()).map_err(|_| PromptStartBlock::OwnerStopped)?;
+        loop {
+            let decision = owner
+                .borrow_and_update()
+                .prompt_start_disposition(id, false);
+            match decision {
+                PromptStartDisposition::Proceed | PromptStartDisposition::YieldNotice(_) => {
+                    return Ok(());
+                }
+                PromptStartDisposition::Fenced(fence) => {
+                    return Err(PromptStartBlock::Fenced(fence.operation));
+                }
+                PromptStartDisposition::Hold => {
+                    #[cfg(test)]
+                    self.inner
+                        .uncertainty
+                        .slot(&_target.endpoint)
+                        .fixture
+                        .waiting(
+                            _target,
+                            crate::binding_store_fixture::BindingFixtureWait::TurnStartHeld,
+                        );
+                    owner
+                        .changed()
+                        .await
+                        .map_err(|_| PromptStartBlock::OwnerStopped)?;
+                }
+            }
+        }
+    }
+
     pub(super) fn owner_prompt(
         &self,
         request: ProviderPromptContentsRequest,
@@ -77,7 +121,25 @@ impl ExternalProviderSupervisor {
                 &request.operation_id,
                 Some(target.clone()),
             )?;
-            let snapshot = backend.owner_session_snapshot(&target);
+            let mut owner = backend.observe_prompt_start_owner(&target);
+            // Placement joins the owner's queue without asking to start now.
+            if request.busy != PromptBusyPolicy::Send(MessageDelivery::Queue) {
+                backend
+                    .await_prompt_start_owner(&target, &request.operation_id, &mut owner)
+                    .await
+                    .map_err(|block| match block {
+                        PromptStartBlock::Fenced(previous) => previous_turn_fence(
+                            previous,
+                            request.operation_id.clone(),
+                            target.clone(),
+                        ),
+                        PromptStartBlock::OwnerStopped => super::unavailable_failure(
+                            request.operation_id.clone(),
+                            Some(target.clone()),
+                        ),
+                    })?;
+            }
+            let snapshot = owner.map(|owner| owner.borrow().clone());
             let class = match request.busy {
                 PromptBusyPolicy::RefuseBusy => snapshot
                     .as_ref()
@@ -95,22 +157,7 @@ impl ExternalProviderSupervisor {
                             })
                     })
                     .unwrap_or(AdmissionClass::Independent),
-                PromptBusyPolicy::Send(MessageDelivery::Queue) => AdmissionClass::LinePlacement,
-                PromptBusyPolicy::Send(MessageDelivery::Auto | MessageDelivery::Steer)
-                    if snapshot
-                        .as_ref()
-                        .is_some_and(|owner| matches!(owner.turn, SessionTurn::Running { .. })) =>
-                {
-                    AdmissionClass::LinePlacement
-                }
-                PromptBusyPolicy::Send(MessageDelivery::Auto)
-                    if snapshot.as_ref().is_some_and(|owner| {
-                        matches!(owner.lifecycle, SessionLifecycle::Loading { .. })
-                    }) =>
-                {
-                    AdmissionClass::LinePlacement
-                }
-                PromptBusyPolicy::Send(_) => AdmissionClass::Independent,
+                PromptBusyPolicy::Send(_) => AdmissionClass::OwnerPlaced,
             };
             let prepared = backend
                 .admit_operation(
@@ -215,6 +262,8 @@ impl ExternalProviderSupervisor {
         use provider_session_machines::session_owner::SessionOwnerCommand;
         let target = request.target;
         let operation = request.operation_id;
+        #[cfg(test)]
+        self.pause_before_owner_prompt_for_test(&operation).await;
         let provider_id = String::from(target.session_id.clone());
         let content = runtime
             .prepare_owner_prompt(&provider_id, request.input)
@@ -324,6 +373,29 @@ impl ExternalProviderSupervisor {
                 }
             })
     }
+}
+
+pub(crate) enum PromptStartBlock {
+    Fenced(Uuid),
+    OwnerStopped,
+}
+
+pub(super) fn previous_turn_fence(
+    previous: Uuid,
+    current: OperationId,
+    target: SessionRef,
+) -> ConversationOperationFailure {
+    let (Ok(previous), Ok(message)) = (
+        OperationId::try_from(previous.to_string()),
+        NonEmptyText::try_from(
+            collaboration_protocol::PREVIOUS_TURN_SETTLEMENT_GUIDANCE.to_owned(),
+        ),
+    ) else {
+        return super::unavailable_failure(current, Some(target));
+    };
+    ConversationOperationFailure::previous_turn_settlement_unresolved(
+        current, previous, target, message,
+    )
 }
 
 pub(super) async fn prompt_failure_answer(
@@ -467,6 +539,7 @@ pub(super) fn retained_prompt(
                 provider_session_machines::session_owner::RevokeReason::SettingsUnresolved => {
                     ConversationOperationFailureKind::SettingsUnresolved
                 }
+                RevokeReason::EarlierSendInFlight { .. } => ConversationOperationFailureKind::Busy,
                 _ => ConversationOperationFailureKind::Unavailable,
             },
             ConversationOperationFailureStage::Dispatch,

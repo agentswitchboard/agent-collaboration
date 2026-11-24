@@ -89,7 +89,9 @@ fn actions_from(
 fn turn_observations(turn: SessionTurn) -> &'static [RefusalStep] {
     match turn {
         SessionTurn::Running { .. } => &[],
-        SessionTurn::Idle | SessionTurn::Cancelling { .. } => &[RefusalStep::Wait],
+        SessionTurn::Idle | SessionTurn::Cancelling { .. } | SessionTurn::Settling(_) => {
+            &[RefusalStep::Wait]
+        }
     }
 }
 
@@ -122,6 +124,7 @@ fn turn_answer(turn: SessionTurn, agent_steers: bool) -> String {
         SessionTurn::Idle => "a queued message is being sent",
         SessionTurn::Running { .. } => "a turn is running",
         SessionTurn::Cancelling { .. } => "a turn is being cancelled",
+        SessionTurn::Settling(_) => "the previous turn is settling",
     };
     format!("{state}; {}", joined(&busy_steps(turn, agent_steers)))
 }

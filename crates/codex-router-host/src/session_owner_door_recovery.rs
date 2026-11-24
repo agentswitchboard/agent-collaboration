@@ -21,14 +21,27 @@ impl SessionOwnerDoor {
     ) {
         let weak = Arc::downgrade(self);
         let stop = self.shutdown.clone();
+        #[cfg(test)]
+        let fixture = Arc::clone(&self.preparation_fixture);
         self.tasks.spawn(async move {
             loop {
+                #[cfg(test)]
+                {
+                    let fixture = Arc::clone(&fixture);
+                    task = task.with_settle_deadline_fault_for_test(move |key| {
+                        fixture.take_settlement_deadline_refusal(key)
+                    });
+                }
                 match task.run(ports, stop.clone()).await {
                     Ok(()) => {
                         owner.calls.stop();
                         return;
                     }
-                    Err(error) => tracing::debug!(%error, "provider session owner failed"),
+                    Err(error) => {
+                        #[cfg(test)]
+                        fixture.observe_settlement_deadline_failure(&error);
+                        tracing::debug!(%error, "provider session owner failed");
+                    }
                 }
                 let Some((next_task, next_ports, next_owner)) = weak
                     .upgrade()

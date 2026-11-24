@@ -118,6 +118,7 @@ impl OwnerTransition {
                     SessionTurn::Running { turn } | SessionTurn::Cancelling { turn } => {
                         ToolSessionPhase::LiveRunning { generation, turn }
                     }
+                    SessionTurn::Settling(_) => return None,
                 })
             }
             _ => None,

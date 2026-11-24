@@ -19,6 +19,9 @@ mod managed_notice;
 #[path = "cancel_after_turn_test.rs"]
 mod cancel_after_turn_tests;
 
+#[path = "session_turn_settling_admission_test.rs"]
+mod session_turn_settling_admission;
+
 /// A steering agent that holds its first turn open, on a supervisor whose
 /// session is recorded on a real hub.
 async fn create_test_session(

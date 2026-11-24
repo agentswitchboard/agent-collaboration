@@ -30,10 +30,14 @@ impl Mailbox {
         let fences = sent_settings(&self.owner);
         let restore_fences = self.owner.ports.restore_setting_fences.clone();
         if let Ok(commit) = decide(&self.owner, event.clone()) {
+            let continuation = commit.effects.continue_after_turn_settlement;
             self.owner = commit.next;
             assert_live_commit(before, self.owner.snapshot().lifecycle, &event);
             for effect in commit.effects.effects {
                 self.observe(effect);
+            }
+            if let Some(settlement) = continuation {
+                self.deliver(OwnerEvent::ContinueAfterTurnSettlement(settlement));
             }
         }
         let remaining = self.pending();
@@ -156,6 +160,21 @@ impl Mailbox {
                     }))
             }
             OwnerEffect::Store(request) => self.observe_store(request),
+            OwnerEffect::ObserveTurnAdmission { run, settlement } => {
+                use crate::session_turn_machine::TurnRecordDisposition;
+                self.arrivals.extend(
+                    [
+                        super::TurnAdmissionEvidence::Clear(TurnRecordDisposition::Saved),
+                        super::TurnAdmissionEvidence::Clear(TurnRecordDisposition::AppliedUnsaved),
+                        super::TurnAdmissionEvidence::Fenced(TurnRecordDisposition::Uncertain),
+                    ]
+                    .map(|evidence| OwnerEvent::TurnAdmissionSettled {
+                        run,
+                        settlement,
+                        evidence,
+                    }),
+                );
+            }
             OwnerEffect::DrainCancel(authorization) => {
                 self.arrivals
                     .push(OwnerEvent::Dispatch(DispatchResult::CancelDrainFinished(
@@ -542,6 +561,78 @@ fn exercise_cancel_confirmation(
         "an unconfirmed cancel must keep its exact turn fenced"
     );
     assert_eq!(mailbox.owner.snapshot().cancel_unconfirmed, Some(prompt));
+}
+
+#[hegel::test(seed = Some(2912103), test_cases = 100)]
+fn a_live_holder_refuses_only_the_exact_unacknowledged_start(case: hegel::TestCase) {
+    let mut state = fresh();
+    let run = restore_live(&mut state, 1);
+    let first = input(run.generation, 71);
+    assert!(
+        enqueue_prompt(&mut state, &first).contains(&OwnerEffect::Store(
+            SessionStoreRequest::MarkDispatch(first.clone())
+        ))
+    );
+    for ordinal in 0..case.draw(gs::integers::<u8>().min_value(1).max_value(6)) {
+        let queued = input(run.generation, 80 + u64::from(ordinal));
+        assert!(
+            command(
+                &mut state,
+                SessionOwnerCommand::Prompt {
+                    input: queued.clone(),
+                    admission: PromptAdmission::Queue,
+                }
+            )
+            .contains(&OwnerEffect::InputQueued(queued))
+        );
+    }
+    let original_line = state.snapshot().queue;
+    let earlier = uuid(90);
+    let mut stale = first.clone();
+    let unrelated = input(run.generation, 91);
+    match case.draw(gs::integers::<u8>().max_value(2)) {
+        0 => stale.input = unrelated.input,
+        1 => stale.operation = unrelated.operation,
+        _ => stale.turn = unrelated.turn,
+    }
+    let refused = |input| {
+        OwnerEvent::Store(SessionStoreResult::DispatchBlockedByLive {
+            input,
+            operation: earlier,
+        })
+    };
+    assert_late(&state, refused(stale));
+    assert_eq!(state.snapshot().queue, original_line);
+
+    let effects = apply(&mut state, refused(first.clone()));
+    let expected = SessionOwnerReply::InputUnsent {
+        input: first.clone(),
+        reason: RevokeReason::EarlierSendInFlight { operation: earlier },
+    };
+    let writes: Vec<_> = effects
+        .iter()
+        .filter_map(|effect| match effect {
+            OwnerEffect::Store(SessionStoreRequest::RecordTerminal { reply, .. }) => {
+                Some(reply.as_ref())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(writes, [&expected], "exactly one known-unsent terminal");
+    assert_eq!(
+        effects
+            .iter()
+            .filter(|effect| **effect == OwnerEffect::Reply(expected.clone()))
+            .count(),
+        1,
+    );
+    assert_eq!(state.snapshot().queue, original_line[1..]);
+    assert!(!effects.iter().any(|effect| matches!(
+        effect,
+        OwnerEffect::InputQueued(_) | OwnerEffect::Authorize { .. }
+    )));
+    assert_late(&state, refused(first));
+    assert_late(&state, refused(original_line[1].input.clone()));
 }
 
 #[hegel::test(seed = Some(29118), test_cases = 100)]

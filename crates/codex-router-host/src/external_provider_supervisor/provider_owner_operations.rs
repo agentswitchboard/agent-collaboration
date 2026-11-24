@@ -234,6 +234,13 @@ pub(super) fn owner_failure(
         _ => None,
     };
     let public = match refusal {
+        Some(SessionOwnerRefusal::PreviousTurnSettlementUnresolved(previous)) => {
+            return super::provider_owner_prompt::previous_turn_fence(
+                previous.operation,
+                operation,
+                target,
+            );
+        }
         Some(
             SessionOwnerRefusal::EffectInProgress(_)
             | SessionOwnerRefusal::SettingEffectInProgress(_),

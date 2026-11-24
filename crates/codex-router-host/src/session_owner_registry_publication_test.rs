@@ -15,6 +15,16 @@ struct RealHubPorts {
 }
 
 impl SessionOwnerPorts for RealHubPorts {
+    fn turn_settlement_refused(
+        &mut self,
+        step: acp_client_runtime::session_owner_task::TurnSettlementStep,
+        settlement: provider_session_machines::session_turn_machine::TurnSettlement,
+        reason: &provider_session_machines::session_owner::SessionOwnerRejection,
+    ) {
+        self.wire_and_store
+            .turn_settlement_refused(step, settlement, reason);
+    }
+
     fn execute(
         &mut self,
         owner: OwnerAddress,

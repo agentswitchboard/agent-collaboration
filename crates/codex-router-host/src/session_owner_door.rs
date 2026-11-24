@@ -16,8 +16,8 @@ use collaboration_protocol::SessionRef;
 use provider_session_machines::{
     session_lifecycle_machine::{LoadAttempt, RestoreVia},
     session_owner::{
-        ConnectionEpoch, OwnerEvent, OwnerInput, PromptAdmission, SessionOwnerCommand,
-        SessionOwnerRejection, SessionSnapshot,
+        ConnectionEpoch, OwnerEvent, OwnerInput, PromptAdmission, PromptStartDisposition,
+        SessionOwnerCommand, SessionOwnerRefusal, SessionOwnerRejection, SessionSnapshot,
     },
 };
 use router_clock::RuntimeClock;
@@ -605,7 +605,7 @@ impl SessionOwnerAddress {
         self.calls.insert_content(&input, content);
         let terminal = self.calls.expect_settlement(input.operation);
         let accepted = self.calls.expect_acceptance(input.operation);
-        let admission = self.admit(command).await;
+        let admission = self.admit_delivery(command, input.operation).await;
         #[cfg(any(test, feature = "test-support"))]
         let (admission, ack_finished) = match self.preparation_fixture.take_delivery_ack_pause() {
             Some(pause) => pause.resolve(admission).await,
@@ -632,6 +632,55 @@ impl SessionOwnerAddress {
             let _test_withdrew_probe = finished.send(());
         }
         result
+    }
+
+    async fn admit_delivery(
+        &self,
+        command: SessionOwnerCommand,
+        operation: Uuid,
+    ) -> Result<(), OwnerDoorError> {
+        let mut snapshots = self.snapshots();
+        loop {
+            let decision = self.admit(command.clone()).await;
+            if !matches!(
+                decision,
+                Err(OwnerDoorError::Refused {
+                    rejection: SessionOwnerRejection::Refused(SessionOwnerRefusal::PromptStartHeld),
+                    ..
+                })
+            ) {
+                return decision;
+            }
+            #[cfg(test)]
+            self.storage.notice_turn_start_held();
+            loop {
+                let start = snapshots
+                    .borrow_and_update()
+                    .prompt_start_disposition(operation, true);
+                match start {
+                    PromptStartDisposition::Proceed | PromptStartDisposition::Fenced(_) => break,
+                    PromptStartDisposition::YieldNotice(input) => {
+                        // Any start-now-or-refuse command can displace an untaken notice.
+                        match self
+                            .admit(SessionOwnerCommand::YieldNoticeBeforePrompt(input))
+                            .await
+                        {
+                            Ok(())
+                            | Err(OwnerDoorError::Refused {
+                                rejection: SessionOwnerRejection::IgnoredLate,
+                                ..
+                            }) => {}
+                            Err(error) => return Err(error),
+                        }
+                    }
+                    PromptStartDisposition::Hold => {}
+                }
+                snapshots
+                    .changed()
+                    .await
+                    .map_err(|_| OwnerDoorError::OwnerStopped)?;
+            }
+        }
     }
 
     pub(crate) fn defer_queued_admission(

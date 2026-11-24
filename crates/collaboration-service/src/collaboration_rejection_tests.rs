@@ -46,18 +46,14 @@ fn every_reason_carries_its_spec_name() {
 fn conversation_failures_map_only_overload() {
     // Arrange.
     let operation = |kind| {
-        ConversationFailure::Operation(ConversationOperationFailure {
+        ConversationFailure::Operation(ConversationOperationFailure::new(
             kind,
-            stage: ConversationOperationFailureStage::Binding,
-            effect: ProviderOperationEffect::None,
-            message: NonEmptyText::try_from("failure".to_owned()).expect("message text"),
-            operation_id: None,
-            invalid_setting: None,
-            provider_code: None,
-            target: None,
-            endpoint: None,
-            availability: None,
-        })
+            ConversationOperationFailureStage::Binding,
+            ProviderOperationEffect::None,
+            NonEmptyText::try_from("failure".to_owned()).expect("message text"),
+            None,
+            None,
+        ))
     };
     let settings = |kind| ProviderSettingsFailure {
         kind,

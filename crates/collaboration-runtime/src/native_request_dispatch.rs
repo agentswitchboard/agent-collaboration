@@ -29,21 +29,51 @@ pub(super) async fn handle_app_server_rpc_with_input(
     let catalog = if matches!(method.as_str(), "turn/start" | "thread/settings/update")
         && let Some(thread_id) = request.pointer("/params/threadId").and_then(Value::as_str)
     {
-        let session = context
-            .events
-            .sessions(context.endpoint.clone())
-            .await
-            .map_err(|_| {
-                settings_diagnostics::emit(
-                    &request,
-                    settings_diagnostics::Reply::DispatchUnavailable,
-                    &[],
-                );
-                AppServerConnectionError::HubUnavailable
-            })?
-            .into_iter()
-            .find(|summary| thread_alias(&summary.session) == thread_id)
-            .map(|summary| summary.session);
+        let resident = super::methods::find_resident_session(
+            context.events.as_ref(),
+            context.endpoint.clone(),
+            thread_id,
+        )
+        .await
+        .map_err(|_| AppServerConnectionError::HubUnavailable)?;
+        if method == "turn/start"
+            && let Some(session) = resident.as_ref()
+            && let Err(error) = context
+                .commands
+                .before_turn_start(collaboration_contracts::SessionTargetCommand {
+                    target: session.clone(),
+                    actor: context.actor.clone(),
+                })
+                .await
+        {
+            return Ok(HandledAppServerRequest {
+                binding_attempt: None,
+                input_id: Some(input_id),
+                method,
+                response: native_error_response(id, &super::methods::command_error(error)),
+                post_response_frames: Vec::new(),
+                session_attachment: None,
+            });
+        }
+        let session = if resident.is_some() {
+            resident
+        } else {
+            context
+                .events
+                .sessions(context.endpoint.clone())
+                .await
+                .map_err(|_| {
+                    settings_diagnostics::emit(
+                        &request,
+                        settings_diagnostics::Reply::DispatchUnavailable,
+                        &[],
+                    );
+                    AppServerConnectionError::HubUnavailable
+                })?
+                .into_iter()
+                .find(|summary| thread_alias(&summary.session) == thread_id)
+                .map(|summary| summary.session)
+        };
         match session {
             Some(session) => match context.model_catalog.read_models(session).await {
                 Ok(catalog) => catalog,
@@ -292,6 +322,7 @@ fn native_error_response(id: Value, error: &ThreadMethodError) -> Value {
         | ThreadMethodError::ImageUnsupportedType => -32602,
         ThreadMethodError::NotFound => -32002,
         ThreadMethodError::Unavailable
+        | ThreadMethodError::PreviousTurnSettlementUnresolved { .. }
         | ThreadMethodError::RestoreFailed { .. }
         | ThreadMethodError::Unsupported
         | ThreadMethodError::UnavailableThreadOrdering { .. }
@@ -300,6 +331,12 @@ fn native_error_response(id: Value, error: &ThreadMethodError) -> Value {
         ThreadMethodError::Busy => -32600,
     };
     let data = match error {
+        ThreadMethodError::PreviousTurnSettlementUnresolved {
+            operation,
+            previous_operation,
+        } => Some(
+            json!({"kind":"previous_turn_settlement_unresolved","operationId":operation,"previousOperationId":previous_operation}),
+        ),
         ThreadMethodError::SettingsContextChanged => {
             Some(json!({"kind":"settings_context_changed"}))
         }

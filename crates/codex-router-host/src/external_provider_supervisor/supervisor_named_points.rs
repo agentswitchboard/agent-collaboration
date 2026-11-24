@@ -12,6 +12,36 @@ use collaboration_protocol::OperationId;
 use std::sync::Arc;
 
 impl ExternalProviderSupervisor {
+    /// Check the exact held turn and waiting input after their owner acknowledgements.
+    pub fn queued_during_turn_settlement_fixture(
+        &self,
+        target: &collaboration_protocol::SessionRef,
+        settling: &OperationId,
+        queued: &OperationId,
+    ) -> bool {
+        use provider_session_machines::session_turn_machine::SessionTurn;
+        self.owner_session_snapshot(target).is_some_and(|snapshot| {
+            matches!(snapshot.turn, SessionTurn::Settling(held)
+                if uuid::Uuid::parse_str(settling.as_str()) == Ok(held.operation))
+                && snapshot.queue.iter().any(|entry| {
+                    !entry.started
+                        && uuid::Uuid::parse_str(queued.as_str()) == Ok(entry.input.operation)
+                })
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn observe_prompt_start_held(
+        &self,
+        target: &collaboration_protocol::SessionRef,
+    ) -> tokio::sync::oneshot::Receiver<()> {
+        self.inner
+            .uncertainty
+            .slot(&target.endpoint)
+            .fixture
+            .notice_wait(target.clone(), BindingFixtureWait::TurnStartHeld)
+    }
+
     /// Joins the operation tasks after a fixture has stopped submitting work.
     pub async fn drain_fixture_operation_tasks(&self) {
         self.inner.operation_tasks.close();

@@ -31,16 +31,12 @@ const DEFAULT_MESSAGE: &str =
 /// The conversation family's overload, for the CLI's typed conversation report.
 #[must_use]
 pub fn conversation(message: &str) -> Option<ConversationOperationFailure> {
-    Some(ConversationOperationFailure {
-        kind: ConversationOperationFailureKind::Overloaded,
-        stage: ConversationOperationFailureStage::Admission,
-        effect: ProviderOperationEffect::None,
-        message: NonEmptyText::try_from(message.to_owned()).ok()?,
-        operation_id: None,
-        invalid_setting: None,
-        provider_code: None,
-        target: None,
-        endpoint: None,
-        availability: None,
-    })
+    Some(ConversationOperationFailure::new(
+        ConversationOperationFailureKind::Overloaded,
+        ConversationOperationFailureStage::Admission,
+        ProviderOperationEffect::None,
+        NonEmptyText::try_from(message.to_owned()).ok()?,
+        None,
+        None,
+    ))
 }

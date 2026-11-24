@@ -128,7 +128,6 @@ async fn a_queued_message_commits_only_after_the_previous_settlement_is_written(
     first_held
         .await
         .expect("the first reaches its terminal write");
-    let dispatch_observed = supervisor.observe_queued_dispatch_fixture(&target, &second);
     supervisor
         .prompt(prompt_request(
             MessageDelivery::Queue,
@@ -138,16 +137,7 @@ async fn a_queued_message_commits_only_after_the_previous_settlement_is_written(
         ))
         .await
         .expect("second queued");
-    let early_prompt = async {
-        while recorded_requests(&receipt, "session/prompt") < 2 {
-            tokio::task::yield_now().await;
-        }
-    };
-    tokio::select! {
-        biased;
-        () = early_prompt => {},
-        observed = dispatch_observed => observed.expect("the owner offered the mark behind the saved result"),
-    }
+    assert!(supervisor.queued_during_turn_settlement_fixture(&target, &first, &second));
     let stage_while_held = supervisor
         .show(ConversationOperationShowRequest {
             operation_id: second.clone(),

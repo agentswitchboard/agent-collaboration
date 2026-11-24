@@ -14,6 +14,7 @@ mod delivery_evidence_effects;
 mod dispatch_effects;
 mod input_effects;
 mod lifecycle_effects;
+mod notice_effects;
 mod provider_started_turn;
 mod queued_dispatch;
 pub(super) use provider_started_turn::PreviousPromptSettlement;
@@ -21,6 +22,8 @@ mod publication_effects;
 mod publication_projection;
 pub(super) use publication_projection::OwnerProjection;
 mod registry_effects;
+mod settlement_effects;
+pub(super) use settlement_effects::PendingTurnAdmission;
 mod setting_effects;
 mod store_effects;
 mod tool_effects;
@@ -46,7 +49,11 @@ impl SessionOwnerState {
         let incarnation_local = event.owner.incarnation == self.ports.address.incarnation
             && matches!(
                 &event.event,
-                OwnerEvent::Store(_) | OwnerEvent::Publication(_) | OwnerEvent::Deadline(_)
+                OwnerEvent::Store(_)
+                    | OwnerEvent::Publication(_)
+                    | OwnerEvent::Deadline(_)
+                    | OwnerEvent::TurnAdmissionSettled { .. }
+                    | OwnerEvent::ContinueAfterTurnSettlement(_)
             );
         if event.owner != self.ports.address && !attaching && !incarnation_local {
             return Err(OwnerRejection::IgnoredLate);
@@ -56,6 +63,7 @@ impl SessionOwnerState {
             effects: Vec::new(),
             observed_at_ms,
             completing_prompt: None,
+            continue_after_turn_settlement: None,
         };
         if transition.next.ports.latest_batch.is_none() {
             transition.offer_rebase()?;
@@ -72,6 +80,7 @@ impl SessionOwnerState {
             effects: OwnerOutbox {
                 owner,
                 effects: transition.effects,
+                continue_after_turn_settlement: transition.continue_after_turn_settlement,
             },
         })
     }
@@ -81,6 +90,7 @@ struct OwnerTransition {
     next: SessionOwnerState,
     effects: Vec<OwnerEffect>,
     observed_at_ms: i64,
+    continue_after_turn_settlement: Option<crate::session_turn_machine::TurnSettlement>,
     completing_prompt: Option<(
         super::InputId,
         Result<super::PromptCompletion, super::ProviderWireFailure>,
@@ -129,6 +139,12 @@ impl OwnerTransition {
             OwnerEvent::ObservedTurnEnded { run, turn, outcome } => {
                 self.observed_turn_ended(run, turn, outcome)
             }
+            OwnerEvent::TurnAdmissionSettled {
+                run,
+                settlement,
+                evidence,
+            } => self.turn_admission_settled(run, settlement, evidence),
+            OwnerEvent::ContinueAfterTurnSettlement(_) => self.continue_after_turn_settlement(),
             OwnerEvent::OutputLimit { run, turn } => self.cancel_turn(run, turn),
         }
     }
@@ -151,9 +167,13 @@ impl OwnerTransition {
             SessionOwnerCommand::DependOnRestore { operation, run } => {
                 self.depend_on_restore(operation, run)
             }
-            SessionOwnerCommand::WarmPrompt(input) | SessionOwnerCommand::NoticePrompt(input) => {
-                self.admit_idle_prompt(input)
+            SessionOwnerCommand::WarmPrompt(input) => {
+                self.admit_idle_prompt(input, super::PromptAdmission::Direct)
             }
+            SessionOwnerCommand::NoticePrompt(input) => {
+                self.admit_idle_prompt(input, super::PromptAdmission::Notice)
+            }
+            SessionOwnerCommand::YieldNoticeBeforePrompt(input) => self.yield_notice(input),
             SessionOwnerCommand::Prompt { input, admission } => self.admit_prompt(input, admission),
             SessionOwnerCommand::PromptWithSkills {
                 input,
@@ -258,6 +278,9 @@ impl OwnerTransition {
             SessionStoreResult::DispatchBlockedByUnknown { input, operation } => {
                 self.dispatch_blocked_by_unknown(&input, operation)
             }
+            SessionStoreResult::DispatchBlockedByLive { input, operation } => {
+                self.dispatch_blocked_by_live(&input, operation)
+            }
             SessionStoreResult::QueuedDispatchBusy { input, attempt } => {
                 self.park_queued_dispatch(&input, attempt)
             }
@@ -323,6 +346,7 @@ impl OwnerTransition {
                     super::SessionTurn::Running { turn }
                     | super::SessionTurn::Cancelling { turn } => Some(turn),
                     super::SessionTurn::Idle => None,
+                    super::SessionTurn::Settling(_) => return,
                 };
                 self.effects.push(OwnerEffect::ForwardTool {
                     run: generation,

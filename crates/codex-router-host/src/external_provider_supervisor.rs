@@ -16,6 +16,7 @@ mod provider_owner_delivery;
 pub use provider_owner_delivery::ManagedClaudeNoticeAdapter;
 mod provider_owner_operations;
 mod provider_owner_prompt;
+pub(crate) use provider_owner_prompt::PromptStartBlock;
 pub(crate) use provider_owner_prompt::{SessionQueuePlan, WarmRun};
 mod provider_prompt_contents;
 pub use provider_prompt_contents::{PromptBusyPolicy, ProviderPromptContentsRequest};
@@ -114,6 +115,8 @@ struct SupervisorInner {
     admission_test_pause: StdMutex<Option<AdmissionTestPause>>,
     #[cfg(test)]
     admission_before_reservation_test_pause: StdMutex<Option<AdmissionTestPause>>,
+    #[cfg(test)]
+    before_owner_prompt_test_pause: StdMutex<Option<(OperationId, AdmissionTestPause)>>,
     #[cfg(test)]
     reconcile_test_pause: StdMutex<
         Option<(
@@ -229,14 +232,27 @@ impl ExternalProviderSupervisor {
         &self,
         target: &SessionRef,
     ) -> Option<provider_session_machines::session_owner::SessionSnapshot> {
-        let owner = self
-            .inner
-            .bindings
-            .get(&target.endpoint)?
-            .owners
-            .existing(target)?;
-        let snapshot = owner.snapshots().borrow().clone();
+        let owner = self.observe_prompt_start_owner(target)?;
+        let snapshot = owner.borrow().clone();
         Some(snapshot)
+    }
+
+    /// Observe the resident owner without opening the operation store or
+    /// loading a cold session.
+    pub(crate) fn observe_prompt_start_owner(
+        &self,
+        target: &SessionRef,
+    ) -> Option<
+        tokio::sync::watch::Receiver<provider_session_machines::session_owner::SessionSnapshot>,
+    > {
+        Some(
+            self.inner
+                .bindings
+                .get(&target.endpoint)?
+                .owners
+                .existing(target)?
+                .snapshots(),
+        )
     }
 
     pub(crate) fn owner_session_catalog(
@@ -386,6 +402,7 @@ impl ExternalProviderSupervisor {
             let operations = Arc::downgrade(&live_operations);
             let dispatch_operations = operations.clone();
             let repair_operations = operations.clone();
+            let settling_operations = operations.clone();
             let wake_retention = Arc::clone(&on_custody_end);
             let permit_for_release = Arc::downgrade(&permit);
             let on_custody_end: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
@@ -425,19 +442,31 @@ impl ExternalProviderSupervisor {
             permit.live_dispatch_blocker.get_or_init(|| {
                 use provider_admission_policy::{AdmissionClass, AdmissionMode, AdmissionRequest};
                 Arc::new(move |operation, target| {
-                    dispatch_operations
-                        .upgrade()?
+                    let index = dispatch_operations.upgrade()?;
+                    let index = index
                         .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .lane_mark_blocker(
-                            &dispatch_binding,
-                            AdmissionRequest {
-                                operation,
-                                kind: ProviderOperationKind::ConversationPrompt,
-                                target: Some(target),
-                                mode: AdmissionMode::deferred(AdmissionClass::Independent),
-                            },
-                        )
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let request = AdmissionRequest {
+                        operation,
+                        kind: ProviderOperationKind::ConversationPrompt,
+                        target: Some(target),
+                        mode: AdmissionMode::deferred(AdmissionClass::Independent),
+                    };
+                    index.lane_mark_blocker(&dispatch_binding, request)
+                })
+            });
+            let settling_generation = binding.identity.generation.clone();
+            permit.turn_admission.get_or_init(|| {
+                Arc::new(move |operation, target| {
+                    let index = settling_operations.upgrade()?;
+                    let index = index
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    index.turn_record_after_admission_release(
+                        operation,
+                        &settling_generation,
+                        target,
+                    )
                 })
             });
             owners.install_binding_permit(permit);
@@ -471,6 +500,8 @@ impl ExternalProviderSupervisor {
                 admission_test_pause: StdMutex::new(None),
                 #[cfg(test)]
                 admission_before_reservation_test_pause: StdMutex::new(None),
+                #[cfg(test)]
+                before_owner_prompt_test_pause: StdMutex::new(None),
                 #[cfg(test)]
                 reconcile_test_pause: StdMutex::new(None),
                 #[cfg(test)]
@@ -740,10 +771,13 @@ impl SupervisorInner {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             operations.retain_result(operation_id, retention);
+            // Admission evidence must remain readable during an API result read.
+            LiveOperations::note_turn_record(live, &result);
             *result_slot = Some(result);
         }
         drop(result_slot);
         live.changed.notify_waiters();
+        self.wake_operation_eligibility(live);
         self.completions
             .send_modify(|revision| *revision = revision.wrapping_add(1));
         #[cfg(test)]
@@ -862,19 +896,14 @@ fn failure(
     operation_id: OperationId,
     target: Option<SessionRef>,
 ) -> ConversationOperationFailure {
-    ConversationOperationFailure {
+    ConversationOperationFailure::new(
         kind,
         stage,
         effect,
-        message: NonEmptyText::try_from(message.to_owned())
-            .expect("provider failure message is valid"),
-        operation_id: Some(operation_id),
-        invalid_setting: None,
-        provider_code: None,
+        NonEmptyText::try_from(message.to_owned()).expect("provider failure message is valid"),
+        Some(operation_id),
         target,
-        endpoint: None,
-        availability: None,
-    }
+    )
 }
 
 fn failure_with_provider_code(

@@ -8,8 +8,9 @@ use provider_session_machines::{
         AuthorizedWork, ConnectionEpoch, CreateProgress, EffectOutcome, OwnerAddress, OwnerEffect,
         OwnerInput, PromptAdmission, PublicationBatch, PublicationResult, SessionOwnerCommand,
         SessionSnapshot, SessionStoreRequest, SessionStoreResult, SessionWireRequest,
+        TurnAdmissionEvidence,
     },
-    session_turn_machine::SessionTurn,
+    session_turn_machine::{SessionTurn, TurnRecordDisposition},
 };
 use session_event_model::{InputId, SessionState, TurnLostReason, TurnOutcome};
 
@@ -18,6 +19,14 @@ struct PromptPorts {
 }
 
 impl SessionOwnerPorts for PromptPorts {
+    fn turn_settlement_refused(
+        &mut self,
+        _: crate::session_owner_task::TurnSettlementStep,
+        _: provider_session_machines::session_turn_machine::TurnSettlement,
+        _: &provider_session_machines::session_owner::SessionOwnerRejection,
+    ) {
+    }
+
     fn execute(
         &mut self,
         _: OwnerAddress,
@@ -62,6 +71,13 @@ impl SessionOwnerPorts for PromptPorts {
                     write,
                     outcome: EffectOutcome::Applied,
                 }))
+            }
+            OwnerEffect::ObserveTurnAdmission { run, settlement } => {
+                Some(OwnerEvent::TurnAdmissionSettled {
+                    run,
+                    settlement,
+                    evidence: TurnAdmissionEvidence::Clear(TurnRecordDisposition::Saved),
+                })
             }
             _ => None,
         })

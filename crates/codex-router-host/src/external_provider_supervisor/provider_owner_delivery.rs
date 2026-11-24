@@ -181,6 +181,9 @@ impl IdleClaudeRun for IdleManagedClaude {
                 return NoticeWriteOutcome::Written { taken_at };
             }
             match accepted {
+                Ok(InputAcceptance::Unsent {
+                    reason: Some(provider_session_machines::session_owner::RevokeReason::NoticeYieldedToPrompt),
+                }) => NoticeWriteOutcome::DefinitelyNotWritten(Busy),
                 Ok(InputAcceptance::Unsent { .. }) => {
                     NoticeWriteOutcome::DefinitelyNotWritten(RejectedBeforeTake)
                 }
@@ -413,18 +416,13 @@ impl ExternalProviderSupervisor {
                 | DeliveryAdmission::QueueOnRun(_)
         );
         let class = match admission {
-            DeliveryAdmission::Requested(MessageDelivery::Queue)
+            DeliveryAdmission::Requested(_)
             | DeliveryAdmission::QueueOnRun(_)
-            | DeliveryAdmission::SteerExisting(_) => AdmissionClass::LinePlacement,
-            DeliveryAdmission::Requested(MessageDelivery::Auto | MessageDelivery::Steer)
-                if matches!(snapshot.turn, SessionTurn::Running { .. }) =>
-            {
-                AdmissionClass::LinePlacement
-            }
-            DeliveryAdmission::Requested(MessageDelivery::Auto) if !snapshot.queue.is_empty() => {
-                AdmissionClass::LinePlacement
-            }
-            _ => AdmissionClass::Independent,
+            | DeliveryAdmission::SteerExisting(_) => AdmissionClass::OwnerPlaced,
+            DeliveryAdmission::Warm(_) => AdmissionClass::Independent,
+            DeliveryAdmission::Notice(_) => AdmissionClass::Notice,
+            #[cfg(test)]
+            DeliveryAdmission::Direct => AdmissionClass::Independent,
         };
         let mode = AdmissionMode::deferred(class);
         let live = if can_queue {
@@ -514,6 +512,8 @@ impl ExternalProviderSupervisor {
         // The Host owns settlement before the caller can suspend on placement.
         // Only the borrowed evidence reply stays with the caller.
         let acceptance = self.retain_operation(operation.clone(), Some(target.clone()), async move {
+            #[cfg(test)]
+            backend.pause_before_owner_prompt_for_test(&operation).await;
             let receipt = if can_queue
                 && owner
                     .defer_queued_admission(switchboard_session_store::ProviderOperationAdmission {

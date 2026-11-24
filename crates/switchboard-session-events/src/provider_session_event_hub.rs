@@ -470,6 +470,19 @@ impl SessionEventHub for ProviderSessionEventHub {
         })
     }
 
+    fn resident_sessions(&self, endpoint: SessionEndpointRef) -> HubFuture<'_, Vec<SessionRef>> {
+        Box::pin(async move {
+            Ok(self
+                .histories
+                .lock()
+                .await
+                .keys()
+                .filter(|session| session.endpoint == endpoint)
+                .cloned()
+                .collect())
+        })
+    }
+
     fn sessions(&self, endpoint: SessionEndpointRef) -> HubFuture<'_, Vec<HubSessionSummary>> {
         Box::pin(async move {
             let stored_endpoint = to_stored_endpoint(&endpoint)?;

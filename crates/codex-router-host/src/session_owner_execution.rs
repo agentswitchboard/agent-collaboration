@@ -14,6 +14,7 @@ use acp_client_runtime::{
     owner_wire::OwnerAcpWire,
     session_owner_task::{
         OwnerCallerWakes, OwnerCompletionPort, OwnerTaskError, SessionOwnerPorts,
+        TurnSettlementStep,
     },
 };
 use collaboration_protocol::{ProviderIdentity, SessionRef};
@@ -48,6 +49,7 @@ pub struct SessionOwnerExecution {
     publisher: SessionOwnerPublisher,
     calls: Arc<SessionOwnerCalls>,
     tasks: TaskTracker,
+    owner_stopped: CancellationToken,
     opens: Arc<Mutex<HashMap<LoadAttempt, OpenedRestore>>>,
     routes: BTreeMap<SessionGeneration, OwnerRun>,
     created: Option<OwnerOpenedSession>,
@@ -98,6 +100,7 @@ impl SessionOwnerExecution {
             publisher,
             calls,
             tasks,
+            owner_stopped: CancellationToken::new(),
             work_roots,
             opens: Arc::default(),
             routes: BTreeMap::new(),
@@ -417,9 +420,12 @@ impl SessionOwnerExecution {
             )));
         }
         if let Some(notice) = notice {
-            return Ok(notice
-                .take(&authorization, &self.wire)
-                .map(OwnerEvent::Dispatch));
+            let taken = notice.take(&authorization, &self.wire);
+            #[cfg(test)]
+            if taken.is_none() {
+                self.preparation_fixture.notice_offer_left_untaken();
+            }
+            return Ok(taken.map(OwnerEvent::Dispatch));
         }
         Ok(self
             .wire
@@ -516,6 +522,22 @@ impl SessionOwnerExecution {
 }
 
 impl SessionOwnerPorts for SessionOwnerExecution {
+    fn turn_settlement_refused(
+        &mut self,
+        step: TurnSettlementStep,
+        settlement: provider_session_machines::session_turn_machine::TurnSettlement,
+        reason: &provider_session_machines::session_owner::SessionOwnerRejection,
+    ) {
+        tracing::warn!(
+            session = %String::from(self.target.session_id.clone()),
+            endpoint = %String::from(self.target.endpoint.endpoint_id.clone()),
+            turn = %settlement.turn.0,
+            ?step,
+            ?reason,
+            "session owner refused turn settlement"
+        );
+    }
+
     fn execute(
         &mut self,
         owner: OwnerAddress,
@@ -533,6 +555,16 @@ impl SessionOwnerPorts for SessionOwnerExecution {
                 Ok(None)
             }
             OwnerEffect::Store(request) => self.storage.execute(owner, request, completions),
+            OwnerEffect::ObserveTurnAdmission { run, settlement } => {
+                self.storage.observe_turn_admission(
+                    owner,
+                    run,
+                    settlement,
+                    completions.clone(),
+                    self.owner_stopped.clone(),
+                )?;
+                Ok(None)
+            }
             OwnerEffect::Wire(SessionWireRequest::Restore { run, via }) => {
                 let result = self.restore(owner, run, via, completions);
                 #[cfg(any(test, feature = "test-support"))]
@@ -818,6 +850,7 @@ impl SessionOwnerPorts for SessionOwnerExecution {
 
 impl Drop for SessionOwnerExecution {
     fn drop(&mut self) {
+        self.owner_stopped.cancel();
         self.storage.stop_dispatch_waits();
         for route in self.routes.values() {
             route.cancel.cancel();

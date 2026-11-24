@@ -49,12 +49,19 @@ impl OwnerTransition {
                     .last_live_turn
                     .as_ref()
                     .is_some_and(|last| last.turn == input.turn) => {}
+            SessionTurn::Settling(previous) if previous.turn == input.turn => {}
             _ => return Ok(()),
         }
-        if self
-            .cell_move(SessionCellEvent::PromptStarted { turn })
-            .is_err()
-        {
+        let started = match self.next.turn() {
+            SessionTurn::Settling(previous) => {
+                self.start_successor_after_settlement(run, previous, turn)
+            }
+            SessionTurn::Idle | SessionTurn::Running { .. } | SessionTurn::Cancelling { .. } => {
+                self.cell_move(SessionCellEvent::PromptStarted { turn })
+                    .map(|_| ())
+            }
+        };
+        if started.is_err() {
             // The receipt concerns a real provider effect, even if a newer
             // admission owns the Router's live projection by the time it arrives.
             return Ok(());
@@ -86,7 +93,6 @@ impl OwnerTransition {
                     ),
                     local_cause: None,
                 }),
-                true,
             );
         }
         let previous = self
@@ -222,12 +228,7 @@ impl OwnerTransition {
             .take()
             .filter(|input| input.generation == run && input.turn == turn)
             .ok_or(OwnerRejection::IgnoredLate)?;
-        self.finish_turn(
-            &input,
-            SentOutcome::Applied,
-            Some(outcome),
-            self.is_live(run),
-        )?;
+        self.finish_turn(&input, SentOutcome::Applied, Some(outcome))?;
         self.continue_close()?;
         self.drive_prompt_line()
     }

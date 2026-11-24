@@ -581,22 +581,18 @@ fn operation_settlement_failure(
             );
         }
     };
-    ConversationClientError::OperationFailure(Box::new(ConversationOperationFailure {
-        kind: if effect == ProviderOperationEffect::Unknown {
+    ConversationClientError::OperationFailure(Box::new(ConversationOperationFailure::new(
+        if effect == ProviderOperationEffect::Unknown {
             ConversationOperationFailureKind::OutcomeUnknown
         } else {
             ConversationOperationFailureKind::ProviderRejected
         },
-        stage: ConversationOperationFailureStage::Settlement,
+        ConversationOperationFailureStage::Settlement,
         effect,
         message,
-        operation_id: Some(operation_id),
-        invalid_setting: None,
-        provider_code: None,
-        target: Some(target),
-        endpoint: None,
-        availability: None,
-    }))
+        Some(operation_id),
+        Some(target),
+    )))
 }
 
 /// A Session requester or approver must belong to the target's service; a Human approver

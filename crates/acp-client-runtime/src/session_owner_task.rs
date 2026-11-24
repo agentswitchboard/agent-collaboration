@@ -4,6 +4,7 @@ use provider_session_machines::session_owner::{
     OwnerAddress, OwnerDeadline, OwnerEffect, OwnerEvent, OwnerMailboxEvent, OwnerOutbox,
     SessionOwnerCommand, SessionOwnerMachine, SessionOwnerRejection, SessionSnapshot,
 };
+use provider_session_machines::session_turn_machine::TurnSettlement;
 use router_clock::{ClockInstant, RuntimeClock};
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -31,6 +32,14 @@ pub enum OwnerTaskError {
     CompletionCapacity,
     #[error("an executor needed by the session owner stopped")]
     ExecutorStopped,
+    #[error("the session owner refused the current turn settlement deadline: {settlement:?}")]
+    TurnSettlementDeadlineRefused { settlement: TurnSettlement },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TurnSettlementStep {
+    Deadline,
+    Continuation,
 }
 
 #[derive(Debug)]
@@ -135,6 +144,13 @@ impl OwnerCompletion {
 /// accepting work it will carry out separately. Synchronous results such as
 /// revoke are returned directly and reduced before reading another command.
 pub trait SessionOwnerPorts {
+    fn turn_settlement_refused(
+        &mut self,
+        step: TurnSettlementStep,
+        settlement: TurnSettlement,
+        reason: &SessionOwnerRejection,
+    );
+
     fn execute(
         &mut self,
         address: OwnerAddress,
@@ -215,7 +231,12 @@ pub struct SessionOwnerTask {
     snapshots: watch::Sender<SessionSnapshot>,
     deadlines: BTreeMap<ClockInstant, VecDeque<ArmedDeadline>>,
     clock: Arc<dyn RuntimeClock>,
+    #[cfg(feature = "test-observation")]
+    settle_deadline_fault: Option<SettleDeadlineFault>,
 }
+
+#[cfg(feature = "test-observation")]
+type SettleDeadlineFault = Box<dyn Fn(TurnSettlement) -> Option<SessionOwnerRejection> + Send>;
 
 impl SessionOwnerTask {
     pub fn new(
@@ -237,6 +258,8 @@ impl SessionOwnerTask {
             snapshots,
             deadlines: BTreeMap::new(),
             clock,
+            #[cfg(feature = "test-observation")]
+            settle_deadline_fault: None,
         };
         let handle = SessionOwnerHandle {
             commands,
@@ -244,6 +267,16 @@ impl SessionOwnerTask {
             snapshots: snapshot_rx,
         };
         (task, handle)
+    }
+
+    #[cfg(feature = "test-observation")]
+    #[must_use]
+    pub fn with_settle_deadline_fault_for_test(
+        mut self,
+        refuse: impl Fn(TurnSettlement) -> Option<SessionOwnerRejection> + Send + 'static,
+    ) -> Self {
+        self.settle_deadline_fault = Some(Box::new(refuse));
+        self
     }
 
     pub async fn run(
@@ -293,10 +326,38 @@ impl SessionOwnerTask {
     ) -> Result<(), OwnerTaskError> {
         let mut ready = VecDeque::from([(event, accepted)]);
         while let Some((event, accepted)) = ready.pop_front() {
+            let continuation = match &event.event {
+                OwnerEvent::ContinueAfterTurnSettlement(settlement) => Some(*settlement),
+                _ => None,
+            };
+            let settle_deadline = match &event.event {
+                OwnerEvent::Deadline(deadline @ OwnerDeadline::SettleTurn { settlement, .. }) => {
+                    Some((deadline.clone(), *settlement))
+                }
+                _ => None,
+            };
             let observed_at_ms = self.clock.utc_now().timestamp_millis();
-            let outbox = match self.machine.handle(event, observed_at_ms) {
+            let outbox = match self.reduce(event, observed_at_ms) {
                 Ok(outbox) => outbox,
                 Err(reason) => {
+                    if let Some((deadline, settlement)) = settle_deadline
+                        && self.machine.has_pending_deadline(&deadline)
+                    {
+                        ports.turn_settlement_refused(
+                            TurnSettlementStep::Deadline,
+                            settlement,
+                            &reason,
+                        );
+                        return Err(OwnerTaskError::TurnSettlementDeadlineRefused { settlement });
+                    }
+                    if let Some(settlement) = continuation {
+                        ports.turn_settlement_refused(
+                            TurnSettlementStep::Continuation,
+                            settlement,
+                            &reason,
+                        );
+                        self.publish_snapshot();
+                    }
                     if let Some(accepted) = accepted {
                         let _reader_gone = accepted.send(Err(OwnerCommandRefusal {
                             rejection: reason,
@@ -306,11 +367,38 @@ impl SessionOwnerTask {
                     continue;
                 }
             };
+            let continuation =
+                outbox
+                    .continue_after_turn_settlement
+                    .map(|settlement| OwnerMailboxEvent {
+                        owner: outbox.owner,
+                        event: OwnerEvent::ContinueAfterTurnSettlement(settlement),
+                    });
             self.execute_outbox(outbox, accepted, ports, |event| {
                 ready.push_back((event, None));
             })?;
+            if let Some(continuation) = continuation {
+                ready.push_front((continuation, None));
+            }
         }
         Ok(())
+    }
+
+    fn reduce(
+        &mut self,
+        event: OwnerMailboxEvent,
+        observed_at_ms: i64,
+    ) -> Result<OwnerOutbox, SessionOwnerRejection> {
+        #[cfg(feature = "test-observation")]
+        if let OwnerEvent::Deadline(OwnerDeadline::SettleTurn { settlement, .. }) = &event.event
+            && let Some(reason) = self
+                .settle_deadline_fault
+                .as_ref()
+                .and_then(|refuse| refuse(*settlement))
+        {
+            return Err(reason);
+        }
+        self.machine.handle(event, observed_at_ms)
     }
 
     fn execute_outbox(
@@ -342,6 +430,19 @@ impl SessionOwnerTask {
             alarms.retain(|alarm| self.machine.has_pending_deadline(&alarm.deadline));
             !alarms.is_empty()
         });
+        // The continuation drives any queued head before a held direct
+        // caller can observe the released turn and submit its next command.
+        if outbox.continue_after_turn_settlement.is_none() {
+            self.publish_snapshot();
+        }
+        caller_wakes.publish();
+        if let Some(accepted) = accepted {
+            let _reader_gone = accepted.send(Ok(()));
+        }
+        Ok(())
+    }
+
+    fn publish_snapshot(&self) {
         let snapshot = self.machine.snapshot();
         self.snapshots.send_if_modified(|published| {
             if *published == snapshot {
@@ -350,11 +451,6 @@ impl SessionOwnerTask {
             *published = snapshot;
             true
         });
-        caller_wakes.publish();
-        if let Some(accepted) = accepted {
-            let _reader_gone = accepted.send(Ok(()));
-        }
-        Ok(())
     }
 
     fn pop_deadline(&mut self) -> Option<ArmedDeadline> {

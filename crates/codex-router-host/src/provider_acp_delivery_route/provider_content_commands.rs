@@ -8,7 +8,7 @@ use super::{
 use crate::session_owner_calls::InputAcceptance;
 use acp_client_runtime::RestorePhase;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum ProviderQueueAdmissionError {
     #[error("provider session not found")]
     SessionNotFound,
@@ -24,6 +24,11 @@ pub enum ProviderQueueAdmissionError {
     UnsupportedContent { content_type: &'static str },
     #[error("provider queue is full")]
     Busy,
+    #[error("{}", collaboration_protocol::PREVIOUS_TURN_SETTLEMENT_GUIDANCE)]
+    PreviousTurnSettlementUnresolved {
+        operation: OperationId,
+        previous_operation: uuid::Uuid,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -95,6 +100,22 @@ impl ProviderAcpDeliveryRoute {
         if !self.serves(&target) {
             return Err(ProviderQueueAdmissionError::SessionNotFound.into());
         }
+        let operation_id = OperationId::generate();
+        let mut start_owner = self.supervisor.observe_prompt_start_owner(&target);
+        self.supervisor
+            .await_prompt_start_owner(&target, &operation_id, &mut start_owner)
+            .await
+            .map_err(|block| match block {
+                crate::external_provider_supervisor::PromptStartBlock::Fenced(
+                    previous_operation,
+                ) => ProviderQueueAdmissionError::PreviousTurnSettlementUnresolved {
+                    operation: operation_id.clone(),
+                    previous_operation,
+                },
+                crate::external_provider_supervisor::PromptStartBlock::OwnerStopped => {
+                    ProviderQueueAdmissionError::Unavailable
+                }
+            })?;
         match self.claim.claim(&target).await.into_claim() {
             RouteClaim::Holds | RouteClaim::CanLoad => {}
             RouteClaim::Rejected { .. } | RouteClaim::LiveElsewhere { .. } => {
@@ -162,11 +183,15 @@ impl ProviderAcpDeliveryRoute {
             .supervisor
             .runtime_for(&target.endpoint)
             .ok_or(ProviderQueueAdmissionError::Unavailable)?;
-        if self
-            .supervisor
-            .owner_session_snapshot(&target)
-            .is_some_and(|snapshot| snapshot.settings_block_input)
-        {
+        // A cold load or a replaced owner can supply a different observation
+        // by the time the usual validation runs.
+        let current_owner = self.supervisor.observe_prompt_start_owner(&target);
+        let owner = current_owner.map(|current| {
+            start_owner
+                .filter(|observed| observed.same_channel(&current))
+                .unwrap_or(current)
+        });
+        if owner.is_some_and(|owner| owner.borrow().settings_block_input) {
             return Err(ProviderQueueAdmissionError::SettingsUnresolved.into());
         }
         let capabilities = runtime
@@ -179,7 +204,7 @@ impl ProviderAcpDeliveryRoute {
         }
         self.supervisor
             .prompt_contents(ProviderPromptContentsRequest {
-                operation_id: OperationId::generate(),
+                operation_id,
                 input_id,
                 target,
                 requested_by: actor,

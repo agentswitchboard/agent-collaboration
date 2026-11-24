@@ -21,9 +21,24 @@ pub(crate) struct OperationLifecycleState {
     cancelled_prompt: Option<CancelledPromptIdentity>,
     lane_mark: Option<(Uuid, bool)>,
     lane_transition: Option<(Uuid, Uuid)>,
+    owner_turn_end: OwnerTurnEnd,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum OwnerTurnEnd {
+    Unobserved,
+    Witnessed,
 }
 
 impl OperationLifecycleState {
+    pub(crate) fn observe_owner_turn_end(&mut self) {
+        self.owner_turn_end = OwnerTurnEnd::Witnessed;
+    }
+
+    pub(crate) fn owner_observed_turn_end(&self) -> bool {
+        self.owner_turn_end == OwnerTurnEnd::Witnessed
+    }
+
     pub(crate) fn lane_marked(&self) -> Option<bool> {
         self.lane_mark.map(|(_, marked)| marked)
     }
@@ -93,6 +108,7 @@ impl OperationLifecycle {
             cancelled_prompt: None,
             lane_mark: None,
             lane_transition: None,
+            owner_turn_end: OwnerTurnEnd::Unobserved,
         };
         let _ = state.apply_custody(CustodyEvent::Reserve);
         Self {

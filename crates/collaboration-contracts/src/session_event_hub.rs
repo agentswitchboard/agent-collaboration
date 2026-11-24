@@ -54,6 +54,11 @@ pub enum SessionEventHubError {
 /// The implementation owns the event log and sequence numbers. Sessions
 /// returns only Sessions on the requested provider endpoint.
 pub trait SessionEventHub: Send + Sync {
+    /// Session identities already present in the hub, without consulting storage.
+    fn resident_sessions(&self, _endpoint: SessionEndpointRef) -> HubFuture<'_, Vec<SessionRef>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
     fn skill_view(&self, session: SessionRef, cwd: PathBuf) -> HubFuture<'_, SkillViewAttachment>;
     fn attach(&self, session: SessionRef) -> HubFuture<'_, SessionEventAttachment>;
     fn state(&self, session: SessionRef) -> HubFuture<'_, SessionState>;
