@@ -1,5 +1,5 @@
 use std::{
-    future::Future,
+    future::{Future, poll_fn},
     sync::{Arc, Mutex, atomic::AtomicUsize},
 };
 
@@ -26,6 +26,7 @@ pub(crate) struct TestWriteFaults {
     replacement_witness: Mutex<Option<ReplacementWitnessGate>>,
     prepared_replacement: Mutex<Option<ReplacementWitnessGate>>,
     resource_cleanup: Mutex<Option<ReplacementWitnessGate>>,
+    pending_key_reap: Mutex<Option<oneshot::Sender<()>>>,
 }
 
 struct ReplacementWitnessGate {
@@ -44,6 +45,12 @@ impl TestWriteFaults {
 
     pub(crate) fn hold_resource_cleanup(&self) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
         Self::hold(&self.resource_cleanup)
+    }
+
+    pub(crate) fn watch_pending_key_reap(&self) -> oneshot::Receiver<()> {
+        let (pending, observed) = oneshot::channel();
+        *self.pending_key_reap.lock().expect("Keychain reap witness") = Some(pending);
+        observed
     }
 
     fn hold(
@@ -104,4 +111,27 @@ impl TestWriteFaults {
             None => write.await,
         }
     }
+}
+
+pub(super) async fn observe_pending_key_reap<Output>(
+    handle: impl Future<Output = Output>,
+    dependencies: Option<&TestDependencies>,
+) -> Output {
+    let mut handle = std::pin::pin!(handle);
+    poll_fn(|context| {
+        let result = handle.as_mut().poll(context);
+        if result.is_pending()
+            && let Some(dependencies) = dependencies
+            && let Some(pending) = dependencies
+                .faults
+                .pending_key_reap
+                .lock()
+                .expect("Keychain reap witness")
+                .take()
+        {
+            let _ = pending.send(());
+        }
+        result
+    })
+    .await
 }

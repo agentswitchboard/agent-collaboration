@@ -1,4 +1,4 @@
-use std::{future::pending, sync::Arc};
+use std::sync::Arc;
 
 use tokio::sync::{Mutex, mpsc, watch};
 
@@ -13,6 +13,19 @@ pub struct EnrollmentJoin {
     pub outcome: Result<(), EnrollmentStoreCloseError>,
 }
 
+/// Why the enrollment store could not provide the requested lifecycle witness.
+/// A `join()` error means ownership is unconfirmed. Keep the store outstanding
+/// and withhold any replacement until physical termination is established.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum EnrollmentObservationError {
+    /// The publisher ended before recording the requested witness.
+    #[error("the enrollment reaper stopped before publishing the requested witness")]
+    ReaperLost,
+    /// The worker task ended, but the reaper could not recover its resources.
+    #[error("the enrollment reaper could not confirm release of the worker's resources")]
+    OwnershipUnconfirmed { exit: EnrollmentWorkerExit },
+}
+
 #[derive(Clone)]
 pub(super) struct WorkerLifecycle {
     progress: watch::Receiver<WorkerProgress>,
@@ -24,6 +37,7 @@ enum WorkerProgress {
     Running,
     Exited(EnrollmentWorkerExit),
     Joined(EnrollmentWorkerExit, EnrollmentJoin),
+    Unconfirmed(EnrollmentWorkerExit),
 }
 
 impl WorkerLifecycle {
@@ -56,6 +70,7 @@ impl WorkerLifecycle {
             report.send_replace(WorkerProgress::Exited(exit));
 
             let Ok(worker) = Arc::try_unwrap(worker) else {
+                report.send_replace(WorkerProgress::Unconfirmed(exit));
                 return;
             };
             let connection_result = worker.into_inner().close_resources().await;
@@ -73,36 +88,41 @@ impl WorkerLifecycle {
         }
     }
 
-    pub(super) async fn worker_exit(&self) -> EnrollmentWorkerExit {
+    pub(super) async fn worker_exit(
+        &self,
+    ) -> Result<EnrollmentWorkerExit, EnrollmentObservationError> {
         let mut progress = self.progress.clone();
         let observed = progress
             .wait_for(|progress| !matches!(progress, WorkerProgress::Running))
-            .await;
-        let exit = match observed.as_deref() {
-            Ok(WorkerProgress::Exited(exit) | WorkerProgress::Joined(exit, _)) => Some(*exit),
-            Ok(WorkerProgress::Running) | Err(_) => None,
-        };
-        drop(observed);
-        match exit {
-            Some(exit) => exit,
-            None => pending().await,
+            .await
+            .map_err(|_| EnrollmentObservationError::ReaperLost)?;
+        match &*observed {
+            WorkerProgress::Exited(exit)
+            | WorkerProgress::Joined(exit, _)
+            | WorkerProgress::Unconfirmed(exit) => Ok(*exit),
+            WorkerProgress::Running => Err(EnrollmentObservationError::ReaperLost),
         }
     }
 
-    pub(super) async fn join(&self) -> EnrollmentJoin {
+    pub(super) async fn join(&self) -> Result<EnrollmentJoin, EnrollmentObservationError> {
         let mut progress = self.progress.clone();
         let observed = progress
-            .wait_for(|progress| matches!(progress, WorkerProgress::Joined(..)))
-            .await;
-        let receipt = match observed.as_deref() {
-            Ok(WorkerProgress::Joined(_, receipt)) => Some(receipt.clone()),
-            Ok(WorkerProgress::Running | WorkerProgress::Exited(_)) | Err(_) => None,
-        };
-        drop(observed);
-        match receipt {
-            Some(receipt) => receipt,
-            // A lost reaper cannot witness that the resources have ended.
-            None => pending().await,
+            .wait_for(|progress| {
+                matches!(
+                    progress,
+                    WorkerProgress::Joined(..) | WorkerProgress::Unconfirmed(_)
+                )
+            })
+            .await
+            .map_err(|_| EnrollmentObservationError::ReaperLost)?;
+        match &*observed {
+            WorkerProgress::Joined(_, receipt) => Ok(receipt.clone()),
+            WorkerProgress::Unconfirmed(exit) => {
+                Err(EnrollmentObservationError::OwnershipUnconfirmed { exit: *exit })
+            }
+            WorkerProgress::Running | WorkerProgress::Exited(_) => {
+                Err(EnrollmentObservationError::ReaperLost)
+            }
         }
     }
 

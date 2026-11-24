@@ -29,7 +29,7 @@ use enrollment_worker::{EnrollmentWorker, ReadFailure};
 use worker_lifecycle::WorkerLifecycle;
 
 pub use enrollment_worker::EnrollmentWorkerExit;
-pub use worker_lifecycle::EnrollmentJoin;
+pub use worker_lifecycle::{EnrollmentJoin, EnrollmentObservationError};
 
 /// An enrollment store with its own core connection and one FIFO worker.
 #[derive(Clone)]
@@ -107,21 +107,25 @@ impl MachineEnrollmentStore {
     }
 
     /// Observes the worker task's exit, even while its resources are still
-    /// being reaped. Every call observes the same exit cause.
-    pub async fn worker_exit(&self) -> EnrollmentWorkerExit {
+    /// being reaped. Returns an observation error if the publisher is lost first.
+    pub async fn worker_exit(&self) -> Result<EnrollmentWorkerExit, EnrollmentObservationError> {
         self.worker.worker_exit().await
     }
 
     /// Waits for the worker and its resources to end without requesting close.
-    /// Later callers obtain the same receipt even if an earlier wait was cancelled.
-    pub async fn join(&self) -> EnrollmentJoin {
+    /// The receipt survives cancellation of earlier waits. An observation error
+    /// leaves the store outstanding with ownership unconfirmed.
+    pub async fn join(&self) -> Result<EnrollmentJoin, EnrollmentObservationError> {
         self.worker.join().await
     }
 
     /// Stops admission and waits for the active operation and connection to settle.
     pub async fn close(&self) -> Result<(), EnrollmentStoreCloseError> {
         self.request_close();
-        self.join().await.outcome
+        self.join()
+            .await
+            .map_err(|_| EnrollmentStoreCloseError::WorkerStopped)?
+            .outcome
     }
 
     fn enqueue_request(

@@ -140,6 +140,9 @@ impl EnrollmentWorker {
         // After a worker task ends unexpectedly, its blocking Keychain call may
         // still own resources. It cannot be cancelled by dropping its waiter.
         if let Some(pending_key) = self.pending_key.take() {
+            #[cfg(test)]
+            let pending_key =
+                test_faults::observe_pending_key_reap(pending_key, self.test_dependencies.as_ref());
             let _ = pending_key.await;
         }
         self.store.close().await
