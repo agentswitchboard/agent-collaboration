@@ -11,7 +11,7 @@ use switchboard_machine_enrollment::{
 };
 
 /// The worker decodes a stored row into the witness used by its locked snapshot comparison.
-#[derive(Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub(crate) enum EnrollmentSnapshot {
     Empty,
     Active {
@@ -88,9 +88,7 @@ impl EnrollmentSnapshot {
             }
             | Self::Ended {
                 key, deployment, ..
-            } => {
-                key.organization_id == context.organization_id && *deployment == context.deployment
-            }
+            } => context.matches_scope(key.organization_id, deployment),
         }
     }
 }

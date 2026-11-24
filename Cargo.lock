@@ -6045,10 +6045,12 @@ version = "0.1.158"
 dependencies = [
  "axum",
  "codex-router-secret-store",
+ "hegeltest",
  "router-clock",
  "rustls",
  "serde_json",
  "sqlx",
+ "state-machine-core",
  "switchboard-machine-core-store",
  "switchboard-machine-enrollment",
  "tempfile",

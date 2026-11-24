@@ -1,7 +1,7 @@
 //! Allowed normal/build edges between workspace packages.
 use super::workspace_boundaries;
 
-const LAYER_POLICY: [(&str, &[&str]); 48] = [
+const LAYER_POLICY: [(&str, &[&str]); 49] = [
     ("workspace-ids", &[]),
     (
         "workspace-model",
@@ -65,6 +65,16 @@ const LAYER_POLICY: [(&str, &[&str]); 48] = [
     ),
     ("central-storage", &[]),
     ("state-machine-core", &[]),
+    (
+        "switchboard-machine-enrollment-store",
+        &[
+            "codex-router-secret-store",
+            "router-clock",
+            "state-machine-core",
+            "switchboard-machine-core-store",
+            "switchboard-machine-enrollment",
+        ],
+    ),
     (
         "switchboard-message-system",
         &[
