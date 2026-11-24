@@ -507,9 +507,10 @@ async fn serve_link(
                         writes.close_authority(&mut socket, cause).await;
                         return;
                     }
-                    Ok(MachineLinkRequestAuthority::TemporarilyUnavailable) | Err(_) => {
+                    Ok(MachineLinkRequestAuthority::TemporarilyUnavailable) => {
                         Ok(RequestStatusAnswer::CentralUnavailable {})
                     }
+                    Err(failure) => Err(failure),
                 };
                 let Ok(result) = result else {
                     writes

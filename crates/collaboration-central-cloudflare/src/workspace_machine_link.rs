@@ -406,9 +406,10 @@ impl CentralObject {
                     Ok(MachineLinkRequestAuthority::Refused(cause)) => {
                         return self.close_machine_authority(&socket, cause);
                     }
-                    Ok(MachineLinkRequestAuthority::TemporarilyUnavailable) | Err(_) => {
+                    Ok(MachineLinkRequestAuthority::TemporarilyUnavailable) => {
                         Ok(RequestStatusAnswer::CentralUnavailable {})
                     }
+                    Err(failure) => Err(failure),
                 };
                 let Ok(result) = result else {
                     return self.close_machine_link(&socket, 1011, Some("central unavailable"));
