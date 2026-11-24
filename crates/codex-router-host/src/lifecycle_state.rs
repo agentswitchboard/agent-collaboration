@@ -2,6 +2,7 @@
 
 use serde::Deserialize;
 use serde::Serialize;
+use switchboard_message_system::MessageSystemStatus;
 
 /// Lifecycle operation visible in status and terminal results.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -209,6 +210,8 @@ pub struct HostSnapshot {
     // The operator channel spans installed CLI versions; older Hosts omit this observation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     last_login_reload: Option<crate::login_reload_outcome::LoginReloadOutcome>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    message_system_status: Option<MessageSystemStatus>,
 }
 
 /// Independently owned dimensions captured in one host snapshot.
@@ -249,6 +252,7 @@ impl HostSnapshot {
             recovery_budget: dimensions.recovery_budget,
             last_lifecycle_outcome: dimensions.last_lifecycle_outcome,
             last_login_reload: None,
+            message_system_status: None,
         }
     }
 
@@ -265,6 +269,19 @@ impl HostSnapshot {
     #[must_use]
     pub const fn port_selection(&self) -> Option<crate::HostPortSelection> {
         self.port_selection
+    }
+
+    /// Attaches the current value read from the running message system.
+    #[must_use]
+    pub const fn with_message_system_status(mut self, status: Option<MessageSystemStatus>) -> Self {
+        self.message_system_status = status;
+        self
+    }
+
+    /// Returns the live observation, when the Host has a message system to read.
+    #[must_use]
+    pub const fn message_system_status(&self) -> Option<MessageSystemStatus> {
+        self.message_system_status
     }
 
     /// Derives overall usability without mutating any component dimension.

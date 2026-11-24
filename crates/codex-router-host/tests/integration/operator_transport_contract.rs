@@ -14,7 +14,9 @@ use codex_router_host::HostOperation;
 use codex_router_host::HostPhase;
 use codex_router_host::HostSnapshot;
 use codex_router_host::HostSnapshotDimensions;
+use codex_router_host::HostTerminalResponse;
 use codex_router_host::HostedReadiness;
+use codex_router_host::MessageSystemStatus;
 use codex_router_host::OperatorFrame;
 use codex_router_host::OperatorProtocolError;
 use codex_router_host::OperatorRequest;
@@ -157,6 +159,36 @@ fn terminal_frames_preserve_busy_classification_and_live_snapshot()
         &snapshot,
         "busy result must carry its live snapshot",
     )?;
+    Ok(())
+}
+
+#[test]
+fn status_reply_round_trips_the_optional_message_system_value()
+-> Result<(), Box<dyn std::error::Error>> {
+    for status in [Some(MessageSystemStatus::Connected), None] {
+        let reply = OperatorFrame::terminal(HostTerminalResponse::new(
+            OperatorRequest::Status,
+            TerminalClassification::Ready,
+            ready_snapshot().with_message_system_status(status),
+            "shared Codex host status".to_owned(),
+        ));
+        let encoded = encode_operator_frame(&reply)?;
+        let json: serde_json::Value = serde_json::from_slice(&encoded)?;
+        check_equal(
+            json.pointer("/frame/payload/snapshot/message_system_status")
+                .cloned(),
+            status.map(|_| serde_json::json!("connected")),
+            "only a present status is encoded, using the producer's wire name",
+        )?;
+        let OperatorFrame::Terminal(decoded) = decode_operator_frame(&encoded)? else {
+            return Err("status reply must be terminal".into());
+        };
+        check_equal(
+            decoded.snapshot().message_system_status(),
+            status,
+            "status must survive the existing codec",
+        )?;
+    }
     Ok(())
 }
 

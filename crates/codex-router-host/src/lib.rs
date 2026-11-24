@@ -196,6 +196,7 @@ pub use router_compatibility::probe_router;
 pub use router_executable_observation::{
     RouterExecutableObserver, RouterExecutableRelation, SharedRouterExecutableCheck,
 };
+pub use switchboard_message_system::MessageSystemStatus;
 mod backend_publication;
 pub use backend_publication::BackendPublication;
 mod collaboration_runtime;

@@ -208,6 +208,12 @@ impl CollaborationLifecycle {
             .map(CollaborationRuntime::mcp_listen_address)
     }
 
+    pub(super) fn message_system_status(&self) -> Option<crate::MessageSystemStatus> {
+        self.runtime
+            .as_ref()
+            .and_then(CollaborationRuntime::message_status)
+    }
+
     pub(super) async fn shutdown(&mut self) -> io::Result<()> {
         self.published_child = None;
         if let Some(runtime) = self.runtime.take() {
