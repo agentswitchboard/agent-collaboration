@@ -6,7 +6,7 @@ use state_machine_core::{
     EventTag, RefusalTag, StateMachine, StateMachineResult, StateTag, Transition, TransitionError,
 };
 use switchboard_machine_core_store::{
-    DirectHandoff, DirectHandoffRow, NoticeAttemptId, SeenReceiptState,
+    DirectHandoff, DirectHandoffChange, DirectHandoffRow, NoticeAttemptId, SeenReceiptState,
 };
 use workspace_model::Timestamp;
 
@@ -115,12 +115,16 @@ pub enum HandoffRefusal {
 #[derive(Debug, thiserror::Error)]
 pub enum HandoverError {
     #[error("inbox handover storage failed")]
-    Inbox(#[from] crate::recipient_inbox::InboxCustodyError),
+    Inbox(#[from] crate::inbox_error::InboxCustodyError),
     #[error("inbox handover returned an invalid transition")]
     Transition,
     #[error("inbox handover attempted to offer an empty notice")]
-    EmptyClaim(#[from] crate::handover_notice::EmptyNoticeClaim),
+    EmptyClaim(#[from] EmptyNoticeClaim),
 }
+
+#[derive(Debug, thiserror::Error)]
+#[error("a notice claim must cover at least one inbox message")]
+pub struct EmptyNoticeClaim;
 
 impl RefusalTag for HandoffRefusal {
     fn refusal_tag(&self) -> &'static str {
@@ -242,6 +246,25 @@ const fn edge(
         to,
         terminal,
     }
+}
+
+pub(super) fn changes_for(
+    rows: &[DirectHandoffRow],
+    event: HandoffEvent,
+) -> Result<(Vec<DirectHandoffChange>, bool), HandoverError> {
+    let mut offer = false;
+    let mut changes = Vec::with_capacity(rows.len());
+    for row in rows {
+        let (next, effects) = DirectHandoffMachine::transition(&Handoff::from(row), event)
+            .map_err(|_| HandoverError::Transition)?;
+        offer |= effects.contains(&HandoffEffect::OfferClaimedNotice);
+        changes.push(DirectHandoffChange {
+            message_id: row.message_id.clone(),
+            expected: row.handoff,
+            next: next.phase,
+        });
+    }
+    Ok((changes, offer))
 }
 
 #[cfg(test)]

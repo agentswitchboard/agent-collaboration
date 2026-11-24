@@ -104,7 +104,12 @@ pub fn custody_task(
                     worker.await;
                     stop_worker.request();
                 };
-                tokio::join!(run_worker, handover.run(&*handover_sink));
+                tokio::join!(
+                    run_worker,
+                    handover.run(|error| {
+                        handover_sink.record_event(CustodyTaskEvent::Failed(error.into()));
+                    })
+                );
             } else {
                 worker.await;
             }

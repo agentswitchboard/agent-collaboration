@@ -1,5 +1,6 @@
 //! Local authority carried from a committed inbox claim to a managed writer.
 
+pub use crate::handover::EmptyNoticeClaim;
 use crate::handover::NoticeWriteOutcome;
 use router_clock::{ClockInstant, RuntimeClock};
 use std::{future::Future, pin::Pin, sync::Arc};
@@ -123,7 +124,3 @@ impl ClaimedNotice {
         Some(take())
     }
 }
-
-#[derive(Debug, thiserror::Error)]
-#[error("a notice claim must cover at least one inbox message")]
-pub struct EmptyNoticeClaim;

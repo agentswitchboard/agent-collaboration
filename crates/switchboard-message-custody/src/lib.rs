@@ -13,6 +13,7 @@ mod flush_report;
 pub mod handover;
 pub mod handover_notice;
 mod handover_task;
+mod inbox_error;
 pub mod inbox_read;
 mod local_settlement;
 mod offer_taker;

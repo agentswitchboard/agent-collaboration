@@ -15,7 +15,7 @@ use crate::{
     session_owner_delivery_evidence::{
         OwnerDeliveryEvidence, ProviderDeliveryEvidence, placement_evidence,
     },
-    session_owner_execution::NoticeWriterTake,
+    session_owner_notice::NoticeWriterTake,
 };
 use collaboration_contracts::AttemptEvidenceSink;
 use collaboration_protocol::{EndpointRef, MessageDelivery, OperationId, ProviderKind, SessionRef};

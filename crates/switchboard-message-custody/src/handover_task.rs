@@ -4,9 +4,8 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use router_clock::RuntimeClock;
 use runtime_primitives::SyncTime;
-use state_machine_core::StateMachine;
 use switchboard_machine_core_store::{
-    DirectHandoff, DirectHandoffChange, DirectHandoffRow, HandoffCommit, NoticeAttemptId,
+    DirectHandoff, DirectHandoffRow, HandoffCommit, NoticeAttemptId,
 };
 use tokio::sync::watch;
 use workspace_ids::SessionRef;
@@ -14,9 +13,8 @@ use workspace_model::central_mail::MessageDelivery;
 
 use crate::{
     custody_run_group::{CustodyRunState, wait_for_stop},
-    custody_task::{CustodyEventSink, CustodyTaskEvent},
     flush_marks::next_mark_after,
-    handover::{DirectHandoffMachine, Handoff, HandoffEffect, HandoffEvent, HandoverError},
+    handover::{HandoffEvent, HandoverError, changes_for},
     handover_notice::{ClaimedNotice, ManagedClaudeNoticePort, NoticeAuthority},
     offer_taker::SharedRecipientInbox,
     recipient_sessions::RecipientSessionAnswer,
@@ -47,10 +45,10 @@ impl HandoverRunner {
         }
     }
 
-    pub(super) async fn run(mut self, sink: &dyn CustodyEventSink) {
+    pub(super) async fn run(mut self, mut report: impl FnMut(HandoverError)) {
         let mut mark = next_mark_after(self.clock.now());
         if let Err(error) = self.recover_writing().await {
-            sink.record_event(CustodyTaskEvent::Failed(error.into()));
+            report(error);
         }
         loop {
             let wake = self.clock.wall_deadline(mark);
@@ -69,7 +67,7 @@ impl HandoverRunner {
             if now < following
                 && let Err(error) = self.visit_mark(following).await
             {
-                sink.record_event(CustodyTaskEvent::Failed(error.into()));
+                report(error);
             }
             mark = next;
         }
@@ -202,23 +200,4 @@ fn group_by_recipient(
         groups.entry(row.target.clone()).or_default().push(row);
     }
     groups
-}
-
-pub(super) fn changes_for(
-    rows: &[DirectHandoffRow],
-    event: HandoffEvent,
-) -> Result<(Vec<DirectHandoffChange>, bool), HandoverError> {
-    let mut offer = false;
-    let mut changes = Vec::with_capacity(rows.len());
-    for row in rows {
-        let (next, effects) = DirectHandoffMachine::transition(&Handoff::from(row), event)
-            .map_err(|_| HandoverError::Transition)?;
-        offer |= effects.contains(&HandoffEffect::OfferClaimedNotice);
-        changes.push(DirectHandoffChange {
-            message_id: row.message_id.clone(),
-            expected: row.handoff,
-            next: next.phase,
-        });
-    }
-    Ok((changes, offer))
 }

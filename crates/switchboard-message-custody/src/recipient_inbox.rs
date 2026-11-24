@@ -4,8 +4,7 @@ use central_link_protocol::{DeliveryMessage, DirectOfferBody, DirectOfferMessage
 use router_clock::RuntimeClock;
 use std::{collections::BTreeMap, future::Future, sync::Arc};
 use switchboard_machine_core_store::{
-    InboxDecision, InboxOfferExpiry, InboxRefusalReason, InboxStore, InboxStoreError,
-    RecordDelivery,
+    InboxDecision, InboxOfferExpiry, InboxRefusalReason, InboxStore, RecordDelivery,
 };
 use tokio::sync::{Mutex, MutexGuard};
 use workspace_ids::{MachineId, MessageId, SessionRef};
@@ -21,6 +20,8 @@ use crate::{
         RECIPIENT_LOOKUP_BUDGET, RecipientSessionAnswer, RecipientSessionDirectory,
     },
 };
+
+pub use crate::inbox_error::InboxCustodyError;
 
 /// A custody offer assembled from a checked central Deliver frame and the local arrival time.
 pub(crate) enum InboxOffer {
@@ -152,21 +153,6 @@ pub enum InboxOfferResult {
     AlreadyDecided { decision: InboxDecision },
     LookupDeferred,
     DamagedRowIgnored,
-}
-
-/// Admission failures reported by the recipient inbox to the custody task.
-#[derive(Debug, thiserror::Error)]
-pub enum InboxCustodyError {
-    #[error("invalid central delivery offer")]
-    InvalidOffer,
-    #[error("central offered a delivery addressed to machine {0}")]
-    WrongMachine(MachineId),
-    #[error("delivery expiry is outside the supported clock range")]
-    ExpiryOutOfRange,
-    #[error("inbox storage unavailable")]
-    Store(#[from] InboxStoreError),
-    #[error("the inbox could not read the earlier decision for message {0}")]
-    MissingDecision(MessageId),
 }
 
 /// Custody constructs this from the Part A inbox, the local identity and the Host's session lookup.
@@ -367,7 +353,7 @@ impl RecipientInbox {
                     && returned.contains(&row.message_id)
             })
             .collect();
-        let (changes, _) = crate::handover_task::changes_for(
+        let (changes, _) = crate::handover::changes_for(
             &rows,
             crate::handover::HandoffEvent::InboxRead {
                 completed_at: self.clock.utc_now(),

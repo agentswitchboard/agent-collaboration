@@ -61,5 +61,5 @@ pub enum InboxReadError {
     #[error("the inbox read could not be applied")]
     Handover(#[from] crate::handover::HandoverError),
     #[error("the inbox could not be read")]
-    Inbox(#[from] crate::recipient_inbox::InboxCustodyError),
+    Inbox(#[from] crate::inbox_error::InboxCustodyError),
 }

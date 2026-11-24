@@ -521,7 +521,7 @@ impl SessionOwnerAddress {
     pub(crate) fn remember_notice(
         &self,
         input: session_event_model::InputId,
-        notice: crate::session_owner_execution::NoticeWriterTake,
+        notice: crate::session_owner_notice::NoticeWriterTake,
     ) {
         self.calls.remember_notice(input, notice);
     }

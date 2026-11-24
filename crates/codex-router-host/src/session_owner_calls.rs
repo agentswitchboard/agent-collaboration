@@ -1,6 +1,7 @@
 //! Retain caller payloads until the session owner settles them.
 
 use crate::session_owner_delivery_evidence::OwnerDeliveryEvidence;
+use crate::session_owner_notice::NoticeWriterTake;
 use acp_client_runtime::ProviderPromptContent;
 use acp_client_runtime::session_owner_task::{OwnerCallerWakes, OwnerCompletion};
 use collaboration_protocol::ProviderIdentity;
@@ -25,7 +26,7 @@ use uuid::Uuid;
 #[derive(Default)]
 pub struct SessionOwnerCalls {
     content: Mutex<BTreeMap<InputId, ProviderPromptContent>>,
-    notices: Mutex<BTreeMap<InputId, crate::session_owner_execution::NoticeWriterTake>>,
+    notices: Mutex<BTreeMap<InputId, NoticeWriterTake>>,
     outstanding: Mutex<BTreeMap<InputId, OwnerInput>>,
     approvals: Mutex<BTreeMap<InputId, crate::ExternalProviderApprovalContext>>,
     acceptance: Mutex<BTreeMap<Uuid, oneshot::Sender<InputAcceptance>>>,
@@ -163,18 +164,11 @@ impl SessionOwnerCalls {
         lock(&self.steer_targets).clear();
     }
 
-    pub(crate) fn remember_notice(
-        &self,
-        input: InputId,
-        notice: crate::session_owner_execution::NoticeWriterTake,
-    ) {
+    pub(crate) fn remember_notice(&self, input: InputId, notice: NoticeWriterTake) {
         lock(&self.notices).insert(input, notice);
     }
 
-    pub(crate) fn notice(
-        &self,
-        input: &InputId,
-    ) -> Option<crate::session_owner_execution::NoticeWriterTake> {
+    pub(crate) fn notice(&self, input: &InputId) -> Option<NoticeWriterTake> {
         lock(&self.notices).get(input).cloned()
     }
 
