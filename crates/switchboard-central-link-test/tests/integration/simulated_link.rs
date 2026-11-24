@@ -36,6 +36,7 @@ use self::{
 };
 
 mod custody_cases;
+mod mac_capabilities;
 mod packet_flight;
 mod simulation_clock;
 mod write_readiness;
