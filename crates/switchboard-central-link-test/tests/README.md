@@ -15,4 +15,4 @@ ordinary request and reply on both the original and replacement sockets.
 
 The enrolled lease journey drives the real refresh owner, lease adapter, Mac enrollment SQLite store and Central's signed revocation route. Its sign-in grant and loopback address are supplied at the fixture boundary. The adjacent enrollment cases run lease mapping and settings publication against the same real store with an injected Keychain.
 
-The message unit journey drives the one-shot enrollment startup, sends through custody's tool front to real Central, and holds the driver's completion to check shutdown ordering. It uses the same controlled sign-in and loopback boundaries.
+The message-system journey starts unenrolled, writes enrollment through a second store on the same SQLite database, connects to real Central and sends through the outbox and inbox. It uses one manual clock to drive polling, autonomous driver recovery and enrollment ending. It holds the driver's join to prove the drain order. Two close cases check that retiring the initial read or retry leaves the database unopened.

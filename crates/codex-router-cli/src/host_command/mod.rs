@@ -14,7 +14,10 @@ use codex_router_host::OperatorRequest;
 use thiserror::Error;
 
 use crate::CliContext;
-use codex_router_host::{HostPortOverrides, parse_loopback_mcp_bind, resolve_host_ports};
+use codex_router_host::{
+    HostPortOverrides, MessageSystemStatus, OperatorFrame, parse_loopback_mcp_bind,
+    resolve_host_ports,
+};
 use operator_client::OperatorClientError;
 
 mod foreground_launch;
@@ -34,6 +37,23 @@ const STATUS_REQUEST_DEADLINE: Duration = Duration::from_secs(40);
 const APP_SERVER_RESTART_DEADLINE: Duration = Duration::from_secs(40);
 const ROUTER_RESTART_DEADLINE: Duration = Duration::from_secs(30);
 const UPDATE_REQUEST_DEADLINE: Duration = Duration::from_secs(17 * 60);
+
+pub(crate) async fn read_message_system_status(
+    router_root: &Path,
+) -> Result<Option<MessageSystemStatus>, OperatorClientError> {
+    let paths = HostCoordinationPaths::for_router_root(router_root);
+    let frames = operator_client::send_operator_request_streaming(
+        paths.operator_socket(),
+        OperatorRequest::Status,
+        STATUS_REQUEST_DEADLINE,
+        |_| {},
+    )
+    .await?;
+    let Some(OperatorFrame::Terminal(reply)) = frames.last() else {
+        return Err(OperatorClientError::MissingTerminal);
+    };
+    Ok(reply.snapshot().message_system_status())
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Subcommand)]
 pub(crate) enum HostAction {

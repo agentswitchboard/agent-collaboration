@@ -10,11 +10,6 @@ pub struct MessageFront(watch::Receiver<Result<CustodyTaskHandle, FrontRefusal>>
 pub(crate) type FrontPublication = watch::Sender<Result<CustodyTaskHandle, FrontRefusal>>;
 
 impl MessageFront {
-    pub(crate) fn forwarding(handle: CustodyTaskHandle) -> (FrontPublication, Self) {
-        let (publication, front) = watch::channel(Ok(handle));
-        (publication, Self(front))
-    }
-
     pub(crate) fn refusing(reason: FrontRefusal) -> (FrontPublication, Self) {
         let (publication, front) = watch::channel(Err(reason));
         (publication, Self(front))

@@ -136,6 +136,7 @@ pub(super) async fn enroll(
     context
 }
 
+#[derive(Clone)]
 pub(super) struct FixtureDiscovery(pub(super) mpsc::UnboundedSender<()>);
 
 impl DiscoverySource for FixtureDiscovery {
@@ -145,6 +146,7 @@ impl DiscoverySource for FixtureDiscovery {
     }
 }
 
+#[derive(Clone)]
 pub(super) struct FixtureRefresh {
     pub(super) enrollment_id: EnrollmentId,
     pub(super) bearer: SecretValue,

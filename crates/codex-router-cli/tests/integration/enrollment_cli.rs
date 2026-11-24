@@ -2,6 +2,13 @@ use std::{
     borrow::Cow, ffi::OsString, fs, io, os::unix::fs::DirBuilderExt, path::Path, process::Output,
 };
 
+use codex_router_host::{
+    AppServerCondition, ExecutableRelation, HostCoordinationPaths, HostPhase, HostSnapshot,
+    HostSnapshotDimensions, HostTerminalResponse, MessageSystemStatus, OperatorFrame,
+    OperatorRequest, RecoveryBudget, RemoteControlCondition, RouterCondition,
+    RouterExecutableRelation, TerminalClassification, decode_operator_request,
+    encode_operator_frame,
+};
 use sqlx::{
     Connection, SqliteConnection,
     sqlite::{SqliteConnectOptions, SqliteLockingMode},
@@ -13,6 +20,10 @@ use switchboard_machine_core_store::{
 };
 use switchboard_machine_enrollment_store::{
     MachineEnrollmentStatus, read_machine_enrollment_status,
+};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::UnixListener,
 };
 
 const ORGANIZATION: &str = "019a0000-0000-7000-8000-000000000001";
@@ -54,7 +65,8 @@ fn enrollment_help_and_invalid_arguments_do_not_create_state() {
     let help =
         compiled_cli(home.path(), &["enroll", "--help"], None).expect("run signed Router CLI");
     assert!(stdout(&help).contains("--organization <uuid> --sign-in <https-origin>"));
-    assert!(stdout(&help).contains("Stop the debug Host"));
+    assert!(stdout(&help).contains("Enroll this Mac in a Switchboard organization."));
+    assert!(!stdout(&help).contains("Stop the debug Host"));
     let help =
         compiled_cli(home.path(), &["enrollment", "--help"], None).expect("run signed Router CLI");
     assert!(stdout(&help).contains("enrollment status"));
@@ -86,7 +98,10 @@ async fn fresh_enrollment_status_creates_nothing() {
     let database = router_root.join(MACHINE_LOCAL_DATABASE);
     let result =
         compiled_cli(home.path(), &["enrollment", "status"], None).expect("run signed Router CLI");
-    assert_eq!(stdout(&result), "This Mac is not enrolled.\n");
+    assert_eq!(
+        stdout(&result),
+        "Router not running\nThis Mac is not enrolled.\n"
+    );
     assert!(
         fs::read_dir(home.path())
             .expect("fixture home")
@@ -109,7 +124,10 @@ async fn fresh_enrollment_status_creates_nothing() {
     let before = fs::read(&database).expect("machine database");
     let result =
         compiled_cli(home.path(), &["enrollment", "status"], None).expect("run signed Router CLI");
-    assert_eq!(stdout(&result), "This Mac is not enrolled.\n");
+    assert_eq!(
+        stdout(&result),
+        "Router not running\nThis Mac is not enrolled.\n"
+    );
     assert_eq!(fs::read(&database).expect("machine database"), before);
     assert!(matches!(
         read_machine_enrollment_status(&database).await,
@@ -123,7 +141,7 @@ async fn fresh_enrollment_status_creates_nothing() {
         compiled_cli(home.path(), &["enrollment", "status"], None).expect("run signed Router CLI");
     assert_eq!(
         stdout(&result),
-        format!("This Mac is not enrolled.\nMachine: {machine_id}\n")
+        format!("Router not running\nThis Mac is not enrolled.\nMachine: {machine_id}\n")
     );
     assert_eq!(fs::read(&database).expect("machine database"), before);
 }
@@ -192,7 +210,7 @@ async fn compiled_status_reports_active_and_ended_rows_without_writing() {
     assert_eq!(
         stdout(&active),
         format!(
-            "This Mac is enrolled.\nMachine: {machine_id}\nOrganization: {ORGANIZATION}\nSign-in: {SIGN_IN}\nThis is what the Mac has stored. It does not show whether the link to central is up.\n"
+            "Router not running\nThis Mac is enrolled.\nMachine: {machine_id}\nOrganization: {ORGANIZATION}\nSign-in: {SIGN_IN}\n"
         )
     );
     assert_eq!(fs::read(&database).expect("machine database"), before);
@@ -215,10 +233,122 @@ async fn compiled_status_reports_active_and_ended_rows_without_writing() {
     assert_eq!(
         stdout(&ended),
         format!(
-            "This Mac's enrollment ended: the enrollment was revoked.\nMachine: {machine_id}\nOrganization: {ORGANIZATION}\n"
+            "Router not running\nThis Mac's enrollment ended: the enrollment was revoked.\nMachine: {machine_id}\nOrganization: {ORGANIZATION}\n"
         )
     );
     assert_eq!(fs::read(&database).expect("machine database"), before);
+}
+
+#[tokio::test]
+async fn compiled_enrollment_status_reads_the_host_reply_and_keeps_stored_facts() {
+    use MessageSystemStatus as Status;
+
+    let home = tempfile::tempdir().expect("fixture home");
+    let root = default_fixture_root(home.path());
+    fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&root)
+        .expect("fixture Router root");
+    let machine_id = load_or_create_machine_id(&root, NOW_MS)
+        .await
+        .expect("machine ID");
+    let database = root.join(MACHINE_LOCAL_DATABASE);
+    let mut store = MachineLocalStore::open(&database)
+        .await
+        .expect("fixture store");
+    let saved = store
+        .write_enrollment_row(&machine_id, 0, NOW_MS, |_| {
+            EnrollmentRowChange::<()>::Write(active_row())
+        })
+        .await
+        .expect("seed active enrollment");
+    assert_eq!(saved, EnrollmentRowWrite::Applied);
+    store.close().await.expect("close seed store");
+    let before = fs::read(&database).expect("machine database");
+    let paths = HostCoordinationPaths::for_router_root(&root);
+    let host = UnixListener::bind(paths.operator_socket()).expect("bind fixture Host socket");
+
+    for (status, line) in [
+        (Status::Starting, "starting"),
+        (Status::NotEnrolled, "not enrolled"),
+        (Status::EnrollmentEnded, "enrollment ended"),
+        (Status::EnrollmentUnreadable, "could not read enrollment"),
+        (Status::Connecting, "enrolled, connecting"),
+        (Status::Connected, "enrolled, connected"),
+        (Status::Stopping, "stopping"),
+        (Status::Restarting, "enrolled, restarting"),
+        (
+            Status::EnrollmentMismatch,
+            "enrollment does not match this Router",
+        ),
+        (Status::Stopped, "link stopped"),
+    ] {
+        let output = compiled_status_with_host_reply(home.path(), &host, Some(status))
+            .await
+            .expect("read live status on the Host socket");
+        assert_eq!(
+            stdout(&output),
+            format!(
+                "{line}\nThis Mac is enrolled.\nMachine: {machine_id}\nOrganization: {ORGANIZATION}\nSign-in: {SIGN_IN}\n"
+            )
+        );
+    }
+
+    let output = compiled_status_with_host_reply(home.path(), &host, None)
+        .await
+        .expect("read a Host reply without message status");
+    assert_eq!(
+        stdout(&output),
+        format!(
+            "Router has no message link\nThis Mac is enrolled.\nMachine: {machine_id}\nOrganization: {ORGANIZATION}\nSign-in: {SIGN_IN}\n"
+        )
+    );
+    assert_eq!(fs::read(&database).expect("machine database"), before);
+}
+
+async fn compiled_status_with_host_reply(
+    home: &Path,
+    host: &UnixListener,
+    status: Option<MessageSystemStatus>,
+) -> Result<Output, Box<dyn std::error::Error>> {
+    let snapshot = HostSnapshot::new(HostSnapshotDimensions {
+        phase: HostPhase::Steady,
+        router: RouterCondition::OwnedReachable,
+        app_server: AppServerCondition::Absent,
+        remote_control: RemoteControlCondition::Unavailable,
+        remote_control_identity: None,
+        executable_relation: ExecutableRelation::Match,
+        router_executable_relation: RouterExecutableRelation::Match,
+        recovery_budget: RecoveryBudget::Available,
+        last_lifecycle_outcome: None,
+    })
+    .with_message_system_status(status);
+    let reply = OperatorFrame::terminal(HostTerminalResponse::new(
+        OperatorRequest::Status,
+        TerminalClassification::Unavailable,
+        snapshot,
+        "fixture Host status".to_owned(),
+    ));
+    let host_exchange = async {
+        let (mut stream, _) = host.accept().await?;
+        let mut request = Vec::new();
+        stream.read_to_end(&mut request).await?;
+        assert_eq!(decode_operator_request(&request)?, OperatorRequest::Status);
+        stream.write_all(&encode_operator_frame(&reply)?).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    };
+
+    let mut cli =
+        tokio::process::Command::from(compiled_cli_command(home, &["enrollment", "status"], None));
+    cli.kill_on_drop(true);
+    let output = cli.output();
+    tokio::pin!(output);
+    tokio::select! {
+        biased;
+        result = host_exchange => result?,
+        early = &mut output => return Err(io::Error::other(format!("CLI exited before the Host replied: {early:?}")).into()),
+    }
+    Ok(output.await?)
 }
 
 #[tokio::test]
@@ -255,7 +385,7 @@ async fn compiled_status_reads_current_enrollment_from_an_open_wal_without_writi
     assert_eq!(
         stdout(&active),
         format!(
-            "This Mac is enrolled.\nMachine: {machine_id}\nOrganization: {ORGANIZATION}\nSign-in: {SIGN_IN}\nThis is what the Mac has stored. It does not show whether the link to central is up.\n"
+            "Router not running\nThis Mac is enrolled.\nMachine: {machine_id}\nOrganization: {ORGANIZATION}\nSign-in: {SIGN_IN}\n"
         ),
         "status must report the current active enrollment from the open WAL",
     );
@@ -285,7 +415,7 @@ async fn compiled_status_reads_current_enrollment_from_an_open_wal_without_writi
     assert_eq!(
         stdout(&ended),
         format!(
-            "This Mac's enrollment ended: the enrollment was revoked.\nMachine: {machine_id}\nOrganization: {ORGANIZATION}\n"
+            "Router not running\nThis Mac's enrollment ended: the enrollment was revoked.\nMachine: {machine_id}\nOrganization: {ORGANIZATION}\n"
         ),
         "status must report the current ended enrollment from the open WAL",
     );
@@ -348,6 +478,7 @@ async fn compiled_status_refuses_unreadable_database_and_corrupt_metadata() {
     assert_status_error(
         &compiled_cli(home.path(), &["enrollment", "status"], None).expect("run signed Router CLI"),
         "could not read the machine database",
+        b"Router not running\n",
     );
     assert_eq!(fs::read(&database).expect("machine database"), before);
     assert!(matches!(
@@ -383,6 +514,7 @@ async fn compiled_status_refuses_unreadable_database_and_corrupt_metadata() {
     assert_status_error(
         &compiled_cli(home.path(), &["enrollment", "status"], None).expect("run signed Router CLI"),
         "stored enrollment metadata is corrupt",
+        b"Router not running\n",
     );
     assert_eq!(fs::read(&database).expect("machine database"), before);
     assert!(matches!(
@@ -393,9 +525,9 @@ async fn compiled_status_refuses_unreadable_database_and_corrupt_metadata() {
     ));
 }
 
-fn assert_status_error(output: &Output, expected: &str) {
+fn assert_status_error(output: &Output, expected: &str, expected_stdout: &[u8]) {
     assert_eq!(output.status.code(), Some(2), "{output:?}");
-    assert!(output.stdout.is_empty(), "{output:?}");
+    assert_eq!(output.stdout, expected_stdout, "{output:?}");
     assert!(
         String::from_utf8_lossy(&output.stderr).contains(expected),
         "{output:?}"
@@ -463,6 +595,7 @@ async fn linked_database_and_sidecars_are_refused_before_sign_in_or_status() {
             assert_status_error(
                 &output,
                 "machine database and its SQLite sidecars must be regular files",
+                b"",
             );
             assert_eq!(
                 files_in(&production).expect("protected fixture files"),
@@ -475,7 +608,7 @@ async fn linked_database_and_sidecars_are_refused_before_sign_in_or_status() {
 }
 
 #[tokio::test]
-async fn compiled_status_reports_sqlite_busy_without_printing_a_state() {
+async fn compiled_status_reports_sqlite_busy_without_printing_enrollment_facts() {
     let home = tempfile::tempdir().expect("fixture home");
     let root = default_fixture_root(home.path());
     fs::DirBuilder::new()
@@ -503,7 +636,11 @@ async fn compiled_status_reports_sqlite_busy_without_printing_a_state() {
 
     let output =
         compiled_cli(home.path(), &["enrollment", "status"], None).expect("run signed Router CLI");
-    assert_status_error(&output, "the machine database is busy or locked. Try again");
+    assert_status_error(
+        &output,
+        "the machine database is busy or locked. Try again",
+        b"Router not running\n",
+    );
     assert!(matches!(
         read_machine_enrollment_status(&database).await,
         Err(EnrollmentMetadataReadError::Busy(_))

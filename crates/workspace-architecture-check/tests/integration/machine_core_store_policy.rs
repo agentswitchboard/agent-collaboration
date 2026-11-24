@@ -8,6 +8,7 @@ const STORE_CONTRACTS: &[&str] = &[
     "fleet-mail",
     "router-clock",
     "sqlite-storage-maintenance",
+    "state-machine-core",
     "workspace-ids",
     "workspace-model",
 ];

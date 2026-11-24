@@ -19,6 +19,7 @@ serde.workspace = true
 serde_json.workspace = true
 sqlite-storage-maintenance = { path = "../sqlite-storage-maintenance", version = "0.1.118" }
 sqlx = { workspace = true, features = ["macros", "migrate", "sqlite"] }
+state-machine-core.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 uuid.workspace = true
