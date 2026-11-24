@@ -6,12 +6,11 @@
 //! these methods and encode what comes back; no operation logic lives in a transport.
 //!
 //! Each family owns only the capabilities its constructor receives.
-//! [`CollaborationApplication`] shares conversation, session, journal, address book and
+//! [`CollaborationApplication`] shares conversation, session, message and
 //! provider observation operations with its callers.
 //! (`provider_observation_operations`). Heavier paging logic stays in the crate's domain modules
 //! (`codex_session_inventory`, `provider_session_inventory`).
 mod conversation_operations;
-mod journal_operations;
 pub mod message_operations;
 mod observation_call_driver;
 mod observation_call_machine;
@@ -29,9 +28,6 @@ pub use crate::response_budget::{API_RESULT_BUDGET, RESULT_LIMIT_BYTES, ResultBy
 pub use session_native_control::NativeSessionControl;
 
 pub use conversation_operations::{ConversationFailure, ConversationOperations};
-pub use journal_operations::{
-    JournalCursorInvalidation, JournalFailure, JournalOperations, JournalUnavailableKind,
-};
 pub use observation_call_driver::ObservedEventSink;
 pub use observation_failure::ObservationFailure;
 pub use provider_observation_operations::ObservationOperations;

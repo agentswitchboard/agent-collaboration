@@ -89,11 +89,6 @@ export const section: LedgerSection = {
       note: "clap types InstructionArguments L20, InstructionCommand L29, InstructionAction L36, TextInput L62; typed InstructionCreate/Update/ShowParams L225-L249; result envelope input json! L179; hand-built error envelopes L184, L190 (outcomeUnknown/unavailable with nextAction).",
     },
     {
-      file: "crates/agent-collaboration/src/journal_read_commands.rs",
-      disposition: { kind: "converts", owners: ["router-vocabulary", "mcp"] },
-      note: "clap types JournalArguments L18, JournalCommand L27; EndpointRef assembled L100; typed results turned into Value L104, L110 then storage field read L116; MCP Rejected code -32602 and data.kind read L134-L145; error envelope json! L150.",
-    },
-    {
       file: "crates/agent-collaboration/src/lib.rs",
       disposition: { kind: "none" },
       note: "Module list and public command re-exports; help text. claude_terminal_test_harness is feature-gated L6-L7; session_contract_tests is cfg(test) L94-L95.",
@@ -373,16 +368,6 @@ export const section: LedgerSection = {
       "event_commands.rs",
       343,
       "SessionObservation::observe_bounded, provider endpoint branch -> tools/call events_observe (collaboration-client provider_session_observation.rs:128-154,345)",
-    ),
-    mcp(
-      "journal_read_commands.rs",
-      106,
-      "CollaborationClient::read_journal -> tools/call journal_read",
-    ),
-    mcp(
-      "journal_read_commands.rs",
-      110,
-      "CollaborationClient::journal_status -> tools/call journal_status",
     ),
     mcp(
       "native_session_commands.rs",

@@ -16,6 +16,7 @@ import { createServer } from "node:net";
 import { once } from "node:events";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
+import { RouterMcp } from "../../clients/router-mcp.ts";
 import { canonicalPath } from "../../filesystem-paths.ts";
 import { decode } from "../../exact-json.ts";
 import {
@@ -41,8 +42,8 @@ import {
   inspectWorkerStartup,
   readWorkerEvents,
   requireIdleWorkerLog,
+  requireNativeUnavailable,
 } from "./worker-startup-evidence.ts";
-import { readObserverJournal } from "./startup-observation.ts";
 import { healthCheck, HealthUnavailable } from "./runtime-configuration.ts";
 
 const protectedPorts = new Set([8787, 8788, 19741, 19742, 19743, 43127]);
@@ -201,6 +202,14 @@ interface WorkerRunContext {
 interface WorkerStartupObservation {
   readonly events: ReturnType<typeof readWorkerEvents>;
   readonly publication: z.infer<typeof readySchema>;
+}
+
+async function readNativePublication(
+  context: WorkerRunContext,
+  publication: WorkerStartupObservation["publication"],
+): Promise<ReturnType<typeof requireNativeUnavailable>> {
+  const mcp = new RouterMcp(`http://127.0.0.1:${context.plan.mcp_port}/mcp`);
+  return requireNativeUnavailable(await mcp.call("endpoints_list", {}, 5), publication);
 }
 
 async function prepareWorkerStartup(plan: WorkerStartupPlan): Promise<PreparedWorkerStartup> {
@@ -436,6 +445,7 @@ async function observeWorkerIdle(
   host: ChildProcess,
 ): Promise<void> {
   const { plan, prepared } = context;
+  const before = await readNativePublication(context, startup.publication);
   const started = runtimeClock.monotonicNow();
   while (runtimeClock.monotonicNow() - started < plan.idle_milliseconds) {
     context.requireContinuing();
@@ -449,20 +459,10 @@ async function observeWorkerIdle(
   if (fixture.additionalRequests !== 0n)
     throw new Error("fixture received input during idle observation");
   requireOwnedFixture(context, host, fixture.pid);
-  const native = readObserverJournal({
-    routerRoot: plan.run_directory,
-    serviceId: startup.publication.serviceId,
-    serviceEpoch: startup.publication.serviceEpoch,
-  });
-  if (
-    native.records.some(
-      (record) =>
-        record.observation.change.kind === "backendStatus" &&
-        record.observation.change.status === "ready",
-    )
-  )
-    throw new Error("native backend became ready on the declared no-native journey");
-  saveRecord(join(plan.evidence, "native-unavailable.json"), native);
+  const native = await readNativePublication(context, startup.publication);
+  if (native.sequence !== before.sequence)
+    throw new Error("endpoint publication changed during the declared idle window");
+  saveRecord(join(plan.evidence, "native-unavailable.json"), { before, after: native });
   saveRecord(join(plan.evidence, "idle.json"), {
     elapsedMilliseconds: runtimeClock.monotonicNow() - started,
     before: startup.events,

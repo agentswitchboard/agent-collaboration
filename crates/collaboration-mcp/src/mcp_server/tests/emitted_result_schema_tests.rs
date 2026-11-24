@@ -1,6 +1,5 @@
 //! The advertised output schemas accept the results tools build from real domain values:
-//! classified Codex session failures, lifecycle records decoded from the journal's wire form,
-//! and provider and peer run evidence decoded through `RunSnapshot`'s validation. The
+//! classified Codex session failures and provider and peer run evidence decoded through `RunSnapshot`'s validation. The
 //! hand-written samples for every tool live in `schema_tests.rs`.
 use super::*;
 use collaboration_service::collaboration_application::{
@@ -95,32 +94,6 @@ fn session_inspect_and_rename_schemas_accept_every_classified_failure_they_emit(
             );
         }
     }
-}
-
-#[test]
-fn journal_read_schema_accepts_a_page_of_decoded_flattened_lifecycle_records() {
-    // Arrange: a page decoded from the journal's wire form, so each record is the flattened
-    // observation the journal actually stores.
-    let validator = advertised_output_validator("journal_read");
-    let id = FIXTURE_SERVICE_ID;
-    let page: collaboration_protocol::JournalPage = serde_json::from_value(serde_json::json!({
-        "bounds":{"journalId":id,"earliestSequence":1,"lastSequence":1},
-        "records":[{
-            "journalId":id,"sequence":1,"schemaVersion":1,"observedAt":"2026-09-05T12:00:00Z",
-            "source":"observerLifecycle",
-            "scope":{"endpoint":{"serviceId":id,"endpointId":"codex-local"},"generation":null,"observerId":id},
-            "subject":{"kind":"backend"},"change":{"kind":"coverageLost"}
-        }],
-        "next":{"journalId":id,"sequence":1},"caughtUp":true
-    }))
-    .expect("journal page decodes");
-
-    // Act
-    let result = super::super::success_result(&page);
-
-    // Assert
-    let structured = validated_structured_content(&validator, "journal_read", result);
-    assert_eq!(structured["records"][0]["source"], "observerLifecycle");
 }
 
 pub(super) fn validated_structured_content(

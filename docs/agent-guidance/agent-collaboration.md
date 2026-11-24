@@ -116,9 +116,11 @@ agent-collaboration session inspect --endpoint "$ENDPOINT_ID" --session THREAD_I
 ```
 
 Set `ENDPOINT_ID` from endpoint discovery for the selected service. Copy each
-session inventory entry's `.target` verbatim; `addresses list` is lifecycle coverage
-and does not return message targets. Check `stored` for unloaded sessions and
-`loaded` for newly active sessions; a missing result never authorizes a replacement.
+session inventory entry's `.target` verbatim. Check `stored` for unloaded sessions
+and `loaded` for newly active sessions. A missing result never authorizes a replacement.
+
+The `addresses` and `journal` command groups are retired. They report
+“not available in this build” and exit 2.
 
 An address is compact JSON containing `endpoint.serviceId`,
 `endpoint.endpointId` and `sessionId`. Preserve all three fields. Stored addresses

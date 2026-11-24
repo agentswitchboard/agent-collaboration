@@ -320,18 +320,6 @@ export const rows: InventoryRow[] = [
     fixedBy: "D2",
   },
   {
-    file: `${R}stored_inventory_observation.rs`,
-    line: 25,
-    owner: "router-vocabulary",
-    kind: "session-ref-conversion",
-    defines:
-      "native session list entry target.session_id copied into ThreadAddress.native_thread_id for a ThreadDiscovered lifecycle record (:25-30)",
-    usedBy: [{ crate: "collaboration-runtime" }],
-    duplicateGroup: "session-ref-conversion",
-    disposition: "duplicate",
-    fixedBy: "D2",
-  },
-  {
     file: "crates/switchboard-session-store/src/provider_session_record.rs",
     line: 352,
     owner: "router-vocabulary",

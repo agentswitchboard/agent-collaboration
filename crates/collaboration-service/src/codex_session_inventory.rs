@@ -177,20 +177,17 @@ pub struct CodexSessionInventory {
     identity: collaboration_contracts::RouterIdentity,
     directory: collaboration_runtime::EndpointDirectory,
     native_backend: Option<collaboration_runtime::NativeControlBackend>,
-    journal: Option<std::sync::Arc<lifecycle_observation::LifecycleStore>>,
 }
 impl CodexSessionInventory {
     pub fn new(
         identity: collaboration_contracts::RouterIdentity,
         directory: collaboration_runtime::EndpointDirectory,
         native_backend: Option<collaboration_runtime::NativeControlBackend>,
-        journal: Option<std::sync::Arc<lifecycle_observation::LifecycleStore>>,
     ) -> Self {
         Self {
             identity,
             directory,
             native_backend,
-            journal,
         }
     }
     pub(crate) async fn list(
@@ -289,21 +286,8 @@ impl CodexSessionInventory {
         let Ok(page) = result else {
             return Err(failed(NativeSessionFailureKind::Unavailable));
         };
-        // Admission/rendering must succeed before catalog observations enter the journal.
         if !budget.admits(&page) {
             return Err(failed(NativeSessionFailureKind::ResponseTooLarge));
-        }
-        if matches!(params.view, NativeSessionView::Stored)
-            && let Some(store) = self.journal.as_deref()
-        {
-            let observer =
-                collaboration_runtime::stored_inventory_observation::StoredInventoryObservation {
-                    store,
-                    observer_id: self.identity.service_epoch(),
-                };
-            // A storage failure invalidates C10 through LifecycleStore; it does not
-            // turn a successful read-only catalog operation into a native failure.
-            let _recorded = observer.record_page(&page).await;
         }
         Ok(page)
     }

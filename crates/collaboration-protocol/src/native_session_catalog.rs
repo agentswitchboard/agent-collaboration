@@ -1,11 +1,29 @@
 //! Stored and runtime discovery are distinct observations of one endpoint-scoped session.
-use crate::{
-    CodexGeneration, EndpointRef, NativeThreadStatus, NonEmptyText, ObservationTimestamp,
-    SessionRef,
-};
+use crate::{CodexGeneration, EndpointRef, NonEmptyText, ObservationTimestamp, SessionRef};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+
+/// Native active flags emitted by Codex for a loaded thread.
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NativeActiveFlag {
+    WaitingOnApproval,
+    WaitingOnUserInput,
+}
+/// Pinned native status projection; schema admission must validate upstream compatibility.
+#[derive(schemars::JsonSchema, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum NativeThreadStatus {
+    NotLoaded,
+    Idle,
+    SystemError,
+    #[serde(rename_all = "camelCase")]
+    Active {
+        active_flags: Vec<NativeActiveFlag>,
+    },
+}
+
 #[derive(JsonSchema, Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum NativeSessionView {
