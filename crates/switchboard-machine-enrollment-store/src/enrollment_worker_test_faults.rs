@@ -16,6 +16,7 @@ pub(crate) enum TestWriteFault {
     BeforeCommit,
     CommitNotApplied,
     LoseAcknowledgement,
+    PanicBeforeCommit,
 }
 
 #[derive(Default)]
@@ -24,6 +25,7 @@ pub(crate) struct TestWriteFaults {
     pub(crate) probes: AtomicUsize,
     replacement_witness: Mutex<Option<ReplacementWitnessGate>>,
     prepared_replacement: Mutex<Option<ReplacementWitnessGate>>,
+    resource_cleanup: Mutex<Option<ReplacementWitnessGate>>,
 }
 
 struct ReplacementWitnessGate {
@@ -38,6 +40,10 @@ impl TestWriteFaults {
 
     pub(crate) fn hold_prepared_replacement(&self) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
         Self::hold(&self.prepared_replacement)
+    }
+
+    pub(crate) fn hold_resource_cleanup(&self) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+        Self::hold(&self.resource_cleanup)
     }
 
     fn hold(
@@ -58,6 +64,10 @@ impl TestWriteFaults {
 
     pub(crate) async fn at_prepared_replacement(&self) {
         Self::wait(&self.prepared_replacement).await;
+    }
+
+    pub(crate) async fn at_resource_cleanup(&self) {
+        Self::wait(&self.resource_cleanup).await;
     }
 
     async fn wait(slot: &Mutex<Option<ReplacementWitnessGate>>) {
@@ -84,6 +94,7 @@ impl TestWriteFaults {
             Some(TestWriteFault::CommitNotApplied) => {
                 Err(EnrollmentRowStoreError::Commit(sqlx::Error::RowNotFound))
             }
+            Some(TestWriteFault::PanicBeforeCommit) => panic!("injected enrollment worker panic"),
             Some(TestWriteFault::LoseAcknowledgement) => match write.await? {
                 EnrollmentRowWrite::Applied => {
                     Err(EnrollmentRowStoreError::Commit(sqlx::Error::RowNotFound))
