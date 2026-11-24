@@ -66,6 +66,18 @@ fn stop_unit(supervisor: &mut Supervisor) -> Vec<Effect> {
 }
 
 #[test]
+fn bootstrap_refusal_is_distinct_from_a_running_supervisors_first_read() {
+    let unavailable = Front::Refusing(FrontRefusal::CouldNotStart);
+    let (supervisor, initial) = Supervisor::new(BUDGETS);
+
+    assert_eq!(
+        supervisor.state().front(),
+        Front::Refusing(FrontRefusal::AwaitingFirstRead)
+    );
+    assert!(!initial.contains(&Effect::PublishFront(unavailable)));
+}
+
+#[test]
 fn observation_only_until_an_active_row_and_read_changes_replace_the_timer() {
     let (mut supervisor, initial) = Supervisor::new(BUDGETS);
     observing(&supervisor, FrontRefusal::AwaitingFirstRead);

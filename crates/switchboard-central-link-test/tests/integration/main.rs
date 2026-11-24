@@ -35,6 +35,10 @@ use tokio::{
 mod custody_journey;
 #[cfg(debug_assertions)]
 mod enrolled_lease_journey;
+#[cfg(debug_assertions)]
+mod message_unit_fixture;
+#[cfg(debug_assertions)]
+mod message_unit_journey;
 mod simulated_link;
 
 struct RealLeases {

@@ -113,7 +113,7 @@ impl LocalEnrollment {
             self.clock.clone(),
             self.binding.context.clone(),
         );
-        EnrollmentLeaseSource::start(owner, self.clock.clone())
+        EnrollmentLeaseSource::start(owner, self.clock.clone(), Arc::new(BTreeSet::new()))
     }
 }
 
@@ -131,7 +131,7 @@ async fn the_real_enrollment_store_obeys_each_acquire_mapping_and_keeps_other_ke
     let key = local.binding.key();
     let empty = local.source(RefreshScript::NoRequest);
     assert_eq!(empty.acquire(&key, None).await, unavailable(1));
-    empty.close().await.unwrap();
+    stop_lease(&empty, local.clock.as_ref()).await;
     local.install().await;
 
     let mut different = key.clone();
@@ -156,7 +156,7 @@ async fn the_real_enrollment_store_obeys_each_acquire_mapping_and_keeps_other_ke
         "classifying a different key must not try to open its credential"
     );
     local.keychain.unavailable.store(false, Ordering::Release);
-    fresh.close().await.unwrap();
+    stop_lease(&fresh, local.clock.as_ref()).await;
 
     for (script, expected) in [
         (RefreshScript::Unavailable(None), unavailable(30)),
@@ -186,7 +186,7 @@ async fn the_real_enrollment_store_obeys_each_acquire_mapping_and_keeps_other_ke
     ] {
         let source = local.source(script);
         assert_eq!(source.acquire(&key, None).await, expected);
-        source.close().await.unwrap();
+        stop_lease(&source, local.clock.as_ref()).await;
     }
     let active = local.store.read().await.unwrap().generation();
     let usable = local.source(RefreshScript::Grant {
@@ -200,7 +200,7 @@ async fn the_real_enrollment_store_obeys_each_acquire_mapping_and_keeps_other_ke
     assert_eq!(acquired.window.binding, key);
     assert_eq!(acquired.window.version.0, active.get() + 1);
     assert_eq!(acquired.token.expose(), "fixture-wire-token");
-    usable.close().await.unwrap();
+    stop_lease(&usable, local.clock.as_ref()).await;
 
     let refused = local.source(RefreshScript::Refused(InvalidReason::GrantRefused));
     let mut enrollment_changes = local.store.subscribe_enrollment_changes();
@@ -216,10 +216,7 @@ async fn the_real_enrollment_store_obeys_each_acquire_mapping_and_keeps_other_ke
             ..
         }
     ));
-    assert_eq!(
-        refused.close().await.unwrap(),
-        UnfinishedLeaseWork::default()
-    );
+    stop_lease(&refused, local.clock.as_ref()).await;
     local.store.close().await.unwrap();
     allocation.close().await.unwrap();
 }
@@ -249,6 +246,7 @@ async fn real_store_settings_see_same_scope_replacement_and_ending_without_the_k
         local.binding.context.clone(),
         clock.clone(),
         local.store.subscribe_enrollment_changes(),
+        Arc::new(BTreeSet::new()),
     );
     let (stop, shutdown) = watch::channel(false);
     let settings = tokio::spawn(settings.run(shutdown));

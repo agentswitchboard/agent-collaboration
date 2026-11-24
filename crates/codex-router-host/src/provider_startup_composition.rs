@@ -313,12 +313,13 @@ pub(crate) async fn compose_provider_startup(
     }
     let supervisor = match store {
         Some(store) if !endpoints.is_empty() => Some(Arc::new(
-            ExternalProviderSupervisor::new_with_hub(
+            ExternalProviderSupervisor::new_with_session_tokens(
                 bindings,
                 store,
                 hub.clone(),
                 scratch_root,
                 clock,
+                Arc::new(collaboration_contracts::V0SessionTokenIssuer),
             )
             .map_err(io::Error::other)?,
         )),
