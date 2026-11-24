@@ -37,6 +37,9 @@ pub(crate) struct HostCollaborationInputs {
 }
 
 mod message_startup;
+#[cfg(test)]
+pub(crate) use message_startup::v0_message_admission_for_test;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExternalProviderLaunchBinding {
     pub endpoint_id: EndpointId,

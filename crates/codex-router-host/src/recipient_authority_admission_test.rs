@@ -452,3 +452,44 @@ async fn managed_claude_stays_one_recipient_when_its_worker_is_registered() {
     };
     tokio::join!(host.inbox.expect_accepted(&target), release_managed_lookup);
 }
+
+#[tokio::test]
+async fn managed_claude_can_read_its_inbox_until_an_independent_caller_claim() {
+    use collaboration_protocol::message_tools::{MessageCallerRefusal, MessageToolRefusal};
+
+    let root = tempfile::tempdir().unwrap();
+    let root = root.path();
+    let target = session_id("managed-claude-inbox-caller");
+    let mut host = HostAdmission::new(root, CodexCatalogue::Empty).await;
+    host.save_managed(0, root, &target).await;
+    host.inbox.expect_accepted(&target).await;
+    let registry = root.join("registry");
+    std::fs::create_dir(&registry).unwrap();
+    seed_peer(&registry, std::process::id(), target.as_str(), false);
+
+    let messages = host.inbox.read_as_reported_caller(&target).await.unwrap();
+    assert_eq!(messages.len(), 1);
+    assert!(matches!(messages.as_slice(), [kept] if kept.target.session_id == target));
+
+    host.save_managed(1, root, &target).await;
+    assert!(matches!(
+        host.inbox.read_as_reported_caller(&target).await,
+        Err(MessageToolRefusal::Caller(
+            MessageCallerRefusal::AmbiguousSession
+        ))
+    ));
+}
+
+#[tokio::test]
+async fn cursor_and_terminal_claude_without_managed_claude_refuse_custody() {
+    let root = tempfile::tempdir().unwrap();
+    let root = root.path();
+    let target = session_id("cursor-and-terminal-claude");
+    let mut host = HostAdmission::new(root, CodexCatalogue::Empty).await;
+    host.save_managed(1, root, &target).await;
+    let registry = root.join("registry");
+    std::fs::create_dir(&registry).unwrap();
+    seed_peer(&registry, std::process::id(), target.as_str(), false);
+
+    host.inbox.expect_ambiguous(&target).await;
+}

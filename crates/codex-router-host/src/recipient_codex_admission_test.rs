@@ -1,5 +1,7 @@
 use central_link_client::ValidatedDeliveryOffer;
 use central_link_protocol::{DeliveryMessage, DirectOfferBody, DirectOfferMessage, TimeLeft};
+use collaboration_protocol::message_tools::MessageToolRefusal;
+use collaboration_service::collaboration_application::message_operations::MessageCallerAdmission;
 use router_clock::{ManualClock, RuntimeClock};
 use std::{
     path::{Path, PathBuf},
@@ -14,6 +16,7 @@ use switchboard_message_custody::{
 };
 use workspace_model::{
     PostText,
+    central_mail::MessageRecord,
     central_mail::{MessageDelivery, MessageSender, MessageState},
 };
 
@@ -24,6 +27,7 @@ const REFUSED: &str = "019f0000-0000-7000-8000-000000000064";
 
 pub(crate) struct Admission {
     inbox: RecipientInbox,
+    directory: Arc<CombinedRecipientSessionDirectory>,
     store: PathBuf,
     clock: Arc<ManualClock>,
 }
@@ -35,17 +39,38 @@ impl Admission {
         sources: RecipientSessionSources,
     ) -> Self {
         let store = root.join("machine-local.sqlite");
+        let directory = Arc::new(CombinedRecipientSessionDirectory::new(sources));
         let inbox = RecipientInbox::new(
             InboxStore::new(MachineLocalStore::open(&store).await.unwrap()),
             MACHINE.parse().unwrap(),
-            Arc::new(CombinedRecipientSessionDirectory::new(sources)),
+            directory.clone(),
             clock.clone(),
         );
         Self {
             inbox,
+            directory,
             store,
             clock,
         }
+    }
+
+    pub(super) async fn read_as_reported_caller(
+        &self,
+        session: &SessionId,
+    ) -> Result<Vec<MessageRecord>, MessageToolRefusal> {
+        let admission = crate::collaboration_runtime::v0_message_admission_for_test(
+            MACHINE.parse().unwrap(),
+            self.directory.clone(),
+            self.clock.clone(),
+        );
+        let caller = admission.admit(Some(session.clone())).await?;
+        let mut store = InboxStore::new(MachineLocalStore::open(&self.store).await.unwrap());
+        let page = store
+            .direct_inbox_messages(caller.address(), 10)
+            .await
+            .unwrap();
+        assert!(page.corrupt_rows.is_empty());
+        Ok(page.healthy)
     }
 
     pub(crate) async fn expect_accepted(&mut self, session: &SessionId) {
