@@ -13,6 +13,7 @@ mod enrollment_outcome;
 mod refresh_owner;
 mod response_object;
 mod retirement_fence;
+mod retirement_machine;
 mod sign_in_answers;
 mod sign_in_client;
 

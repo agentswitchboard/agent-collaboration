@@ -1,8 +1,14 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
-use tokio::sync::watch;
+use state_machine_core::StateMachine;
+use tokio::sync::{Mutex as AsyncMutex, watch};
 
-use crate::{BindingGeneration, EnrollmentEnd, EnrollmentKey};
+use crate::{
+    BindingGeneration, EnrollmentEnd, EnrollmentKey,
+    retirement_machine::{
+        RetirementEvent, RetirementMachine, RetirementOutcome, RetirementRequest, RetirementState,
+    },
+};
 
 /// Synchronous retirement admission and observation for one owner.
 #[derive(Clone, Default)]
@@ -24,38 +30,38 @@ impl Default for RetirementEntries {
 
 struct FencedEnrollment {
     key: EnrollmentKey,
-    attempt: Arc<RetirementAttempt>,
-    waiting: Option<EnrollmentEnd>,
-    status: RetirementStatus,
+    state: RetirementState,
+    cleanup: Arc<AsyncMutex<()>>,
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum RetirementStatus {
-    Pending,
-    Durable,
-    Superseded,
+impl FencedEnrollment {
+    fn new(key: &EnrollmentKey, state: RetirementState) -> Self {
+        Self {
+            key: key.clone(),
+            state,
+            cleanup: Arc::default(),
+        }
+    }
+
+    fn pending_attempt(&self) -> Option<RetirementAttempt> {
+        let RetirementState::Pending { request, .. } = self.state else {
+            return None;
+        };
+        Some(RetirementAttempt {
+            request,
+            cleanup: self.cleanup.clone(),
+        })
+    }
 }
 
-#[derive(Clone, Copy)]
-pub(crate) enum RetirementOutcome {
-    Durable,
-    Superseded,
-    StaleOwnerEnding,
-}
-
-pub(crate) struct RetirementAttempt {
-    pub(crate) why: EnrollmentEnd,
-    pub(crate) through: Option<BindingGeneration>,
-    pub(crate) cleanup: tokio::sync::Mutex<()>,
+pub(super) struct RetirementAttempt {
+    pub(super) request: RetirementRequest,
+    pub(super) cleanup: Arc<AsyncMutex<()>>,
 }
 
 impl RetirementAttempt {
-    fn new(why: EnrollmentEnd, through: Option<BindingGeneration>) -> Arc<Self> {
-        Arc::new(Self {
-            why,
-            through,
-            cleanup: tokio::sync::Mutex::new(()),
-        })
+    pub(super) fn same_cleanup(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.cleanup, &other.cleanup)
     }
 }
 
@@ -67,23 +73,20 @@ impl RetirementFence {
             .entries
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if let Some(existing) = entries.iter_mut().find(|entry| &entry.key == key) {
-            if existing.status == RetirementStatus::Pending
-                && existing.attempt.through.is_some()
-                && existing.waiting.is_none()
-            {
-                existing.waiting = Some(why);
-                drop(entries);
-                self.0.changes.send_replace(());
-            }
-            return;
+        let event = RetirementEvent::DefinitiveRequested(why);
+        if let Some(entry) = entries.iter_mut().find(|entry| &entry.key == key) {
+            let Ok((next, _)) = RetirementMachine::transition(&entry.state, event) else {
+                return;
+            };
+            // Queuing a reason keeps the current cleanup identity.
+            entry.state = next;
+        } else {
+            let Ok((next, _)) = RetirementMachine::transition(&RetirementState::Unfenced, event)
+            else {
+                return;
+            };
+            entries.push(FencedEnrollment::new(key, next));
         }
-        entries.push(FencedEnrollment {
-            key: key.clone(),
-            attempt: RetirementAttempt::new(why, None),
-            waiting: None,
-            status: RetirementStatus::Pending,
-        });
         drop(entries);
         self.0.changes.send_replace(());
     }
@@ -100,7 +103,7 @@ impl RetirementFence {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .iter()
-            .filter(|entry| entry.status == RetirementStatus::Pending)
+            .filter(|entry| matches!(entry.state, RetirementState::Pending { .. }))
             .map(|entry| entry.key.clone())
             .collect()
     }
@@ -110,58 +113,61 @@ impl RetirementFence {
         self.ending(key).is_some()
     }
 
-    pub(crate) fn ending(&self, key: &EnrollmentKey) -> Option<EnrollmentEnd> {
+    pub(super) fn ending(&self, key: &EnrollmentKey) -> Option<EnrollmentEnd> {
         self.0
             .entries
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .iter()
             .find(|entry| &entry.key == key)
-            .map(|entry| entry.attempt.why)
+            .and_then(|entry| entry.state.ending())
     }
 
-    pub(crate) fn pending_attempt(&self, key: &EnrollmentKey) -> Option<Arc<RetirementAttempt>> {
-        let entries = self
-            .0
+    pub(super) fn pending_attempt(&self, key: &EnrollmentKey) -> Option<RetirementAttempt> {
+        self.0
             .entries
             .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let entry = entries
+            .unwrap_or_else(PoisonError::into_inner)
             .iter()
-            .find(|entry| &entry.key == key && entry.status == RetirementStatus::Pending)?;
-        Some(entry.attempt.clone())
+            .find(|entry| &entry.key == key)
+            .and_then(FencedEnrollment::pending_attempt)
     }
 
-    pub(crate) fn record_owner_ending(
+    pub(super) fn record_owner_ending(
         &self,
         key: &EnrollmentKey,
         generation: BindingGeneration,
         why: EnrollmentEnd,
-    ) -> Option<Arc<RetirementAttempt>> {
+    ) -> Option<RetirementAttempt> {
         let mut entries = self
             .0
             .entries
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if entries.iter().any(|entry| &entry.key == key) {
-            return None;
-        }
-        let attempt = RetirementAttempt::new(why, Some(generation));
-        entries.push(FencedEnrollment {
-            key: key.clone(),
-            attempt: attempt.clone(),
-            waiting: None,
-            status: RetirementStatus::Pending,
-        });
+        let current = entries
+            .iter()
+            .find(|entry| &entry.key == key)
+            .map_or(RetirementState::Unfenced, |entry| entry.state);
+        let (next, _) = RetirementMachine::transition(
+            &current,
+            RetirementEvent::OwnerEndingRequested {
+                why,
+                through: generation,
+            },
+        )
+        .ok()?;
+        let entry = FencedEnrollment::new(key, next);
+        let attempt = entry.pending_attempt()?;
+        entries.push(entry);
         drop(entries);
         self.0.changes.send_replace(());
         Some(attempt)
     }
 
-    pub(crate) fn settle(
+    pub(super) fn settle(
         &self,
         key: &EnrollmentKey,
-        attempt: &Arc<RetirementAttempt>,
+        attempt: &RetirementAttempt,
         outcome: RetirementOutcome,
     ) {
         let mut entries = self
@@ -171,20 +177,29 @@ impl RetirementFence {
             .unwrap_or_else(PoisonError::into_inner);
         let Some(entry) = entries
             .iter_mut()
-            .find(|entry| &entry.key == key && entry.status == RetirementStatus::Pending)
+            .find(|entry| &entry.key == key && Arc::ptr_eq(&entry.cleanup, &attempt.cleanup))
         else {
             return;
         };
-        if !Arc::ptr_eq(&entry.attempt, attempt) {
+        let Ok((next, _)) =
+            RetirementMachine::transition(&entry.state, RetirementEvent::CleanupSettled(outcome))
+        else {
             return;
-        }
-        match outcome {
-            RetirementOutcome::Durable => entry.status = RetirementStatus::Durable,
-            RetirementOutcome::Superseded => entry.status = RetirementStatus::Superseded,
-            RetirementOutcome::StaleOwnerEnding => match entry.waiting.take() {
-                Some(why) => entry.attempt = RetirementAttempt::new(why, None),
-                None => entries.retain(|entry| &entry.key != key),
-            },
+        };
+        if matches!(next, RetirementState::StaleOwnerEnding(_)) {
+            // Promotion or removal is atomic with settlement for observers.
+            let Ok((released, _)) =
+                RetirementMachine::transition(&next, RetirementEvent::ReleaseStaleOwnerEnding)
+            else {
+                return;
+            };
+            if released == RetirementState::Unfenced {
+                entries.retain(|entry| &entry.key != key);
+            } else {
+                *entry = FencedEnrollment::new(key, released);
+            }
+        } else {
+            entry.state = next;
         }
         drop(entries);
         self.0.changes.send_replace(());

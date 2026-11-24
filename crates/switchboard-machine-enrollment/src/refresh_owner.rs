@@ -16,7 +16,11 @@ use crate::{
     EnrollmentContext, EnrollmentEnd, EnrollmentKey, EnrollmentMetadata, InvalidReason,
     KeyedEnrollment, RefreshAnswer, RefreshCredential, RetirementFence, SecretValue,
     StoredEnrollment, TokenGrant,
-    retirement_fence::{RetirementAttempt, RetirementOutcome},
+    retirement_fence::RetirementAttempt,
+    retirement_machine::{
+        CleanupDecision, EndingWriteDecision, RetirementEffect, RetirementEvent, RetirementOutcome,
+        RetirementRequest, RetirementState, read_effect,
+    },
 };
 
 const WRITE_RETRY_INTERVAL: Duration = Duration::from_secs(1);
@@ -370,14 +374,20 @@ where
             .clock
             .monotonic_now()
             .after(ENDING_CLEANUP_LIMIT);
-        match self.inputs.read_for_cleanup(deadline).await? {
-            EnrollmentMetadata::Ended {
-                key: ended,
-                why: recorded,
-                ..
-            } if &ended == key && recorded == why => Ok(ConditionalWrite::Applied),
-            _ => Ok(ConditionalWrite::Superseded),
-        }
+        let observed = self.inputs.read_for_cleanup(deadline).await?;
+        // A direct replay reads the durable row independently of the fence.
+        let RetirementEffect::Replay(answer) = read_effect(
+            RetirementState::Unfenced,
+            RetirementEvent::DirectReplayRead {
+                key,
+                why,
+                observed: &observed,
+            },
+        )?
+        else {
+            return Err(CredentialStoreError::Read);
+        };
+        Ok(answer)
     }
 
     /// Processes the owner's previously admitted retirement for this exact key.
@@ -392,7 +402,7 @@ where
                 .finish_retirement_attempt(key, &attempt, started, &self.state)
                 .await?;
             if let Some(current) = self.inputs.retirements.pending_attempt(key)
-                && !Arc::ptr_eq(&attempt, &current)
+                && !attempt.same_cleanup(&current)
             {
                 continue;
             }
@@ -624,7 +634,7 @@ impl<Store: CredentialStore, Source: RefreshSource> RefreshInputs<Store, Source>
     async fn finish_retirement_attempt(
         &self,
         key: &EnrollmentKey,
-        attempt: &Arc<RetirementAttempt>,
+        attempt: &RetirementAttempt,
         started: ClockInstant,
         state: &Mutex<RefreshState>,
     ) -> Result<ConditionalWrite, CredentialStoreError> {
@@ -635,37 +645,38 @@ impl<Store: CredentialStore, Source: RefreshSource> RefreshInputs<Store, Source>
         if !self
             .retirements
             .pending_attempt(key)
-            .is_some_and(|current| Arc::ptr_eq(&current, attempt))
+            .is_some_and(|current| current.same_cleanup(attempt))
         {
             return Ok(ConditionalWrite::Superseded);
         }
         let outcome = loop {
-            match self.read_for_cleanup(deadline).await? {
-                EnrollmentMetadata::Ended { key: ended, .. } if &ended == key => {
-                    break RetirementOutcome::Durable;
-                }
-                EnrollmentMetadata::Active {
-                    key: active,
-                    generation,
-                    ..
-                } if &active == key => {
-                    if attempt.through.is_some_and(|ceiling| generation > ceiling) {
-                        break RetirementOutcome::StaleOwnerEnding;
-                    }
+            let observed = self.read_for_cleanup(deadline).await?;
+            let RetirementEffect::Cleanup(decision) = read_effect(
+                RetirementState::pending(attempt.request),
+                RetirementEvent::InitialCleanupRead {
+                    key,
+                    observed: &observed,
+                },
+            )?
+            else {
+                return Err(CredentialStoreError::Read);
+            };
+            match decision {
+                CleanupDecision::Settle(outcome) => break outcome,
+                CleanupDecision::Remove(generation) => {
                     let observed = timeout_at(self.clock.as_ref(), deadline, state.lock())
                         .await
                         .map_err(|_| CredentialStoreError::CleanupTimedOut)?
                         .observe(generation);
                     if observed
                         && self
-                            .end_binding(key, generation, attempt.why, started)
+                            .end_binding(key, generation, attempt.request, started)
                             .await?
                             == ConditionalWrite::Applied
                     {
                         break RetirementOutcome::Durable;
                     }
                 }
-                _ => break RetirementOutcome::Superseded,
             }
         };
         self.retirements.settle(key, attempt, outcome);
@@ -693,7 +704,7 @@ impl<Store: CredentialStore, Source: RefreshSource> RefreshInputs<Store, Source>
         &self,
         key: &EnrollmentKey,
         generation: BindingGeneration,
-        why: EnrollmentEnd,
+        request: RetirementRequest,
         started: ClockInstant,
     ) -> Result<ConditionalWrite, CredentialStoreError> {
         let deadline = started.after(ENDING_CLEANUP_LIMIT);
@@ -701,47 +712,51 @@ impl<Store: CredentialStore, Source: RefreshSource> RefreshInputs<Store, Source>
         if self.clock.monotonic_now() >= write_deadline {
             return Err(CredentialStoreError::CleanupTimedOut);
         }
-        let mut attempt = timeout_at(
+        let pending = RetirementState::pending(request);
+        let removed = timeout_at(
             self.clock.as_ref(),
             write_deadline,
-            self.store.remove(generation, why),
+            self.store.remove(generation, request.why),
         )
-        .await;
+        .await
+        .ok();
+        let mut effect = read_effect(pending, RetirementEvent::RemoveReturned(removed))?;
         loop {
-            match attempt {
-                Ok(Ok(ending)) => return Ok(ending),
-                Err(_) | Ok(Err(CredentialStoreError::OutcomeNotKnown)) => {
+            let RetirementEffect::EndingWrite(decision) = effect else {
+                return Err(CredentialStoreError::Read);
+            };
+            effect = match decision {
+                EndingWriteDecision::Finished(result) => return result,
+                EndingWriteDecision::ReadBack => {
                     let observed =
                         timeout_at(self.clock.as_ref(), deadline, self.store.read_metadata())
                             .await
                             .ok()
                             .and_then(Result::ok)
                             .ok_or(CredentialStoreError::CleanupTimedOut)?;
-                    if matches!(observed, EnrollmentMetadata::Ended {
-                        generation: saved,
-                        why: recorded,
-                        key: ended,
-                    } if saved >= generation && recorded == why && &ended == key)
-                    {
-                        return Ok(ConditionalWrite::Applied);
-                    }
+                    read_effect(
+                        pending,
+                        RetirementEvent::SubmittedWriteReadback {
+                            key,
+                            generation,
+                            observed: &observed,
+                        },
+                    )?
                 }
-                Ok(Err(_)) => {}
-            }
-            if self.clock.monotonic_now() >= write_deadline {
-                return Err(CredentialStoreError::CleanupTimedOut);
-            }
-            attempt = timeout_at(
-                self.clock.as_ref(),
-                write_deadline,
-                self.store.mark_unusable(generation, why),
-            )
-            .await;
-            if let Ok(Err(error)) = attempt
-                && error != CredentialStoreError::OutcomeNotKnown
-            {
-                return Err(error);
-            }
+                EndingWriteDecision::MarkUnusable => {
+                    if self.clock.monotonic_now() >= write_deadline {
+                        return Err(CredentialStoreError::CleanupTimedOut);
+                    }
+                    let marked = timeout_at(
+                        self.clock.as_ref(),
+                        write_deadline,
+                        self.store.mark_unusable(generation, request.why),
+                    )
+                    .await
+                    .ok();
+                    read_effect(pending, RetirementEvent::MarkUnusableReturned(marked))?
+                }
+            };
         }
     }
 }
