@@ -237,7 +237,7 @@ impl DiscoverySource for DiscoveryScript {
 }
 
 #[tokio::test]
-async fn real_store_settings_see_foreign_and_ended_rows_without_the_keychain() {
+async fn real_store_settings_see_same_scope_replacement_and_ending_without_the_keychain() {
     let clock = Arc::new(ManualClock::new("2030-03-17T17:46:40Z".parse().unwrap()));
     let allocation = start_machine_link_fixture(clock.clone()).await.unwrap();
     let path = allocation.root_path().join("settings-matrix");
@@ -267,7 +267,7 @@ async fn real_store_settings_see_foreign_and_ended_rows_without_the_keychain() {
     .unwrap();
     let mut replacement = local.binding.clone();
     replacement.generation = replacement.generation.successor().unwrap();
-    replacement.context.organization_id = "019f0000-0000-7000-8000-00000000cf54".parse().unwrap();
+    replacement.credential.enrollment_id = "019f0000-0000-7000-8000-00000000cf54".parse().unwrap();
     let replacement_key = replacement.key();
     assert_eq!(
         other.replace(local.binding.generation, &replacement).await,
@@ -285,8 +285,8 @@ async fn real_store_settings_see_foreign_and_ended_rows_without_the_keychain() {
         published.address,
         Err(switchboard_central_link::AddressError::InvalidLocation)
     );
+    let _held_replacement = discovery.recv().await.unwrap();
     assert!(held.is_closed());
-    assert!(discovery.try_recv().is_err());
     assert_eq!(
         local.store.read().await,
         Err(switchboard_machine_enrollment::CredentialStoreError::Read)

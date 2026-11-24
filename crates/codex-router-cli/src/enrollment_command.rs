@@ -4,9 +4,9 @@ use std::{ffi::OsString, io::Write, sync::Arc};
 use clap::Parser;
 use router_clock::RuntimeClock;
 use switchboard_machine_enrollment::{
-    CredentialStore, DeviceInstructions, EnrollmentEnd, EnrollmentFailure, EnrollmentRequest,
-    InvalidReason, MachineId, OrganizationId, SignInClient, SignInClientError, SignInDeployment,
-    SignInFailure,
+    CredentialStore, CredentialStoreError, DeviceInstructions, EnrollmentEnd, EnrollmentFailure,
+    EnrollmentRequest, InvalidReason, MachineId, OrganizationId, SignInClient, SignInClientError,
+    SignInDeployment, SignInFailure,
 };
 
 /// The enroll command parses these values from the person's arguments.
@@ -125,9 +125,16 @@ fn describe_ending(failure: EnrollmentFailure) -> &'static str {
         EnrollmentFailure::Instructions => {
             "The sign-in instructions could not be shown. Restore terminal output and try again."
         }
-        EnrollmentFailure::Store(_) => {
-            "The enrollment store is unavailable. Check Keychain access and try again."
+        EnrollmentFailure::Store(CredentialStoreError::EnrollmentScopeMismatch) => {
+            "Remove this machine first, then enroll it in the new organization or sign-in deployment."
         }
+        EnrollmentFailure::Store(
+            CredentialStoreError::Read
+            | CredentialStoreError::Replace
+            | CredentialStoreError::Remove
+            | CredentialStoreError::CleanupTimedOut
+            | CredentialStoreError::OutcomeNotKnown,
+        ) => "The enrollment store is unavailable. Check Keychain access and try again.",
         EnrollmentFailure::SignIn(SignInFailure::Unavailable { .. }) => {
             "Sign-in is temporarily unavailable. Try enrolling again later."
         }

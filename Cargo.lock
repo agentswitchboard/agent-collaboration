@@ -6053,6 +6053,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "switchboard-message-system"
+version = "0.1.158"
+dependencies = [
+ "hegeltest",
+ "state-machine-core",
+ "thiserror 2.0.18",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "switchboard-session-calls"
 version = "0.1.158"
 dependencies = [
