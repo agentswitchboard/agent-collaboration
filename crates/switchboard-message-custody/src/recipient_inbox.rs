@@ -2,12 +2,12 @@
 
 use central_link_protocol::{DeliveryMessage, DirectOfferBody, DirectOfferMessage, TimeLeft};
 use router_clock::RuntimeClock;
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, future::Future, sync::Arc};
 use switchboard_machine_core_store::{
     InboxDecision, InboxOfferExpiry, InboxRefusalReason, InboxStore, InboxStoreError,
     RecordDelivery,
 };
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, MutexGuard};
 use workspace_ids::{MachineId, MessageId, SessionRef};
 use workspace_model::{
     Timestamp,
@@ -39,6 +39,14 @@ struct OfferLookup {
     directory: Arc<dyn RecipientSessionDirectory>,
     clock: Arc<dyn RuntimeClock>,
     session: SessionRef,
+}
+
+enum PreparedKeep<'inbox> {
+    AlreadyDecided(InboxOfferResult),
+    Write {
+        inbox: MutexGuard<'inbox, RecipientInbox>,
+        answer: RecipientSessionAnswer,
+    },
 }
 
 impl OfferLookup {
@@ -244,24 +252,46 @@ impl RecipientInbox {
     pub(crate) async fn keep_shared_offer(
         inbox: &Mutex<Self>,
         offer: InboxOffer,
+        stop: impl Future<Output = ()>,
     ) -> Result<InboxOfferResult, InboxCustodyError> {
-        let (first_decision, lookup) = {
-            let mut inbox = inbox.lock().await;
-            (
-                inbox.prior_decision(offer.message_id()).await,
-                inbox.offer_lookup(&offer),
-            )
+        // A stopped lookup is left for Central to re-offer. After preparation
+        // selects a durable write, keep it outside the cancellable wait.
+        let prepared = tokio::select! {
+            biased;
+            () = stop => return Ok(InboxOfferResult::LookupDeferred),
+            prepared = Self::prepare_shared_keep(inbox, &offer) => prepared,
         };
-        let result = match first_decision {
-            Ok(None) => {
-                let answer = lookup.resolve().await;
-                inbox.lock().await.commit_offer(&offer, answer).await
+        let result = match prepared {
+            Ok(PreparedKeep::AlreadyDecided(decided)) => Ok(decided),
+            Ok(PreparedKeep::Write { mut inbox, answer }) => {
+                inbox.write_offer(&offer, answer).await
             }
-            Ok(Some(decided)) => Ok(decided),
             Err(error) => Err(error),
         };
         inbox.lock().await.retain_on_failure(offer, &result);
         result
+    }
+
+    async fn prepare_shared_keep<'inbox>(
+        inbox: &'inbox Mutex<Self>,
+        offer: &InboxOffer,
+    ) -> Result<PreparedKeep<'inbox>, InboxCustodyError> {
+        let (first_decision, lookup) = {
+            let mut inbox = inbox.lock().await;
+            (
+                inbox.prior_decision(offer.message_id()).await?,
+                inbox.offer_lookup(offer),
+            )
+        };
+        if let Some(decided) = first_decision {
+            return Ok(PreparedKeep::AlreadyDecided(decided));
+        }
+        let answer = lookup.resolve().await;
+        let mut inbox = inbox.lock().await;
+        if let Some(decided) = inbox.prior_decision(offer.message_id()).await? {
+            return Ok(PreparedKeep::AlreadyDecided(decided));
+        }
+        Ok(PreparedKeep::Write { inbox, answer })
     }
 
     /// Read one session's retained messages in the order supplied by the inbox store.
@@ -389,10 +419,18 @@ impl RecipientInbox {
         offer: &InboxOffer,
         answer: RecipientSessionAnswer,
     ) -> Result<InboxOfferResult, InboxCustodyError> {
-        let message_id = offer.message_id();
-        if let Some(previous) = self.prior_decision(message_id).await? {
+        if let Some(previous) = self.prior_decision(offer.message_id()).await? {
             return Ok(previous);
         }
+        self.write_offer(offer, answer).await
+    }
+
+    async fn write_offer(
+        &mut self,
+        offer: &InboxOffer,
+        answer: RecipientSessionAnswer,
+    ) -> Result<InboxOfferResult, InboxCustodyError> {
+        let message_id = offer.message_id();
         let decision = match answer {
             RecipientSessionAnswer::KnownOnce => InboxDecision::Accepted,
             RecipientSessionAnswer::UnknownSession => InboxDecision::Refused {

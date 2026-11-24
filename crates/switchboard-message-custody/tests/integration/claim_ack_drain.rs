@@ -54,8 +54,10 @@ pub(super) async fn check_empty_retry_before_claim_recovery(first_cutoff_gap_ms:
         ])));
     let first_frame = fixture.peer.hold_next_batch();
     let mut worker = ObservedWorker::start(fixture.custody, clock.clone());
-    clock.wait_after(0).await;
     let mark = Duration::from_secs(20);
+    worker
+        .wait_for_timer(0, ClockInstant::ZERO.after(mark))
+        .await;
     clock.manual.advance(mark).unwrap();
     first_frame.entered.notified().await;
     fixture
@@ -107,11 +109,9 @@ pub(super) async fn check_empty_retry_before_claim_recovery(first_cutoff_gap_ms:
     );
     let before_release = clock.checkpoint();
     empty_claim.release.notify_one();
-    clock.wait_after(before_release).await;
     let orphan_wake = mark + Duration::from_secs(1);
-    clock
-        .manual
-        .not_due_check_now(ClockInstant::ZERO.after(orphan_wake))
+    worker
+        .wait_for_timer(before_release, ClockInstant::ZERO.after(orphan_wake))
         .await;
 
     let recovered = worker

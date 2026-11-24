@@ -123,10 +123,8 @@ async fn an_awaiting_batch_does_not_hold_an_immediate_status_read() {
         outbox,
         inbox,
     );
-    let (stop, stopped) = watch::channel(false);
     let (sender, mut events) = mpsc::unbounded_channel();
-    let (calls, task) = custody_task(custody, stopped, Arc::new(ObserveTask(sender)));
-    let running = tokio::spawn(task);
+    let (calls, group) = custody_task(custody, Arc::new(ObserveTask(sender)));
     let item = thread_post(98);
     let OutboxQueuedWrite::Workspace(request) = item.payload else {
         panic!("thread post fixture required");
@@ -159,8 +157,8 @@ async fn an_awaiting_batch_does_not_hold_an_immediate_status_read() {
     let observed = events.recv().await.unwrap();
     assert!(matches!(observed, CustodyTaskEvent::Flush(report)
         if matches!(report.answered.as_slice(), [answer] if answer.request == item.request)));
-    stop.send_replace(true);
-    running.await.unwrap();
+    group.request_stop();
+    group.join().await.unwrap();
 }
 
 #[tokio::test]
@@ -182,9 +180,8 @@ async fn a_caller_gone_before_task_admission_leaves_no_outbox_row() {
         clock.clone(),
     );
     let custody = CustodyLink::new(lane.clone(), clock, Arc::new(NoFlushJitter), outbox, inbox);
-    let (stop, stopped) = watch::channel(false);
     let (sender, _events) = mpsc::unbounded_channel();
-    let (calls, task) = custody_task(custody, stopped, Arc::new(ObserveTask(sender)));
+    let (calls, group) = custody_task(custody, Arc::new(ObserveTask(sender)));
     let item = thread_post(99);
     let OutboxQueuedWrite::Workspace(request) = item.payload else {
         panic!("thread post fixture required");
@@ -198,15 +195,14 @@ async fn a_caller_gone_before_task_admission_leaves_no_outbox_row() {
             .is_pending()
     );
     drop(submission);
-    let running = tokio::spawn(task);
 
     assert!(
         calls.pending_writes(item.caller).await.unwrap().is_empty(),
         "a caller lost before admission cannot leave a row"
     );
     assert!(lane.batch_commands().is_empty());
-    stop.send_replace(true);
-    running.await.unwrap();
+    group.request_stop();
+    group.join().await.unwrap();
 }
 
 #[tokio::test]
@@ -215,10 +211,8 @@ async fn a_caller_gone_after_the_insert_still_has_its_write_flushed_and_answered
     let gate = campaign.faults.hold_next_insert_commit();
     let peer = campaign.peer;
     let clock = campaign.clock;
-    let (stop, stopped) = watch::channel(false);
     let (sender, mut events) = mpsc::unbounded_channel();
-    let (calls, task) = custody_task(campaign.custody, stopped, Arc::new(ObserveTask(sender)));
-    let running = tokio::spawn(task);
+    let (calls, group) = custody_task(campaign.custody, Arc::new(ObserveTask(sender)));
     let item = thread_post(62);
     let OutboxQueuedWrite::Workspace(request) = item.payload else {
         panic!("thread post fixture required");
@@ -267,6 +261,6 @@ async fn a_caller_gone_after_the_insert_still_has_its_write_flushed_and_answered
         CustodyRequestStatus::Answered(_)
     ));
     assert_eq!(peer.batch_commands().len(), 1);
-    stop.send_replace(true);
-    running.await.unwrap();
+    group.request_stop();
+    group.join().await.unwrap();
 }
