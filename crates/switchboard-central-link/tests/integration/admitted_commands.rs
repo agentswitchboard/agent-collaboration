@@ -30,7 +30,7 @@ fn correlation(number: u8) -> CorrelationId {
     clippy::panic,
     reason = "The fixture must fail if its hand-built frame is not a request."
 )]
-fn mail_write(number: u8) -> LinkRequest {
+pub(super) fn mail_write(number: u8) -> LinkRequest {
     let wire = format!(
         r#"{{"kind":"request","request":{{"correlationId":"{}","caller":{{"kind":"session","value":{{"machineId":"01890f2e-7b4c-7cc0-98c4-000000000002","sessionId":"s"}}}},"payload":{{"kind":"mail","request":{{"requestId":"01890f2e-7b4c-7cc0-98c4-0000000000{number:02x}","operation":{{"kind":"setNoticeCadence","cadence":"m25"}}}}}}}}}}"#,
         String::from(correlation(number))
@@ -81,7 +81,7 @@ async fn admit(
     admitted
 }
 
-async fn send_answer(socket: &mut WebSocketStream<TcpStream>, frame: DataFrame) {
+pub(super) async fn send_answer(socket: &mut WebSocketStream<TcpStream>, frame: DataFrame) {
     let wire = encode_text(&LinkFrame::Data(frame), FrameDirection::ToRouter).unwrap();
     socket.send(Message::Text(wire.into())).await.unwrap();
 }
@@ -799,6 +799,7 @@ async fn stalled_delivery_consumer_fault_preserves_held_offers_and_settles_comma
     let lane = fixture.inbox_events.lane.clone();
     let mut socket = fixture.accept().await;
     let admitted = admit(&mut fixture, &mut socket, &lane).await;
+    let before_offers = fixture.clock.wait_checkpoint();
     let ids = (1..=68)
         .map(|index| format!("01890f2e-7b4c-7cc0-98c4-{index:012x}"))
         .collect::<Vec<_>>();
@@ -806,7 +807,23 @@ async fn stalled_delivery_consumer_fault_preserves_held_offers_and_settles_comma
         let wire = DELIVER_FRAME.replace("01890f2e-7b4c-7cc0-98c4-000000000009", id);
         socket.send(Message::Text(wire.into())).await.unwrap();
     }
-    fixture.clock.not_due_check_now(tick(5)).await;
+    // The capabilities write also polls a five-second timer at tick zero.
+    // Wait for a live delivery-stall timer registered after admission.
+    fixture
+        .driver_polls
+        .wait_for(|_| {
+            fixture
+                .clock
+                .wait_registrations_since(before_offers)
+                .iter()
+                .any(|wait| {
+                    wait.deadline == tick(5)
+                        && wait.first_polled_at == Some(tick(0))
+                        && !wait.dropped
+                })
+        })
+        .await
+        .unwrap();
 
     let mut status = lane.request_status(status_command(&admitted, 70));
     let outbound = tokio::select! { wire = text(&mut socket) => wire, _ = &mut status => panic!("control write must run during pressure") };
