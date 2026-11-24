@@ -33,21 +33,17 @@ async fn native_app_server_keeps_its_existing_restore_and_steer_errors() {
         super::test_support::model_catalog(tokio::sync::watch::channel(Vec::new()).1),
     ));
     let failure = |kind| {
-        Box::new(ConversationOperationFailure {
+        Box::new(ConversationOperationFailure::new(
             kind,
-            stage: ConversationOperationFailureStage::Admission,
-            effect: ProviderOperationEffect::None,
-            message: "original provider guidance"
+            ConversationOperationFailureStage::Admission,
+            ProviderOperationEffect::None,
+            "original provider guidance"
                 .to_owned()
                 .try_into()
                 .expect("message"),
-            operation_id: None,
-            invalid_setting: None,
-            provider_code: None,
-            target: None,
-            endpoint: None,
-            availability: None,
-        })
+            None,
+            None,
+        ))
     };
     let thread = thread_alias(&backend.session);
 

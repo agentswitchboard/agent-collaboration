@@ -348,18 +348,17 @@ impl ConversationOperations {
         let Ok(message) = message else {
             return ConversationFailure::UndescribableFailure;
         };
-        ConversationFailure::Operation(ConversationOperationFailure {
-            kind: ConversationOperationFailureKind::Unavailable,
-            stage: ConversationOperationFailureStage::Binding,
-            effect: ProviderOperationEffect::None,
+        let mut failure = ConversationOperationFailure::new(
+            ConversationOperationFailureKind::Unavailable,
+            ConversationOperationFailureStage::Binding,
+            ProviderOperationEffect::None,
             message,
-            operation_id: Some(operation_id),
-            invalid_setting: None,
-            provider_code: None,
+            Some(operation_id),
             target,
-            endpoint: Some(endpoint.clone()),
-            availability,
-        })
+        );
+        failure.endpoint = Some(endpoint.clone());
+        failure.availability = availability;
+        ConversationFailure::Operation(failure)
     }
 
     /// The recorded Codex ACP operation with this identity, if one exists.
@@ -659,18 +658,14 @@ fn local_failure(
     let Ok(message) = NonEmptyText::try_from(message.to_owned()) else {
         return ConversationFailure::UndescribableFailure;
     };
-    ConversationFailure::Operation(ConversationOperationFailure {
+    ConversationFailure::Operation(ConversationOperationFailure::new(
         kind,
         stage,
-        effect: ProviderOperationEffect::None,
+        ProviderOperationEffect::None,
         message,
-        operation_id: Some(operation_id),
-        invalid_setting: None,
-        provider_code: None,
+        Some(operation_id),
         target,
-        endpoint: None,
-        availability: None,
-    })
+    ))
 }
 
 #[expect(clippy::result_large_err, reason = "Preserve typed failure payloads.")]

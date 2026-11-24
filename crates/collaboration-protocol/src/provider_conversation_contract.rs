@@ -824,9 +824,12 @@ pub struct ConversationOperationFailure {
     pub stage: ConversationOperationFailureStage,
     pub effect: ProviderOperationEffect,
     pub message: NonEmptyText,
-    /// For `PreviousTurnSettlementUnresolved`, this identifies the predecessor.
+    /// Identifies the request that failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operation_id: Option<OperationId>,
+    /// Present for `PreviousTurnSettlementUnresolved`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    previous_operation_id: Option<OperationId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invalid_setting: Option<InvalidProviderSetting>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -837,4 +840,57 @@ pub struct ConversationOperationFailure {
     pub endpoint: Option<EndpointRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub availability: Option<crate::EndpointAvailability>,
+}
+
+impl ConversationOperationFailure {
+    #[must_use]
+    pub fn new(
+        kind: ConversationOperationFailureKind,
+        stage: ConversationOperationFailureStage,
+        effect: ProviderOperationEffect,
+        message: NonEmptyText,
+        operation_id: Option<OperationId>,
+        target: Option<SessionRef>,
+    ) -> Self {
+        Self {
+            kind,
+            stage,
+            effect,
+            message,
+            operation_id,
+            target,
+            previous_operation_id: None,
+            invalid_setting: None,
+            provider_code: None,
+            endpoint: None,
+            availability: None,
+        }
+    }
+
+    #[must_use]
+    pub fn previous_turn_settlement_unresolved(
+        operation_id: OperationId,
+        previous_operation_id: OperationId,
+        target: SessionRef,
+        message: NonEmptyText,
+    ) -> Self {
+        Self {
+            previous_operation_id: Some(previous_operation_id),
+            ..Self::new(
+                ConversationOperationFailureKind::PreviousTurnSettlementUnresolved,
+                ConversationOperationFailureStage::Admission,
+                ProviderOperationEffect::None,
+                message,
+                Some(operation_id),
+                Some(target),
+            )
+        }
+    }
+
+    #[must_use]
+    pub fn previous_operation_id(&self) -> Option<&OperationId> {
+        self.previous_operation_id.as_ref().filter(|_| {
+            self.kind == ConversationOperationFailureKind::PreviousTurnSettlementUnresolved
+        })
+    }
 }

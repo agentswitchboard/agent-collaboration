@@ -278,13 +278,14 @@ impl SessionCommandPort for HostSessionCommandPort {
                 .await_prompt_start_owner(&target, &operation, &mut owner)
                 .await
                 .map_err(|block| match block {
-                    crate::external_provider_supervisor::PromptStartBlock::Fenced(operation) => {
-                        map_admission_failure(
-                            ProviderQueueAdmissionError::PreviousTurnSettlementUnresolved {
-                                operation,
-                            },
-                        )
-                    }
+                    crate::external_provider_supervisor::PromptStartBlock::Fenced(
+                        previous_operation,
+                    ) => map_admission_failure(
+                        ProviderQueueAdmissionError::PreviousTurnSettlementUnresolved {
+                            operation,
+                            previous_operation,
+                        },
+                    ),
                     crate::external_provider_supervisor::PromptStartBlock::OwnerStopped => {
                         CommandFailure::ProviderFailure
                     }
@@ -635,11 +636,17 @@ fn map_admission_failure(error: ProviderQueueAdmissionError) -> CommandFailure {
             CommandFailure::UnsupportedContent(content_type)
         }
         ProviderQueueAdmissionError::Busy => CommandFailure::Busy,
-        ProviderQueueAdmissionError::PreviousTurnSettlementUnresolved { operation } => {
-            OperationId::try_from(operation.to_string())
-                .map(|operation| CommandFailure::PreviousTurnSettlementUnresolved { operation })
-                .unwrap_or(CommandFailure::ProviderFailure)
-        }
+        ProviderQueueAdmissionError::PreviousTurnSettlementUnresolved {
+            operation,
+            previous_operation,
+        } => OperationId::try_from(previous_operation.to_string())
+            .map(
+                |previous_operation| CommandFailure::PreviousTurnSettlementUnresolved {
+                    operation,
+                    previous_operation,
+                },
+            )
+            .unwrap_or(CommandFailure::ProviderFailure),
         _ => CommandFailure::ProviderFailure,
     }
 }

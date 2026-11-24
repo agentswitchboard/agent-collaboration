@@ -58,7 +58,7 @@ async fn start_observed_before_settling(advance_deadline: bool) {
     let second = rig
         .supervisor
         .prompt_contents(ProviderPromptContentsRequest {
-            operation_id: next,
+            operation_id: next.clone(),
             input_id: session_event_model::InputId::generate(),
             target: rig.target.clone(),
             requested_by: actor.clone(),
@@ -97,7 +97,8 @@ async fn start_observed_before_settling(advance_deadline: bool) {
             failure.kind,
             ConversationOperationFailureKind::PreviousTurnSettlementUnresolved
         );
-        assert_eq!(failure.operation_id, Some(first));
+        assert_eq!(failure.operation_id.as_ref(), Some(&next));
+        assert_eq!(failure.previous_operation_id(), Some(&first));
         assert_eq!(
             String::from(failure.message),
             "The last turn on this session ended, but the Router could not confirm it was recorded. This session takes no new turn until that is confirmed; start a new session to continue."

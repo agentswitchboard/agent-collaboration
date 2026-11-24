@@ -896,19 +896,14 @@ fn failure(
     operation_id: OperationId,
     target: Option<SessionRef>,
 ) -> ConversationOperationFailure {
-    ConversationOperationFailure {
+    ConversationOperationFailure::new(
         kind,
         stage,
         effect,
-        message: NonEmptyText::try_from(message.to_owned())
-            .expect("provider failure message is valid"),
-        operation_id: Some(operation_id),
-        invalid_setting: None,
-        provider_code: None,
+        NonEmptyText::try_from(message.to_owned()).expect("provider failure message is valid"),
+        Some(operation_id),
         target,
-        endpoint: None,
-        availability: None,
-    }
+    )
 }
 
 fn failure_with_provider_code(

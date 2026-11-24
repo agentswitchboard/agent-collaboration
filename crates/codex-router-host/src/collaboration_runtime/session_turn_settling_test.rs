@@ -665,8 +665,19 @@ async fn assert_native_fence(
     operation: &OperationId,
 ) -> FixtureResult<()> {
     let frame = receive_response(socket, id).await?;
-    let expected = json!({"kind":"previous_turn_settlement_unresolved","operationId":operation});
-    if frame.pointer("/error/data") != Some(&expected)
+    let failed_operation = frame
+        .pointer("/error/data/operationId")
+        .and_then(Value::as_str)
+        .and_then(|value| OperationId::try_from(value.to_owned()).ok());
+    if failed_operation
+        .as_ref()
+        .is_none_or(|failed| failed == operation)
+        || frame.pointer("/error/data/kind").and_then(Value::as_str)
+            != Some("previous_turn_settlement_unresolved")
+        || frame
+            .pointer("/error/data/previousOperationId")
+            .and_then(Value::as_str)
+            != Some(operation.as_str())
         || frame.pointer("/error/message").and_then(Value::as_str)
             != Some(
                 "The last turn on this session ended, but the Router could not confirm it was recorded. This session takes no new turn until that is confirmed; start a new session to continue.",

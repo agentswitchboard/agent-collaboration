@@ -123,6 +123,7 @@ pub enum CommandFailure {
     #[error("{}", collaboration_protocol::PREVIOUS_TURN_SETTLEMENT_GUIDANCE)]
     PreviousTurnSettlementUnresolved {
         operation: collaboration_protocol::OperationId,
+        previous_operation: collaboration_protocol::OperationId,
     },
     #[error("session has no active turn")]
     NoActiveTurn,
@@ -173,12 +174,17 @@ impl CommandFailure {
             Kind::Busy => Self::Busy,
             Kind::UnsupportedCapability => Self::Unsupported,
             Kind::SettingsUnresolved => Self::SettingsUnresolved,
-            Kind::PreviousTurnSettlementUnresolved => failure
-                .operation_id
-                .clone()
-                .map_or(Self::ProviderFailure, |operation| {
-                    Self::PreviousTurnSettlementUnresolved { operation }
-                }),
+            Kind::PreviousTurnSettlementUnresolved => {
+                match (&failure.operation_id, failure.previous_operation_id()) {
+                    (Some(operation), Some(previous_operation)) => {
+                        Self::PreviousTurnSettlementUnresolved {
+                            operation: operation.clone(),
+                            previous_operation: previous_operation.clone(),
+                        }
+                    }
+                    _ => Self::ProviderFailure,
+                }
+            }
             Kind::InvalidSetting => match &failure.invalid_setting {
                 Some(detail) => Self::InvalidCreateSetting {
                     target: failure.target.clone(),

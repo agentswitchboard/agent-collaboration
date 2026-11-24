@@ -136,6 +136,7 @@ enum ThreadMethodError {
     #[error("{}", collaboration_protocol::PREVIOUS_TURN_SETTLEMENT_GUIDANCE)]
     PreviousTurnSettlementUnresolved {
         operation: collaboration_protocol::OperationId,
+        previous_operation: collaboration_protocol::OperationId,
     },
     #[error("invalid thread parameters")]
     InvalidParams,

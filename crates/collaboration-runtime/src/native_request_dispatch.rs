@@ -331,9 +331,12 @@ fn native_error_response(id: Value, error: &ThreadMethodError) -> Value {
         ThreadMethodError::Busy => -32600,
     };
     let data = match error {
-        ThreadMethodError::PreviousTurnSettlementUnresolved { operation } => {
-            Some(json!({"kind":"previous_turn_settlement_unresolved","operationId":operation}))
-        }
+        ThreadMethodError::PreviousTurnSettlementUnresolved {
+            operation,
+            previous_operation,
+        } => Some(
+            json!({"kind":"previous_turn_settlement_unresolved","operationId":operation,"previousOperationId":previous_operation}),
+        ),
         ThreadMethodError::SettingsContextChanged => {
             Some(json!({"kind":"settings_context_changed"}))
         }

@@ -601,9 +601,13 @@ pub(super) fn command_error(error: collaboration_contracts::CommandFailure) -> T
             ThreadMethodError::Unsupported
         }
         CommandFailure::Busy | CommandFailure::NoActiveTurn => ThreadMethodError::Busy,
-        CommandFailure::PreviousTurnSettlementUnresolved { operation } => {
-            ThreadMethodError::PreviousTurnSettlementUnresolved { operation }
-        }
+        CommandFailure::PreviousTurnSettlementUnresolved {
+            operation,
+            previous_operation,
+        } => ThreadMethodError::PreviousTurnSettlementUnresolved {
+            operation,
+            previous_operation,
+        },
         CommandFailure::SessionNotFound => ThreadMethodError::NotFound,
         CommandFailure::InvalidSetting { .. } | CommandFailure::UnsupportedContent(_) => {
             ThreadMethodError::InvalidParams

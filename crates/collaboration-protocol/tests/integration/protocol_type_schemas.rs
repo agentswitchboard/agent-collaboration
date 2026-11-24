@@ -1,4 +1,53 @@
 use collaboration_protocol::protocol_type_schemas;
+
+#[test]
+fn settlement_refusal_keeps_the_failed_request_and_the_predecessor_in_separate_fields() {
+    use collaboration_protocol::{
+        ConversationOperationFailure as Failure, ConversationOperationFailureKind as Kind,
+        ConversationOperationFailureStage as Stage, OperationId, ProviderOperationEffect,
+        SessionRef,
+    };
+
+    let request = OperationId::generate();
+    let predecessor = OperationId::generate();
+    let target: SessionRef = serde_json::from_value(serde_json::json!({
+        "endpoint":{"serviceId":"0ff962c5-7fa3-4c18-a5ca-1bbe8db09e89","endpointId":"cursor-local"},
+        "sessionId":"fenced-session"
+    }))
+    .unwrap();
+    let guidance = collaboration_protocol::PREVIOUS_TURN_SETTLEMENT_GUIDANCE
+        .to_owned()
+        .try_into()
+        .unwrap();
+    let ordinary = Failure::new(
+        Kind::Busy,
+        Stage::Admission,
+        ProviderOperationEffect::None,
+        String::from("provider session is busy").try_into().unwrap(),
+        Some(request.clone()),
+        Some(target.clone()),
+    );
+    let fence = Failure::previous_turn_settlement_unresolved(
+        request.clone(),
+        predecessor.clone(),
+        target,
+        guidance,
+    );
+    let schema = serde_json::to_value(schemars::schema_for!(Failure)).unwrap();
+    let validator = jsonschema::validator_for(&schema).unwrap();
+
+    let ordinary = serde_json::to_value(ordinary).unwrap();
+    let wire = serde_json::to_value(fence).unwrap();
+    assert!(validator.is_valid(&ordinary));
+    assert!(validator.is_valid(&wire));
+    assert!(ordinary.get("previousOperationId").is_none());
+    assert_eq!(wire["kind"], "previousTurnSettlementUnresolved");
+    assert_eq!(wire["operationId"], request.as_str());
+    assert_eq!(wire["previousOperationId"], predecessor.as_str());
+    let decoded: Failure = serde_json::from_value(wire).unwrap();
+    assert_eq!(decoded.operation_id.as_ref(), Some(&request));
+    assert_eq!(decoded.previous_operation_id(), Some(&predecessor));
+}
 use serde_json::json;
 
 #[test]

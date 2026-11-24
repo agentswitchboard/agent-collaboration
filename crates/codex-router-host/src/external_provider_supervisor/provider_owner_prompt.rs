@@ -385,13 +385,16 @@ pub(super) fn previous_turn_fence(
     current: OperationId,
     target: SessionRef,
 ) -> ConversationOperationFailure {
-    failure(
-        ConversationOperationFailureKind::PreviousTurnSettlementUnresolved,
-        ConversationOperationFailureStage::Admission,
-        ProviderOperationEffect::None,
-        collaboration_protocol::PREVIOUS_TURN_SETTLEMENT_GUIDANCE,
-        OperationId::try_from(previous.to_string()).unwrap_or(current),
-        Some(target),
+    let (Ok(previous), Ok(message)) = (
+        OperationId::try_from(previous.to_string()),
+        NonEmptyText::try_from(
+            collaboration_protocol::PREVIOUS_TURN_SETTLEMENT_GUIDANCE.to_owned(),
+        ),
+    ) else {
+        return super::unavailable_failure(current, Some(target));
+    };
+    ConversationOperationFailure::previous_turn_settlement_unresolved(
+        current, previous, target, message,
     )
 }
 

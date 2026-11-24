@@ -8,7 +8,7 @@ use super::{
 use crate::session_owner_calls::InputAcceptance;
 use acp_client_runtime::RestorePhase;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum ProviderQueueAdmissionError {
     #[error("provider session not found")]
     SessionNotFound,
@@ -25,7 +25,10 @@ pub enum ProviderQueueAdmissionError {
     #[error("provider queue is full")]
     Busy,
     #[error("{}", collaboration_protocol::PREVIOUS_TURN_SETTLEMENT_GUIDANCE)]
-    PreviousTurnSettlementUnresolved { operation: uuid::Uuid },
+    PreviousTurnSettlementUnresolved {
+        operation: OperationId,
+        previous_operation: uuid::Uuid,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -103,9 +106,12 @@ impl ProviderAcpDeliveryRoute {
             .await_prompt_start_owner(&target, &operation_id, &mut start_owner)
             .await
             .map_err(|block| match block {
-                crate::external_provider_supervisor::PromptStartBlock::Fenced(operation) => {
-                    ProviderQueueAdmissionError::PreviousTurnSettlementUnresolved { operation }
-                }
+                crate::external_provider_supervisor::PromptStartBlock::Fenced(
+                    previous_operation,
+                ) => ProviderQueueAdmissionError::PreviousTurnSettlementUnresolved {
+                    operation: operation_id.clone(),
+                    previous_operation,
+                },
                 crate::external_provider_supervisor::PromptStartBlock::OwnerStopped => {
                     ProviderQueueAdmissionError::Unavailable
                 }
