@@ -21,7 +21,9 @@ use tokio::{
 };
 
 mod enrollment_row_mapping;
+mod enrollment_status_read;
 mod enrollment_worker;
+pub use enrollment_status_read::{MachineEnrollmentStatus, read_machine_enrollment_status};
 #[cfg(all(feature = "test-support", debug_assertions))]
 pub mod test_support {
     pub use codex_router_secret_store::keychain_data_key::{KeychainAccess, KeychainAccessError};

@@ -1,15 +1,26 @@
-//! The interactive enrollment command. Its process dispatch needs a machine identity and store.
-use std::{ffi::OsString, io::Write, sync::Arc};
+//! Interactive enrollment arguments and the device-approval journey.
+use std::{ffi::OsString, future::Future, io::Write};
 
 use clap::Parser;
-use router_clock::RuntimeClock;
+use switchboard_machine_core_store::{
+    EnrollmentMetadataReadError, MachineIdentityError, MachineLocalStoreError,
+};
 use switchboard_machine_enrollment::{
     CredentialStore, CredentialStoreError, DeviceInstructions, EnrollmentEnd, EnrollmentFailure,
     EnrollmentRequest, InvalidReason, MachineId, OrganizationId, SignInClient, SignInClientError,
     SignInDeployment, SignInFailure,
 };
+use switchboard_machine_enrollment_store::EnrollmentStoreCloseError;
+
+use crate::enrollment_status::ENROLLED_TEXT;
+
+pub(crate) const ENROLL_HELP: &str = "Usage: codex-router enroll --organization <uuid> --sign-in <https-origin>\n\
+Enroll this Mac in a Switchboard organization. Stop the debug Host before enrolling.\n";
+pub(crate) const STATUS_HELP: &str = "Usage: codex-router enrollment status\n\
+Show the enrollment stored on this Mac. Use an idle Router state directory.\n";
 
 /// The enroll command parses these values from the person's arguments.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EnrollArguments {
     pub organization_id: OrganizationId,
     pub sign_in: SignInDeployment,
@@ -27,16 +38,15 @@ struct EnrollOptions {
     sign_in: String,
 }
 
-/// The composition root supplies the Mac identity, store and clock to the enroll command.
+/// The composition root supplies the Mac identity and store to the enroll command.
 pub struct EnrollBindings<'input, Store> {
     pub machine_id: &'input MachineId,
     pub machine_label: &'input str,
     pub store: &'input Store,
-    pub clock: Arc<dyn RuntimeClock + Send + Sync>,
 }
 
 /// The command emits these action-oriented messages without carrying raw arguments or replies.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum EnrollCommandError {
     #[error("Use enroll --organization <organization-uuid> --sign-in <https-origin>.")]
     Arguments,
@@ -50,6 +60,24 @@ pub enum EnrollCommandError {
     Output,
     #[error("{}", describe_ending(*.0))]
     Enrollment(EnrollmentFailure),
+    #[error("Use codex-router enrollment status.")]
+    StatusArguments,
+    #[error("{0}")]
+    DebugRoot(&'static str),
+    #[error("The Router state directory must be a private, absolute directory.")]
+    InvalidRoot,
+    #[error("The Router state directory could not be opened.")]
+    RootFilesystem(#[source] std::io::Error),
+    #[error("The Mac's local identity could not be opened.")]
+    MachineIdentity(#[source] MachineIdentityError),
+    #[error("The enrollment store could not be opened.")]
+    StoreOpen(#[source] MachineLocalStoreError),
+    #[error(
+        "Enrollment was saved. The enrollment store could not close. Run enrollment status before trying again."
+    )]
+    StoreClose(#[source] EnrollmentStoreCloseError),
+    #[error("The Mac's stored enrollment could not be read. {0}.")]
+    StatusRead(#[source] EnrollmentMetadataReadError),
 }
 
 impl EnrollArguments {
@@ -75,31 +103,38 @@ impl EnrollArguments {
     }
 }
 
+pub(crate) fn create_sign_in_client(
+    sign_in: &SignInDeployment,
+    clock: std::sync::Arc<dyn router_clock::RuntimeClock + Send + Sync>,
+) -> Result<SignInClient, EnrollCommandError> {
+    SignInClient::new(sign_in.origin().clone(), clock).map_err(|error| match error {
+        SignInClientError::InvalidIssuer => EnrollCommandError::SignInOrigin,
+        SignInClientError::ClientSetup => EnrollCommandError::Client,
+    })
+}
+
 pub async fn run_enroll(
-    arguments: EnrollArguments,
+    organization_id: OrganizationId,
     bindings: EnrollBindings<'_, impl CredentialStore>,
+    client: &SignInClient,
+    close_store: impl Future<Output = Result<(), EnrollmentStoreCloseError>>,
     output: &mut impl Write,
 ) -> Result<(), EnrollCommandError> {
-    let client =
-        SignInClient::new(arguments.sign_in.origin().clone(), bindings.clock).map_err(|error| {
-            match error {
-                SignInClientError::InvalidIssuer => EnrollCommandError::SignInOrigin,
-                SignInClientError::ClientSetup => EnrollCommandError::Client,
-            }
-        })?;
     let request = EnrollmentRequest {
         machine_id: bindings.machine_id,
         machine_label: bindings.machine_label,
-        organization_id: arguments.organization_id,
+        organization_id,
     };
-    client
+    let enrollment = client
         .enroll(request, bindings.store, |instructions| {
             show_device_instructions(output, instructions)
                 .map_err(|_| EnrollmentFailure::Instructions)
         })
-        .await
-        .map_err(EnrollCommandError::Enrollment)?;
-    writeln!(output, "This Mac is enrolled.").map_err(|_| EnrollCommandError::Output)
+        .await;
+    let closed = close_store.await;
+    enrollment.map_err(EnrollCommandError::Enrollment)?;
+    closed.map_err(EnrollCommandError::StoreClose)?;
+    writeln!(output, "{ENROLLED_TEXT}").map_err(|_| EnrollCommandError::Output)
 }
 
 fn show_device_instructions(
@@ -182,3 +217,7 @@ fn invalid_answer(reason: InvalidReason) -> &'static str {
 #[cfg(test)]
 #[path = "enrollment_command_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "enrollment_journey_test.rs"]
+mod journey_tests;

@@ -5,7 +5,9 @@ use sqlx::SqliteConnection;
 use workspace_ids::MachineId;
 
 use crate::{
-    EnrollmentRowCorruption, MachineLocalStore, StoredEnrollmentRow, StoredEnrollmentRowMetadata,
+    EnrollmentMetadataQueryError, EnrollmentRowCorruption, MachineLocalStore, StoredEnrollmentRow,
+    StoredEnrollmentRowMetadata,
+    enrollment_metadata_read::{fetch_enrollment_metadata, parse_machine_id},
 };
 
 /// Failures before commit are distinct from a commit attempt with an uncertain outcome.
@@ -53,7 +55,7 @@ impl MachineLocalStore {
         &mut self,
         machine_id: &MachineId,
     ) -> Result<StoredEnrollmentRowMetadata, EnrollmentRowStoreError> {
-        fetch_enrollment_metadata(&mut self.connection, machine_id).await
+        fetch_existing_enrollment_metadata(&mut self.connection, machine_id).await
     }
 
     /// Settles an uncertain ending against metadata under the writer reservation.
@@ -62,7 +64,7 @@ impl MachineLocalStore {
         machine_id: &MachineId,
     ) -> Result<StoredEnrollmentRowMetadata, EnrollmentRowStoreError> {
         let mut transaction = self.transaction(TransactionStart::Immediate).await?;
-        let row = fetch_enrollment_metadata(&mut transaction, machine_id).await?;
+        let row = fetch_existing_enrollment_metadata(&mut transaction, machine_id).await?;
         transaction.commit().await?;
         Ok(row)
     }
@@ -112,7 +114,7 @@ impl MachineLocalStore {
         decide: impl FnOnce(StoredEnrollmentRowMetadata) -> EnrollmentRowChange<Abort> + Send,
     ) -> Result<EnrollmentRowWrite<Abort>, EnrollmentRowStoreError> {
         let mut transaction = self.transaction(TransactionStart::Immediate).await?;
-        let row = fetch_enrollment_metadata(&mut transaction, machine_id).await?;
+        let row = fetch_existing_enrollment_metadata(&mut transaction, machine_id).await?;
         let generation = row.generation();
         let active = matches!(row, StoredEnrollmentRowMetadata::Active { .. });
         let decision = decide(row);
@@ -224,45 +226,29 @@ async fn fetch_enrollment_row(
     )?)
 }
 
-async fn fetch_enrollment_metadata(
+async fn fetch_existing_enrollment_metadata(
     connection: &mut SqliteConnection,
     machine_id: &MachineId,
 ) -> Result<StoredEnrollmentRowMetadata, EnrollmentRowStoreError> {
-    let rows = sqlx::query!(
-        r#"SELECT CAST(machine_id AS BLOB) AS "machine_id!: Vec<u8>",
-                  CASE WHEN typeof(enrollment_generation) = 'integer' THEN enrollment_generation END
-                      AS "generation?: i64",
-                  CAST(enrollment_json AS BLOB) AS "metadata?: Vec<u8>",
-                  (typeof(machine_id) = 'text'
-                   AND typeof(enrollment_json) IN ('text', 'null')) AS "valid_storage!: bool"
-           FROM machine_identity LIMIT 2"#,
-    )
-    .fetch_all(connection)
-    .await?;
-    let mut rows = rows.into_iter();
-    let row = rows.next().ok_or(EnrollmentRowCorruption::MissingMachine)?;
-    if rows.next().is_some() {
-        return Err(EnrollmentRowCorruption::MultipleMachines.into());
-    }
-    if !row.valid_storage {
-        return Err(EnrollmentRowCorruption::StorageType.into());
-    }
-    confirm_machine(&row.machine_id, machine_id)?;
-    let generation = row.generation.ok_or(EnrollmentRowCorruption::StorageType)?;
-    Ok(StoredEnrollmentRowMetadata::from_columns(
-        generation,
-        row.metadata.as_deref(),
-    )?)
+    fetch_enrollment_metadata(connection, Some(machine_id))
+        .await
+        .map_err(|error| match error {
+            EnrollmentMetadataQueryError::Sqlite(source) => {
+                EnrollmentRowStoreError::Database(source)
+            }
+            EnrollmentMetadataQueryError::Corrupt(reason) => {
+                EnrollmentRowStoreError::Corrupt(reason)
+            }
+        })?
+        .map(|(_, row)| row)
+        .ok_or_else(|| EnrollmentRowCorruption::MissingMachine.into())
 }
 
 fn confirm_machine(
     stored_id: &[u8],
     machine_id: &MachineId,
 ) -> Result<(), EnrollmentRowCorruption> {
-    let stored_machine: MachineId = std::str::from_utf8(stored_id)
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .ok_or(EnrollmentRowCorruption::MachineId)?;
+    let stored_machine = parse_machine_id(stored_id)?;
     if &stored_machine != machine_id {
         return Err(EnrollmentRowCorruption::WrongMachine);
     }

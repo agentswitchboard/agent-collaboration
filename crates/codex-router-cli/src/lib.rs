@@ -29,6 +29,10 @@ pub mod doctor;
 #[cfg(unix)]
 #[doc(hidden)]
 pub mod enrollment_command;
+#[cfg(unix)]
+mod enrollment_process;
+#[cfg(unix)]
+mod enrollment_status;
 mod host_command;
 mod live;
 mod presentation;
@@ -103,8 +107,11 @@ pub async fn run_async() -> i32 {
     let uses_async_dispatch = matches!(&parsed_command, Ok(CliCommand::Quota(_)))
         || matches!(&parsed_command, Ok(CliCommand::Host(_)));
     #[cfg(unix)]
-    let uses_async_dispatch =
-        uses_async_dispatch || matches!(&parsed_command, Ok(CliCommand::Central(_)));
+    let uses_async_dispatch = uses_async_dispatch
+        || matches!(
+            &parsed_command,
+            Ok(CliCommand::Central(_) | CliCommand::Enroll(_) | CliCommand::EnrollmentStatus)
+        );
     if !uses_async_dispatch {
         return std::thread::spawn(move || run_sync_process_args(args))
             .join()
@@ -214,6 +221,18 @@ where
         #[cfg(unix)]
         CliCommand::Central(command) => {
             central_command::run_central_command(command, stdout).await?;
+            stderr.flush().map_err(CliError::Stderr)
+        }
+        #[cfg(unix)]
+        CliCommand::Enroll(arguments) => {
+            enrollment_process::enroll_from_process(arguments, &default_router_root()?, stdout)
+                .await?;
+            stderr.flush().map_err(CliError::Stderr)
+        }
+        #[cfg(unix)]
+        CliCommand::EnrollmentStatus => {
+            enrollment_process::enrollment_status_from_process(&default_router_root()?, stdout)
+                .await?;
             stderr.flush().map_err(CliError::Stderr)
         }
         CliCommand::Host(command) => {
@@ -637,6 +656,10 @@ where
         CliCommand::Central(_) => {
             return Err(central_command::CentralCommandError::AsyncDispatchRequired.into());
         }
+        #[cfg(unix)]
+        CliCommand::Enroll(_) | CliCommand::EnrollmentStatus => {
+            return Err(CliError::EnrollmentRequiresAsyncDispatch);
+        }
         CliCommand::Version => {
             writeln!(stdout, "codex-router {}", env!("CARGO_PKG_VERSION"))
                 .map_err(CliError::Stdout)?;
@@ -845,6 +868,8 @@ commands:
   host app-server update         Update managed Codex and activate it if changed
   host router restart            Restart the router when host-owned
   central serve --config FILE   Run a self-hosted central
+  enroll --organization <uuid> --sign-in <https-origin>  Enroll this Mac
+  enrollment status             Show this Mac's stored enrollment
   doctor                        Diagnose local router setup
   profile print                 Print the Codex profile snippet
 
