@@ -150,6 +150,11 @@ impl Journey {
                 machine_id: MACHINE_LINK_FIXTURE_MACHINE.parse().unwrap()
             }
         );
+        inbox
+            .watch_admitted()
+            .wait_for(Option::is_some)
+            .await
+            .unwrap();
         Self {
             central,
             mac_clock,
