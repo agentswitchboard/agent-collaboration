@@ -215,10 +215,8 @@ async fn real_central_accepts_and_receipts_same_mac_delivery_and_refuses_an_unkn
         OutboxWork::new(Box::new(outbox), clock.clone()),
         RecipientInbox::new(inbox, machine, directory, clock.clone()),
     );
-    let (stop, stopped) = watch::channel(false);
     let (event_sender, mut events) = mpsc::unbounded_channel();
-    let (calls, task) = custody_task(custody, stopped, Arc::new(RecordCustody(event_sender)));
-    let task = tokio::spawn(task);
+    let (calls, group) = custody_task(custody, Arc::new(RecordCustody(event_sender)));
 
     let register = calls
         .submit(
@@ -383,7 +381,7 @@ async fn real_central_accepts_and_receipts_same_mac_delivery_and_refuses_an_unkn
     assert!(calls.waiting_for_session(missing).await.unwrap().is_empty());
     assert_eq!(calls.waiting_for_session(session).await.unwrap(), waiting);
 
-    stop.send_replace(true);
-    task.await.unwrap();
+    group.request_stop();
+    group.join().await.unwrap();
     journey.close().await;
 }

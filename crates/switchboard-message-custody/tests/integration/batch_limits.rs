@@ -19,7 +19,7 @@ use switchboard_message_custody::{
     outbox_work::OutboxWork,
     recipient_inbox::RecipientInbox,
 };
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 use workspace_ids::MachineId;
 use workspace_model::{Addressee, ChangePosition, PostText, WorkspaceOperation, WorkspaceRequest};
 
@@ -67,14 +67,15 @@ pub(super) async fn limits_fixture_with_clock(
         clock.clone(),
         Default::default(),
     ));
-    let custody = custody_with_store(&database, lane.clone(), observed_clock, machine).await;
+    let custody = custody_with_store(&database, lane.clone(), observed_clock, clock, machine).await;
     (root, custody, lane)
 }
 
 pub(super) async fn custody_with_store(
     database: &Path,
     lane: Arc<ScriptedBatchLane>,
-    clock: Arc<dyn RuntimeClock>,
+    scheduler_clock: Arc<dyn RuntimeClock>,
+    clock: Arc<ManualClock>,
     machine: MachineId,
 ) -> CustodyLink {
     let outbox = OutboxWork::new(Box::new(open_outbox(database).await), clock.clone());
@@ -84,7 +85,13 @@ pub(super) async fn custody_with_store(
         Arc::new(KnownRecipient),
         clock.clone(),
     );
-    CustodyLink::new(lane, clock, Arc::new(NoFlushJitter), outbox, inbox)
+    CustodyLink::new(
+        lane,
+        scheduler_clock,
+        Arc::new(NoFlushJitter),
+        outbox,
+        inbox,
+    )
 }
 
 async fn queue_post(
@@ -256,7 +263,9 @@ async fn an_orphaned_claim_arms_the_flush_after_the_last_waiting_row_disappears(
     );
 
     let mut worker = ObservedWorker::start(custody, clock.clone());
-    clock.wait_after(0).await;
+    worker
+        .wait_for_timer(0, ClockInstant::ZERO.after(Duration::from_secs(20)))
+        .await;
     assert!(
         matches!(
             lane.take_calls().as_slice(),
@@ -352,10 +361,8 @@ async fn a_flush_end_prunes_only_terminal_writes_outside_sixty_days() {
             .await
             .unwrap();
     }
-    let (stop, stopped) = watch::channel(false);
     let (sender, mut events) = mpsc::unbounded_channel();
-    let (calls, task) = custody_task(custody, stopped, Arc::new(ObserveTask(sender)));
-    let running = tokio::spawn(task);
+    let (calls, group) = custody_task(custody, Arc::new(ObserveTask(sender)));
     let fresh = thread_post(1);
     let OutboxQueuedWrite::Workspace(request) = fresh.payload else {
         panic!("thread post fixture required");
@@ -377,8 +384,8 @@ async fn a_flush_end_prunes_only_terminal_writes_outside_sixty_days() {
             break;
         }
     }
-    stop.send_replace(true);
-    running.await.unwrap();
+    group.request_stop();
+    group.join().await.unwrap();
     assert_eq!(
         store
             .request_status(&old.caller, &old.request)

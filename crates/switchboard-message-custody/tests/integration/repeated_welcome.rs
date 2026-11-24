@@ -6,6 +6,7 @@
     reason = "The fixture and its observed frames must be complete."
 )]
 
+use router_clock::{ClockInstant, RuntimeClock};
 use runtime_primitives::SyncTime;
 use std::time::Duration;
 use switchboard_machine_core_store::OutboxQueuedWrite;
@@ -14,7 +15,7 @@ use workspace_model::{Caller, Timestamp};
 
 use super::{
     batch_limits::observed_limits_fixture, batch_replay::new_admission, mark_drain::queue_posts,
-    outbox_timing::thread_post, worker_turns::ObservedWorker,
+    outbox_timing::thread_post, worker_orphans::flush_event, worker_turns::ObservedWorker,
 };
 
 const MARK_MS: i64 = 1_763_380_800_000;
@@ -45,7 +46,9 @@ pub(super) async fn check_repeated_welcome(visit_named_mark: bool, older_suffix:
     lane.admitted.send_replace(Some(first_welcome));
     let first_gate = lane.hold_next_batch();
     let mut worker = ObservedWorker::start(custody, observed.clone());
-    observed.wait_after(0).await;
+    worker
+        .wait_for_timer(0, ClockInstant::ZERO.after(Duration::from_secs(20)))
+        .await;
     clock.advance(Duration::from_secs(20)).unwrap();
     first_gate.entered.notified().await;
 
@@ -63,10 +66,9 @@ pub(super) async fn check_repeated_welcome(visit_named_mark: bool, older_suffix:
     let occupying_gate = if visit_named_mark {
         let named_gate = lane.hold_next_batch();
         clock.advance(Duration::from_secs(3)).unwrap();
-        let before_release = observed.checkpoint();
         first_gate.release.notify_one();
-        observed.wait_after(before_release).await;
-        assert_eq!(worker.take_reports().unwrap().answered.len(), 64);
+        let flushed = flush_event(&mut worker.events, "the first frame to settle").await;
+        assert_eq!(flushed.answered.len(), 64);
         clock.advance(Duration::from_secs(57)).unwrap();
         named_gate.entered.notified().await;
         named_gate
@@ -82,11 +84,15 @@ pub(super) async fn check_repeated_welcome(visit_named_mark: bool, older_suffix:
         Timestamp::from_timestamp_millis(earlier_mark - 1_000).unwrap();
     let before_welcome = observed.checkpoint();
     lane.admitted.send_replace(Some(second_welcome));
-    observed.wait_after(before_welcome).await;
-    let before_release = observed.checkpoint();
+    worker
+        .wait_for_timer(
+            before_welcome,
+            clock.monotonic_now().after(Duration::from_secs(1)),
+        )
+        .await;
     occupying_gate.release.notify_one();
-    observed.wait_after(before_release).await;
-    assert_eq!(worker.take_reports().unwrap().answered.len(), 64);
+    let flushed = flush_event(&mut worker.events, "the held older frame to settle").await;
+    assert_eq!(flushed.answered.len(), 64);
 
     let earlier = worker.advance(Duration::from_secs(1)).await.unwrap();
     let (_, remaining) = old_ids

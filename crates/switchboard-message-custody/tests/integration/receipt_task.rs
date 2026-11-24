@@ -9,7 +9,7 @@ use switchboard_message_custody::{
     custody_task::{CustodyTaskEvent, custody_task},
     receipt_delivery::ReceiptFrameOutcome,
 };
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 use workspace_model::{
     Timestamp,
     central_mail::{MessageBody, MessageRecord},
@@ -58,10 +58,8 @@ async fn collecting_an_old_receipt_does_not_consume_the_replacement_mark() {
     ));
     let release = lane.hold_next_receipt_completion();
     let mut sent = lane.watch_receipt_commands();
-    let (stop, stopped) = watch::channel(false);
     let (observed, mut events) = mpsc::unbounded_channel();
-    let (_calls, task) = custody_task(custody, stopped, Arc::new(ObserveTask(observed)));
-    let worker = tokio::spawn(task);
+    let (_calls, group) = custody_task(custody, Arc::new(ObserveTask(observed)));
     let original_mark = ClockInstant::ZERO + Duration::from_secs(20);
     clock.not_due_check_now(original_mark).await;
     clock.advance(Duration::from_secs(20)).unwrap();
@@ -121,6 +119,6 @@ async fn collecting_an_old_receipt_does_not_consume_the_replacement_mark() {
             .healthy
             .is_empty()
     );
-    stop.send_replace(true);
-    worker.await.unwrap();
+    group.request_stop();
+    group.join().await.unwrap();
 }

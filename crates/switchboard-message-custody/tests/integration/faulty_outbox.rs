@@ -15,7 +15,7 @@ use switchboard_machine_core_store::{
     OutboxRequestStatus, OutboxStorage, OutboxStoreError, OutboxWriteOutcome, OutgoingWrite,
     PendingWrite, StoreScan, StoredSenderOutcome, UnansweredOutboxClaim,
 };
-use tokio::sync::Notify;
+use tokio::sync::{Notify, oneshot};
 use workspace_ids::RequestId;
 use workspace_model::Caller;
 
@@ -46,11 +46,23 @@ pub(super) enum FaultStage {
 struct FaultJournal {
     planned: Vec<(FaultSite, FaultStage)>,
     fired: Vec<(FaultSite, FaultStage)>,
+    insert_entry: Option<InsertEntry>,
     committed_insert: Option<Arc<StoreCommitGate>>,
     committed_claim: Option<Arc<StoreCommitGate>>,
     committed_claim_return: Option<Arc<StoreCommitGate>>,
     scoped_read_gate: Option<Arc<ScopedReadGate>>,
     scoped_reads_unavailable: bool,
+}
+
+struct InsertEntry {
+    entered: Arc<Notify>,
+    release: oneshot::Receiver<InsertRelease>,
+}
+
+#[derive(Debug)]
+pub(super) enum InsertRelease {
+    Continue,
+    Panic,
 }
 
 /// A test holds the worker after a SQLite commit and before the store returns.
@@ -105,6 +117,16 @@ impl StoreFaultPlan {
         let gate = Arc::new(StoreCommitGate::default());
         self.0.lock().unwrap().committed_insert = Some(gate.clone());
         gate
+    }
+
+    pub(super) fn hold_next_insert_entry(&self) -> (Arc<Notify>, oneshot::Sender<InsertRelease>) {
+        let entered = Arc::new(Notify::new());
+        let (release, action) = oneshot::channel();
+        self.0.lock().unwrap().insert_entry = Some(InsertEntry {
+            entered: entered.clone(),
+            release: action,
+        });
+        (entered, release)
     }
 
     pub(super) fn hold_next_claim_commit(&self) -> Arc<StoreCommitGate> {
@@ -177,11 +199,25 @@ impl OutboxStorage for FaultyOutbox {
         item: &'call NewOutboxItem,
         now: i64,
     ) -> OutboxFuture<'call, OutboxInsert> {
-        let gate = self.plan.0.lock().unwrap().committed_insert.take();
+        let (entry, commit) = {
+            let mut plan = self.plan.0.lock().unwrap();
+            (plan.insert_entry.take(), plan.committed_insert.take())
+        };
         let insert = self
             .plan
             .wrap(FaultSite::Insert, self.inner.insert(item, now));
-        StoreCommitGate::hold_after(gate, insert)
+        let insert = StoreCommitGate::hold_after(commit, insert);
+        let Some(entry) = entry else {
+            return insert;
+        };
+        Box::pin(async move {
+            entry.entered.notify_one();
+            assert!(
+                matches!(entry.release.await.unwrap(), InsertRelease::Continue),
+                "scripted worker panic before the outbox insert"
+            );
+            insert.await
+        })
     }
 
     fn request_status<'call>(
