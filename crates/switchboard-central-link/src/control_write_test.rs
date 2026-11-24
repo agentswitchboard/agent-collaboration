@@ -112,14 +112,20 @@ impl<Socket: Sink<Message, Error = WebSocketError> + Unpin> Sink<Message>
     }
 }
 
-fn fresh_driver(fixture: &HeartbeatFixture, binding: u8) -> WelcomedDriver<'_, NoLeaseSource> {
+pub(super) fn fresh_driver(
+    fixture: &HeartbeatFixture,
+    binding: u8,
+) -> WelcomedDriver<'_, NoLeaseSource> {
     let (mut driver, _) = fixture.welcomed_driver(&NoLeaseSource);
     driver.client = LinkClient::new(fixture.machine.clone(), fixture.clock.clone());
     driver.apply(LinkInput::BindingAvailable(binding)).unwrap();
     driver
 }
 
-fn start_attempt(driver: &mut WelcomedDriver<'_, NoLeaseSource>, binding: u8) -> ConnectionAttempt {
+pub(super) fn start_attempt(
+    driver: &mut WelcomedDriver<'_, NoLeaseSource>,
+    binding: u8,
+) -> ConnectionAttempt {
     let Some(ClientAction::Connect { attempt }) = driver.client.poll_time() else {
         panic!("the new attempt must be ready to dial");
     };
@@ -139,7 +145,11 @@ fn start_attempt(driver: &mut WelcomedDriver<'_, NoLeaseSource>, binding: u8) ->
     attempt
 }
 
-async fn send_welcome(peer: &mut Peer, fixture: &HeartbeatFixture, lifetime_seconds: u64) {
+pub(super) async fn send_welcome(
+    peer: &mut Peer,
+    fixture: &HeartbeatFixture,
+    lifetime_seconds: u64,
+) {
     let central_time = fixture.clock.utc_now();
     let wire = encode_text(
         &LinkFrame::Data(DataFrame::Welcome {
@@ -153,14 +163,14 @@ async fn send_welcome(peer: &mut Peer, fixture: &HeartbeatFixture, lifetime_seco
     peer.send(Message::Text(wire.into())).await.unwrap();
 }
 
-async fn read_frame(peer: &mut Peer) -> LinkFrame {
+pub(super) async fn read_frame(peer: &mut Peer) -> LinkFrame {
     let Message::Text(text) = peer.next().await.unwrap().unwrap() else {
         panic!("expected a complete ordinary text frame");
     };
     decode_text(&text, FrameDirection::ToCentral).unwrap()
 }
 
-async fn expect_advertisement(peer: &mut Peer) {
+pub(super) async fn expect_advertisement(peer: &mut Peer) {
     assert_eq!(
         read_frame(peer).await,
         LinkFrame::Data(DataFrame::MacCapabilities(MacCapabilities {

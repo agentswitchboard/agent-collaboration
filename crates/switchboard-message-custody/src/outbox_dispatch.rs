@@ -403,38 +403,6 @@ impl OutboxDispatcher {
         submitted: PreparedWriteBatch,
         disposition: WriteBatchDisposition,
     ) -> Option<FlushReport> {
-        let driver_fence = match &disposition {
-            WriteBatchDisposition::NotReached {
-                cause: UntouchedCommand::SendWindowElapsed,
-            } => Some(submitted.command.send_before),
-            _ => None,
-        };
-        self.settle_claim(work, submitted, disposition, driver_fence)
-            .await
-    }
-
-    pub(crate) async fn return_unsubmitted(
-        &mut self,
-        work: &mut OutboxWork,
-        submitted: PreparedWriteBatch,
-        cause: UntouchedCommand,
-    ) -> Option<FlushReport> {
-        self.settle_claim(
-            work,
-            submitted,
-            WriteBatchDisposition::NotReached { cause },
-            None,
-        )
-        .await
-    }
-
-    async fn settle_claim(
-        &mut self,
-        work: &mut OutboxWork,
-        submitted: PreparedWriteBatch,
-        disposition: WriteBatchDisposition,
-        driver_fence: Option<ClockInstant>,
-    ) -> Option<FlushReport> {
         let active = self.in_flight.as_ref()?;
         if active.ticket.token != submitted.token || active.ticket.command != submitted.command {
             return None;
@@ -459,16 +427,8 @@ impl OutboxDispatcher {
                     if active.ended_at_cutoff.contains(&write.request) {
                         continue;
                     }
-                    let departure = if driver_fence
-                        .is_some_and(|fence| work.write_deadline(write.sent_at) <= fence)
-                    {
-                        // A driver-side expired fence proves the ticket was held through this cutoff.
-                        MemberReturn::DriverHeldAtCutoff
-                    } else {
-                        MemberReturn::NotTransmitted
-                    };
                     self.settling
-                        .return_member(work, write, departure, &mut report)
+                        .return_member(work, write, MemberReturn::NotTransmitted, &mut report)
                         .await;
                 }
                 collect_due_writes(work, &mut report).await;
