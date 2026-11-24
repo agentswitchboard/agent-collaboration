@@ -33,7 +33,9 @@ filter = "(package(=codex-router-host) & binary(=integration) & test(/^update_re
 test-group = "process-runtime"
 threads-required = "num-test-threads"
 
-# The owned Router copy probes the replacement with the product's two-second budget.
+# Under real load the version probe can exceed two seconds and the product
+# returns Unknown by design. The exclusive group reduces competing test load.
+# This reservation affects test scheduling only.
 [[profile.ci.overrides]]
 filter = "package(=codex-router-host) & binary(=integration) & test(=router_executable_status::host_status_reports_a_router_replaced_since_start_with_no_timer)"
 test-group = "process-runtime"

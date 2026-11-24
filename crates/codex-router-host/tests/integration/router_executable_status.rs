@@ -208,12 +208,11 @@ async fn owned_copy_host_child_entrypoint() -> ProofResult {
         return Ok(());
     };
     // Inherit the parent's stderr so Nextest reports the probe diagnosis beside a failure.
-    tracing_subscriber::fmt()
+    let _ = tracing_subscriber::fmt()
         .with_ansi(false)
         .with_max_level(tracing::Level::WARN)
         .with_writer(std::io::stderr)
-        .try_init()
-        .map_err(|error| -> Box<dyn std::error::Error> { error })?;
+        .try_init();
     let directory = PathBuf::from(directory);
     let router_endpoint = std::env::var("CODEX_HOST_STATUS_CHILD_ROUTER")?.parse()?;
     let launch_path = std::env::current_exe()?;
