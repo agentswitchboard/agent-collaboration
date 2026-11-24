@@ -1,6 +1,6 @@
 use central_engine_model::IdSource;
 use central_storage::StoreFailure;
-use fleet_identity_protocol::OrganizationId;
+use fleet_identity_protocol::{EnrollmentId, OrganizationId};
 use fleet_machine_login::link_authority::ValidatedMachineConnection;
 use fleet_runtime_ports::workspace_decode_error::corrupt;
 use workspace_ids::{RequestId, RouterRunId};
@@ -117,4 +117,24 @@ impl ApprovalHolderScope {
             enrollment: self.run.enrollment.clone(),
         }
     }
+}
+
+pub(crate) fn decode_holder_scope(
+    organization: &str,
+    machine: &str,
+    enrollment: &str,
+    run: &str,
+) -> Result<ApprovalHolderScope, StoreFailure> {
+    Ok(ApprovalHolderScope {
+        organization_id: OrganizationId::try_from(organization.to_owned())
+            .map_err(|_| corrupt("organization_id"))?,
+        run: ApprovalRun {
+            router_run: run.parse().map_err(|_| corrupt("router_run_id"))?,
+            enrollment: ApprovalEnrollment {
+                machine_id: machine.parse().map_err(|_| corrupt("machine_id"))?,
+                enrollment_id: EnrollmentId::try_from(enrollment.to_owned())
+                    .map_err(|_| corrupt("enrollment_id"))?,
+            },
+        },
+    })
 }

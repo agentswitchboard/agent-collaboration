@@ -14,7 +14,7 @@ use fleet_runtime_ports::workspace_decode_error::corrupt;
 use super::{ApprovalApplyFailure, ApprovalApplyingStore};
 use crate::{
     ApprovalSession, ApprovalSessionFacts, ApprovalState, CommittedApprovalNotice,
-    approval_store_reads::{read_approval_due_subject, read_parent_approval_request},
+    approval_store_reads::{read_approval_by_row_id, read_parent_approval_request},
     approval_store_scope::{ApprovalDestinationRowId, ApprovalRequestRowId},
     approval_store_transaction::ApprovalStoreTransaction,
 };
@@ -47,8 +47,9 @@ where
         session: &ApprovalSession,
         request_id: &ApprovalRequestId,
     ) -> Result<Option<CentralTime>, ApprovalApplyFailure> {
+        let at = self.sample_applying_time()?;
         let Some(record) =
-            read_parent_approval_request(self.transaction, organization, request_id, session)
+            read_parent_approval_request(self.transaction, organization, request_id, session, at)
                 .await?
         else {
             return Ok(None);
@@ -100,7 +101,7 @@ where
             let destination =
                 ApprovalDestinationRowId::parse(notice.approval_destination_id.stored_text()?)?;
             let row_id = ApprovalRequestRowId::parse(notice.approval_row_id.stored_text()?)?;
-            let record = read_approval_due_subject(self.transaction, &row_id)
+            let record = read_approval_by_row_id(self.transaction, &row_id)
                 .await?
                 .ok_or_else(|| corrupt("approval_request_destinations.notice_request"))?;
             let member = record

@@ -124,6 +124,13 @@ export type EndingView = EndingViewWire;
 
 export type EndingViewWire = { kind: "providerApproval"; ending: DestinationEnding<OfferedOptionId, ProviderCancellation> } | { kind: "providerQuestion"; ending: DestinationEnding<QuestionAnswer, ProviderCancellation> } | { kind: "unprovenCall"; ending: ParkedCallEndingView };
 
+/**  The identity and ending a holder can learn after the retention cutoff. */
+export type ErasedApprovalMarker = {
+	requestId: ApprovalRequestId,
+	routerRun: RouterRunId,
+	ending: StopReceiptEnding,
+};
+
 export type GiverDecision<AcceptedAnswer> = {
 	by: DecidedBy,
 	answer: AcceptedAnswer,
@@ -296,7 +303,7 @@ export type RaiseReceipt = {
 };
 
 /**  Outcome of a Raise on the holder link, including the current authority check. */
-export type RaiseReply = { kind: "receipt"; receipt: RaiseReceipt } | { kind: "alreadyStopped" } | { kind: "sessionEnded" } | { kind: "contentsDiffer" } | { kind: "tooManyOutstanding" } | { kind: "authorityRefused"; refusal: RunRefusal };
+export type RaiseReply = { kind: "receipt"; receipt: RaiseReceipt } | { kind: "alreadyStopped" } | { kind: "alreadyEnded"; marker: ErasedApprovalMarker } | { kind: "sessionEnded" } | { kind: "contentsDiffer" } | { kind: "tooManyOutstanding" } | { kind: "authorityRefused"; refusal: RunRefusal };
 
 export type Raise_Deserialize = { kind: "providerApproval"; requestId: ApprovalRequestId; holder: ProviderHolder; offer: ApprovalOffer_Deserialize } | { kind: "providerQuestion"; requestId: ApprovalRequestId; holder: ProviderHolder; offer: QuestionOffer_Deserialize } | { kind: "unprovenCall"; requestId: ApprovalRequestId; holder: ParkedCallHolder; invocation: InvocationDigest; offer: CallOffer };
 
@@ -386,7 +393,7 @@ export type SessionDecider = { kind: "session"; session: CentralSessionId };
 
 export type StandingEnding<Cancellation> = { kind: "decided"; by: DecidedBy } | { kind: "cancelled"; reason: Cancellation } | { kind: "timedOut" };
 
-/**  Which ending stands after a Stop. The receipt carries no handover or answer. */
+/**  The ending that stands, with its reason when cancelled. */
 export type StopReceiptEnding = { kind: "cancelled"; reason: CancelReason } | { kind: "timedOut" } | { kind: "decidedEarlier" };
 
 export type StopReply =

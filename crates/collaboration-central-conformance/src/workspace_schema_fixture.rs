@@ -10,6 +10,7 @@ pub const ORGANIZATION_TABLES: &[&str] = &[
     "actor_sessions",
     "admin_used_requests",
     "approval_applying_time",
+    "approval_erased_requests",
     "approval_request_destinations",
     "approval_requests",
     "approval_router_runs",

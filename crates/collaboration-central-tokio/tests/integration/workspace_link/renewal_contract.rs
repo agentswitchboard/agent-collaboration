@@ -11,11 +11,11 @@ use central_link_protocol::{
     TokenRenewalRefusal, TokenRenewalResult,
 };
 use central_storage::{SqlValue, Statement};
+use collaboration_central_conformance::fixture_link_reader::read_fixture_frame;
 use collaboration_central_conformance::{ConformanceResult as Result, signin_fixtures as signed};
 use collaboration_central_core::ValidatedMachineConnection;
 use collaboration_central_core::{MachineLoginControl, machine_login_control};
 use fleet_contracts::MachineTokenDecision;
-use futures_util::StreamExt;
 use reqwest_websocket::{Message, WebSocket};
 use serde_json::json;
 use std::time::Duration;
@@ -247,7 +247,7 @@ async fn a_renewal_at_the_live_deadline_answers_retryably_then_closes() -> Resul
         }
     );
     assert_eq!(at_deadline, retryable_expiry());
-    let close = socket.next().await;
+    let close = read_fixture_frame(&mut socket, "link close").await?;
     assert!(
         matches!(
             close, Some(Ok(Message::Close { code, .. }))
@@ -343,7 +343,7 @@ async fn every_refused_renewal_keeps_the_current_deadline() -> Result<()> {
     send(&mut socket, &renew_frame(correlation_id, &candidate)?).await?;
     tokio::select! {
         () = applying.until_held() => {}
-        early = socket.next() => {
+        early = read_fixture_frame(&mut socket, "renewal contract link frame")=> {
             return Err(format!("renewal settled before its applying sample: {early:?}").into());
         }
     }
@@ -357,6 +357,8 @@ async fn every_refused_renewal_keeps_the_current_deadline() -> Result<()> {
 
     // The first advertised deadline still decides: a write just before it lands.
     assert_eq!(initial_expiry.timestamp(), signed::NOW_SECONDS + 600);
+    send(&mut socket, &LinkFrame::Ping).await?;
+    assert_eq!(receive(&mut socket).await?, LinkFrame::Pong);
     let mut writes = Vec::new();
     for (advance, request_id, name) in [
         (
@@ -367,8 +369,6 @@ async fn every_refused_renewal_keeps_the_current_deadline() -> Result<()> {
         (1, "019f0000-0000-7000-8000-00000000d312", "At the deadline"),
     ] {
         fixture.clock.advance(Duration::from_secs(advance))?;
-        send(&mut socket, &LinkFrame::Ping).await?;
-        assert_eq!(receive(&mut socket).await?, LinkFrame::Pong);
         let request = client.begin_request(caller()?, create_workspace(request_id, name)?)?;
         send(&mut socket, &request).await?;
         let (reply_id, reply) = workspace_reply(&mut client, &attempt, &mut socket).await?;
@@ -461,7 +461,7 @@ async fn a_renewal_after_live_revocation_is_refused_as_enrollment_connection_enr
     // Assert
     assert!(revoked.is_some());
     assert_eq!(answer, connection_enrollment_ended());
-    let close = socket.next().await;
+    let close = read_fixture_frame(&mut socket, "link close").await?;
     assert!(
         matches!(
             close, Some(Ok(Message::Close { code, .. }))
@@ -515,7 +515,7 @@ async fn a_batch_after_the_deadline_refuses_every_member_and_then_closes() -> Re
     for _ in &members {
         replies.push(receive(&mut socket).await?);
     }
-    let closed = socket.next().await;
+    let closed = read_fixture_frame(&mut socket, "link close").await?;
 
     // Assert
     for (member, reply) in members.iter().zip(&replies) {
@@ -540,3 +540,34 @@ async fn a_batch_after_the_deadline_refuses_every_member_and_then_closes() -> Re
 
 #[path = "renewal_issuer_cases.rs"]
 mod issuer_cases;
+
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "The socket assertions name the failed observation."
+)]
+#[tokio::test]
+async fn native_ping_arriving_during_renewal_follows_the_renewed_reply() -> Result<()> {
+    let fixture = start_fixture().await?;
+    let observed = async {
+        let mut socket = fixture.connect().await?;
+        receive(&mut socket).await?;
+        fixture.clock.advance(Duration::from_secs(300))?;
+        let fresh = fixture.mint_machine_token().await?;
+        let runtime = fixture.host.central(&fixture.organization_id).await?;
+        let mut hold = runtime.runtime().pause_points().hold_central(fleet_runtime::PausePoint::BeforeRenewalApplyingSample);
+        let correlation = "019f0000-0000-7000-8000-00000000d601";
+        send(&mut socket, &renew_frame(correlation, &fresh)?).await?;
+        tokio::select! {
+            () = hold.until_held() => {}
+            early = read_fixture_frame(&mut socket, "renewal contract link frame")=> return Err(format!("renewal completed before the hold: {early:?}").into()),
+        }
+        send(&mut socket, &LinkFrame::Ping).await?;
+        hold.release();
+        assert!(matches!(answer_to(&mut socket, correlation).await?, TokenRenewalResult::Renewed { .. }));
+        assert_eq!(receive(&mut socket).await?, LinkFrame::Pong);
+        fixture.clock.advance(Duration::from_secs(300))?;
+        collaboration_central_conformance::machine_link_boundary::expect_pong(&mut socket).await
+    }.await;
+    fixture.close().await?;
+    observed
+}

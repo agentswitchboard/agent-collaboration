@@ -226,3 +226,39 @@ async fn a_retained_central_notice_recovers_the_senders_original_acceptance() {
     );
     assert!(lane.take_calls().is_empty());
 }
+
+#[tokio::test]
+async fn an_inconclusive_remote_status_surfaces_as_unavailable_on_the_admitted_link() {
+    use central_link_protocol::RequestStatusAnswer;
+
+    let (_root, mut custody, lane) = status_fixture().await;
+    let item = thread_post(96);
+    let query = RequestStatusQuery {
+        request_id: item.request,
+        scope: RequestScope::Organization,
+    };
+    lane.script_status_answer(
+        item.caller.clone(),
+        query.clone(),
+        RequestStatusAnswer::CentralUnavailable {},
+    );
+    assert_eq!(
+        custody
+            .request_status(item.caller.clone(), query.clone())
+            .await,
+        CustodyRequestStatus::StatusUnavailable
+    );
+    let later = ReplyPayload::Mail(CentralMailResult::Refused(
+        workspace_model::central_mail::CentralMailRefusal::NotSession,
+    ));
+    lane.script_status_answer(
+        item.caller.clone(),
+        query.clone(),
+        RequestStatusAnswer::Answered(later.clone()),
+    );
+    assert_eq!(
+        custody.request_status(item.caller, query).await,
+        CustodyRequestStatus::Answered(later)
+    );
+    assert!(lane.admitted.borrow().is_some());
+}

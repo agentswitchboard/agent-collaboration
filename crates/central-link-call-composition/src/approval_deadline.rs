@@ -100,7 +100,10 @@ where
                         .release(&proof)
                         .map_err(|_| CheckedDueFailure::AnswerLost)?;
                     return Ok(AppliedApprovalDeadline {
-                        outcome: CheckedDueUnit::Applied { ready: None },
+                        outcome: CheckedDueUnit::Applied {
+                            ready: None,
+                            retired_recipient: None,
+                        },
                         completion: self.after_reply(offers, None),
                     });
                 }
@@ -160,7 +163,7 @@ where
             crate::approval_applying_time::observe_applying_time(transaction, clock.now()).await?;
         let now = EngineTime::from_timestamp_millis(sampled.unix_millis())
             .ok_or_else(|| corrupt("approval_store.applying_time"))?;
-        if !ApprovalStore::approval_deadline_is_due(
+        if !ApprovalStore::approval_due_is_current(
             transaction,
             &deadline.subject.key,
             deadline.due_at,
@@ -196,7 +199,7 @@ where
             &mut row_ids,
         );
         let reply = store
-            .apply_approval_deadline(&deadline.subject.key, deadline.due_at)
+            .apply_approval_due_work(&deadline.subject.key, deadline.due_at)
             .await?;
         Ok(PendingDeadline::Applied {
             reply,
@@ -227,7 +230,7 @@ where
             crate::approval_applying_time::observe_applying_time(transaction, clock.now()).await?;
         let now = EngineTime::from_timestamp_millis(observed.unix_millis())
             .ok_or_else(|| corrupt("approval_store.applying_time"))?;
-        if !ApprovalStore::approval_deadline_still_waiting(
+        if !ApprovalStore::approval_due_is_current(
             transaction,
             &deadline.subject.key,
             deadline.due_at,

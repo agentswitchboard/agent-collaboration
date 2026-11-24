@@ -49,6 +49,31 @@ fn retained_organization_decision(
 
 impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores> {
     /// Status never re-applies the original operation or creates an identity.
+    pub async fn status_for_link_caller(
+        &self,
+        connection: crate::ValidatedMachineConnection,
+        caller: workspace_model::Caller,
+        query: &RequestStatusQuery,
+    ) -> Result<RequestStatusAnswer, StoreFailure>
+    where
+        Stores: Transport<WorkspaceServiceProtocol>,
+    {
+        let caller = match crate::WorkspaceCaller::from_machine_link(connection, caller) {
+            Ok(caller) => caller,
+            Err(reason) => {
+                return Ok(RequestStatusAnswer::Refused(RequestRefusal::Workspace(
+                    reason,
+                )));
+            }
+        };
+        match self.request_status(&caller, query).await {
+            Err(StoreFailure::Unavailable | StoreFailure::AnswerLost) => {
+                Ok(RequestStatusAnswer::CentralUnavailable {})
+            }
+            result => result,
+        }
+    }
+
     pub async fn request_status(
         &self,
         caller: &WorkspaceCaller,

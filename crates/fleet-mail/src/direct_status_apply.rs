@@ -35,6 +35,7 @@ where
             AppliedDirectStatus {
                 status: MessageStatus::NotFound {},
                 ready: None,
+                retired_recipient: None,
             },
         ));
     };
@@ -50,6 +51,7 @@ where
             AppliedDirectStatus {
                 status,
                 ready: None,
+                retired_recipient: None,
             },
         ));
     }
@@ -66,8 +68,15 @@ where
     )
     .await?;
     match transition {
-        AppliedTransition::Changed(ready) => Ok(DirectWriteOutcome::with_alarm_recompute(
-            AppliedDirectStatus { status, ready },
+        AppliedTransition::Changed {
+            ready,
+            retired_recipient,
+        } => Ok(DirectWriteOutcome::with_alarm_recompute(
+            AppliedDirectStatus {
+                status,
+                ready,
+                retired_recipient,
+            },
         )),
         AppliedTransition::Missing | AppliedTransition::Covered | AppliedTransition::Settled => {
             Err(DirectApplyFailure::Conflict)

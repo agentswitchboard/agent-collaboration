@@ -50,6 +50,8 @@ enum Point {
     BeforeTimerCommit,
     BeforeWakeRequestCommit,
     BeforeReceiptTransaction,
+    BeforeMachineLinkWelcome,
+    AfterMachineLinkWelcome,
     BeforeSessionTransaction,
     BeforeApprovalCommit,
     ApprovalEndingNeverReached,
@@ -84,6 +86,9 @@ enum Point {
     AfterEngineAbsentLookup,
     BeforeControlClear,
     BeforeRenewalApplyingSample,
+    BeforeMachineAuthorityCloseWrite,
+    AfterMachineFrameHandled,
+    AfterMachineMailOffer,
     BeforeSignInSample,
     AfterSignInSample,
 }
@@ -100,6 +105,8 @@ impl From<Point> for PausePoint {
             Point::BeforeTimerCommit => Self::BeforeTimerCommit,
             Point::BeforeWakeRequestCommit => Self::BeforeWakeRequestCommit,
             Point::BeforeReceiptTransaction => Self::BeforeReceiptTransaction,
+            Point::BeforeMachineLinkWelcome => Self::BeforeMachineLinkWelcome,
+            Point::AfterMachineLinkWelcome => Self::AfterMachineLinkWelcome,
             Point::BeforeSessionTransaction => Self::BeforeSessionTransaction,
             Point::BeforeApprovalCommit => Self::BeforeApprovalCommit,
             Point::ApprovalEndingNeverReached => Self::ApprovalEndingNeverReached,
@@ -136,6 +143,9 @@ impl From<Point> for PausePoint {
             Point::AfterEngineAbsentLookup => Self::AfterEngineAbsentLookup,
             Point::BeforeControlClear => Self::BeforeControlClear,
             Point::BeforeRenewalApplyingSample => Self::BeforeRenewalApplyingSample,
+            Point::BeforeMachineAuthorityCloseWrite => Self::BeforeMachineAuthorityCloseWrite,
+            Point::AfterMachineFrameHandled => Self::AfterMachineFrameHandled,
+            Point::AfterMachineMailOffer => Self::AfterMachineMailOffer,
             Point::BeforeSignInSample => Self::BeforeSignInSample,
             Point::AfterSignInSample => Self::AfterSignInSample,
         }
@@ -390,6 +400,10 @@ pub(super) async fn control(
         "/test/machine-restore-failure" => {
             let (skip, failure) = request.json().await?;
             runtime.fail_machine_restore_after(skip, failure);
+            Response::from_json(&true)
+        }
+        "/test/fail-mail-offer" => {
+            runtime.fail_next_mail_offer(request.json().await?);
             Response::from_json(&true)
         }
         "/test/fail-idle-renewal-send" => {

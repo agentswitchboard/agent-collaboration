@@ -359,6 +359,10 @@ const LAYER_POLICY: [(&str, &[&str]); 48] = [
     (
         "codex-router-cli",
         &[
+            // The enroll and enrollment-status commands compose the machine identity and the enrollment store.
+            "switchboard-machine-core-store",
+            // The enroll and enrollment-status commands compose the machine identity and the enrollment store.
+            "switchboard-machine-enrollment-store",
             // The central serve composition root owns the two listeners and clock.
             "collaboration-central-core",
             "collaboration-central-tokio",

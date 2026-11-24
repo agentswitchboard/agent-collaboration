@@ -90,6 +90,14 @@ pub fn plan_due_table_change(
     })
 }
 
+/// Remove the attempt history when the owner erases a due item or replaces its occurrence.
+pub fn plan_due_item_attempt_clear(key: &DueItemKey) -> GuardedStatement {
+    crate::plan_attempt_delete(&EngineSubject {
+        kind: central_engine_model::MachineKind(key.kind.tag()),
+        key: key.subject.clone(),
+    })
+}
+
 /// Resolve the attempt registry's existing source identity into the due table's
 /// typed role. Test fixtures and Engine-only probes have no production entry.
 pub fn due_change_for_attempt(subject: &EngineSubject) -> Option<DueTableChange> {

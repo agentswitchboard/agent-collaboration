@@ -188,7 +188,7 @@ async fn retained_refusals_conflicts_and_holder_reoffers_persist_the_deadline() 
                 ApprovalDecisionReply::OperationConflict {}
             };
             assert_eq!(answer.reply, expected);
-            assert_eq!(evidence.sql_writes.len(), 2);
+            assert_eq!(evidence.sql_writes.len(), 3);
             answer.ending_offers
         };
         assert_eq!(offers.len(), 1);

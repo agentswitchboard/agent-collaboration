@@ -255,6 +255,28 @@
             "name": "updated_at"
           }
         }
+      },
+      {
+        "name": "erase_after_ms",
+        "ordinal": 23,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "erase_after_ms"
+          }
+        }
+      },
+      {
+        "name": "compact_ending_json",
+        "ordinal": 24,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "compact_ending_json"
+          }
+        }
       }
     ],
     "parameters": {
@@ -283,7 +305,9 @@
       true,
       true,
       false,
-      false
+      false,
+      true,
+      true
     ]
   },
   "hash": "b8867f8a2e01b0873727ed23460d715cfb94346bc3a937d0afddfc74331c072d"

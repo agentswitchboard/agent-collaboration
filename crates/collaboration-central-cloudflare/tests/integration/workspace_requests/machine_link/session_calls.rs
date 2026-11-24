@@ -2,6 +2,7 @@ use super::fixture::{ConnectedLink, Fixture, MACHINE_ID, OTHER_ORGANIZATION};
 use super::receipt_frames::{EnrollmentAtApply, stored_ending_batch};
 use central_link_protocol::{LinkCallRefusal, MachineLinkCloseCode};
 use central_storage::{BatchOutcome, SqlValue};
+use collaboration_central_conformance::fixture_link_reader::read_fixture_frame;
 use collaboration_central_conformance::{
     ConformanceResult as Result,
     session_link_scenarios::{
@@ -89,7 +90,6 @@ async fn check_revoked_socket(fixture: &Fixture, stage: SessionLifecycleStage) -
 
 #[tokio::test]
 async fn rechecks_session_authority_after_outer_restore_on_workerd() -> Result<()> {
-    use futures_util::StreamExt;
     for cause in [MachineLinkCloseCode::Expired, MachineLinkCloseCode::Revoked] {
         for stage in [
             SessionLifecycleStage::Create,
@@ -111,7 +111,7 @@ async fn rechecks_session_authority_after_outer_restore_on_workerd() -> Result<(
                     held = runtime.control::<bool>("until-held-central", &point) => {
                         if !held? { return Err("call did not enter the applying barrier".into()); }
                     }
-                    _ = link.socket.next() => return Err("call replied before the applying barrier".into()),
+                    _ = read_fixture_frame(&mut link.socket, "session calls link frame")=> return Err("call replied before the applying barrier".into()),
                 }
                 let applying: Result<()> = async {
                     if cause == MachineLinkCloseCode::Expired {

@@ -51,7 +51,8 @@ pub use due_table_contract::{
 
 mod due_table_planner;
 pub use due_table_planner::{
-    apply_due_table_change, due_change_for_attempt, plan_due_table_change,
+    apply_due_table_change, due_change_for_attempt, plan_due_item_attempt_clear,
+    plan_due_table_change,
 };
 
 mod central_queries;

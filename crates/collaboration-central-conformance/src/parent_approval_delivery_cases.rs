@@ -1,4 +1,5 @@
 //! Fences for C2 reply loss and approval-notice writes.
+use crate::fixture_link_reader::read_fixture_frame;
 use std::future::Future;
 
 use approval_request_protocol::{
@@ -395,7 +396,6 @@ pub async fn hidden_approval_matches_an_absent_one_on_wire(
     use central_link_protocol::{
         CentralCallReply, FrameDirection, approval_rpc::DecideApprovalAsSessionRpc, decode_text,
     };
-    use futures_util::StreamExt;
     use reqwest_websocket::Message;
 
     let mut setup = ParentSetup::open(fixture, Chain::Direct).await?;
@@ -482,7 +482,9 @@ pub async fn hidden_approval_matches_an_absent_one_on_wire(
                 }),
             )
             .await?;
-            let Some(Ok(Message::Text(text))) = setup.socket.next().await else {
+            let Some(Ok(Message::Text(text))) =
+                read_fixture_frame(&mut setup.socket, "approval notice").await?
+            else {
                 return Err("expected textual Central approval reply".into());
             };
             responses.push(text);

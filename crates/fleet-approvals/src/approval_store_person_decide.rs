@@ -6,8 +6,7 @@ use approval_request_protocol::{
 use central_engine_model::supported_time;
 use central_storage::StoreFailure;
 use fleet_request_log::{
-    RetainedRequest, decode_organization_request, lookup_organization_request,
-    retain_organization_request, strict_cutoff,
+    RetainedRequest, decode_organization_request, lookup_organization_request, strict_cutoff,
 };
 use fleet_runtime_ports::{stored_values::json, workspace_decode_error::corrupt};
 use fleet_signin::{
@@ -28,7 +27,6 @@ use crate::{
     EndedApproval, PendingApprovalReply,
     approval_decision_log::retained_answer_matches,
     approval_store_reads::{ApprovalReadRecord, read_people_approval_request},
-    approval_store_transaction::ApprovalStoreTransaction,
 };
 
 impl<Transaction, Sessions> ApprovalApplyingStore<'_, Transaction, Sessions>
@@ -44,6 +42,17 @@ where
         if self.transaction.organization_id() != &request.organization {
             return Ok(None);
         }
+        let at = self.sample_applying_time()?;
+        let record = read_people_approval_request(
+            self.transaction,
+            &request.organization,
+            &request.request_id,
+            at,
+        )
+        .await?;
+        let Some(record) = record else {
+            return Ok(None);
+        };
         let Some(stored) = self
             .read_person_decision(&request.operation_id, retained_at)
             .await?
@@ -55,8 +64,7 @@ where
         {
             return Ok(None);
         }
-        let reply =
-            decode_retained_decision(self.transaction, &stored, request, retry.person()).await?;
+        let reply = decode_retained_decision(&record, &stored, request, retry.person())?;
         let address = ApprovalReplyAddress::Person {
             organization: request.organization.clone(),
             person: retry.person().clone(),
@@ -83,6 +91,20 @@ where
             .digest()
             .map_err(|_| corrupt("runtime_request_log.approval_intent"))?;
         let address = reply_address(admission);
+        let at = self.sample_applying_time()?;
+        let record = read_people_approval_request(
+            self.transaction,
+            admission.organization(),
+            &request.request_id,
+            at,
+        )
+        .await?;
+        let Some(record) = record else {
+            return Ok(self.stage_reply(
+                address,
+                ApprovalTransitionOutput::with_reply(ApprovalDecideReply::NotVisible {}),
+            ));
+        };
         if let Some(stored) = self
             .read_person_decision(&request.operation_id, retained_at)
             .await?
@@ -93,16 +115,16 @@ where
                 .await?;
             let reply = if actor.as_ref() == Some(&stored.caller) && digest == stored.content_digest
             {
-                decode_retained_decision(self.transaction, &stored, &request, admission.person())
-                    .await?
+                decode_retained_decision(&record, &stored, &request, admission.person())?
             } else {
                 ApprovalDecideReply::OperationConflict {}
             };
             return Ok(self.stage_reply(address, ApprovalTransitionOutput::with_reply(reply)));
         }
 
-        let at = self.sample_applying_time()?;
-        let applied = self.apply_person_decision(admission, &request, at).await?;
+        let applied = self
+            .apply_person_decision(admission, &request, &record, at)
+            .await?;
         match &applied.reply {
             ApprovalDecideReply::SavedDecision { .. }
             | ApprovalDecideReply::AlreadyDecided { .. }
@@ -113,14 +135,18 @@ where
                     .transaction
                     .resolve_person_actor(admission, at, self.row_ids)
                     .await?;
-                for write in retain_organization_request(
+                let at = retained_at.to_rfc3339();
+                let cutoff = strict_cutoff(retained_at).to_rfc3339();
+                let writes = crate::approval_decision_log::retain_approval_operation(
+                    &record.row_id,
                     &request.operation_id,
                     &caller,
                     &digest,
                     &applied.reply,
-                    &retained_at.to_rfc3339(),
-                    &strict_cutoff(retained_at).to_rfc3339(),
-                )? {
+                    &at,
+                    &cutoff,
+                )?;
+                for write in writes {
                     self.execute_guarded_write(write).await?;
                 }
             }
@@ -153,19 +179,9 @@ where
         &mut self,
         admission: &ApprovalPersonAdmission,
         request: &ApprovalDecideRequest,
+        record: &ApprovalReadRecord,
         at: CentralTime,
     ) -> Result<ApprovalTransitionOutput<ApprovalDecideReply>, ApprovalApplyFailure> {
-        let record = read_people_approval_request(
-            self.transaction,
-            admission.organization(),
-            &request.request_id,
-        )
-        .await?;
-        let Some(record) = record else {
-            return Ok(ApprovalTransitionOutput::with_reply(
-                ApprovalDecideReply::NotVisible {},
-            ));
-        };
         match &record.state {
             ApprovalState::Ended { closed, .. } => {
                 Ok(ApprovalTransitionOutput::with_reply(ended_reply(closed)))
@@ -185,7 +201,7 @@ where
                 Ok(expired.replace_reply(ApprovalDecideReply::TooLate {}))
             }
             ApprovalState::Waiting { .. } => {
-                self.apply_waiting_person_decision(admission, request, &record, at)
+                self.apply_waiting_person_decision(admission, request, record, at)
                     .await
             }
             ApprovalState::Unraised | ApprovalState::StoppedBeforeRaise { .. } => Ok(
@@ -305,8 +321,8 @@ fn ended_reply(closed: &EndedApproval) -> ApprovalDecideReply {
     }
 }
 
-async fn decode_retained_decision(
-    transaction: &mut impl ApprovalStoreTransaction,
+fn decode_retained_decision(
+    record: &ApprovalReadRecord,
     stored: &RetainedRequest,
     request: &ApprovalDecideRequest,
     person: &workspace_ids::PersonId,
@@ -319,7 +335,6 @@ async fn decode_retained_decision(
             {
                 return Err(invalid_retained_decision());
             }
-            let record = retained_person_approval(transaction, request).await?;
             let ApprovalState::Ended { closed, .. } = &record.state else {
                 return Err(invalid_retained_decision());
             };
@@ -330,7 +345,6 @@ async fn decode_retained_decision(
             }
         }
         ApprovalDecideReply::AlreadyDecided { .. } | ApprovalDecideReply::TooLate {} => {
-            let record = retained_person_approval(transaction, request).await?;
             let ApprovalState::Ended { closed, .. } = &record.state else {
                 return Err(invalid_retained_decision());
             };
@@ -345,15 +359,6 @@ async fn decode_retained_decision(
         }
     }
     Ok(reply)
-}
-
-async fn retained_person_approval(
-    transaction: &mut impl ApprovalStoreTransaction,
-    request: &ApprovalDecideRequest,
-) -> Result<ApprovalReadRecord, StoreFailure> {
-    read_people_approval_request(transaction, &request.organization, &request.request_id)
-        .await?
-        .ok_or_else(invalid_retained_decision)
 }
 
 fn invalid_retained_decision() -> StoreFailure {

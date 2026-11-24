@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT router_run_id, enrollment_cleanup_ms FROM approval_router_runs\nWHERE organization_id = ?1 AND enrollment_id = ?2 AND machine_id = ?3\n  AND enrollment_cleanup_ms IS NOT NULL AND enrollment_cleanup_due_ms IS NULL\nLIMIT 1\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "router_run_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_router_runs",
+            "name": "router_run_id"
+          }
+        }
+      },
+      {
+        "name": "enrollment_cleanup_ms",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "approval_router_runs",
+            "name": "enrollment_cleanup_ms"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "dc6b83e498150cc22fb57a755a91ca25d86ff0d25d8b59c81b42b3fb65a80555"
+}

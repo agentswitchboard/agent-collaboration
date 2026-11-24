@@ -60,7 +60,9 @@ where
             ApprovalAlarmPublication::AtDueBatchEnd,
             move |loan, commit| {
                 Box::pin(async move {
-                    let clock = ApprovalApplyingClock(clock.now());
+                    let time =
+                        fleet_approvals::ApprovalApplyingTime::read(loan, clock.now()).await?;
+                    let clock = ApprovalApplyingClock(time.now());
                     let mut ids = ApprovalApplyingIds(ids.as_ref());
                     Ok(ApprovalStore::new(
                         &commit,

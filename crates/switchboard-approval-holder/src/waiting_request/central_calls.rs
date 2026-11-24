@@ -210,6 +210,16 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
                 return Ok(());
             }
             RaiseReply::AlreadyStopped {} => RaiseRefusal::AlreadyStopped,
+            RaiseReply::AlreadyEnded { marker } => {
+                if self.request_id.as_ref() != Some(&marker.request_id)
+                    || self.router_run.as_ref() != Some(&marker.router_run)
+                {
+                    return Err(TransitionError::Domain(
+                        WaitRefusal::ErasureMarkerForDifferentRequestOrRun,
+                    ));
+                }
+                RaiseRefusal::AlreadyEnded(marker.ending)
+            }
             RaiseReply::SessionEnded {} => RaiseRefusal::SessionEnded,
             RaiseReply::ContentsDiffer {} => RaiseRefusal::ContentsDiffer,
             RaiseReply::TooManyOutstanding {} => RaiseRefusal::TooManyOutstanding,
