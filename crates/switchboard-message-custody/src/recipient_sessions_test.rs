@@ -374,3 +374,29 @@ async fn custody_keeps_two_proved_claims_when_answer_and_deadline_are_ready_toge
         .unwrap();
     assert_eq!(receipt.healthy.unwrap().decision, decision);
 }
+
+#[test]
+fn the_same_managed_claude_claim_counts_once_across_read_orders() {
+    use SessionInventoryAnswer::{AtLeast, Complete};
+
+    let managed = Complete(0).with_managed_claude();
+    let partial = AtLeast(0).with_managed_claude();
+    for evidence in [
+        [managed, Complete(0)],
+        [Complete(0), managed],
+        [managed, managed],
+    ] {
+        assert_eq!(
+            combine_inventory_answers(evidence),
+            RecipientSessionAnswer::KnownOnce
+        );
+    }
+    assert_eq!(
+        combine_inventory_answers([managed, Complete(1), managed]),
+        RecipientSessionAnswer::AmbiguousSession
+    );
+    assert_eq!(
+        combine_inventory_answers([managed, partial]),
+        RecipientSessionAnswer::CouldNotTell
+    );
+}

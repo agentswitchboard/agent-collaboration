@@ -1,7 +1,9 @@
 use super::*;
 use admission::Admission;
+use claude_code_peer_messaging::{ManagedClaudeLaunches, ProcessIncarnation};
 use codex_holder::native_reply;
 use codex_native_integration::NativeProtocolConnection;
+use collaboration_protocol::SessionId as PeerSessionId;
 use collaboration_runtime::{NativeGenerationGate, NativeRelayListener};
 use futures_util::{FutureExt, StreamExt};
 use native_list_fixture::NativeListFixture;
@@ -35,6 +37,15 @@ impl HostAdmission {
         state: CodexCatalogue,
         native_gate: NativeGenerationGate,
     ) -> Self {
+        Self::with_gate_and_launches(root, state, native_gate, None).await
+    }
+
+    async fn with_gate_and_launches(
+        root: &Path,
+        state: CodexCatalogue,
+        native_gate: NativeGenerationGate,
+        managed_launches: Option<Arc<dyn ManagedClaudeLaunches>>,
+    ) -> Self {
         match state {
             CodexCatalogue::Missing => {}
             CodexCatalogue::Unreadable => {
@@ -62,11 +73,14 @@ impl HostAdmission {
         ));
         let managed = Arc::new(managed_inventory(Some(provider_store.clone())));
         let clock = Arc::new(router_clock::ManualClock::new(chrono::DateTime::UNIX_EPOCH));
-        let terminal = Arc::new(ClaudeTerminalSessionInventory::new(
-            Arc::new(ClaudeCodeSessionRegistry::new(root.join("registry"))),
-            clock.clone(),
-            Arc::new(IgnoreCustodyEvents),
-        ));
+        let terminal = Arc::new(
+            ClaudeTerminalSessionInventory::new(
+                Arc::new(ClaudeCodeSessionRegistry::new(root.join("registry"))),
+                clock.clone(),
+                Arc::new(IgnoreCustodyEvents),
+            )
+            .with_managed_launches(managed_launches),
+        );
         let inbox = Admission::new(
             root,
             clock.clone(),
@@ -423,4 +437,109 @@ async fn reused_terminal_pid_cannot_create_a_permanent_custody_refusal() {
     native
         .run(host.inbox.expect_accepted(&target), loaded(&[]))
         .await;
+}
+
+struct FixtureManagedLaunch {
+    session: PeerSessionId,
+    adapter: ProcessIncarnation,
+    live_reads: usize,
+    reads: std::sync::atomic::AtomicUsize,
+}
+
+impl FixtureManagedLaunch {
+    async fn owned_by_test_process(live_reads: usize) -> Arc<Self> {
+        let adapter = ProcessIncarnation::observe(
+            std::num::NonZeroU32::new(std::process::id()).unwrap(),
+            std::future::pending(),
+            std::future::pending,
+        )
+        .await
+        .expect("real process inspection of the fixture's adapter");
+        Arc::new(Self {
+            session: PeerSessionId::try_from(SAVED.to_owned()).unwrap(),
+            adapter,
+            live_reads,
+            reads: std::sync::atomic::AtomicUsize::new(0),
+        })
+    }
+}
+
+impl ManagedClaudeLaunches for FixtureManagedLaunch {
+    fn live_adapter(&self, target: &PeerSessionId) -> Option<ProcessIncarnation> {
+        use std::sync::atomic::Ordering;
+        (target == &self.session && self.reads.fetch_add(1, Ordering::AcqRel) < self.live_reads)
+            .then_some(self.adapter)
+    }
+}
+
+async fn registered_managed_fixture(
+    root: &Path,
+    native: &NativeListFixture,
+    launch: Arc<FixtureManagedLaunch>,
+    worker_pid: u32,
+) -> HostAdmission {
+    let host = HostAdmission::with_gate_and_launches(
+        root,
+        CodexCatalogue::Empty,
+        native.gate.clone(),
+        Some(launch),
+    )
+    .await;
+    host.save_managed(0, root, &session_id(SAVED)).await;
+    let registry = root.join("registry");
+    std::fs::create_dir(&registry).unwrap();
+    std::fs::write(
+        registry.join(format!("{worker_pid}.json")),
+        json!({"pid":worker_pid,"sessionId":SAVED,"kind":"interactive","entrypoint":"sdk-ts","startedAt":4_102_444_800_000_i64}).to_string(),
+    ).unwrap();
+    host
+}
+
+#[tokio::test]
+async fn managed_claude_stays_one_recipient_when_its_worker_is_registered() {
+    let root = tempfile::tempdir().unwrap();
+    let root = root.path();
+    let native = NativeListFixture::bind(root);
+    let launch = FixtureManagedLaunch::owned_by_test_process(usize::MAX).await;
+    let worker = LivePeer::new();
+    let mut host = registered_managed_fixture(root, &native, launch, worker.0.id()).await;
+    let target = session_id(SAVED);
+
+    assert_eq!(
+        native
+            .run(host.codex.lookup_session(&target), loaded(&[]))
+            .await,
+        complete(0)
+    );
+    assert_eq!(host.managed.lookup_session(&target).await, complete(1));
+
+    let mut offer = pin!(host.inbox.expect_accepted(&target));
+    tokio::select! {
+        () = &mut offer => {}
+        (mut wire, request) = native.request() => {
+            native_reply(&mut wire, &request, loaded(&[])).await;
+            offer.await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn adapter_retirement_between_claim_reads_preserves_ambiguity() {
+    let root = tempfile::tempdir().unwrap();
+    let native = NativeListFixture::bind(root.path());
+    let launch = FixtureManagedLaunch::owned_by_test_process(1).await;
+    let worker = LivePeer::new();
+    let mut host =
+        registered_managed_fixture(root.path(), &native, launch.clone(), worker.0.id()).await;
+    let target = session_id(SAVED);
+
+    let mut offer = pin!(host.inbox.expect_ambiguous(&target));
+    tokio::select! {
+        () = &mut offer => {}
+        (mut wire, request) = native.request() => {
+            native_reply(&mut wire, &request, loaded(&[])).await;
+            offer.await;
+        }
+    }
+    assert_eq!(launch.reads.load(std::sync::atomic::Ordering::Acquire), 2);
 }

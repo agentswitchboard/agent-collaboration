@@ -117,6 +117,18 @@ fn accepted_write_words_report_what_central_has_confirmed() {
             "Seen: the recipient session was told.",
         ),
         (
+            MessageDeliveryObservation::Checked(MessageStatus::Refused {
+                reason: workspace_model::central_mail::MessageRefusal::UnknownSession,
+            }),
+            "Refused by the recipient's Mac: unknown session.",
+        ),
+        (
+            MessageDeliveryObservation::Checked(MessageStatus::Refused {
+                reason: workspace_model::central_mail::MessageRefusal::AmbiguousSession,
+            }),
+            "Refused by the recipient's Mac: two sessions match.",
+        ),
+        (
             MessageDeliveryObservation::Checked(MessageStatus::NotFound {}),
             "Central has no record of this message.",
         ),

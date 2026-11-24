@@ -76,6 +76,7 @@ pub struct AgentSessionClient<P: InteractionPort> {
     /// A locally requested stop, distinct from transport failure breaking the task.
     sink_closed: CancellationToken,
     retirement: CancellationToken,
+    adapter_process_id: Arc<std::sync::atomic::AtomicU32>,
     task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
     #[cfg(feature = "test-observation")]
     connection_settled: CancellationToken,
@@ -128,6 +129,15 @@ impl<P: InteractionPort> AgentSessionClient<P> {
     #[must_use]
     pub fn owner_wire(&self) -> Arc<crate::owner_wire::OwnerAcpWire> {
         Arc::clone(&self.owner_wire)
+    }
+
+    /// The owned stdio child while this ACP connection can still identify it.
+    #[must_use]
+    pub fn live_adapter_process_id(&self) -> Option<std::num::NonZeroU32> {
+        if self.retirement.is_cancelled() {
+            return None;
+        }
+        std::num::NonZeroU32::new(self.adapter_process_id.load(Ordering::Acquire))
     }
 
     #[must_use]

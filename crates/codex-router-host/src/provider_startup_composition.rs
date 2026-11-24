@@ -203,7 +203,10 @@ pub(crate) async fn compose_provider_startup(
                 )
                 .await;
                 match runtime {
-                    Ok(runtime) => {
+                    Ok(mut runtime) => {
+                        if binding.provider == ProviderKind::ClaudeCode {
+                            runtime.observe_managed_claude_adapter().await;
+                        }
                         runtime
                             .set_endpoint_id(String::from(binding.endpoint_id.clone()))
                             .await;

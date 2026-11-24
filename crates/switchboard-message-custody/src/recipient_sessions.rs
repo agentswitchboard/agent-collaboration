@@ -51,21 +51,50 @@ pub enum SessionInventoryAnswer {
     Complete(usize),
     /// The authority may be hiding more matches.
     AtLeast(usize),
+    CompleteWithManagedClaude {
+        independent: usize,
+    },
+    AtLeastWithManagedClaude {
+        independent: usize,
+    },
 }
 
 impl SessionInventoryAnswer {
-    const fn proved(self) -> usize {
+    const fn evidence(self) -> (usize, bool, bool) {
         match self {
-            Self::Complete(count) | Self::AtLeast(count) => count,
+            Self::Complete(count) => (count, false, true),
+            Self::AtLeast(count) => (count, false, false),
+            Self::CompleteWithManagedClaude { independent } => (independent, true, true),
+            Self::AtLeastWithManagedClaude { independent } => (independent, true, false),
+        }
+    }
+
+    /// A positive claim for the exact managed Claude owner. Both inventories
+    /// may carry it when the terminal record proved its managed ancestry.
+    #[must_use]
+    pub const fn with_managed_claude(self) -> Self {
+        let (independent, _, complete) = self.evidence();
+        if complete {
+            Self::CompleteWithManagedClaude { independent }
+        } else {
+            Self::AtLeastWithManagedClaude { independent }
         }
     }
 
     #[must_use]
     pub const fn merge(self, other: Self) -> Self {
-        let proved = self.proved().saturating_add(other.proved());
-        match (self, other) {
-            (Self::AtLeast(_), _) | (_, Self::AtLeast(_)) => Self::AtLeast(proved),
-            _ => Self::Complete(proved),
+        let (left, left_managed, left_complete) = self.evidence();
+        let (right, right_managed, right_complete) = other.evidence();
+        let independent = left.saturating_add(right);
+        let merged = if left_complete && right_complete {
+            Self::Complete(independent)
+        } else {
+            Self::AtLeast(independent)
+        };
+        if left_managed || right_managed {
+            merged.with_managed_claude()
+        } else {
+            merged
         }
     }
 }
@@ -123,13 +152,13 @@ pub fn combine_inventory_answers(
     let summary = answers
         .into_iter()
         .fold(EMPTY_INVENTORY, SessionInventoryAnswer::merge);
-    match summary {
-        SessionInventoryAnswer::Complete(2..) | SessionInventoryAnswer::AtLeast(2..) => {
-            RecipientSessionAnswer::AmbiguousSession
-        }
-        SessionInventoryAnswer::AtLeast(_) => RecipientSessionAnswer::CouldNotTell,
-        SessionInventoryAnswer::Complete(1) => RecipientSessionAnswer::KnownOnce,
-        SessionInventoryAnswer::Complete(0) => RecipientSessionAnswer::UnknownSession,
+    let (independent, managed, complete) = summary.evidence();
+    let proved = independent.saturating_add(if managed { 1 } else { 0 });
+    match (proved, complete) {
+        (2.., _) => RecipientSessionAnswer::AmbiguousSession,
+        (_, false) => RecipientSessionAnswer::CouldNotTell,
+        (1, true) => RecipientSessionAnswer::KnownOnce,
+        (0, true) => RecipientSessionAnswer::UnknownSession,
     }
 }
 

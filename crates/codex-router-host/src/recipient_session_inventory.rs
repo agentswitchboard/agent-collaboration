@@ -47,7 +47,11 @@ impl ManagedProviderSessionInventory {
         })
     }
 
-    fn lookup_endpoint(&self, target: SessionRef) -> SessionInventoryPart<'_> {
+    fn lookup_endpoint(
+        &self,
+        target: SessionRef,
+        managed_claude: bool,
+    ) -> SessionInventoryPart<'_> {
         let owner_knows = self
             .supervisor
             .as_ref()
@@ -58,7 +62,19 @@ impl ManagedProviderSessionInventory {
                     SessionLifecycle::Live { .. } | SessionLifecycle::Loading { .. }
                 )
             });
-        let observed = SessionInventoryAnswer::AtLeast(usize::from(owner_knows));
+        let count_match = move |found, complete_read| match (found, managed_claude, complete_read) {
+            (true, true, _) => {
+                let empty = if complete_read {
+                    complete(0)
+                } else {
+                    UNAVAILABLE
+                };
+                empty.with_managed_claude()
+            }
+            (found, _, true) => complete(usize::from(found)),
+            (found, _, false) => SessionInventoryAnswer::AtLeast(usize::from(found)),
+        };
+        let observed = count_match(owner_knows, false);
         SessionInventoryPart {
             observed,
             read: Box::pin(async move {
@@ -66,22 +82,29 @@ impl ManagedProviderSessionInventory {
                     return observed;
                 };
                 match store.lock().await.session_record(&target).await {
-                    Ok(record) => complete(usize::from(owner_knows || record.is_some())),
+                    Ok(record) => count_match(owner_knows || record.is_some(), true),
                     Err(_) => observed,
                 }
             }),
         }
     }
 
-    fn endpoint_parts(&self, session_id: &SessionId) -> Option<[SessionInventoryPart<'_>; 2]> {
+    fn endpoint_parts(
+        &self,
+        session_id: &SessionId,
+        identify_managed_claude: bool,
+    ) -> Option<[SessionInventoryPart<'_>; 2]> {
         let session_id =
             collaboration_protocol::SessionId::try_from(session_id.as_str().to_owned()).ok()?;
-        Some(self.endpoints.each_ref().map(|endpoint| {
-            self.lookup_endpoint(SessionRef {
-                endpoint: endpoint.clone(),
-                session_id: session_id.clone(),
-            })
-        }))
+        let [claude, cursor] = &self.endpoints;
+        let target = |endpoint: &EndpointRef| SessionRef {
+            endpoint: endpoint.clone(),
+            session_id: session_id.clone(),
+        };
+        Some([
+            self.lookup_endpoint(target(claude), identify_managed_claude),
+            self.lookup_endpoint(target(cursor), false),
+        ])
     }
 }
 
@@ -91,7 +114,7 @@ impl SessionInventory for ManagedProviderSessionInventory {
         session_id: &'lookup SessionId,
     ) -> Pin<Box<dyn Future<Output = SessionInventoryAnswer> + Send + 'lookup>> {
         Box::pin(async move {
-            let Some([claude, cursor]) = self.endpoint_parts(session_id) else {
+            let Some([claude, cursor]) = self.endpoint_parts(session_id, false) else {
                 return UNAVAILABLE;
             };
             let (claude, cursor) = tokio::join!(claude.read, cursor.read);
@@ -104,7 +127,7 @@ impl SessionInventory for ManagedProviderSessionInventory {
         session_id: &'lookup SessionId,
         _deadline: Option<router_clock::ClockInstant>,
     ) -> Vec<SessionInventoryPart<'lookup>> {
-        match self.endpoint_parts(session_id) {
+        match self.endpoint_parts(session_id, true) {
             Some(parts) => Vec::from(parts),
             None => vec![SessionInventoryPart {
                 observed: UNAVAILABLE,

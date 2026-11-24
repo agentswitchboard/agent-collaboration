@@ -215,6 +215,7 @@ async fn reap_handoff_emits_one_typed_event_and_releases_the_permit() {
                 answer: PeerCensusAnswer {
                     at_least: 1,
                     complete: false,
+                    managed_claude_alias: false,
                 },
             }
         })

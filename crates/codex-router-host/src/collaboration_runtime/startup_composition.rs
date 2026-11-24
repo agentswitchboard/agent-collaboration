@@ -507,6 +507,12 @@ impl CollaborationRuntime {
         let (message_system, message_tools) = match message_roots {
             Some(roots) => {
                 let custody_events = Arc::new(HostCustodyEvents);
+                let managed_launches = external_provider_supervisor
+                    .as_ref()
+                    .zip(managed_claude_endpoint.as_ref())
+                    .map(|(supervisor, endpoint)| {
+                        supervisor.managed_claude_launches(endpoint.clone())
+                    });
                 let recipient_directory = Arc::new(CombinedRecipientSessionDirectory::new(
                     RecipientSessionSources {
                         codex: Arc::new(
@@ -529,7 +535,8 @@ impl CollaborationRuntime {
                                 claude_code_sessions,
                                 worker_clock.clone(),
                                 custody_events.clone(),
-                            ),
+                            )
+                            .with_managed_launches(managed_launches),
                         ),
                     },
                 ));

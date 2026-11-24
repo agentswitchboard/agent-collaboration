@@ -40,9 +40,12 @@ async fn an_expired_probe_kills_and_reaps_the_owned_child() {
 #[tokio::test]
 async fn an_unfinished_reap_hands_off_at_its_injected_deadline() {
     let (expire, expired) = tokio::sync::oneshot::channel();
-    let mut wait = std::pin::pin!(wait_for_reap(std::future::pending(), async {
-        expired.await.unwrap();
-    }));
+    let mut wait = std::pin::pin!(wait_for_reap::<super::ProcessStart>(
+        std::future::pending(),
+        async {
+            expired.await.unwrap();
+        }
+    ));
     std::future::poll_fn(|cx| {
         use std::{future::Future as _, task::Poll};
         assert!(wait.as_mut().poll(cx).is_pending());

@@ -58,6 +58,14 @@ impl ProviderTransport {
 }
 
 impl ProviderLifetime {
+    pub(super) fn process_id(&self) -> u32 {
+        match self {
+            Self::Process(child) => child.id(),
+            #[cfg(feature = "test-support")]
+            Self::InProcess(_) => 0,
+        }
+    }
+
     /// Resolves once the agent has exited on its own.
     pub(super) async fn exited(&mut self) {
         match self {

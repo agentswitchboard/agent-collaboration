@@ -1,5 +1,6 @@
 //! Host-owned admission and settlement for external ACP provider operations.
 
+mod managed_claude_launch;
 mod provider_admission_policy;
 mod provider_operation_admission;
 mod provider_operation_index;
