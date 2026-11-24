@@ -14,6 +14,7 @@ test-support = []
 
 [dependencies]
 codex-router-secret-store = { path = "../codex-router-secret-store", version = "0.1.158" }
+futures-util.workspace = true
 router-clock.workspace = true
 state-machine-core.workspace = true
 switchboard-machine-core-store = { path = "../switchboard-machine-core-store", version = "0.1.158" }

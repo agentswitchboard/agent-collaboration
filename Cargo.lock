@@ -6046,6 +6046,7 @@ version = "0.1.158"
 dependencies = [
  "axum",
  "codex-router-secret-store",
+ "futures-util",
  "hegeltest",
  "router-clock",
  "rustls",
