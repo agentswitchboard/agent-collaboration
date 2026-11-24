@@ -5,7 +5,7 @@ use router_clock::ManualClock;
 use std::sync::Arc;
 
 use super::*;
-use crate::admitted_lane_socket::AdmittedSocketLane;
+use crate::{admitted_lane_socket::AdmittedSocketLane, wire_write_fence::WireWriteFence};
 
 fn admitted_connection() -> AdmittedConnection {
     let central_time = "2030-01-01T00:00:00Z".parse().unwrap();
@@ -44,7 +44,10 @@ fn prepared(connection: ConnectionAttempt) -> (LaneRequest, oneshot::Receiver<La
 fn submitter_paused_after_admission_cannot_enqueue_after_final_withdrawal() {
     let (handle, mut owner) = link_lane_channel();
     let admitted = admitted_connection();
-    let mut socket = AdmittedSocketLane::new(&owner);
+    let write_fence = WireWriteFence::new(Arc::new(ManualClock::new(
+        admitted.clock_anchor.central_time,
+    )));
+    let mut socket = AdmittedSocketLane::new(&owner, &write_fence);
     assert!(socket.admit(admitted.clone()));
 
     // A submitter has already taken the fast-path observation of A. The
@@ -97,6 +100,8 @@ fn generated_handoffs_settle_every_accepted_command_after_withdrawal(case: hegel
     let (handle, mut owner) = link_lane_channel();
     let first = admitted_connection();
     let second = admitted_connection();
+    let write_fence =
+        WireWriteFence::new(Arc::new(ManualClock::new(first.clock_anchor.central_time)));
     let mut current: Option<&ConnectionAttempt> = None;
     let mut accepted = Vec::new();
     let mut owner_socket = None;
@@ -109,7 +114,7 @@ fn generated_handoffs_settle_every_accepted_command_after_withdrawal(case: hegel
                 } else {
                     &second
                 };
-                let mut socket = AdmittedSocketLane::new(&owner);
+                let mut socket = AdmittedSocketLane::new(&owner, &write_fence);
                 assert!(socket.admit(view.clone()));
                 owner_socket = Some(socket);
                 current = Some(&view.connection);
