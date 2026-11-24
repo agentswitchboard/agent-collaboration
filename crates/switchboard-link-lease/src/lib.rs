@@ -25,11 +25,16 @@ mod lease_worker;
 use lease_worker::{LeaseCommand, run};
 
 /// Lease adapter started and closed by its composition owner.
+///
+/// The executor calls `seal_ending_reports` after the driver physically joins
+/// or when it proves that the driver never started. A timed-out driver stop
+/// leaves reports open until the late driver join.
 pub struct EnrollmentLeaseSource {
     commands: mpsc::UnboundedSender<LeaseCommand>,
     retirements: RetirementFence,
     closing: watch::Sender<Option<ClockInstant>>,
     admission: Arc<Mutex<Admission>>,
+    ending_reports: watch::Sender<Admission>,
     worker_exit: watch::Receiver<Option<LeaseWorkerExit>>,
     excluded: Arc<BTreeSet<EnrollmentId>>,
     completion: AsyncMutex<Completion>,
@@ -44,6 +49,7 @@ pub struct LeaseJoin {
 
 enum Completion {
     Running(JoinHandle<Result<(), LeaseWorkerFailure>>),
+    Reaped(Result<(), LeaseWorkerFailure>),
     Finished(Result<LeaseJoin, LeaseJoinUnconfirmed>),
 }
 
@@ -185,6 +191,7 @@ impl EnrollmentLeaseSource {
             retirements,
             closing,
             admission,
+            ending_reports: watch::channel(Admission::Open).0,
             worker_exit,
             excluded,
             completion: AsyncMutex::new(Completion::Running(task)),
@@ -207,6 +214,17 @@ impl EnrollmentLeaseSource {
         });
     }
 
+    /// Closes definitive reports after the driver has joined or never started.
+    pub fn seal_ending_reports(&self) {
+        self.ending_reports.send_if_modified(|admission| {
+            if *admission == Admission::Sealed {
+                return false;
+            }
+            *admission = Admission::Sealed;
+            true
+        });
+    }
+
     /// Observes the worker's retained exit before waiting for its children.
     pub async fn worker_exit(&self) -> LeaseWorkerExit {
         let mut observed = self.worker_exit.clone();
@@ -216,27 +234,38 @@ impl EnrollmentLeaseSource {
         }
     }
 
-    /// Waits for physical completion. Cancelling a wait leaves the receipt available.
+    /// Waits for reaping and the driver report seal. Cancelling a wait retains the receipt.
     pub async fn join(&self) -> Result<LeaseJoin, LeaseJoinUnconfirmed> {
         let mut completion = self.completion.lock().await;
-        match &mut *completion {
-            Completion::Running(task) => {
-                let joined = task
-                    .await
-                    .map_err(LeaseJoinUnconfirmed::from)
-                    .map(|worker| {
-                        // An admitted retirement write is store-owned and can finish
-                        // after its child stops waiting. Pending here stays fenced.
-                        LeaseJoin {
-                            unsettled_retirements: self.retirements.pending_keys(),
-                            worker,
-                        }
-                    });
-                *completion = Completion::Finished(joined.clone());
-                joined
-            }
-            Completion::Finished(joined) => joined.clone(),
-        }
+        let worker = match &mut *completion {
+            Completion::Running(task) => match task.await {
+                Ok(worker) => {
+                    *completion = Completion::Reaped(worker);
+                    worker
+                }
+                Err(error) => {
+                    let unconfirmed = LeaseJoinUnconfirmed::from(error);
+                    *completion = Completion::Finished(Err(unconfirmed));
+                    return Err(unconfirmed);
+                }
+            },
+            Completion::Reaped(worker) => *worker,
+            Completion::Finished(joined) => return joined.clone(),
+        };
+        // This adapter holds the sender for the entire wait.
+        let mut reports = self.ending_reports.subscribe();
+        let _ = reports
+            .wait_for(|admission| *admission == Admission::Sealed)
+            .await;
+
+        // An admitted retirement write is store-owned and can finish
+        // after its child stops waiting. Pending here stays fenced.
+        let joined = LeaseJoin {
+            unsettled_retirements: self.retirements.pending_keys(),
+            worker,
+        };
+        *completion = Completion::Finished(Ok(joined.clone()));
+        Ok(joined)
     }
 }
 
@@ -276,10 +305,7 @@ impl LeaseSource<EnrollmentKey> for EnrollmentLeaseSource {
     }
 
     fn end(&self, key: &EnrollmentKey, cause: EnrollmentEnd) {
-        let admission = self
-            .admission
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let admission = self.ending_reports.borrow();
         if *admission == Admission::Sealed || self.excluded.contains(&key.enrollment_id) {
             return;
         }

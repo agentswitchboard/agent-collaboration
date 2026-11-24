@@ -13,6 +13,7 @@ use switchboard_machine_enrollment_store::{
 };
 
 async fn stop_lease(lease: &EnrollmentLeaseSource, clock: &dyn RuntimeClock) {
+    lease.seal_ending_reports();
     lease.request_stop_by(clock.monotonic_now().after(Duration::from_secs(5)));
     let joined = lease.join().await.unwrap();
     assert_eq!(joined.worker, Ok(()));

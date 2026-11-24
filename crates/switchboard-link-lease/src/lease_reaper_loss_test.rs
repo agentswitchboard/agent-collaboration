@@ -8,6 +8,7 @@ async fn reaper_loss_cannot_confirm_join_while_a_real_child_holds_the_owner() {
     let mut held_child = fixture.refreshes.recv().await.unwrap();
     let abort = match &*fixture.source.completion.lock().await {
         Completion::Running(reaper) => reaper.abort_handle(),
+        Completion::Reaped(outcome) => panic!("unexpected reaped worker: {outcome:?}"),
         Completion::Finished(receipt) => panic!("unexpected completed receipt: {receipt:?}"),
     };
 

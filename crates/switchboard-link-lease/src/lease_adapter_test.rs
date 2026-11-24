@@ -278,6 +278,7 @@ pub(crate) async fn stop_lease(
     source: &EnrollmentLeaseSource,
     clock: &dyn RuntimeClock,
 ) -> LeaseJoin {
+    source.seal_ending_reports();
     source.request_stop_by(clock.monotonic_now().after(Duration::from_secs(5)));
     source.join().await.unwrap()
 }
@@ -317,6 +318,7 @@ async fn stop_cancels_a_held_refresh_at_the_cutoff() {
     let key = fixture.binding.key();
     let acquire = start_acquire(&fixture.source, &key).await;
     let held_sign_in = fixture.refreshes.recv().await.unwrap();
+    fixture.source.seal_ending_reports();
     fixture
         .source
         .request_stop_by(ClockInstant::ZERO.after(Duration::from_secs(5)));
@@ -595,6 +597,7 @@ async fn forced_close_abandons_a_rotated_credential_held_before_storage() {
     let acquire = start_acquire(&fixture.source, &key).await;
     let held_sign_in = fixture.refreshes.recv().await.unwrap();
 
+    fixture.source.seal_ending_reports();
     fixture
         .source
         .request_stop_by(ClockInstant::ZERO.after(Duration::from_secs(5)));
@@ -622,6 +625,7 @@ async fn an_earlier_stop_tightens_the_live_cutoff_and_a_later_one_does_not() {
     let held_sign_in = fixture.refreshes.recv().await.unwrap();
 
     let cutoff = |seconds| ClockInstant::ZERO.after(Duration::from_secs(seconds));
+    fixture.source.seal_ending_reports();
     fixture.source.request_stop_by(cutoff(5));
     fixture.clock.not_due_check_now(cutoff(5)).await;
     fixture.source.request_stop_by(cutoff(3));

@@ -231,6 +231,7 @@ async fn excluded_lease_is_refused_before_acquisition_or_retirement() {
     );
     lease.end(&excluded, central_link_client::EnrollmentEnd::Revoked);
     assert!(!fence.is_fenced(&excluded));
+    lease.seal_ending_reports();
     lease.request_stop_by(clock.monotonic_now());
     let joined = lease.join().await.unwrap();
     assert_eq!(joined.worker, Ok(()));
@@ -279,6 +280,7 @@ async fn join_replaces_the_pending_timeout_sample_with_the_settled_fence() {
         admitted,
     } = admit_retirement().await;
     let now = clock.monotonic_now();
+    source.seal_ending_reports();
     source.request_stop_by(now.after(Duration::from_secs(5)));
     let mut early_wait = std::pin::pin!(router_clock::timeout_at(
         clock.as_ref(),
@@ -317,6 +319,7 @@ async fn an_admitted_retirement_can_finish_in_the_store_after_the_child_is_joine
         admitted,
         ..
     } = admit_retirement().await;
+    source.seal_ending_reports();
     source.request_stop_by(clock.monotonic_now());
 
     let joined = source.join().await.unwrap();
@@ -333,5 +336,32 @@ async fn an_admitted_retirement_can_finish_in_the_store_after_the_child_is_joine
         &*store.row.borrow(),
         EnrollmentMetadata::Ended { key: ended, why: EnrollmentEnd::Revoked, .. } if ended == &key
     ));
+    assert_eq!(source.join().await.unwrap(), joined);
+}
+
+#[tokio::test]
+async fn reports_for_the_active_binding_are_refused_after_the_driver_seal() {
+    let context = context();
+    let binding = key(&context, "019a0000-0000-7000-8000-000000000004");
+    let store = MetadataStore::new(active(&context, &binding, 1));
+    let clock = Arc::new(ManualClock::new(Default::default()));
+    let owner = RefreshOwner::new(store, NoRefresh, clock.clone(), context);
+    let fence = owner.retirement_fence();
+    let source = EnrollmentLeaseSource::start(owner, clock.clone(), Arc::new(BTreeSet::new()));
+    let (release, held) = oneshot::channel::<()>();
+    let driver = tokio::spawn(async move { held.await.unwrap() });
+    release.send(()).unwrap();
+    driver.await.unwrap();
+
+    source.seal_ending_reports();
+    source.seal_ending_reports();
+    source.end(&binding, central_link_client::EnrollmentEnd::Revoked);
+    assert!(!fence.is_fenced(&binding));
+
+    source.request_stop_by(clock.monotonic_now());
+    let joined = source.join().await.unwrap();
+    assert!(joined.unsettled_retirements.is_empty());
+    source.end(&binding, central_link_client::EnrollmentEnd::Inactive);
+    assert!(!fence.is_fenced(&binding));
     assert_eq!(source.join().await.unwrap(), joined);
 }

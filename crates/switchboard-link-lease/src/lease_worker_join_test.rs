@@ -2,7 +2,7 @@ use std::{sync::mpsc as blocking, task::Poll};
 
 use router_clock::ManualClock;
 use switchboard_central_link::lease_source::LeaseSource;
-use switchboard_machine_enrollment::{EnrollmentEnd, RetirementFence};
+use switchboard_machine_enrollment::{EnrollmentEnd, RetirementFence, StoredEnrollment};
 
 use crate::{
     Admission, Completion, EnrollmentLeaseSource, LeaseJoin, LeaseWorkerExit, tests::Fixture,
@@ -26,20 +26,18 @@ fn exit_publication() -> (
 }
 
 #[tokio::test]
-async fn worker_exit_seals_admission_before_held_children_are_joined() {
+async fn a_held_driver_reports_the_active_key_after_worker_exit_and_cutoff() {
     let fixture = Fixture::new();
     let key = fixture.binding.key();
     let clock = fixture.clock.clone();
     let fence = RetirementFence::default();
-    let worker_fence = fence.clone();
-    let worker_key = key.clone();
     let (commands, _unused) = mpsc::unbounded_channel();
     let (closing, stopped) = watch::channel(None);
     let (publication, worker_exit) = exit_publication();
     let admission = publication.admission.clone();
     let children = ChildTasks::new();
     let (ready, waiting) = oneshot::channel();
-    let (release, held) = oneshot::channel::<()>();
+    let (mut release, held) = oneshot::channel::<()>();
     children.spawn(async move {
         ready.send(()).unwrap();
         let _ = held.await;
@@ -47,7 +45,6 @@ async fn worker_exit_seals_admission_before_held_children_are_joined() {
     });
     waiting.await.unwrap();
     let worker = tokio::spawn(async move {
-        worker_fence.request_definitive(&worker_key, EnrollmentEnd::Revoked);
         panic!("fixture forces the lease worker to exit");
     });
     while !worker.is_finished() {
@@ -67,15 +64,16 @@ async fn worker_exit_seals_admission_before_held_children_are_joined() {
         sampled_reaper.send(()).unwrap();
         reaping.await
     });
-    let source = EnrollmentLeaseSource {
+    let source = Arc::new(EnrollmentLeaseSource {
         commands,
         retirements: fence.clone(),
         closing,
         admission,
+        ending_reports: watch::channel(Admission::Open).0,
         worker_exit,
         excluded: Arc::new(BTreeSet::new()),
         completion: tokio::sync::Mutex::new(Completion::Running(reaper)),
-    };
+    });
     sampling.await.unwrap();
 
     let expected_exit = Poll::Ready(LeaseWorkerExit::Failed(LeaseWorkerFailure::Panicked));
@@ -89,26 +87,92 @@ async fn worker_exit_seals_admission_before_held_children_are_joined() {
         LeaseWorkerExit::Failed(LeaseWorkerFailure::Panicked)
     );
     assert!(!release.is_closed());
-    let mut late_key = key.clone();
-    late_key.enrollment_id = "019a0000-0000-7000-8000-000000000008".parse().unwrap();
-    source.end(&late_key, central_link_client::EnrollmentEnd::Revoked);
-    assert!(!fence.is_fenced(&late_key));
-    let mut late_acquire = source.acquire(&late_key, None);
-    assert_eq!(
-        poll_fn(|cx| Poll::Ready(late_acquire.as_mut().poll(cx))).await,
-        Poll::Ready(Err(LeaseFailure::Fault)),
-    );
+    assert!(matches!(
+        &*fixture.store.row.borrow(),
+        StoredEnrollment::Active(binding) if binding.key() == key
+    ));
+    assert_eq!(source.acquire(&key, None).await, Err(LeaseFailure::Fault));
+    let (deliver, delivered) = oneshot::channel::<()>();
+    let (reported, report_received) = oneshot::channel();
+    let (release_driver, held_driver) = oneshot::channel::<()>();
+    let driver_source = source.clone();
+    let driver_key = key.clone();
+    let driver = tokio::spawn(async move {
+        delivered.await.unwrap();
+        driver_source.end(&driver_key, central_link_client::EnrollmentEnd::Revoked);
+        reported.send(()).unwrap();
+        held_driver.await.unwrap();
+    });
 
     source.request_stop_by(fixture.clock.monotonic_now());
-    let expected = Ok(LeaseJoin {
-        unsettled_retirements: vec![key.clone()],
-        worker: Err(LeaseWorkerFailure::Panicked),
-    });
-    assert_eq!(source.join().await, expected);
-    assert!(release.is_closed());
-    source.end(&late_key, central_link_client::EnrollmentEnd::Revoked);
-    assert_eq!(fence.pending_keys(), vec![key]);
-    assert_eq!(source.join().await, expected);
+    release.closed().await;
+    loop {
+        let reaped = match &*source.completion.lock().await {
+            Completion::Running(task) => task.is_finished(),
+            Completion::Reaped(_) | Completion::Finished(_) => true,
+        };
+        if reaped {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    let reads = *fixture.store.metadata_reads.borrow();
+    let writes = *fixture.store.end_attempts.borrow();
+    deliver.send(()).unwrap();
+    report_received.await.unwrap();
+    assert!(!driver.is_finished());
+    assert_eq!(fence.pending_keys(), vec![key.clone()]);
+    assert_eq!(*fixture.store.metadata_reads.borrow(), reads);
+    assert_eq!(*fixture.store.end_attempts.borrow(), writes);
+    assert!(matches!(
+        &*fixture.store.row.borrow(),
+        StoredEnrollment::Active(_)
+    ));
+
+    {
+        let mut early_join = std::pin::pin!(source.join());
+        assert!(
+            poll_fn(|cx| Poll::Ready(early_join.as_mut().poll(cx)))
+                .await
+                .is_pending()
+        );
+    }
+    release_driver.send(()).unwrap();
+    driver.await.unwrap();
+    source.seal_ending_reports();
+    let joined = source.join().await.unwrap();
+    assert_eq!(joined.unsettled_retirements, vec![key.clone()]);
+    assert_eq!(joined.worker, Err(LeaseWorkerFailure::Panicked));
+    assert_eq!(source.join().await, Ok(joined.clone()));
+
+    let excluded = joined
+        .unsettled_retirements
+        .into_iter()
+        .map(|entry| entry.enrollment_id)
+        .collect();
+    let successor_owner = RefreshOwner::new(
+        fixture.store.clone(),
+        UnexpectedRefresh,
+        fixture.clock.clone(),
+        fixture.binding.context.clone(),
+    );
+    let successor =
+        EnrollmentLeaseSource::start(successor_owner, fixture.clock.clone(), Arc::new(excluded));
+    assert_eq!(
+        successor.acquire(&key, None).await,
+        Err(LeaseFailure::EnrollmentEnded)
+    );
+    successor.seal_ending_reports();
+    successor.request_stop_by(fixture.clock.monotonic_now());
+    assert!(
+        successor
+            .join()
+            .await
+            .unwrap()
+            .unsettled_retirements
+            .is_empty()
+    );
+    fixture.source.seal_ending_reports();
     fixture
         .source
         .request_stop_by(fixture.clock.monotonic_now());
@@ -220,6 +284,7 @@ async fn retry_with_cutoff(remaining: Duration) -> LeaseJoin {
     };
     let source =
         EnrollmentLeaseSource::start(owner, fixture.clock.clone(), Arc::new(BTreeSet::new()));
+    source.seal_ending_reports();
     source.request_stop_by(fixture.clock.monotonic_now());
     let joined = source.join().await.unwrap();
     if matches!(result, FinishedWork::StillPending) {
@@ -227,6 +292,7 @@ async fn retry_with_cutoff(remaining: Duration) -> LeaseJoin {
     } else {
         assert!(joined.unsettled_retirements.is_empty());
     }
+    fixture.source.seal_ending_reports();
     fixture
         .source
         .request_stop_by(fixture.clock.monotonic_now());
@@ -262,6 +328,7 @@ async fn an_acquire_first_polled_at_cutoff_does_not_enter_the_owner() {
     stop.send_replace(Some(fixture.clock.monotonic_now()));
     assert_eq!(acquisition.await, Err(LeaseFailure::Fault));
     assert_eq!(*fixture.store.credential_opens.borrow(), 0);
+    fixture.source.seal_ending_reports();
     fixture
         .source
         .request_stop_by(fixture.clock.monotonic_now());
