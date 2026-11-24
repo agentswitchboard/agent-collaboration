@@ -1,7 +1,17 @@
-//! Engine administration results, including the historical retained receipt format.
+//! Engine administration inputs and the historical retained receipt format.
 use crate::AdminRefusal;
 use fleet_engine::EngineFailureClass;
 use serde::{Deserialize, Serialize};
+use workspace_ids::{PersonId, RequestId};
+
+/// A mutation of one retired attempt in the owning organization.
+pub(crate) struct EngineAttemptCommand {
+    pub organization_id: fleet_identity_protocol::OrganizationId,
+    pub operation_id: RequestId,
+    pub attempt_id: uuid::Uuid,
+    pub person_id: PersonId,
+    pub intent_digest: String,
+}
 
 /// The closed set of engine kinds an admin sees; test-support machines are hidden.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

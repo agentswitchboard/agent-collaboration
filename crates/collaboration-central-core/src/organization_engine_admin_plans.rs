@@ -3,7 +3,9 @@
 //! operation ID, so a replay returns it as CreateWorkspace's does.
 use crate::{
     AdminRefusal, WorkspaceRuntime,
-    engine_admin_result::{EngineAdminResult, EngineKindHealth, EngineRetiredItem},
+    engine_admin_types::{
+        EngineAdminResult, EngineAttemptCommand, EngineKindHealth, EngineRetiredItem,
+    },
     organization_admin_contract::RetainedOrganizationAdminAnswer,
     workspace_runtime::engine_admin_dispatch::KIND_REGISTRY,
 };
@@ -14,16 +16,7 @@ use fleet_runtime_ports::{
     stored_values::{json, string},
     workspace_decode_error::corrupt,
 };
-use workspace_model::{ActorIdentityId, Identity, PersonId, RequestId, Timestamp};
-
-/// A mutation of one retired attempt in the owning organization.
-pub(crate) struct EngineAttemptCommand {
-    pub organization_id: fleet_identity_protocol::OrganizationId,
-    pub operation_id: RequestId,
-    pub attempt_id: uuid::Uuid,
-    pub person_id: PersonId,
-    pub intent_digest: String,
-}
+use workspace_model::{ActorIdentityId, Identity, RequestId, Timestamp};
 
 /// What the admin batch carries for one engine operation.
 pub(crate) struct EngineAdminPlan {

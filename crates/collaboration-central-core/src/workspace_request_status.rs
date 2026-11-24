@@ -1,7 +1,7 @@
 //! Read a retained decision from the ledger that owned the original write.
 use crate::WorkspaceCaller;
 use crate::{
-    WorkspaceRuntime, engine_admin_result::EngineAdminResult,
+    WorkspaceRuntime, engine_admin_types::EngineAdminResult,
     organization_admin_contract::OrganizationAdminResult,
 };
 use central_link_protocol::{

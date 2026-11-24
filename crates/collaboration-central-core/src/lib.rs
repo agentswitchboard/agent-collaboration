@@ -86,7 +86,7 @@ pub use sign_in_trust_settings::SignInTrustSettings;
 mod authorization_revision_plans;
 #[cfg(feature = "test-support")]
 mod engine_admin_fixture;
-mod engine_admin_result;
+mod engine_admin_types;
 mod organization_admin_contract;
 mod organization_admin_plans;
 mod organization_authority_cache;
@@ -99,7 +99,9 @@ mod organization_authority_cache;
 )]
 mod organization_engine_admin_plans;
 #[cfg(feature = "test-support")]
-pub use engine_admin_fixture::{EngineAdminControl, EngineAttemptAction, EngineAttemptFixture};
+pub use engine_admin_fixture::{
+    EngineAdminControl, EngineAttemptAction, EngineAttemptFixture, fixture_engine_admin,
+};
 mod organization_provisioning_plans;
 mod organization_signin_http;
 mod organization_signin_port;

@@ -347,7 +347,9 @@ pub(super) async fn control(
         }
         "/test/engine-admin-control" => {
             let control = request.json().await?;
-            Response::from_json(&runtime.fixture_engine_admin(control).await)
+            Response::from_json(
+                &collaboration_central_core::fixture_engine_admin(runtime.as_ref(), control).await,
+            )
         }
         "/test/engine-alarm-inputs" => {
             use fleet_runtime_ports::CentralStore as _;

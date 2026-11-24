@@ -306,7 +306,8 @@ impl EngineOrg {
         &self,
         control: EngineAdminControl,
     ) -> std::result::Result<Value, StoreFailure> {
-        self.runtime().await.fixture_engine_admin(control).await
+        collaboration_central_core::fixture_engine_admin(self.runtime().await.as_ref(), control)
+            .await
     }
 
     pub async fn health(&self) -> Value {

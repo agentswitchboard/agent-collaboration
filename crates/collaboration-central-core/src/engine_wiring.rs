@@ -1,7 +1,7 @@
 //! Composes the retained engine with the runtime's execution capabilities.
 use crate::workspace_runtime::engine_admin_dispatch::{KIND_REGISTRY, finish_registered_discard};
 use crate::workspace_runtime::engine_dispatch::{CoreTimedRows, WholeKind};
-use crate::{WorkspaceRuntime, engine_admin_result::EngineKindName};
+use crate::{WorkspaceRuntime, engine_admin_types::EngineKindName};
 use central_engine_model::EngineTime;
 use central_storage::StoreFailure;
 use fleet_contracts::{
