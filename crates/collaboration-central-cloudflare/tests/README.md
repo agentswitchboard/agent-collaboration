@@ -234,10 +234,10 @@ These cases come from the paused reliability branch and mirror the native ones:
 - `workspace_requests::notices::engine_drain_origins`: V2 error origin on workerd; each
   drain-batch outcome forced separately, and the two-workspace mixes.
 - `workspace_requests::organization_signin::engine_admin_support`: an organization with a
-  workspace, today's timers, the four engine admin routes through the Worker sign-in
-  binding with person proofs, and the captured `central engine:` log lines.
+  workspace, today's timers, the four engine methods through test support, and the
+  captured `central engine:` log lines.
 - `workspace_requests::organization_signin::engine_admin`: V13 on workerd; health, the
-  paged retired list, retry and discard with refusals, replays and admission, and the V2
+  paged retired list, retry and discard with refusals, retained replies, and the V2
   item observations.
 - `workspace_requests::organization_signin::engine_unit_revival`: V2 notice units and
   `engine_source` on workerd; recovery, the restarted 60-day period, retirement, stopped

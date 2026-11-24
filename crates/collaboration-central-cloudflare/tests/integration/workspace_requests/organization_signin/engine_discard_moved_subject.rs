@@ -1,11 +1,11 @@
-//! A competing change during discard leaves only the admitted refusal writes.
+//! A competing change during discard retains the refusal without changing the engine subject.
 
 #![cfg(test)]
 
 use super::*;
 
 #[tokio::test]
-async fn moved_subject_retains_stale_with_proof_without_domain_writes() {
+async fn moved_subject_retains_stale_without_domain_writes() {
     let engine = EngineOrg::new().await;
     // A subject changed meanwhile: the discard's reload finds it disabled.
     let (moved, moved_attempt) = retired_automation(&engine).await;
@@ -19,20 +19,9 @@ async fn moved_subject_retains_stale_with_proof_without_domain_writes() {
         "SELECT * FROM engine_due_entries WHERE work_kind='automation_timer' AND subject_key=?1",
         vec![text(&moved)],
     ).await;
-    let proof_id = engine.fresh();
     let operation_id = engine.fresh();
-    let organization = super::super::support::ORG;
-    let body =
-        json!({"organizationId":organization,"operationId":operation_id,"attemptId":moved_attempt});
-    let intent = json!({"v":1,"operation":"EngineDiscard","organization":organization,"target":organization,"operationId":operation_id,"params":{"attemptId":moved_attempt}});
-    let person = engine.repairer();
     let runtime = engine.runtime().await;
-    let send = async {
-        let headers = person
-            .headers(DISCARD, &intent, &proof_id, engine.now().timestamp())
-            .unwrap();
-        engine.f.post_bytes(DISCARD, &body, &headers).await
-    };
+    let send = engine.change(EngineAttemptAction::Discard, &operation_id, &moved_attempt);
     let held = runtime.hold_engine("afterEngineLoad", &moved).await;
     let change = async {
         runtime.until_held_engine(held).await;
@@ -51,18 +40,8 @@ async fn moved_subject_retains_stale_with_proof_without_domain_writes() {
         runtime.release_engine(held).await;
         moved_row
     };
-    let ((status, stale), moved_row) = tokio::join!(send, change);
-    assert_eq!(status, 200);
-    assert_eq!(stale, br#"{"result":"refused","reason":"stale"}"#);
-    assert_eq!(
-        engine
-            .rows(
-                "SELECT id,operation_id FROM admin_used_requests WHERE id=?1",
-                vec![text(&proof_id)],
-            )
-            .await,
-        [[text(&proof_id), text(&operation_id)]]
-    );
+    let (stale, moved_row) = tokio::join!(send, change);
+    assert_eq!(stale, refused("stale"));
     assert_eq!(
         engine
             .rows(
@@ -72,7 +51,7 @@ async fn moved_subject_retains_stale_with_proof_without_domain_writes() {
             .await,
         [[
             text(&operation_id),
-            text(std::str::from_utf8(&stale).unwrap())
+            text(r#"{"result":"refused","reason":"stale"}"#)
         ]]
     );
     assert_eq!(

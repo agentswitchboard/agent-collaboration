@@ -72,12 +72,6 @@ fn organization_admin_result_wire_contract() {
             json!({"result":"refused","reason":"requestTime"}),
             json!({"result":"refused","reason":"requestReused"}),
             json!({"result":"refused","reason":"rejected"}),
-            json!({"result":"engineHealth","kinds":[{"kind":"wake_timer","failing":1,"retired":0,"oldestFirstFailedAt":"2030-01-01T10:05:00Z","lastFailure":"corrupt_row"},{"kind":"automation_timer","failing":0,"retired":0,"oldestFirstFailedAt":null,"lastFailure":null}],"alarm":"2030-01-01T10:10:00Z","alarmMissing":false}),
-            json!({"result":"engineHealth","kinds":[],"alarm":null,"alarmMissing":true}),
-            json!({"result":"engineRetired","items":[{"attemptId":"019a3dce-2000-7000-8000-000000000020","kind":"wake_timer","subjectKey":"019a3dce-2000-7000-8000-000000000021","failureClass":"corrupt_row","count":2,"retiredAt":"2030-01-01T10:10:00Z","lastFailure":"automation_wakes.target"}],"next":"019a3dce-2000-7000-8000-000000000020"}),
-            json!({"result":"engineRetired","items":[],"next":null}),
-            json!({"result":"engineRetried"}),
-            json!({"result":"engineDiscarded"}),
             json!({"result":"refused","reason":"notFound"}),
             json!({"result":"refused","reason":"notRetired"}),
             json!({"result":"refused","reason":"discardUnsupported"}),
@@ -86,17 +80,6 @@ fn organization_admin_result_wire_contract() {
         ].into_iter().chain(boundaries).collect(),
         false,
     );
-}
-
-#[test]
-fn engine_retired_schema_requires_a_nullable_cursor() {
-    let schema = serde_json::to_value(schemars::schema_for!(OrganizationAdminResult)).unwrap();
-    let validator = schema_validation::contract_validator(&schema).unwrap();
-    assert!(!validator.is_valid(&json!({"result":"engineRetired","items":[]})));
-    assert!(validator.is_valid(&json!({"result":"engineRetired","items":[],"next":null})));
-    assert!(validator.is_valid(&json!({
-        "result":"engineRetired","items":[],"next":"019f0000-0000-7000-8000-000000000101"
-    })));
 }
 
 #[test]
@@ -192,30 +175,6 @@ fn organization_admin_intent_wire_contract() {
             json!({"organizationId":"019a3dce-2000-7000-8000-000000000001","after":null,"limit":1}),
             json!({"v":1,"operation":"ReadChangeRecords","organization":"019a3dce-2000-7000-8000-000000000001","target":"019a3dce-2000-7000-8000-000000000001","operationId":null,"params":{"after":null,"limit":1}}),
             r#"{"operation":"ReadChangeRecords","operationId":null,"organization":"019a3dce-2000-7000-8000-000000000001","params":{"after":null,"limit":1},"target":"019a3dce-2000-7000-8000-000000000001","v":1}"#,
-        ),
-        (
-            AdminRoute::EngineHealth,
-            json!({"organizationId":"019a3dce-2000-7000-8000-000000000001"}),
-            json!({"v":1,"operation":"EngineHealth","organization":"019a3dce-2000-7000-8000-000000000001","target":"019a3dce-2000-7000-8000-000000000001","operationId":null,"params":{}}),
-            r#"{"operation":"EngineHealth","operationId":null,"organization":"019a3dce-2000-7000-8000-000000000001","params":{},"target":"019a3dce-2000-7000-8000-000000000001","v":1}"#,
-        ),
-        (
-            AdminRoute::EngineListRetired,
-            json!({"organizationId":"019a3dce-2000-7000-8000-000000000001","after":"019a3dce-2000-7000-8000-000000000020","limit":2}),
-            json!({"v":1,"operation":"EngineListRetired","organization":"019a3dce-2000-7000-8000-000000000001","target":"019a3dce-2000-7000-8000-000000000001","operationId":null,"params":{"after":"019a3dce-2000-7000-8000-000000000020","limit":2}}),
-            r#"{"operation":"EngineListRetired","operationId":null,"organization":"019a3dce-2000-7000-8000-000000000001","params":{"after":"019a3dce-2000-7000-8000-000000000020","limit":2},"target":"019a3dce-2000-7000-8000-000000000001","v":1}"#,
-        ),
-        (
-            AdminRoute::EngineRetry,
-            json!({"organizationId":"019a3dce-2000-7000-8000-000000000001","operationId":"019a3dce-2000-7000-8000-000000000022","attemptId":"019a3dce-2000-7000-8000-000000000020"}),
-            json!({"v":1,"operation":"EngineRetry","organization":"019a3dce-2000-7000-8000-000000000001","target":"019a3dce-2000-7000-8000-000000000001","operationId":"019a3dce-2000-7000-8000-000000000022","params":{"attemptId":"019a3dce-2000-7000-8000-000000000020"}}),
-            r#"{"operation":"EngineRetry","operationId":"019a3dce-2000-7000-8000-000000000022","organization":"019a3dce-2000-7000-8000-000000000001","params":{"attemptId":"019a3dce-2000-7000-8000-000000000020"},"target":"019a3dce-2000-7000-8000-000000000001","v":1}"#,
-        ),
-        (
-            AdminRoute::EngineDiscard,
-            json!({"organizationId":"019a3dce-2000-7000-8000-000000000001","operationId":"019a3dce-2000-7000-8000-000000000023","attemptId":"019a3dce-2000-7000-8000-000000000020"}),
-            json!({"v":1,"operation":"EngineDiscard","organization":"019a3dce-2000-7000-8000-000000000001","target":"019a3dce-2000-7000-8000-000000000001","operationId":"019a3dce-2000-7000-8000-000000000023","params":{"attemptId":"019a3dce-2000-7000-8000-000000000020"}}),
-            r#"{"operation":"EngineDiscard","operationId":"019a3dce-2000-7000-8000-000000000023","organization":"019a3dce-2000-7000-8000-000000000001","params":{"attemptId":"019a3dce-2000-7000-8000-000000000020"},"target":"019a3dce-2000-7000-8000-000000000001","v":1}"#,
         ),
     ];
     let mut literals = Vec::new();

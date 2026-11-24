@@ -265,62 +265,6 @@ export type EndedMachineClient = {
 	clientId: ClientId,
 };
 
-export type EngineAttemptParams = {
-	attemptId: string,
-};
-
-/**  The closed failure classes of engine_work_attempts.last_failure. */
-export type EngineFailureClass = "corrupt_row" | "constraint_violated" | "statement_rejected" | "refused" | "other_store_unavailable";
-
-/**  One registered engine kind in EngineHealth; zero counts are listed too. */
-export type EngineKindHealth = EngineKindHealth_Serialize | EngineKindHealth_Deserialize;
-
-/**  One registered engine kind in EngineHealth; zero counts are listed too. */
-export type EngineKindHealth_Deserialize = {
-	kind: EngineKindName,
-	failing: number,
-	retired: number,
-	oldestFirstFailedAt?: string | null,
-	lastFailure?: EngineFailureClass | null,
-};
-
-/**  One registered engine kind in EngineHealth; zero counts are listed too. */
-export type EngineKindHealth_Serialize = {
-	kind: EngineKindName,
-	failing: number,
-	retired: number,
-	oldestFirstFailedAt: string | null,
-	lastFailure: EngineFailureClass | null,
-};
-
-/**  The closed set of engine kinds an admin sees; test-support machines are hidden. */
-export type EngineKindName = "wake_timer" | "automation_timer" | "direct_message" | "system_message_expiry" | "legacy_notice_windows" | "legacy_workspace_drains" | "engine_source";
-
-/**  One retired failure record in EngineListRetired, ascending by attempt ID. */
-export type EngineRetiredItem = EngineRetiredItem_Serialize | EngineRetiredItem_Deserialize;
-
-/**  One retired failure record in EngineListRetired, ascending by attempt ID. */
-export type EngineRetiredItem_Deserialize = {
-	attemptId: string,
-	kind: EngineKindName,
-	subjectKey: string,
-	failureClass: EngineFailureClass,
-	count: number,
-	retiredAt: string,
-	lastFailure?: string | null,
-};
-
-/**  One retired failure record in EngineListRetired, ascending by attempt ID. */
-export type EngineRetiredItem_Serialize = {
-	attemptId: string,
-	kind: EngineKindName,
-	subjectKey: string,
-	failureClass: EngineFailureClass,
-	count: number,
-	retiredAt: string,
-	lastFailure: string | null,
-};
-
 export type EnrollPermission = "machine:enroll";
 
 export type EnrollmentId = RecordId;
@@ -500,9 +444,9 @@ export type OrganizationAdminIntent = OrganizationAdminIntent_Serialize | Organi
 
 export type OrganizationAdminIntentWire = OrganizationAdminIntentWire_Serialize | OrganizationAdminIntentWire_Deserialize;
 
-export type OrganizationAdminIntentWire_Deserialize = { operation: "CreateWorkspace"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: AdminOperationId; params: CreateWorkspaceParams_Deserialize } | { operation: "WorkspaceLookup"; v: 1; organization: OrganizationId; target: WorkspaceId; operationId: null; params: WorkspaceLookupParams } | { operation: "ListWorkspaces"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: null; params: ListWorkspacesParams_Deserialize } | { operation: "ReadChangeRecords"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: null; params: ReadChangeRecordsParams_Deserialize } | { operation: "EngineHealth"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: null; params: WorkspaceLookupParams } | { operation: "EngineListRetired"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: null; params: ReadChangeRecordsParams_Deserialize } | { operation: "EngineRetry"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: AdminOperationId; params: EngineAttemptParams } | { operation: "EngineDiscard"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: AdminOperationId; params: EngineAttemptParams } | { operation: "RevokeMachineEnrollment"; v: 1; organization: OrganizationId; target: EnrollmentId; operationId: null; params: MachineRevocationParams_Deserialize };
+export type OrganizationAdminIntentWire_Deserialize = { operation: "CreateWorkspace"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: AdminOperationId; params: CreateWorkspaceParams_Deserialize } | { operation: "WorkspaceLookup"; v: 1; organization: OrganizationId; target: WorkspaceId; operationId: null; params: WorkspaceLookupParams } | { operation: "ListWorkspaces"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: null; params: ListWorkspacesParams_Deserialize } | { operation: "ReadChangeRecords"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: null; params: ReadChangeRecordsParams_Deserialize } | { operation: "RevokeMachineEnrollment"; v: 1; organization: OrganizationId; target: EnrollmentId; operationId: null; params: MachineRevocationParams_Deserialize };
 
-export type OrganizationAdminIntentWire_Serialize = { operation: "CreateWorkspace"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: AdminOperationId; params: CreateWorkspaceParams_Serialize } | { operation: "WorkspaceLookup"; v: 1; organization: OrganizationId; target: WorkspaceId; operationId: null; params: WorkspaceLookupParams } | { operation: "ListWorkspaces"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: null; params: ListWorkspacesParams_Serialize } | { operation: "ReadChangeRecords"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: null; params: ReadChangeRecordsParams_Serialize } | { operation: "EngineHealth"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: null; params: WorkspaceLookupParams } | { operation: "EngineListRetired"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: null; params: ReadChangeRecordsParams_Serialize } | { operation: "EngineRetry"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: AdminOperationId; params: EngineAttemptParams } | { operation: "EngineDiscard"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: AdminOperationId; params: EngineAttemptParams } | { operation: "RevokeMachineEnrollment"; v: 1; organization: OrganizationId; target: EnrollmentId; operationId: null; params: MachineRevocationParams_Serialize };
+export type OrganizationAdminIntentWire_Serialize = { operation: "CreateWorkspace"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: AdminOperationId; params: CreateWorkspaceParams_Serialize } | { operation: "WorkspaceLookup"; v: 1; organization: OrganizationId; target: WorkspaceId; operationId: null; params: WorkspaceLookupParams } | { operation: "ListWorkspaces"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: null; params: ListWorkspacesParams_Serialize } | { operation: "ReadChangeRecords"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: null; params: ReadChangeRecordsParams_Serialize } | { operation: "RevokeMachineEnrollment"; v: 1; organization: OrganizationId; target: EnrollmentId; operationId: null; params: MachineRevocationParams_Serialize };
 
 /**  The version-one T06 object whose canonical bytes a person's proof hashes. */
 export type OrganizationAdminIntent_Deserialize = OrganizationAdminIntentWire_Deserialize;
@@ -514,10 +458,10 @@ export type OrganizationAdminIntent_Serialize = OrganizationAdminIntentWire_Seri
 export type OrganizationAdminResult = OrganizationAdminResult_Serialize | OrganizationAdminResult_Deserialize;
 
 /**  The closed body of a 200 on an admin route. */
-export type OrganizationAdminResult_Deserialize = { result: "applied"; workspace: WorkspaceView_Deserialize } | { result: "found"; workspace?: WorkspaceView_Deserialize | null } | { result: "records"; records: OrganizationChangeRecord[] } | { result: "engineHealth"; kinds: EngineKindHealth_Deserialize[]; alarm?: string | null; alarmMissing: boolean } | { result: "engineRetired"; items: EngineRetiredItem_Deserialize[]; next: string | null } | { result: "engineRetried" } | { result: "engineDiscarded" } | { result: "refused"; reason: AdminRefusal };
+export type OrganizationAdminResult_Deserialize = { result: "applied"; workspace: WorkspaceView_Deserialize } | { result: "found"; workspace?: WorkspaceView_Deserialize | null } | { result: "records"; records: OrganizationChangeRecord[] } | { result: "refused"; reason: AdminRefusal };
 
 /**  The closed body of a 200 on an admin route. */
-export type OrganizationAdminResult_Serialize = { result: "applied"; workspace: WorkspaceView_Serialize } | { result: "found"; workspace: WorkspaceView_Serialize | null } | { result: "records"; records: OrganizationChangeRecord[] } | { result: "engineHealth"; kinds: EngineKindHealth_Serialize[]; alarm: string | null; alarmMissing: boolean } | { result: "engineRetired"; items: EngineRetiredItem_Serialize[]; next: string | null } | { result: "engineRetried" } | { result: "engineDiscarded" } | { result: "refused"; reason: AdminRefusal };
+export type OrganizationAdminResult_Serialize = { result: "applied"; workspace: WorkspaceView_Serialize } | { result: "found"; workspace: WorkspaceView_Serialize | null } | { result: "records"; records: OrganizationChangeRecord[] } | { result: "refused"; reason: AdminRefusal };
 
 /**  A sign-in-originated change carries no person or permission; none is invented. */
 export type OrganizationChangeOrigin =

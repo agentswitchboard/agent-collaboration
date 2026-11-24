@@ -10,9 +10,9 @@ mod signed_claims;
 
 pub(crate) use admin_operations::MAXIMUM_RECORD_PAGE;
 pub use admin_operations::{
-    AdminOperation, AdminOperationId, AdminRoute, CreateWorkspaceRequest, EngineAttemptRequest,
-    EngineHealthRequest, EngineListRetiredRequest, ListWorkspacesRequest, OrganizationAdminIntent,
-    ReadChangeRecordsRequest, RecordPageLimit, WorkspaceLookupRequest, WorkspaceName,
+    AdminOperation, AdminOperationId, AdminRoute, CreateWorkspaceRequest, ListWorkspacesRequest,
+    OrganizationAdminIntent, ReadChangeRecordsRequest, RecordPageLimit, WorkspaceLookupRequest,
+    WorkspaceName,
 };
 pub use refusal::PersonRequestRefusal;
 pub use request_admission::{

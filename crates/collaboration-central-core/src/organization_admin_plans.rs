@@ -93,8 +93,6 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
         let mut statements = plan.statements;
         let mut operation = None;
         let mut retained = None;
-        let mut alarm = central_storage::AlarmUpdate::Unchanged;
-        let mut guard_failed = AdminRefusal::Conflict;
         let result = match &verified.operation {
             AdminOperation::RevokeMachineEnrollment(revocation) => {
                 return self
@@ -159,35 +157,6 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
                     .collect::<Result<_, _>>()?;
                 OrganizationAdminAnswer::Answered(OrganizationAdminResult::Records { records })
             }
-            AdminOperation::EngineHealth(_) => {
-                OrganizationAdminAnswer::Answered(self.engine_health_result().await?.result)
-            }
-            AdminOperation::EngineListRetired(request) => {
-                let planned = self
-                    .engine_retired_result(request.after, request.limit.get())
-                    .await?;
-                OrganizationAdminAnswer::Answered(planned.result)
-            }
-            AdminOperation::EngineRetry(request) => {
-                let planned = self.prepare_engine_retry(&verified, request, now).await?;
-                statements.extend(planned.statements);
-                alarm = planned.alarm;
-                retained = planned.retained;
-                // A concurrent retry deleted the record first.
-                guard_failed = AdminRefusal::NotFound;
-                OrganizationAdminAnswer::Answered(planned.result)
-            }
-            AdminOperation::EngineDiscard(request) => {
-                let planned = self
-                    .prepare_engine_discard(&verified, request, &mut statements, now)
-                    .await?;
-                if planned.committed {
-                    return Ok(OrganizationAdminAnswer::Answered(planned.result));
-                }
-                statements.extend(planned.statements);
-                retained = planned.retained;
-                OrganizationAdminAnswer::Answered(planned.result)
-            }
         };
         #[cfg(feature = "test-support")]
         self.execution
@@ -197,7 +166,10 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
         match self
             .execution
             .statement_host()
-            .run_batch(StatementBatch { statements, alarm })
+            .run_batch(StatementBatch {
+                statements,
+                alarm: central_storage::AlarmUpdate::Unchanged,
+            })
             .await?
         {
             BatchOutcome::Applied { .. } => {
@@ -221,7 +193,7 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
             BatchOutcome::StatementRejected { .. } => Err(StoreFailure::Unavailable),
             _ => Ok(admin_refusal_answer(
                 verified.operation.route(),
-                guard_failed,
+                AdminRefusal::Conflict,
             )),
         }
     }

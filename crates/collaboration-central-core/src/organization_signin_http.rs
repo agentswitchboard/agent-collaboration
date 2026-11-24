@@ -49,10 +49,6 @@ pub fn organization_signin_router<Port: OrganizationSignInPort>(port: Arc<Port>)
         AdminRoute::WorkspaceLookup,
         AdminRoute::ListWorkspaces,
         AdminRoute::ReadChangeRecords,
-        AdminRoute::EngineHealth,
-        AdminRoute::EngineListRetired,
-        AdminRoute::EngineRetry,
-        AdminRoute::EngineDiscard,
         AdminRoute::RevokeMachineEnrollment,
     ] {
         let port = port.clone();

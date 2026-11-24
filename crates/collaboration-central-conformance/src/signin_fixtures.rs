@@ -294,7 +294,5 @@ pub use trust_trace::TrustTraceHost;
 
 pub mod machine_lifecycle;
 
-pub mod engine_admin_decisions;
-
 #[cfg(feature = "session-link-test-support")]
 pub mod person_link;

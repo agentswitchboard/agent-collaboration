@@ -1,7 +1,4 @@
-use super::super::{
-    engine_admin_support::*,
-    support::{A, text},
-};
+use super::super::{engine_admin_support::*, support::text};
 use serde_json::json;
 
 const FIRST: &str = "019f0000-0000-7000-8000-000000000101";
@@ -46,19 +43,6 @@ async fn retired_paging_continues_past_a_hidden_kind_between_visible_attempts() 
     assert_visible_walk(["wake_timer", "owed_reply", "automation_timer"], FIRST).await;
 }
 
-async fn signed_retired_status(engine: &EngineOrg, after: Option<&str>) -> u16 {
-    let organization = A;
-    let person = engine.person(&[READ_AUDIT], false);
-    let body = json!({"organizationId":organization,"after":after,"limit":1});
-    let intent = json!({"v":1,"operation":"EngineListRetired","organization":organization,"target":organization,"operationId":null,"params":{"after":after,"limit":1}});
-    let reply = engine
-        .f
-        .person(RETIRED, &body, &person, &intent, &engine.fresh())
-        .await
-        .unwrap();
-    reply.status
-}
-
 async fn take_page_reads(engine: &EngineOrg, arm: bool) -> Option<Vec<usize>> {
     engine
         .runtime()
@@ -79,12 +63,12 @@ async fn seed_retired_attempt(engine: &EngineOrg, attempt: &str, kind: &str) {
 async fn retired_paging_reports_an_unknown_kind_after_a_hidden_chunk() {
     let engine = EngineOrg::new().await;
     seed_retired_attempts(&engine, ["engine_probe", "owed_reply", "unrecognized_kind"]).await;
-    assert_eq!(signed_retired_status(&engine, None).await, 503);
+    assert!(engine.retired_result(None, 1).await.is_err());
     engine.close().await;
 }
 
 #[tokio::test]
-async fn retired_paging_bounds_every_signed_read_and_resumes_from_empty_pages() {
+async fn retired_paging_bounds_every_read_and_resumes_from_empty_pages() {
     let engine = EngineOrg::new().await;
     engine.raw(
         "WITH RECURSIVE fixture_rows(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM fixture_rows WHERE n<12) INSERT INTO engine_work_attempts(attempt_id,machine_kind,subject_key,state,failure_count,next_try_at,last_failure,first_failed_at,last_failed_at,retired_at,created_at,updated_at) SELECT printf('019f0000-0000-7000-8000-%012d',n), 'engine_probe', printf('hidden-%d',n), CASE n%2 WHEN 0 THEN 'retired' ELSE 'failing' END, 2, CASE n%2 WHEN 1 THEN ?1 END, 'statement_rejected', ?1, ?1, CASE n%2 WHEN 0 THEN ?1 END, ?1, ?1 FROM fixture_rows",
@@ -134,9 +118,11 @@ async fn retired_paging_bounds_every_signed_read_and_resumes_from_empty_pages() 
     assert!(
         matches!(take_page_reads(&engine, true).await.as_deref(), Some([count]) if *count <= 4)
     );
-    assert_eq!(
-        signed_retired_status(&engine, page["next"].as_str()).await,
-        503
+    assert!(
+        engine
+            .retired_result(page["next"].as_str(), 1)
+            .await
+            .is_err()
     );
     assert!(
         matches!(take_page_reads(&engine, false).await.as_deref(), Some([count]) if *count <= 4)
@@ -153,7 +139,7 @@ async fn retired_paging_rejects_noncanonical_v7_storage_keys() {
         "urn:uuid:019f0000-0000-7000-8000-000000000102",
     ] {
         seed_retired_attempt(&engine, attempt, "wake_timer").await;
-        statuses.push(signed_retired_status(&engine, None).await);
+        statuses.push(engine.retired_result(None, 1).await.is_err());
         engine
             .raw(
                 "DELETE FROM engine_work_attempts WHERE attempt_id=?1",
@@ -163,7 +149,7 @@ async fn retired_paging_rejects_noncanonical_v7_storage_keys() {
     }
     assert_eq!(
         statuses,
-        [503, 503],
+        [true, true],
         "uppercase and URN keys must both be rejected"
     );
     engine.close().await;
@@ -180,6 +166,6 @@ async fn retired_paging_rejects_a_corrupt_projected_failure_count() {
         )
         .await;
 
-    assert_eq!(signed_retired_status(&engine, None).await, 503);
+    assert!(engine.retired_result(None, 1).await.is_err());
     engine.close().await;
 }

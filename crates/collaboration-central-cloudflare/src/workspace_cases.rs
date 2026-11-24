@@ -345,6 +345,10 @@ pub(super) async fn control(
         "/test/completion-attempts" => {
             Response::from_json(&runtime.runtime().completion_attempts())
         }
+        "/test/engine-admin-control" => {
+            let control = request.json().await?;
+            Response::from_json(&runtime.fixture_engine_admin(control).await)
+        }
         "/test/engine-alarm-inputs" => {
             use fleet_runtime_ports::CentralStore as _;
 

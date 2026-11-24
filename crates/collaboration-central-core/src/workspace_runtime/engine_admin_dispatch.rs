@@ -1,5 +1,5 @@
 //! Core's closed admin kind registry and discard routing.
-use crate::{WorkspaceRuntime, organization_admin_contract::EngineKindName};
+use crate::{WorkspaceRuntime, engine_admin_result::EngineKindName};
 use central_storage::StoreFailure;
 use fleet_engine::{
     AdminMachineKindRegistry, AttemptRefusal, DiscardOutcome, PreparedAttemptDiscard,

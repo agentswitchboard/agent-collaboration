@@ -204,13 +204,6 @@ pub(super) fn invalid_specimens() -> Vec<(&'static str, WireSpecimen)> {
         Serialize,
         workspace_page.clone(),
     );
-    let mut retired_page = json!({"result":"engineRetired","items":[],"next":null});
-    retired_page.as_object_mut().unwrap().remove("next");
-    let missing_retired_cursor = wire_specimen(
-        "retired page reader sees no required nullable cursor",
-        Deserialize,
-        retired_page,
-    );
     let missing_accepted_cursor = wire_specimen(
         "workspace page reader sees no required nullable cursor",
         Deserialize,
@@ -225,7 +218,6 @@ pub(super) fn invalid_specimens() -> Vec<(&'static str, WireSpecimen)> {
         ("OrganizationAdminIntent", required_null),
         ("ListWorkspacesResult", missing_serialized_cursor),
         ("ListWorkspacesResult", missing_accepted_cursor),
-        ("OrganizationAdminResult", missing_retired_cursor),
     ]
     .into_iter()
     .chain(
