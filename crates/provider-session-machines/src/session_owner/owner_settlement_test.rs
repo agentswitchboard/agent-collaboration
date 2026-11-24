@@ -293,7 +293,7 @@ fn same_tick_store_and_admission_events_leave_one_witnessed_end_and_the_same_fen
         vec![store.clone(), settle.clone()],
         vec![settle.clone(), store.clone()],
         vec![store.clone(), fenced.clone(), settle.clone()],
-        vec![store.clone(), settle.clone(), fenced.clone()],
+        vec![store.clone(), settle, fenced],
     ] {
         let mut candidate = state.clone();
         let mut publications = Vec::new();
