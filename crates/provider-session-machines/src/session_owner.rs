@@ -67,6 +67,7 @@ pub enum SessionOwnerCommand {
         run: RunAttempt<LoadAttempt>,
     },
     WarmPrompt(OwnerInput),
+    NoticePrompt(OwnerInput),
     Prompt {
         input: OwnerInput,
         admission: PromptAdmission,

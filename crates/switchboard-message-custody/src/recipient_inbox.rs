@@ -4,8 +4,7 @@ use central_link_protocol::{DeliveryMessage, DirectOfferBody, DirectOfferMessage
 use router_clock::RuntimeClock;
 use std::{collections::BTreeMap, future::Future, sync::Arc};
 use switchboard_machine_core_store::{
-    InboxDecision, InboxOfferExpiry, InboxRefusalReason, InboxStore, InboxStoreError,
-    RecordDelivery,
+    InboxDecision, InboxOfferExpiry, InboxRefusalReason, InboxStore, RecordDelivery,
 };
 use tokio::sync::{Mutex, MutexGuard};
 use workspace_ids::{MachineId, MessageId, SessionRef};
@@ -21,6 +20,8 @@ use crate::{
         RECIPIENT_LOOKUP_BUDGET, RecipientSessionAnswer, RecipientSessionDirectory,
     },
 };
+
+pub use crate::inbox_error::InboxCustodyError;
 
 /// A custody offer assembled from a checked central Deliver frame and the local arrival time.
 pub(crate) enum InboxOffer {
@@ -152,21 +153,6 @@ pub enum InboxOfferResult {
     AlreadyDecided { decision: InboxDecision },
     LookupDeferred,
     DamagedRowIgnored,
-}
-
-/// Admission failures reported by the recipient inbox to the custody task.
-#[derive(Debug, thiserror::Error)]
-pub enum InboxCustodyError {
-    #[error("invalid central delivery offer")]
-    InvalidOffer,
-    #[error("central offered a delivery addressed to machine {0}")]
-    WrongMachine(MachineId),
-    #[error("delivery expiry is outside the supported clock range")]
-    ExpiryOutOfRange,
-    #[error("inbox storage unavailable")]
-    Store(#[from] InboxStoreError),
-    #[error("the inbox could not read the earlier decision for message {0}")]
-    MissingDecision(MessageId),
 }
 
 /// Custody constructs this from the Part A inbox, the local identity and the Host's session lookup.
@@ -303,6 +289,80 @@ impl RecipientInbox {
         let mut waiting = inbox_scan(scan, &mut self.operator_events);
         waiting.retain(|message| &message.target == session);
         Ok(waiting)
+    }
+
+    pub(crate) fn recipient_directory(&self) -> Arc<dyn RecipientSessionDirectory> {
+        self.directory.clone()
+    }
+
+    pub(crate) async fn direct_handoffs(
+        &mut self,
+    ) -> Result<Vec<switchboard_machine_core_store::DirectHandoffRow>, InboxCustodyError> {
+        let scan = self.store.scan_direct_handoffs().await?;
+        Ok(inbox_scan(scan, &mut self.operator_events))
+    }
+
+    pub(crate) async fn commit_direct_handoffs(
+        &mut self,
+        target: &SessionRef,
+        changes: &[switchboard_machine_core_store::DirectHandoffChange],
+    ) -> Result<switchboard_machine_core_store::HandoffCommit, InboxCustodyError> {
+        Ok(self
+            .store
+            .compare_and_set_direct_handoffs(target, changes, self.clock.utc_now())
+            .await?)
+    }
+
+    pub(crate) async fn read_inbox(
+        &mut self,
+        session: &crate::inbox_read::AdmittedLocalSession,
+    ) -> Result<crate::inbox_read::RecipientInboxPage, crate::inbox_read::InboxReadError> {
+        let target = session.session();
+        let scan = self
+            .store
+            .direct_inbox_messages(target)
+            .await
+            .map_err(InboxCustodyError::from)?;
+        let messages = inbox_scan(scan, &mut self.operator_events);
+        Ok(crate::inbox_read::RecipientInboxPage::new(
+            target.clone(),
+            messages,
+        ))
+    }
+
+    pub(crate) async fn record_inbox_read(
+        &mut self,
+        session: &crate::inbox_read::AdmittedLocalSession,
+        read: crate::inbox_read::RecipientInboxRead,
+    ) -> Result<(), crate::inbox_read::InboxReadError> {
+        use crate::inbox_read::InboxReadError;
+        use switchboard_machine_core_store::{DirectHandoff, HandoffCommit};
+
+        let target = session.session();
+        if &read.target != target {
+            return Err(InboxReadError::RecipientChanged);
+        }
+        let returned: std::collections::BTreeSet<_> = read.returned.into_iter().collect();
+        let rows: Vec<_> = self
+            .direct_handoffs()
+            .await?
+            .into_iter()
+            .filter(|row| {
+                &row.target == target
+                    && row.handoff == DirectHandoff::NotKnown
+                    && returned.contains(&row.message_id)
+            })
+            .collect();
+        let (changes, _) = crate::handover::changes_for(
+            &rows,
+            crate::handover::HandoffEvent::InboxRead {
+                completed_at: self.clock.utc_now(),
+            },
+        )?;
+        if self.commit_direct_handoffs(target, &changes).await? != HandoffCommit::Committed {
+            return Err(InboxReadError::ChangedSinceRead);
+        }
+        Ok(())
     }
 
     pub(crate) async fn pending_sender_notices(

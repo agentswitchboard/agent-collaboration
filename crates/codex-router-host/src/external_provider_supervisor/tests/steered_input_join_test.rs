@@ -13,6 +13,9 @@ use session_event_model::SessionEvent;
 #[path = "provider_prompt_wire_test.rs"]
 mod provider_prompt_wire;
 
+#[path = "managed_notice_test.rs"]
+mod managed_notice;
+
 #[path = "cancel_after_turn_test.rs"]
 mod cancel_after_turn_tests;
 

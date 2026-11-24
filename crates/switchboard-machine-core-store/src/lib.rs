@@ -32,8 +32,10 @@ pub use enrollment_row::{
 };
 pub use enrollment_row_store::{EnrollmentRowChange, EnrollmentRowStoreError, EnrollmentRowWrite};
 pub use inbox_store::{
-    InboxDecision, InboxOfferExpiry, InboxReceipt, InboxRefusalReason, InboxStore, InboxStoreError,
-    MAX_INBOX_DELIVERY_WINDOW_MS, RecordDelivery,
+    DirectHandoff, DirectHandoffChange, DirectHandoffRow, HandoffCommit, InboxDecision,
+    InboxOfferExpiry, InboxReceipt, InboxRefusalReason, InboxStore, InboxStoreError,
+    InvalidNoticeAttemptId, MAX_INBOX_DELIVERY_WINDOW_MS, NoticeAttemptId, RecordDelivery,
+    SeenReceiptRejection, SeenReceiptState,
 };
 pub use machine_identity_store::{MachineIdentityError, load_or_create_machine_id};
 pub use machine_local_store::{MACHINE_LOCAL_DATABASE, MachineLocalStore, MachineLocalStoreError};

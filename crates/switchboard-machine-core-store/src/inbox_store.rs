@@ -12,6 +12,11 @@ use workspace_model::{
     central_mail::{MessageBody, MessageRecord},
 };
 
+pub use inbox_handoff::{
+    DirectHandoff, DirectHandoffChange, DirectHandoffRow, HandoffCommit, InvalidNoticeAttemptId,
+    NoticeAttemptId, SeenReceiptRejection, SeenReceiptState,
+};
+
 const INBOX_RETENTION_MILLIS: i64 = 60 * 24 * 60 * 60 * 1_000;
 /// The inbox store uses the longest delivery window even when the body is absent.
 /// This must equal the wire's TimeLeft bound. The store is independent of link protocol types.
@@ -40,6 +45,8 @@ pub enum InboxStoreError {
         message_id: MessageId,
         expected: &'static str,
     },
+    #[error("inbox message {message_id} was changed more than once in the same handover batch")]
+    DuplicateHandoffChange { message_id: MessageId },
 }
 
 /// Custody supplies the expiry for a validated direct offer or the system offer's lack of expiry.
@@ -155,6 +162,7 @@ enum HandoffState {
     Pending,
     Completed,
     NotRequired,
+    Direct { state: DirectHandoff },
 }
 
 struct StoredDelivery {
@@ -266,14 +274,26 @@ impl InboxRow {
             return Err(corrupt("expires_at", InconsistentState));
         }
         if !matches!(
-            (state.decision, state.handoff, self.has_message),
+            (
+                state.decision,
+                state.handoff,
+                state.family,
+                self.has_message
+            ),
             (
                 InboxDecision::Accepted,
                 HandoffState::Pending | HandoffState::Completed,
+                InboxOfferFamily::Direct | InboxOfferFamily::System,
+                true
+            ) | (
+                InboxDecision::Accepted,
+                HandoffState::Direct { .. },
+                InboxOfferFamily::Direct,
                 true
             ) | (
                 InboxDecision::Refused { .. },
                 HandoffState::NotRequired,
+                InboxOfferFamily::Direct | InboxOfferFamily::System,
                 false
             )
         ) {
@@ -509,7 +529,15 @@ impl InboxStore {
             .collect::<StoreScan<Vec<_>>>()
             .map_healthy(|rows| {
                 rows.into_iter()
-                    .filter(|delivery| delivery.state.handoff == HandoffState::Pending)
+                    .filter(|delivery| {
+                        matches!(
+                            delivery.state.handoff,
+                            HandoffState::Pending
+                                | HandoffState::Direct {
+                                    state: DirectHandoff::Waiting | DirectHandoff::NotKnown,
+                                }
+                        )
+                    })
                     .filter_map(|delivery| delivery.message)
                     .collect()
             }))
@@ -682,6 +710,9 @@ fn unexpected(message_id: &MessageId, expected: &'static str) -> InboxStoreError
         expected,
     }
 }
+
+#[path = "inbox_handoff.rs"]
+mod inbox_handoff;
 
 #[cfg(test)]
 #[path = "inbox_store_test.rs"]
