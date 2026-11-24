@@ -199,7 +199,7 @@ async fn a_send_at_the_last_eligible_millisecond_ends_unconfirmed_at_its_deadlin
         .admitted
         .send_replace(Some(new_admission(machine, lane.clock.clone())));
 
-    let (_calls, stop, mut events, running) = start_worker(custody);
+    let (_calls, group, mut events) = start_worker(custody);
     let flush = flush_event(&mut events, "the first frame's exact cutoff").await;
     let commands = lane.peer.batch_commands();
     assert_eq!(
@@ -216,8 +216,8 @@ async fn a_send_at_the_last_eligible_millisecond_ends_unconfirmed_at_its_deadlin
     assert!(
         matches!(flush.ended.as_slice(), [ending] if ending.request_id == item.request && ending.reason == OutboxCancellation::NotConfirmedWithin15Minutes)
     );
-    stop.send_replace(true);
-    running.await.unwrap();
+    group.request_stop();
+    group.join().await.unwrap();
 }
 
 #[tokio::test]

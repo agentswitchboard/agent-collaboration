@@ -3,6 +3,7 @@
 use router_clock::ClockInstant;
 use std::time::Duration;
 use switchboard_machine_core_store::{OutboxRequestStatus, OutboxStorage, PendingWriteState};
+use switchboard_message_custody::custody_task::CustodyRunFailure;
 use workspace_model::Caller;
 
 use super::{
@@ -33,7 +34,7 @@ pub(super) async fn check_subsequent_claim_recovery(count: u16) {
         panic!("the worker's original caller is a fixture session");
     };
     let first_gate = peer.hold_next_batch();
-    let (_calls, _stop, mut events, running) = start_worker(custody);
+    let (_calls, group, mut events) = start_worker(custody);
     let mark = Duration::from_secs(20);
     clock
         .not_due_check_now(ClockInstant::ZERO.after(mark))
@@ -70,8 +71,8 @@ pub(super) async fn check_subsequent_claim_recovery(count: u16) {
         OutboxRequestStatus::Sent
     );
 
-    running.abort();
-    assert!(running.await.unwrap_err().is_cancelled());
+    second_gate.crash_worker();
+    assert_eq!(group.join().await, Err(CustodyRunFailure::WorkerPanicked));
     clock.advance(Duration::from_secs(3)).unwrap();
     peer.admitted
         .send_replace(Some(new_admission(owner.machine_id.clone(), clock.clone())));

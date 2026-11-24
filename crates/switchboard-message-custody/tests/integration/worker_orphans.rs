@@ -8,13 +8,10 @@ use switchboard_message_custody::{
     custody_link::CustodyLink,
     custody_status::CustodyRequestStatus,
     custody_submission::{Submission, SubmissionPayload},
-    custody_task::{CustodyTaskEvent, CustodyTaskHandle, custody_task},
+    custody_task::{CustodyRunGroup, CustodyTaskEvent, CustodyTaskHandle, custody_task},
     outbox_dispatch::FlushReport,
 };
-use tokio::{
-    sync::{mpsc, watch},
-    task::JoinHandle,
-};
+use tokio::sync::mpsc;
 use workspace_model::RefusalReason;
 
 use super::{
@@ -30,14 +27,12 @@ pub(super) fn start_worker(
     custody: CustodyLink,
 ) -> (
     CustodyTaskHandle,
-    watch::Sender<bool>,
+    CustodyRunGroup,
     mpsc::UnboundedReceiver<CustodyTaskEvent>,
-    JoinHandle<()>,
 ) {
-    let (stop, stopped) = watch::channel(false);
     let (sender, events) = mpsc::unbounded_channel();
-    let (calls, worker) = custody_task(custody, stopped, Arc::new(ObserveTask(sender)));
-    (calls, stop, events, tokio::spawn(worker))
+    let (calls, group) = custody_task(custody, Arc::new(ObserveTask(sender)));
+    (calls, group, events)
 }
 
 #[tokio::test]
@@ -58,7 +53,7 @@ async fn a_lost_return_ack_excludes_that_request_while_an_unrelated_batch_is_liv
         faults.arm(site, FaultStage::AfterSuccess);
         faults.fail_scoped_reads(true);
         peer.decide_next_batch(Some(first_disposition));
-        let (calls, stop, mut events, running) = start_worker(campaign.custody);
+        let (calls, group, mut events) = start_worker(campaign.custody);
         let OutboxQueuedWrite::Workspace(first_payload) = &first.payload else {
             panic!("expected a post");
         };
@@ -128,8 +123,8 @@ async fn a_lost_return_ack_excludes_that_request_while_an_unrelated_batch_is_liv
             }
         };
         assert!(matches!(replayed.as_slice(), [answer] if answer.request == first.request));
-        stop.send_replace(true);
-        running.await.unwrap();
+        group.request_stop();
+        group.join().await.unwrap();
     }
 }
 
@@ -178,7 +173,7 @@ async fn an_orphan_status_uses_its_accepted_instant_and_never_notifies_twice() {
         };
         peer.script_status_answer(item.caller.clone(), query.clone(), central_status);
         let status_gate = peer.hold_next_status();
-        let (calls, stop, mut events, running) = start_worker(campaign.custody);
+        let (calls, group, mut events) = start_worker(campaign.custody);
         status_gate.entered.notified().await;
         let cutoff = ClockInstant::ZERO.after(Duration::from_secs(5));
         clock.not_due_check_now(cutoff).await;
@@ -263,8 +258,8 @@ async fn an_orphan_status_uses_its_accepted_instant_and_never_notifies_twice() {
             "the checked answer and cutoff cannot both notify"
         );
         assert!(peer.batch_commands().is_empty());
-        stop.send_replace(true);
-        running.await.unwrap();
+        group.request_stop();
+        group.join().await.unwrap();
     }
 }
 
@@ -330,7 +325,7 @@ async fn a_failed_startup_orphan_read_retries_offline_and_ends_at_the_original_d
         .arm(FaultSite::SentWithoutAnswer, FaultStage::BeforeCall);
     let clock = campaign.clock.clone();
     let peer = campaign.peer.clone();
-    let (calls, stop, mut events, running) = start_worker(campaign.custody);
+    let (calls, group, mut events) = start_worker(campaign.custody);
     assert!(matches!(
         events.recv().await,
         Some(CustodyTaskEvent::Failed(_))
@@ -363,8 +358,8 @@ async fn a_failed_startup_orphan_read_retries_offline_and_ends_at_the_original_d
     );
     assert!(peer.batch_commands().is_empty());
     assert!(peer.take_calls().is_empty());
-    stop.send_replace(true);
-    running.await.unwrap();
+    group.request_stop();
+    group.join().await.unwrap();
     assert!(events.try_recv().is_err());
 }
 
@@ -381,7 +376,7 @@ async fn a_failed_untouched_return_keeps_its_first_attempt_unsent_offline() {
     campaign
         .faults
         .arm(FaultSite::ReturnNotTransmitted, FaultStage::BeforeCall);
-    let (calls, stop, mut events, running) = start_worker(campaign.custody);
+    let (calls, group, mut events) = start_worker(campaign.custody);
 
     let mark = ClockInstant::ZERO.after(Duration::from_secs(20));
     clock.not_due_check_now(mark).await;
@@ -408,8 +403,8 @@ async fn a_failed_untouched_return_keeps_its_first_attempt_unsent_offline() {
     );
     assert!(peer.batch_commands().is_empty());
     assert!(peer.take_calls().is_empty());
-    stop.send_replace(true);
-    running.await.unwrap();
+    group.request_stop();
+    group.join().await.unwrap();
 }
 
 #[tokio::test]
@@ -428,7 +423,7 @@ async fn a_recovered_orphan_uses_the_scoped_status_answer_without_retransmission
             .peer
             .script_status_answer(item.caller.clone(), query.clone(), answer.clone());
         let peer = campaign.peer.clone();
-        let (calls, stop, mut events, running) = start_worker(campaign.custody);
+        let (calls, group, mut events) = start_worker(campaign.custody);
         let report = flush_event(&mut events, "checked scoped status settlement").await;
         assert!(
             matches!(report.answered.as_slice(), [settled] if settled.request == item.request && settled.caller == item.caller)
@@ -451,8 +446,8 @@ async fn a_recovered_orphan_uses_the_scoped_status_answer_without_retransmission
             peer.batch_commands().is_empty(),
             "a known orphan must never be transmitted again"
         );
-        stop.send_replace(true);
-        running.await.unwrap();
+        group.request_stop();
+        group.join().await.unwrap();
     }
 }
 
@@ -472,7 +467,7 @@ async fn a_lost_local_claim_ack_is_returned_as_untouched_without_a_status_probe(
     campaign
         .faults
         .arm(FaultSite::ClaimBatch, FaultStage::AfterSuccess);
-    let (calls, stop, mut events, running) = start_worker(campaign.custody);
+    let (calls, group, mut events) = start_worker(campaign.custody);
     assert!(matches!(
         calls
             .submit(
@@ -519,8 +514,8 @@ async fn a_lost_local_claim_ack_is_returned_as_untouched_without_a_status_probe(
     assert!(matches!(report.answered.as_slice(), [one] if one.request == item.request));
     assert_eq!(peer.batch_commands().len(), 1);
     assert_eq!(peer.command_instants(), [retry]);
-    stop.send_replace(true);
-    running.await.unwrap();
+    group.request_stop();
+    group.join().await.unwrap();
 }
 
 #[tokio::test]
@@ -536,7 +531,7 @@ async fn a_known_member_settles_locally_while_the_other_member_replays() {
             ScriptedMemberFate::RecordedAnswerLost,
         ])));
         faults.arm(FaultSite::RecordOutcome, stage);
-        let (calls, stop, mut events, running) = start_worker(campaign.custody);
+        let (calls, group, mut events) = start_worker(campaign.custody);
         for item in &ordered {
             let OutboxQueuedWrite::Workspace(request) = &item.payload else {
                 panic!("fixture requires a thread post");
@@ -600,7 +595,7 @@ async fn a_known_member_settles_locally_while_the_other_member_replays() {
             peer.take_calls().is_empty(),
             "live evidence needs no startup status probe"
         );
-        stop.send_replace(true);
-        running.await.unwrap();
+        group.request_stop();
+        group.join().await.unwrap();
     }
 }

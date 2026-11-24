@@ -19,17 +19,14 @@ use std::{
 };
 use switchboard_message_custody::{
     custody_link::{CustodyLink, CustodyLinkError},
-    custody_task::{CustodyTaskEvent, CustodyTaskHandle, custody_task},
+    custody_task::{CustodyRunGroup, CustodyTaskEvent, CustodyTaskHandle, custody_task},
     outbox_dispatch::FlushReport,
 };
-use tokio::{
-    sync::{mpsc, watch},
-    task::JoinHandle,
-};
+use tokio::sync::{mpsc, watch};
 
 use super::custody_task::ObserveTask;
 
-/// Tests use this clock decorator to observe a complete poll of the worker's select.
+/// Tests use this clock decorator to observe the worker parked with a timer armed.
 pub(super) struct WorkerClock {
     pub(super) manual: Arc<ManualClock>,
     timers: AtomicUsize,
@@ -63,7 +60,18 @@ impl RuntimeClock for WorkerClock {
         Box::pin(async move {
             self.timers.fetch_add(1, Ordering::Relaxed);
             let _timer = PendingTimer(&self.timers);
-            self.manual.sleep_until(deadline).await;
+            let mut timer = pin!(self.manual.sleep_until(deadline));
+            poll_fn(|context| {
+                let result = timer.as_mut().poll(context);
+                if result.is_pending() {
+                    self.parked.send_modify(|(polls, elapsed)| {
+                        *polls += 1;
+                        *elapsed = self.monotonic_now();
+                    });
+                }
+                result
+            })
+            .await;
         })
     }
 }
@@ -81,34 +89,37 @@ impl WorkerClock {
         self.parked.borrow().0
     }
 
-    pub(super) async fn wait_after(&self, before: usize) {
+    async fn wait_for_armed_timer(&self, before: usize) {
         let now = self.monotonic_now();
         let mut parked = self.parked.subscribe();
-        assert!(
-            parked
-                .wait_for(|(polls, elapsed)| *polls > before && *elapsed >= now)
+        let mut after = before;
+        loop {
+            let (sequence, _) = *parked
+                .wait_for(|(polls, elapsed)| *polls > after && *elapsed >= now)
                 .await
-                .is_ok()
-        );
+                .unwrap();
+            // These fixtures use a current-thread runtime. The test can only
+            // observe this signal after the worker yields. A selected branch
+            // drops its timer before SQLite or any other operation can park.
+            if self.timers.load(Ordering::Relaxed) != 0 {
+                return;
+            }
+            after = sequence;
+        }
     }
 
-    async fn observe(&self, worker: impl Future<Output = ()>) {
-        // Observe a complete select poll even when this test has already
-        // consumed Tokio's cooperative budget. Real SQLite awaits still park.
-        let mut worker = pin!(tokio::task::unconstrained(worker));
-        poll_fn(|context| {
-            let result = worker.as_mut().poll(context);
-            // The select drops its timer futures before entering any selected
-            // branch, including branches that then wait for SQLite.
-            if result.is_pending() && self.timers.load(Ordering::Relaxed) != 0 {
-                self.parked.send_modify(|(polls, elapsed)| {
-                    *polls += 1;
-                    *elapsed = self.monotonic_now();
-                });
+    #[expect(
+        clippy::panic,
+        reason = "The worker must park with a registered clock timer."
+    )]
+    pub(super) async fn wait_after(&self, before: usize) {
+        tokio::select! {
+            biased;
+            () = self.wait_for_armed_timer(before) => {}
+            () = async { for _ in 0..50_000 { tokio::task::yield_now().await; } } => {
+                panic!("custody worker never parked with an armed timer");
             }
-            result
-        })
-        .await;
+        }
     }
 }
 
@@ -117,24 +128,18 @@ pub(super) struct ObservedWorker {
     pub(super) calls: CustodyTaskHandle,
     pub(super) events: mpsc::UnboundedReceiver<CustodyTaskEvent>,
     pub(super) clock: Arc<WorkerClock>,
-    stop: watch::Sender<bool>,
-    task: JoinHandle<()>,
+    group: CustodyRunGroup,
 }
 
 impl ObservedWorker {
     pub(super) fn start(custody: CustodyLink, clock: Arc<WorkerClock>) -> Self {
-        let (stop, stopped) = watch::channel(false);
         let (events_sink, events) = mpsc::unbounded_channel();
-        let (calls, worker) = custody_task(custody, stopped, Arc::new(ObserveTask(events_sink)));
-        let worker = Box::pin(worker);
-        let worker_clock = clock.clone();
-        let task = tokio::spawn(async move { worker_clock.observe(worker).await });
+        let (calls, group) = custody_task(custody, Arc::new(ObserveTask(events_sink)));
         Self {
             calls,
             events,
             clock,
-            stop,
-            task,
+            group,
         }
     }
 
@@ -173,7 +178,7 @@ impl ObservedWorker {
     }
 
     pub(super) async fn stop(self) {
-        self.stop.send_replace(true);
-        self.task.await.unwrap();
+        self.group.request_stop();
+        self.group.join().await.unwrap();
     }
 }

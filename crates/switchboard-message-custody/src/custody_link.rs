@@ -7,7 +7,7 @@ use central_link_client::{
 use central_link_protocol::{FreshCorrelationId, RequestStatusQuery};
 use router_clock::{ClockInstant, RuntimeClock};
 use runtime_primitives::SyncTime;
-use std::{collections::BTreeSet, sync::Arc, time::Duration};
+use std::{collections::BTreeSet, future::pending, sync::Arc, time::Duration};
 use switchboard_machine_core_store::{
     OutboxStoreError, OutgoingWrite, PendingWrite, StoredSenderOutcome,
 };
@@ -356,7 +356,7 @@ impl CustodyLink {
     /// Drive one delivery using the same save-only path as the offer task.
     pub async fn observe_next_event(&mut self) -> Result<CustodyLinkObservation, CustodyLinkError> {
         let event = self.lane.next_event().await;
-        let saved = take_event(&self.inbox, event).await?;
+        let saved = take_event(&self.inbox, event, pending()).await?;
         let sender_notice_saved = saved.sender_notice_saved;
         let observation = self.observe_taken_event(saved).await?;
         if sender_notice_saved
@@ -569,7 +569,9 @@ impl CustodyLink {
         let mut failures = Vec::new();
         let offered = self.inbox.lock().await.take_uncommitted();
         for offer in offered.into_values() {
-            if let Err(error) = RecipientInbox::keep_shared_offer(&self.inbox, offer).await {
+            if let Err(error) =
+                RecipientInbox::keep_shared_offer(&self.inbox, offer, pending()).await
+            {
                 failures.push(error);
             }
         }

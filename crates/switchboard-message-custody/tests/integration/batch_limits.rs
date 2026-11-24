@@ -19,7 +19,7 @@ use switchboard_message_custody::{
     outbox_work::OutboxWork,
     recipient_inbox::RecipientInbox,
 };
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 use workspace_ids::MachineId;
 use workspace_model::{Addressee, ChangePosition, PostText, WorkspaceOperation, WorkspaceRequest};
 
@@ -352,10 +352,8 @@ async fn a_flush_end_prunes_only_terminal_writes_outside_sixty_days() {
             .await
             .unwrap();
     }
-    let (stop, stopped) = watch::channel(false);
     let (sender, mut events) = mpsc::unbounded_channel();
-    let (calls, task) = custody_task(custody, stopped, Arc::new(ObserveTask(sender)));
-    let running = tokio::spawn(task);
+    let (calls, group) = custody_task(custody, Arc::new(ObserveTask(sender)));
     let fresh = thread_post(1);
     let OutboxQueuedWrite::Workspace(request) = fresh.payload else {
         panic!("thread post fixture required");
@@ -377,8 +375,8 @@ async fn a_flush_end_prunes_only_terminal_writes_outside_sixty_days() {
             break;
         }
     }
-    stop.send_replace(true);
-    running.await.unwrap();
+    group.request_stop();
+    group.join().await.unwrap();
     assert_eq!(
         store
             .request_status(&old.caller, &old.request)

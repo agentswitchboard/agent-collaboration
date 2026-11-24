@@ -60,7 +60,7 @@ pub(super) async fn check_hidden_member_cutoff(before_cutoff_ms: u64) {
         ScriptedMemberFate::LostBeforeCentral,
     ])));
     let gate = peer.hold_next_batch();
-    let (calls, stop, mut events, running) = start_worker(custody);
+    let (calls, group, mut events) = start_worker(custody);
     let cutoff_ms = 21_000;
     let accepted = Duration::from_millis(cutoff_ms - before_cutoff_ms);
     clock
@@ -147,8 +147,8 @@ pub(super) async fn check_hidden_member_cutoff(before_cutoff_ms: u64) {
             .iter()
             .all(|write| write.request_id != unanswered.request)
     );
-    stop.send_replace(true);
-    running.await.unwrap();
+    group.request_stop();
+    group.join().await.unwrap();
 }
 
 #[tokio::test]
@@ -181,7 +181,7 @@ pub(super) async fn check_active_cutoff_fault(gap_ms: u32) {
     }
 
     let gate = campaign.peer.hold_next_batch();
-    let (calls, stop, mut events, running) = start_worker(campaign.custody);
+    let (calls, group, mut events) = start_worker(campaign.custody);
     let clock = campaign.clock;
     clock
         .not_due_check_now(ClockInstant::ZERO.after(Duration::from_secs(20)))
@@ -238,8 +238,8 @@ pub(super) async fn check_active_cutoff_fault(gap_ms: u32) {
         if active.request_id == later_active.request && active.reason == OutboxCancellation::NotConfirmedWithin15Minutes
             && waiting.request_id == waiting_later.request && waiting.reason == OutboxCancellation::NotSentWithin15Minutes));
     assert!(later.answered.is_empty());
-    stop.send_replace(true);
-    running.await.unwrap();
+    group.request_stop();
+    group.join().await.unwrap();
 }
 
 #[tokio::test]
@@ -263,7 +263,7 @@ pub(super) async fn check_worker_waiting_cutoff(gap_ms: u32) {
         );
     }
     let gate = peer.hold_next_batch();
-    let (calls, stop, mut events, running) = start_worker(custody);
+    let (calls, group, mut events) = start_worker(custody);
     clock
         .not_due_check_now(ClockInstant::ZERO.after(Duration::from_secs(20)))
         .await;
@@ -303,8 +303,8 @@ pub(super) async fn check_worker_waiting_cutoff(gap_ms: u32) {
     assert_eq!(clock.monotonic_now(), waiting_due);
     assert_eq!(peer.batch_commands().len(), 1);
     gate.release.notify_one();
-    stop.send_replace(true);
-    running.await.unwrap();
+    group.request_stop();
+    group.join().await.unwrap();
 }
 
 #[tokio::test]
@@ -330,7 +330,7 @@ pub(super) async fn check_cutoff_during_orphan_probe(gap_ms: u32) {
         .await
         .unwrap();
     let status_gate = peer.hold_next_status();
-    let (_calls, stop, mut events, running) = start_worker(custody);
+    let (_calls, group, mut events) = start_worker(custody);
     status_gate.entered.notified().await;
     let gap = Duration::from_millis(u64::from(gap_ms));
     let cutoff = ClockInstant::ZERO.after(gap);
@@ -347,6 +347,6 @@ pub(super) async fn check_cutoff_during_orphan_probe(gap_ms: u32) {
         OutboxRequestStatus::Sent
     );
     assert!(peer.batch_commands().is_empty());
-    stop.send_replace(true);
-    running.await.unwrap();
+    group.request_stop();
+    group.join().await.unwrap();
 }

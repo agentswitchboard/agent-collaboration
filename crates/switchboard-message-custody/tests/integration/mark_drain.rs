@@ -113,7 +113,7 @@ fn frame_counts(lane: &ScriptedBatchLane) -> Vec<usize> {
 async fn two_hundred_prompt_writes_drain_in_four_ordered_frames_at_one_mark() {
     let (_root, mut custody, lane, clock) = observed_mark_fixture().await;
     let queued = queue_posts(&mut custody, 200).await;
-    let (_calls, stop, mut events, running) = start_worker(custody);
+    let (_calls, group, mut events) = start_worker(custody);
     clock
         .source
         .not_due_check_now(ClockInstant::ZERO.after(FIRST_MARK))
@@ -139,8 +139,8 @@ async fn two_hundred_prompt_writes_drain_in_four_ordered_frames_at_one_mark() {
         [ClockInstant::ZERO.after(FIRST_MARK); 4]
     );
     assert_eq!(clock.monotonic_now(), ClockInstant::ZERO.after(FIRST_MARK));
-    stop.send_replace(true);
-    running.await.unwrap();
+    group.request_stop();
+    group.join().await.unwrap();
 }
 
 #[tokio::test]
@@ -162,7 +162,7 @@ async fn the_exclusive_mark_close_leaves_the_slow_frames_suffix_for_the_next_mar
     let queued = queue_posts(&mut custody, 65).await;
     let (prefix, suffix) = queued.split_at_checked(64).unwrap();
     let gate = lane.hold_next_batch();
-    let (_calls, stop, mut events, running) = start_worker(custody);
+    let (_calls, group, mut events) = start_worker(custody);
     clock
         .source
         .not_due_check_now(ClockInstant::ZERO.after(FIRST_MARK))
@@ -199,8 +199,8 @@ async fn the_exclusive_mark_close_leaves_the_slow_frames_suffix_for_the_next_mar
             ClockInstant::ZERO.after(SECOND_MARK)
         ]
     );
-    stop.send_replace(true);
-    running.await.unwrap();
+    group.request_stop();
+    group.join().await.unwrap();
 }
 
 #[tokio::test]
@@ -234,7 +234,7 @@ pub(super) async fn check_untouched_intake(count: u16) {
     let (_root, mut custody, peer, clock) = observed_mark_fixture().await;
     let queued = queue_posts(&mut custody, count).await;
     peer.decide_next_batch(Some(ScriptedBatch::Untouched));
-    let (_calls, stop, mut events, running) = start_worker(custody);
+    let (_calls, group, mut events) = start_worker(custody);
     clock
         .source
         .not_due_check_now(ClockInstant::ZERO.after(FIRST_MARK))
@@ -255,8 +255,8 @@ pub(super) async fn check_untouched_intake(count: u16) {
     );
     assert_eq!(answer_ids(retried.unwrap()), queued);
     assert_eq!(peer.command_instants(), [retry]);
-    stop.send_replace(true);
-    running.await.unwrap();
+    group.request_stop();
+    group.join().await.unwrap();
 }
 
 #[tokio::test]
@@ -270,7 +270,7 @@ pub(super) async fn check_waiting_read_fault(count: u16) {
     let queued = queue_posts(&mut campaign.custody, count).await;
     let (prefix, suffix) = queued.split_at_checked(64).unwrap();
     let gate = campaign.peer.hold_next_batch();
-    let (_calls, stop, mut events, running) = start_worker(campaign.custody);
+    let (_calls, group, mut events) = start_worker(campaign.custody);
     clock
         .source
         .not_due_check_now(ClockInstant::ZERO.after(FIRST_MARK))
@@ -313,8 +313,8 @@ pub(super) async fn check_waiting_read_fault(count: u16) {
         campaign.peer.command_instants(),
         [ClockInstant::ZERO.after(FIRST_MARK), retry]
     );
-    stop.send_replace(true);
-    running.await.unwrap();
+    group.request_stop();
+    group.join().await.unwrap();
 }
 
 #[tokio::test]
@@ -328,7 +328,7 @@ pub(super) async fn check_closed_claim(after_close_ms: u64) {
     let queued = queue_posts(&mut campaign.custody, 1).await;
     let stored_claim = campaign.faults.hold_next_claim_commit();
     let mut store = open_outbox(&campaign.root.path().join("machine_local.sqlite")).await;
-    let (calls, stop, mut events, running) = start_worker(campaign.custody);
+    let (calls, group, mut events) = start_worker(campaign.custody);
     clock
         .source
         .not_due_check_now(ClockInstant::ZERO.after(FIRST_MARK))
@@ -369,8 +369,8 @@ pub(super) async fn check_closed_claim(after_close_ms: u64) {
         campaign.peer.command_instants(),
         [ClockInstant::ZERO.after(SECOND_MARK)]
     );
-    stop.send_replace(true);
-    running.await.unwrap();
+    group.request_stop();
+    group.join().await.unwrap();
 }
 
 #[tokio::test]
@@ -391,7 +391,7 @@ pub(super) async fn check_rebased_admission(old_count: u16) {
         Timestamp::from_timestamp_millis(MARK_MS - 140_000).unwrap();
     lane.admitted.send_replace(Some(backwards));
     let gate = lane.hold_next_batch();
-    let (calls, stop, mut events, running) = start_worker(custody);
+    let (calls, group, mut events) = start_worker(custody);
     clock
         .source
         .not_due_check_now(ClockInstant::ZERO.after(FIRST_MARK))
@@ -435,8 +435,8 @@ pub(super) async fn check_rebased_admission(old_count: u16) {
         [fresh.request]
     );
     assert_eq!(frame_counts(&lane), [64, old_suffix.len(), 1]);
-    stop.send_replace(true);
-    running.await.unwrap();
+    group.request_stop();
+    group.join().await.unwrap();
 }
 
 #[tokio::test]
@@ -492,7 +492,7 @@ async fn a_driver_held_write_ends_once_at_cutoff_and_a_later_reply_updates_only_
             lane.decide_next_batch(Some(ScriptedBatch::Untouched));
         }
         let gate = lane.hold_next_batch();
-        let (calls, stop, mut events, running) = start_worker(custody);
+        let (calls, group, mut events) = start_worker(custody);
         clock
             .not_due_check_now(ClockInstant::ZERO.after(FIRST_MARK))
             .await;
@@ -552,7 +552,7 @@ async fn a_driver_held_write_ends_once_at_cutoff_and_a_later_reply_updates_only_
             frame_counts(&lane),
             if untouched { vec![1] } else { vec![1, 1] }
         );
-        stop.send_replace(true);
-        running.await.unwrap();
+        group.request_stop();
+        group.join().await.unwrap();
     }
 }
