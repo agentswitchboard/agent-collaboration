@@ -11,6 +11,7 @@ central-link-client.workspace = true
 central-link-protocol.workspace = true
 router-clock.workspace = true
 runtime-primitives.workspace = true
+state-machine-core.workspace = true
 switchboard-machine-core-store.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
