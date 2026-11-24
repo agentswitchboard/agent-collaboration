@@ -80,7 +80,7 @@ fn message_contract_keeps_exact_pair_and_distinct_outcomes() {
     );
     assert_eq!(
         message_status_text(&MessageToolResult::Returned(MessageWriteStatus::InFlight)),
-        "Sent to central, waiting for its answer.",
+        "Being sent to central. No answer yet.",
     );
     assert_eq!(
         message_status_text(&MessageToolResult::Returned(

@@ -40,7 +40,7 @@ pub fn message_status_text(result: &MessageToolResult<MessageWriteStatus>) -> St
             MessageWriteStatus::InOutbox { flush_at } => {
                 format!("In outbox. Leaves at {}.", flush_at.to_rfc3339())
             }
-            MessageWriteStatus::InFlight => "Sent to central, waiting for its answer.".into(),
+            MessageWriteStatus::InFlight => "Being sent to central. No answer yet.".into(),
             MessageWriteStatus::Answered {
                 message_id,
                 delivery,
