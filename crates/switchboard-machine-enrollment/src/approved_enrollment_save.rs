@@ -293,7 +293,9 @@ pub(super) async fn install_approved_binding(
             }
             SaveState::Failed(failure) => return Err(failure),
         };
-        // Each driver branch supplies the event declared for that state.
+        // This cannot fire because each branch feeds the event its state declares.
+        // The fallback remains because transition returns a Result. A typed
+        // driver per state would remove it.
         state = next
             .map_err(|_| {
                 ApprovedEnrollmentSaveFailure::OutcomeUnknown(EnrollmentSaveFailure::Store(

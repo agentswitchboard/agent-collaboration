@@ -8,9 +8,7 @@ use state_machine_core::{
     EventTag, RefusalTag, StateMachine, StateMachineResult, StateTag, Transition, TransitionError,
 };
 
-use crate::{
-    ApprovedEnrollmentSaveFailure, EnrollmentEnd, EnrollmentReceipt, PollAnswer, TokenGrant,
-};
+use crate::{ApprovedEnrollmentSaveFailure, EnrollmentEnd, EnrollmentReceipt, PollAnswer};
 
 const FINAL_POLL_GRACE: Duration = Duration::from_secs(2);
 
@@ -97,6 +95,10 @@ impl EventTag for DeviceSignInEvent<'_> {
 
 pub(super) struct DeviceSignInMachine<'reply>(PhantomData<&'reply ()>);
 
+pub(super) enum DeviceSignInEffect {
+    SaveApprovedGrant,
+}
+
 #[derive(Debug)]
 pub(super) enum DeviceSignInRefusal {}
 
@@ -135,7 +137,7 @@ const fn edge(
 impl<'reply> StateMachine for DeviceSignInMachine<'reply> {
     type State = DeviceSignInState;
     type Event = DeviceSignInEvent<'reply>;
-    type Effect = &'reply TokenGrant;
+    type Effect = DeviceSignInEffect;
     type Error = DeviceSignInRefusal;
 
     fn transition(state: &Self::State, event: Self::Event) -> StateMachineResult<Self> {
@@ -208,13 +210,16 @@ fn settle_poll(
     mut window: DevicePollWindow,
     now: ClockInstant,
     reply: Option<&PollAnswer>,
-) -> (DeviceSignInState, Vec<&TokenGrant>) {
+) -> (DeviceSignInState, Vec<DeviceSignInEffect>) {
     let delay = match reply {
         // The request began before expiry. A ready grant wins at expiry and
         // through the inclusive grace boundary. No new poll starts in grace.
-        Some(PollAnswer::Enrolled(grant)) => {
+        Some(PollAnswer::Enrolled(_)) => {
             return if now <= window.reply_deadline() {
-                (DeviceSignInState::Saving, vec![grant])
+                (
+                    DeviceSignInState::Saving,
+                    vec![DeviceSignInEffect::SaveApprovedGrant],
+                )
             } else {
                 (ended(EnrollmentEnd::Expired), Vec::new())
             };

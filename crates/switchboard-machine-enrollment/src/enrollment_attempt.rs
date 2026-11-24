@@ -3,9 +3,12 @@ use state_machine_core::StateMachine;
 use crate::{
     ApprovedEnrollmentSaveFailure, CredentialStore, CredentialStoreError, DeviceInstructions,
     EnrollmentContext, EnrollmentEnd, EnrollmentReceipt, EnrollmentRequest, InvalidReason,
-    SignInClient, SignInFailure, StoreDurability, StoredEnrollment,
+    PollAnswer, SignInClient, SignInFailure, StoreDurability, StoredEnrollment,
     approved_enrollment_save::install_approved_binding,
-    device_state::{DeviceSignInEnding, DeviceSignInEvent, DeviceSignInMachine, DeviceSignInState},
+    device_state::{
+        DeviceSignInEffect, DeviceSignInEnding, DeviceSignInEvent, DeviceSignInMachine,
+        DeviceSignInState,
+    },
 };
 
 /// The client reports why one human-initiated device login did not install a durable binding.
@@ -117,14 +120,12 @@ impl SignInClient {
                         },
                     )
                     .map_err(|_| transition_fault())?;
-                    for grant in effects {
-                        let result = install_approved_binding(
-                            store,
-                            &before,
-                            &context,
-                            grant.credential.clone(),
-                        )
-                        .await;
+                    if let [DeviceSignInEffect::SaveApprovedGrant] = effects.as_slice()
+                        && let Some(PollAnswer::Enrolled(grant)) = reply
+                    {
+                        let result =
+                            install_approved_binding(store, &before, &context, grant.credential)
+                                .await;
                         next = DeviceSignInMachine::transition(
                             &next,
                             DeviceSignInEvent::SaveSettled(result),
@@ -153,6 +154,9 @@ impl SignInClient {
     }
 }
 
+// This cannot fire because each branch feeds the event its state declares.
+// These fallbacks remain because transition returns a Result. A typed driver
+// per state would remove them.
 fn transition_fault() -> EnrollmentFailure {
     EnrollmentFailure::Ended(EnrollmentEnd::Invalid(InvalidReason::UnexpectedStatus))
 }

@@ -5,6 +5,7 @@ use state_machine_core::{
 
 use crate::{
     BindingGeneration, CredentialStoreError, EnrollmentSaveFailure, RefreshCredential, SecretValue,
+    TokenGrant,
 };
 
 use super::*;
