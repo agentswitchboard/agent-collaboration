@@ -65,6 +65,14 @@ impl PersonSocketAttachment {
         self.permissions.contains(&permission)
     }
 
+    pub fn has_fresh_second_factor(&self, now_ms: i64) -> bool {
+        fleet_signin::person_proof::fresh_admin_second_factor(
+            self.second_factor.as_ref().map(|factor| factor.at.0),
+            now_ms,
+        )
+        .is_some()
+    }
+
     pub fn is_current(&self, now_ms: i64) -> bool {
         now_ms
             < self
@@ -175,7 +183,8 @@ impl PersonRevision {
 use central_link_protocol::{
     CentralCall, CorrelationId, DataFrame, FrameDirection, LinkCallRefusal, LinkFrame,
     ProtocolError, ReplyPayload, RequestRefusal, RequestStatusAnswer, TokenRenewalRefusal,
-    TokenRenewalResult, TypedCallResult, decode_text, person_link_rpc::ListOrganizationWorkspaces,
+    TokenRenewalResult, TypedCallResult, decode_text,
+    person_link_rpc::{CreateOrganizationWorkspace, ListOrganizationWorkspaces},
 };
 use fleet_rpc::Envelope;
 
@@ -184,6 +193,10 @@ pub enum PersonFrame {
     ListWorkspaces {
         correlation: CorrelationId,
         request: Envelope<OrganizationId, ListOrganizationWorkspaces>,
+    },
+    CreateWorkspace {
+        correlation: CorrelationId,
+        request: Envelope<OrganizationId, CreateOrganizationWorkspace>,
     },
     ProtocolViolation,
 }
@@ -211,7 +224,16 @@ pub fn dispatch(connection: &PersonSocketAttachment, text: &str) -> PersonFrame 
                     request,
                 }
             }
-            CentralCall::ListOrganizationWorkspaces(_)
+            CentralCall::CreateOrganizationWorkspace(request)
+                if &request.target == connection.organization() =>
+            {
+                PersonFrame::CreateWorkspace {
+                    correlation: correlation_id,
+                    request,
+                }
+            }
+            CentralCall::CreateOrganizationWorkspace(_)
+            | CentralCall::ListOrganizationWorkspaces(_)
             | CentralCall::RegisterRun(_)
             | CentralCall::Raise(_)
             | CentralCall::Stop(_)

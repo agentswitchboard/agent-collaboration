@@ -22,3 +22,5 @@ pub use verifier::{
     CheckedPersonProof, PersonProofFacts, PersonProofVerifier, PersonRequestPolicy,
     in_request_window,
 };
+
+pub use admission::fresh_admin_second_factor;

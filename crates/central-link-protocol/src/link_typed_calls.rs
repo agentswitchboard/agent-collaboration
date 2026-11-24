@@ -6,7 +6,7 @@ use crate::{
         ListApprovalsForSessionRpc, PassOnApprovalForSessionRpc, RaiseApprovalRpc,
         ReadApprovalForSessionRpc, RegisterRunRpc, StopApprovalRpc,
     },
-    person_link_rpc::ListOrganizationWorkspacesRpc,
+    person_link_rpc::{CreateOrganizationWorkspaceRpc, ListOrganizationWorkspacesRpc},
     session_lifecycle_rpc::{BindFleetSessionRpc, CreateFleetSessionRpc, EndFleetSessionRpc},
 };
 use fleet_rpc::{Envelope, Rpc};
@@ -257,6 +257,7 @@ macro_rules! register_calls {
 register_calls! {
     CentralCall, "CentralCall", CentralCallReader, CentralCallReply, "CentralCallReply", CentralCallReplyReader, CentralLinkRpc;
     "listOrganizationWorkspaces" => ListOrganizationWorkspaces(ListOrganizationWorkspacesRpc),
+    "createOrganizationWorkspace" => CreateOrganizationWorkspace(CreateOrganizationWorkspaceRpc),
     "registerRun" => RegisterRun(RegisterRunRpc),
     "raise" => Raise(RaiseApprovalRpc),
     "stop" => Stop(StopApprovalRpc),

@@ -143,7 +143,11 @@ const OTHER_ENROLLMENT: &str = "019f0000-0000-7000-8000-00000000cf2b";
 
 /// Moves the one injected clock and hands the time to the Worker and its object.
 pub(super) async fn advance(fixture: &Fixture, seconds: u64) -> Result<()> {
-    fixture.clock.advance(Duration::from_secs(seconds))?;
+    advance_time(fixture, Duration::from_secs(seconds)).await
+}
+
+pub(super) async fn advance_time(fixture: &Fixture, elapsed: Duration) -> Result<()> {
+    fixture.clock.advance(elapsed)?;
     fixture
         .host
         .set_external_time_ms(fixture.clock.now().unix_millis())

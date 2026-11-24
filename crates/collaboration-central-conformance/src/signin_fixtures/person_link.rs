@@ -10,6 +10,9 @@ use futures_util::SinkExt;
 use reqwest_websocket::{Message, RequestBuilderExt, WebSocket};
 use serde_json::{Value, json};
 
+mod create_workspace;
+pub use create_workspace::{CreateCallCase, check_workspace_create};
+
 const REVISIONS: &str = "/internal/organization-authorization-revisions";
 
 pub struct PersonLinkFixture<'a> {
@@ -182,7 +185,7 @@ fn claims(person: &Person, now: i64, snapshot: i64, session: i64) -> Result<Valu
         "permission_policy_digest":person.policy_digest, "permissions":person.permissions,
         "session_expires_at_ms":(now+session)*1000, "authorization_snapshot_at_ms":now*1000,
         "authorization_snapshot_valid_until_ms":(now+snapshot)*1000,
-        "second_factor_at":person.second_factor_at, "second_factor_method":"totp",
+        "second_factor_at":person.second_factor_at, "second_factor_method":person.second_factor_at.map(|_| "totp"),
     }))
 }
 
