@@ -14,7 +14,10 @@ use switchboard_machine_enrollment::{
     EnrollmentContext, EnrollmentEnd, EnrollmentKey, EnrollmentMetadata, KeyedEnrollment,
     MachineId, RefreshCredential, SecretValue, StoredEnrollment,
 };
-use tokio::sync::{mpsc, watch};
+use tokio::{
+    sync::{mpsc, watch},
+    task::JoinHandle,
+};
 
 use crate::{
     EnrollmentMutation, EnrollmentRequest, MutationStage, WriteResult,
@@ -26,10 +29,20 @@ pub(crate) struct EnrollmentWorker {
     secret_root: PathBuf,
     machine_id: MachineId,
     clock: Arc<dyn RuntimeClock + Send + Sync>,
+    pending_key: Option<JoinHandle<Result<EnrollmentRowSealer, SecretStoreError>>>,
     #[cfg(any(test, all(feature = "test-support", debug_assertions)))]
     keychain: Option<Arc<dyn codex_router_secret_store::keychain_data_key::KeychainAccess>>,
     #[cfg(test)]
     test_dependencies: Option<TestDependencies>,
+}
+
+/// The cause of termination observed by the enrollment store for its worker task.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EnrollmentWorkerExit {
+    /// The worker stopped its request loop in response to `request_close`.
+    Requested,
+    /// The worker ended without completing a requested stop, including on unwind.
+    Autonomous,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -65,6 +78,7 @@ impl EnrollmentWorker {
             secret_root,
             machine_id,
             clock,
+            pending_key: None,
             #[cfg(any(test, all(feature = "test-support", debug_assertions)))]
             keychain: None,
             #[cfg(test)]
@@ -92,11 +106,11 @@ impl EnrollmentWorker {
     }
 
     pub(crate) async fn run(
-        mut self,
+        &mut self,
         mut requests: mpsc::UnboundedReceiver<EnrollmentRequest>,
         mut shutdown: watch::Receiver<bool>,
         enrollment_changes: watch::Sender<u64>,
-    ) -> Result<(), MachineLocalStoreError> {
+    ) -> EnrollmentWorkerExit {
         while !*shutdown.borrow_and_update() {
             let request = tokio::select! {
                 biased;
@@ -111,9 +125,32 @@ impl EnrollmentWorker {
             }
             self.handle(request, &enrollment_changes).await;
         }
-        requests.close();
-        drop(requests);
-        self.store.close().await
+        if *shutdown.borrow() {
+            EnrollmentWorkerExit::Requested
+        } else {
+            EnrollmentWorkerExit::Autonomous
+        }
+    }
+
+    pub(crate) async fn close_resources(mut self) -> Result<(), MachineLocalStoreError> {
+        #[cfg(test)]
+        if let Some(test) = &self.test_dependencies {
+            test.faults.at_resource_cleanup().await;
+        }
+        // After a worker task ends unexpectedly, its blocking Keychain call may
+        // still own resources. It cannot be cancelled by dropping its waiter.
+        if let Some(pending_key) = self.pending_key.take() {
+            #[cfg(test)]
+            let pending_key =
+                test_faults::observe_pending_key_reap(pending_key, self.test_dependencies.as_ref());
+            let _ = pending_key.await;
+        }
+        let result = self.store.close().await;
+        #[cfg(test)]
+        if let Some(test) = &self.test_dependencies {
+            return test.faults.connection_close_result(result);
+        }
+        result
     }
 
     async fn handle(
@@ -408,13 +445,13 @@ impl EnrollmentWorker {
     }
 
     async fn acquire_key(
-        &self,
+        &mut self,
         sealed_bytes_present: bool,
     ) -> Result<EnrollmentRowSealer, SecretStoreError> {
         let root = self.secret_root.clone();
         #[cfg(any(test, all(feature = "test-support", debug_assertions)))]
         let keychain = self.keychain.clone();
-        tokio::task::spawn_blocking(move || {
+        let task = tokio::task::spawn_blocking(move || {
             #[cfg(any(test, all(feature = "test-support", debug_assertions)))]
             if let Some(keychain) = keychain {
                 return EnrollmentRowSealer::acquire_with_keychain(
@@ -424,9 +461,10 @@ impl EnrollmentWorker {
                 );
             }
             EnrollmentRowSealer::acquire(&root, sealed_bytes_present)
-        })
-        .await
-        .map_err(|_| SecretStoreError::KeyUnavailable)?
+        });
+        let result = self.pending_key.insert(task).await;
+        self.pending_key = None;
+        result.map_err(|_| SecretStoreError::KeyUnavailable)?
     }
 }
 
