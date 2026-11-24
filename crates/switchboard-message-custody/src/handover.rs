@@ -189,11 +189,11 @@ impl StateMachine for DirectHandoffMachine {
                 }
             }
             (Writing { .. }, RecoverWriting) => (NotKnown, vec![]),
-            (NotKnown, ReadAcknowledged { completed_at }) => seen(completed_at),
+            (Waiting | NotKnown, ReadAcknowledged { completed_at }) => seen(completed_at),
             (Waiting | NotKnown | NotSeen | Seen { .. }, WriteFinished { .. }) => {
                 return Err(TransitionError::Stale);
             }
-            (Waiting, RecoverWriting | ReadAcknowledged { .. })
+            (Waiting, RecoverWriting)
             | (Writing { .. }, EligibleAtMark { .. } | ReadAcknowledged { .. })
             | (NotKnown, EligibleAtMark { .. } | Cutoff { .. } | RecoverWriting)
             | (
@@ -220,6 +220,7 @@ impl StateMachine for DirectHandoffMachine {
             edge("Writing", "WriteFinished", "Seen", true),
             edge("Writing", "WriteFinished", "NotKnown", false),
             edge("Writing", "RecoverWriting", "NotKnown", false),
+            edge("Waiting", "ReadAcknowledged", "Seen", true),
             edge("NotKnown", "ReadAcknowledged", "Seen", true),
         ];
         TRANSITIONS

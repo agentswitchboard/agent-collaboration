@@ -165,17 +165,15 @@ impl StoredDelivery {
 }
 
 impl InboxStore {
-    /// Lists the newest kept direct messages whose delivery window is still open.
+    /// Lists the newest direct messages retained for the recipient.
     pub async fn direct_inbox_messages(
         &mut self,
         target: &SessionRef,
-        now: Timestamp,
         limit: usize,
     ) -> Result<StoreScan<Vec<workspace_model::central_mail::MessageRecord>>, InboxStoreError> {
         Ok(self.scan_direct_rows().await?.map_healthy(|rows| {
             rows.into_iter()
                 .rev()
-                .filter(|row| row.expires_at.is_some_and(|expiry| now < expiry))
                 .filter_map(|row| row.message)
                 .filter(|message| &message.target == target)
                 .take(limit)

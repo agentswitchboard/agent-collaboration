@@ -10,7 +10,7 @@ pub const ADDRESS_FORMAT: &str = "Use machineId and sessionId.";
 pub const MESSAGE_CLI_HELP: &str = "  message send --to PAIR_JSON --body TEXT [--request-id UUID] [--json]\n  message status --request-id UUID [--json]\n  message inbox [--limit N] [--acknowledge TOKEN] [--json]\n";
 pub const MESSAGE_SEND_DESCRIPTION: &str = "Sends one direct message to an exact machineId and sessionId. Report your own harness session ID as callerSessionId. An outbox receipt confirms this Mac kept the write for a scheduled send.";
 pub const MESSAGE_STATUS_DESCRIPTION: &str = "Checks your original write by requestId. Report your own harness session ID as callerSessionId. A write accepted by central also shows the current delivery observation.";
-pub const MESSAGE_INBOX_DESCRIPTION: &str = "Lists your unexpired direct messages, newest first (20 by default). To acknowledge a page, pass its readToken as acknowledge. Acknowledged messages stay listed until expiry. Report your own harness session ID as callerSessionId.";
+pub const MESSAGE_INBOX_DESCRIPTION: &str = "Lists your kept direct messages, newest first (20 by default). To acknowledge a page, pass its readToken as acknowledge. Report your own harness session ID as callerSessionId.";
 
 pub fn message_inbox_text(result: &MessageToolResult<MessageInboxPage>) -> String {
     let page = match result {

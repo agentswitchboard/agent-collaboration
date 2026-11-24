@@ -1,5 +1,9 @@
-//! Joins two message systems through one local Central, up to the managed notice port.
-//! PR 411's Host tests cover delivery into an ACP Claude session. The owner's watched run covers that step separately.
+//! Two message systems and native Tokio Central share one manual clock.
+//! The tests enter at MessageFront with fixture-built AdmittedLocalSession values, below
+//! MessageOperations, V0MessageAdmission, and MCP/CLI. Each Mac's enrollment is written
+//! directly into its store with a fixture bearer. The recipient directory and managed
+//! notice port are fixtures. Sign-in, Cloudflare, and the ACP Claude transport are outside
+//! this journey. PR 411's Host tests exercise the ACP step separately.
 
 #![expect(
     clippy::panic,
@@ -34,7 +38,7 @@ use switchboard_message_custody::{
     custody_task::CustodyTaskEvent,
     flush_clock::{FlushJitter, MachineFlushJitter, wake_for_mark},
     flush_marks::{earliest_open_mark, next_mark_after},
-    handover_notice::ManagedClaudeNoticePort,
+    handover_notice::{ClaimedNotice, ManagedClaudeNoticePort},
     receipt_delivery::ReceiptFrameOutcome,
     recipient_sessions::{RecipientSessionAnswer, RecipientSessionDirectory},
 };
@@ -217,15 +221,33 @@ impl RecipientSessionDirectory for HeldRecipientLookup {
 
 #[tokio::test]
 async fn first_message_local_two_macs_reports_one_notice_and_a_seen_receipt() {
-    first_message_local(NoticeResultScript::ReturnWriterTake).await;
+    first_message_local(FirstMessageCase::NoticeThenRead).await;
 }
 
 #[tokio::test]
 async fn first_message_local_two_macs_restart_does_not_repeat_an_unconfirmed_notice() {
-    first_message_local(NoticeResultScript::HoldAfterWriterTake).await;
+    first_message_local(FirstMessageCase::RestartDuringNotice).await;
 }
 
-async fn first_message_local(notice_result: NoticeResultScript) {
+#[tokio::test]
+async fn first_message_local_two_macs_can_read_and_ack_after_the_delivery_window() {
+    first_message_local(FirstMessageCase::ReadAfterDeliveryWindow).await;
+}
+
+#[tokio::test]
+async fn first_message_local_two_macs_acknowledging_while_waiting_records_seen_without_a_notice() {
+    first_message_local(FirstMessageCase::ReadBeforeNotice).await;
+}
+
+#[derive(Clone, Copy)]
+enum FirstMessageCase {
+    NoticeThenRead,
+    RestartDuringNotice,
+    ReadAfterDeliveryWindow,
+    ReadBeforeNotice,
+}
+
+async fn first_message_local(journey: FirstMessageCase) {
     let clock = Arc::new(ManualClock::new(EPOCH.parse().unwrap()));
     let central = start_machine_link_fixture(clock.clone()).await.unwrap();
     let sender_mac = EnrolledFixtureMac::enroll(
@@ -256,6 +278,10 @@ async fn first_message_local(notice_result: NoticeResultScript) {
     let (offers, mut written) = mpsc::unbounded_channel();
     let enabled = Arc::new(AtomicBool::new(false));
     let takes = Arc::new(AtomicUsize::new(0));
+    let notice_result = match journey {
+        FirstMessageCase::RestartDuringNotice => NoticeResultScript::HoldAfterWriterTake,
+        _ => NoticeResultScript::ReturnWriterTake,
+    };
     let port = Arc::new(ManagedPromptPort {
         clock: clock.clone(),
         enabled: enabled.clone(),
@@ -357,6 +383,40 @@ async fn first_message_local(notice_result: NoticeResultScript) {
     )
     .await;
 
+    if matches!(journey, FirstMessageCase::ReadBeforeNotice) {
+        let completed_at = clock.utc_now();
+        read_and_acknowledge(
+            &mac_b.front,
+            &recipient,
+            message_id,
+            MessageInboxAcknowledgment {
+                changed: 1,
+                unchanged: 0,
+            },
+        )
+        .await;
+        assert!(matches!(
+            handoff_row(&mut inbox, message_id).await.unwrap().handoff,
+            DirectHandoff::Seen { completed_at: at, .. } if at == completed_at
+        ));
+        enabled.store(true, Ordering::SeqCst);
+        let notice_mark = assert_quiet_notice_mark(&clock, &mut written).await;
+        assert_eq!(takes.load(Ordering::SeqCst), 0);
+        run_receipt_turn(
+            &clock,
+            anchor,
+            &recipient_mac,
+            notice_mark,
+            &mut mac_b.events,
+        )
+        .await;
+        assert_sender_words(&mac_a.front, &sender, &request_id, message_id, SEEN_WORDS).await;
+        assert_eq!(mac_a.system.close().await, CloseReport::Closed);
+        assert_eq!(mac_b.system.close().await, CloseReport::Closed);
+        central.close().await.unwrap();
+        return;
+    }
+
     enabled.store(true, Ordering::SeqCst);
     let notice_mark = next_mark_after(clock.now());
     move_clock(&clock, clock.wall_deadline(notice_mark));
@@ -390,6 +450,20 @@ async fn first_message_local(notice_result: NoticeResultScript) {
                 handoff_row(&mut inbox, message_id).await.unwrap().handoff,
                 DirectHandoff::Writing { .. }
             ));
+            read_and_acknowledge(
+                &mac_b.front,
+                &recipient,
+                message_id,
+                MessageInboxAcknowledgment {
+                    changed: 0,
+                    unchanged: 1,
+                },
+            )
+            .await;
+            assert!(matches!(
+                handoff_row(&mut inbox, message_id).await.unwrap().handoff,
+                DirectHandoff::Writing { .. }
+            ));
             assert_eq!(mac_b.system.close().await, CloseReport::Closed);
             mac_b = recipient_mac.start(&central, directory, Some(port)).await;
             observe_handoff(&mut inbox, message_id, |state| {
@@ -400,18 +474,7 @@ async fn first_message_local(notice_result: NoticeResultScript) {
                 handoff_row(&mut inbox, message_id).await.unwrap().handoff,
                 DirectHandoff::NotKnown
             );
-            let first_after_restart = next_mark_after(clock.now());
-            move_clock(&clock, clock.wall_deadline(first_after_restart));
-            let following_notice_wake = clock.wall_deadline(next_mark_after(first_after_restart));
-            let second_notice = tokio::select! {
-                biased;
-                notice = written.recv() => notice,
-                () = clock.not_due_check_now(following_notice_wake) => None,
-            };
-            assert!(
-                second_notice.is_none(),
-                "the restarted Mac offered a second notice"
-            );
+            assert_quiet_notice_mark(&clock, &mut written).await;
             assert_eq!(
                 takes.load(Ordering::SeqCst),
                 1,
@@ -437,27 +500,23 @@ async fn first_message_local(notice_result: NoticeResultScript) {
         }
     };
 
-    let shown = mac_b
-        .front
-        .read_inbox(
-            &recipient,
-            MessageInboxRead::from_arguments(None, None).unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(shown.acknowledgment, None);
-    assert_inbox_words(&shown, message_id, None);
-    let acknowledged = mac_b
-        .front
-        .read_inbox(
-            &recipient,
-            MessageInboxRead::from_arguments(None, Some(&shown.read_token)).unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(acknowledged.acknowledgment, Some(expected_acknowledgment));
-    assert_eq!(acknowledged.messages, shown.messages);
-    assert_inbox_words(&acknowledged, message_id, Some(expected_acknowledgment));
+    if matches!(journey, FirstMessageCase::ReadAfterDeliveryWindow) {
+        let expiry = handoff_row(&mut inbox, message_id)
+            .await
+            .unwrap()
+            .expires_at;
+        clock
+            .advance_to(SyncTime::from_unix_millis(expiry.timestamp_millis() + 1))
+            .unwrap();
+        assert!(clock.utc_now() > expiry);
+    }
+    read_and_acknowledge(
+        &mac_b.front,
+        &recipient,
+        message_id,
+        expected_acknowledgment,
+    )
+    .await;
     if matches!(notice_result, NoticeResultScript::HoldAfterWriterTake) {
         observe_handoff(&mut inbox, message_id, |state| {
             matches!(state, DirectHandoff::Seen { .. })
@@ -479,6 +538,33 @@ async fn first_message_local(notice_result: NoticeResultScript) {
     assert_eq!(mac_a.system.close().await, CloseReport::Closed);
     assert_eq!(mac_b.system.close().await, CloseReport::Closed);
     central.close().await.unwrap();
+}
+
+async fn read_and_acknowledge(
+    front: &MessageFront,
+    recipient: &AdmittedLocalSession,
+    message_id: &MessageId,
+    expected_acknowledgment: MessageInboxAcknowledgment,
+) {
+    let shown = front
+        .read_inbox(
+            recipient,
+            MessageInboxRead::from_arguments(None, None).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(shown.acknowledgment, None);
+    assert_inbox_words(&shown, message_id, None);
+    let acknowledged = front
+        .read_inbox(
+            recipient,
+            MessageInboxRead::from_arguments(None, Some(&shown.read_token)).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(acknowledged.acknowledgment, Some(expected_acknowledgment));
+    assert_eq!(acknowledged.messages, shown.messages);
+    assert_inbox_words(&acknowledged, message_id, Some(expected_acknowledgment));
 }
 
 async fn assert_sender_words(
@@ -552,6 +638,21 @@ fn move_clock(clock: &ManualClock, deadline: ClockInstant) {
     clock
         .advance(deadline.saturating_duration_since(clock.monotonic_now()))
         .unwrap();
+}
+
+async fn assert_quiet_notice_mark(
+    clock: &ManualClock,
+    written: &mut mpsc::UnboundedReceiver<ClaimedNotice>,
+) -> SyncTime {
+    let mark = next_mark_after(clock.now());
+    move_clock(clock, clock.wall_deadline(mark));
+    let following_wake = clock.wall_deadline(next_mark_after(mark));
+    tokio::select! {
+        biased;
+        notice = written.recv() => panic!("a settled notice reached the writer: {}", notice.unwrap().text()),
+        () = clock.not_due_check_now(following_wake) => {}
+    }
+    mark
 }
 
 async fn run_receipt_turn(

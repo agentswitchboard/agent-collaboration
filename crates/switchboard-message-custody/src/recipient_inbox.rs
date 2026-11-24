@@ -328,7 +328,7 @@ impl RecipientInbox {
         let target = session.address();
         let scan = self
             .store
-            .direct_inbox_messages(target, self.clock.utc_now(), limit)
+            .direct_inbox_messages(target, limit)
             .await
             .map_err(InboxCustodyError::from)?;
         let messages = inbox_scan(scan, &mut self.operator_events);
@@ -362,7 +362,10 @@ impl RecipientInbox {
                 .await
                 .map_err(InboxCustodyError::from)?
                 .ok_or(InboxReadError::MessageNotKept)?;
-            if row.handoff == DirectHandoff::NotKnown {
+            if matches!(
+                row.handoff,
+                DirectHandoff::Waiting | DirectHandoff::NotKnown
+            ) {
                 rows.push(row);
             }
         }

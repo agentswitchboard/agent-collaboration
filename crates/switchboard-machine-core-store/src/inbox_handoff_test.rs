@@ -67,20 +67,19 @@ async fn inbox_page_is_recent_ordered_limited_and_notice_selection_only_returns_
         .record_handoff(&completed.message_id, ARRIVAL + 3)
         .await
         .unwrap();
-    let expiry = at(ARRIVAL + 900_000);
     let target = &waiting.target;
     let page = store
-        .direct_inbox_messages(target, expiry, 2)
+        .direct_inbox_messages(target, 2)
         .await
         .unwrap()
         .expect_clean();
     assert_eq!(page, [queued.clone(), completed.clone()]);
     let page = store
-        .direct_inbox_messages(target, expiry, 20)
+        .direct_inbox_messages(target, 20)
         .await
         .unwrap()
         .expect_clean();
-    assert_eq!(page, [queued, completed, waiting.clone()]);
+    assert_eq!(page, [queued, completed, waiting.clone(), expired.clone()]);
 
     let rows = store
         .scan_waiting_notice_handoffs()
