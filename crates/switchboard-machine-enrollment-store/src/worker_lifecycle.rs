@@ -35,8 +35,8 @@ impl WorkerLifecycle {
         #[cfg(test)]
         let (abort, registration) = AbortHandle::new_pair();
         tokio::spawn(async move {
-            // The loop borrows the worker. Its future, including any outstanding
-            // request, is dropped inside this scope before the owner reaps it.
+            // The guarded block drops the loop future before close_resources runs,
+            // and after an unwind the worker is used only for that close.
             let loop_result = AssertUnwindSafe(async {
                 let run = worker.run(requests, shutdown.clone(), enrollment_changes);
                 #[cfg(test)]
