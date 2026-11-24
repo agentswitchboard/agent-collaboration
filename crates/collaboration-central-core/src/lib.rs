@@ -112,5 +112,7 @@ pub use organization_signin_port::OrganizationSignInPort;
 mod signin_wire_export_test;
 
 mod person_link_admission;
-pub use central_person_link::{PersonConnectionState, PersonRevision, PersonSocketAttachment};
+pub use central_person_link::{
+    PersonConnectionRegistry, PersonConnectionState, PersonRevision, PersonSocketAttachment,
+};
 pub use person_link_admission::{PersonLinkAdmission, PersonLinkReply, PersonSocketRegistration};

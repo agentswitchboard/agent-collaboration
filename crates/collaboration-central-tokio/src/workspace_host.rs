@@ -161,7 +161,7 @@ pub struct TokioWorkspaceHost {
         Mutex<BTreeMap<OrganizationId, Arc<WorkspaceRuntime<ObjectStorage, TokioWorkspaceStores>>>>,
     alarms: Mutex<Vec<WorkspaceAlarmOwner>>,
     pub(crate) push_registry: MachinePushRegistry,
-    pub(crate) person_sockets: crate::workspace_link::person_socket::PersonSockets,
+    pub(crate) person_sockets: collaboration_central_core::PersonConnectionRegistry,
     approval_deadline_tasks: workspace_approval_delivery::ApprovalDeadlineTasks,
     #[cfg(feature = "test-support")]
     fixture_link_calls: bool,

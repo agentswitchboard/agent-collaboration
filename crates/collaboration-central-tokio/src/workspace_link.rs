@@ -29,7 +29,7 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 #[path = "workspace_link_io.rs"]
 mod link_io;
 #[path = "workspace_person_socket.rs"]
-pub(crate) mod person_socket;
+mod person_socket;
 #[path = "workspace_typed_link.rs"]
 mod typed_link;
 use link_io::{

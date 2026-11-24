@@ -14,58 +14,14 @@ use axum::{
 };
 use central_link_protocol::PersonLinkCloseCode;
 use collaboration_central_core::{
-    PersonConnectionState, PersonLinkAdmission, PersonLinkReply, PersonRevision,
-    PersonSocketAttachment, PersonSocketRegistration,
+    PersonLinkAdmission, PersonLinkReply, PersonSocketAttachment, PersonSocketRegistration,
 };
 use fleet_identity_protocol::OrganizationId;
 use std::{
-    sync::{Arc, Mutex, OnceLock, PoisonError, Weak},
+    sync::{Arc, OnceLock},
     time::Duration,
 };
 use tokio_util::sync::CancellationToken;
-
-#[derive(Clone, Default)]
-pub(crate) struct PersonSockets(Arc<Mutex<Vec<Weak<PersonSocket>>>>);
-
-struct PersonSocket {
-    connection: Mutex<PersonConnectionState>,
-    reconnect: CancellationToken,
-}
-
-impl PersonSockets {
-    fn register(
-        &self,
-        attachment: PersonSocketAttachment,
-        reconnect: CancellationToken,
-    ) -> Arc<PersonSocket> {
-        let socket = Arc::new(PersonSocket {
-            connection: Mutex::new(PersonConnectionState::Admitted(attachment)),
-            reconnect,
-        });
-        let mut sockets = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        sockets.retain(|existing| existing.strong_count() > 0);
-        sockets.push(Arc::downgrade(&socket));
-        socket
-    }
-
-    pub(crate) fn close_affected(&self, revision: &PersonRevision) {
-        let mut sockets = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        sockets.retain(|existing| {
-            let Some(socket) = existing.upgrade() else {
-                return false;
-            };
-            if socket
-                .connection
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .observe_revision(revision)
-            {
-                socket.reconnect.cancel();
-            }
-            true
-        });
-    }
-}
 
 pub(super) async fn upgrade(
     State(state): State<Arc<LinkState>>,
@@ -106,12 +62,13 @@ async fn serve(
     attachment: PersonSocketAttachment,
 ) {
     let reconnect_requested = CancellationToken::new();
+    let request_reconnect = reconnect_requested.clone();
     let registered = runtime
         .register_person_socket(&attachment, || {
             state
                 .host
                 .person_sockets
-                .register(attachment.clone(), reconnect_requested.clone())
+                .register(attachment.clone(), move || request_reconnect.cancel())
         })
         .await;
     let closed_machine = OnceLock::new();
@@ -137,7 +94,7 @@ async fn serve(
         let incoming = tokio::select! {
             biased;
             () = state.stop.cancelled() => return,
-            () = registered.reconnect.cancelled() => return reconnect(&mut socket, &writes).await,
+            () = reconnect_requested.cancelled() => return reconnect(&mut socket, &writes).await,
             incoming = socket.recv() => incoming,
         };
         let text = match receive_text(&mut socket, &writes, incoming).await {
@@ -145,12 +102,7 @@ async fn serve(
             IncomingText::Control => continue,
             IncomingText::Ended => return,
         };
-        let current = registered
-            .connection
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .check_time(state.host.current_time().unix_millis())
-            .cloned();
+        let current = registered.current(state.host.current_time().unix_millis());
         let Some(attachment) = current else {
             return reconnect(&mut socket, &writes).await;
         };

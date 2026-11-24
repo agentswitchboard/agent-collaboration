@@ -1,6 +1,9 @@
 //! The authority and two-state lifetime of one admitted person connection.
 #![forbid(unsafe_code)]
 
+mod connection_registry;
+pub use connection_registry::{PersonConnectionRegistry, RegisteredPersonConnection};
+
 use fleet_identity_protocol::{OrganizationId, UnixMillis};
 use fleet_signin::person_proof::{
     CheckedPersonLink, OrganizationFloor, OrganizationFloorState, PersonFloor, PersonFloorState,
