@@ -1,6 +1,6 @@
 //! Approval retention and retired-marker cleanup on the applying loan.
 use approval_request_protocol::{ApprovalRequestId, CentralTime, StopReceiptEnding};
-use central_engine_model::InstanceKey;
+use central_engine_model::{InstanceKey, next_five_minute_mark};
 use central_storage::{GuardedStatement, RowExpectation, SafeInteger, Statement, StoreFailure};
 use fleet_engine::{
     DueItemKey, DueKind, DueTableChange, checked_engine_statement, plan_due_item_attempt_clear,
@@ -15,8 +15,12 @@ use crate::{
     ApprovalState, ApprovalStoreTransaction, PendingApprovalReply,
     approval_lifecycle_effects::standing,
     approval_retention::cutoff_at,
-    approval_store_reads::{ApprovalReadRecord, read_approval_due_subject, read_approval_run},
-    approval_store_writes::{approval_due_key, encode_stored_json, plan_approval_due},
+    approval_store_reads::{
+        ApprovalReadRecord, ApprovalRunRecord, read_approval_due_subject, read_approval_run,
+    },
+    approval_store_writes::{
+        approval_due_key, approval_grid_mark, encode_stored_json, plan_approval_due_at,
+    },
 };
 
 const RETIRED_RUN_PREFIX: &str = "retired-run:";
@@ -108,39 +112,19 @@ where
         if now < occurrence {
             return Ok(false);
         }
-        match ApprovalDueSubject::from_key(key)? {
-            ApprovalDueSubject::Request(row_id) => {
-                let at = SafeInteger::try_from(occurrence.timestamp_millis())
-                    .map_err(|_| corrupt("approval_requests.due_occurrence"))?;
-                let query = checked_engine_statement!(
-                    query_file,
-                    [],
-                    "src/queries/read_approval_due_occurrence.sql",
-                    organization = transaction.organization_id().as_str().to_owned(),
-                    row_id = row_id.as_str().to_owned(),
-                    occurrence = at,
-                );
-                Ok(!transaction
-                    .read_approval_statement(query)
-                    .await?
-                    .rows
-                    .is_empty())
-            }
-            ApprovalDueSubject::RetiredRun(run) => Ok(read_approval_run(transaction, &run)
-                .await?
-                .is_some_and(|row| {
-                    row.scope.organization_id == *transaction.organization_id()
-                        && row.retired_at == Some(occurrence)
-                })),
-            ApprovalDueSubject::EndedEnrollment(anchor) => {
-                Ok(read_approval_run(transaction, &anchor)
-                    .await?
-                    .is_some_and(|row| {
-                        row.scope.organization_id == *transaction.organization_id()
-                            && row.enrollment_cleanup_at == Some(occurrence)
-                    }))
-            }
-        }
+        let at = time_bind(occurrence)?;
+        let query = checked_engine_statement!(
+            query_file,
+            [],
+            "src/queries/read_approval_due_occurrence.sql",
+            key = key.0.clone(),
+            occurrence = at,
+        );
+        Ok(!transaction
+            .read_approval_statement(query)
+            .await?
+            .rows
+            .is_empty())
     }
 
     pub async fn apply_approval_due_work(
@@ -161,20 +145,28 @@ where
                 }
             }
             ApprovalDueSubject::RetiredRun(run) => {
-                if Self::approval_due_is_current(self.transaction, key, occurrence, at).await? {
-                    self.clean_retired_markers(&run, at).await?;
-                }
+                let record = read_approval_run(self.transaction, &run)
+                    .await?
+                    .filter(|owner| {
+                        owner.scope.organization_id == *self.transaction.organization_id()
+                            && owner.retired_at == Some(occurrence)
+                    })
+                    .ok_or_else(|| corrupt("approval_router_runs.retired_at"))?;
+                self.clean_retired_markers(&record, occurrence, at).await?;
             }
             ApprovalDueSubject::EndedEnrollment(anchor) => {
-                if let Some(record) = read_approval_run(self.transaction, &anchor).await?
-                    && record.scope.organization_id == *self.transaction.organization_id()
-                    && record.enrollment_cleanup_at == Some(occurrence)
-                    && at >= occurrence
-                    && self
-                        .transaction
-                        .approval_enrollment_standing(&record.scope.enrollment_scope())
-                        .await?
-                        == ApprovalEnrollmentStanding::Ended
+                let record = read_approval_run(self.transaction, &anchor)
+                    .await?
+                    .filter(|owner| {
+                        owner.scope.organization_id == *self.transaction.organization_id()
+                            && owner.enrollment_cleanup_at == Some(occurrence)
+                    })
+                    .ok_or_else(|| corrupt("approval_router_runs.enrollment_cleanup_ms"))?;
+                if self
+                    .transaction
+                    .approval_enrollment_standing(&record.scope.enrollment_scope())
+                    .await?
+                    == ApprovalEnrollmentStanding::Ended
                 {
                     self.clean_ended_enrollment(&record.scope, occurrence, at)
                         .await?;
@@ -256,18 +248,19 @@ where
         at: CentralTime,
     ) -> Result<(), ApprovalApplyFailure> {
         if self.retired_markers_remain(run).await? {
-            for write in plan_approval_due(retired_run_key(run), at, at)? {
-                self.execute_guarded_write(write).await?;
-            }
+            self.schedule_retired_markers(run, at, Some(approval_grid_mark(at)?), at)
+                .await?;
         }
         Ok(())
     }
 
     async fn clean_retired_markers(
         &mut self,
-        run: &RouterRunId,
+        owner: &ApprovalRunRecord,
+        occurrence: CentralTime,
         at: CentralTime,
     ) -> Result<(), ApprovalApplyFailure> {
+        let run = &owner.scope.run.router_run;
         let deletion = checked_engine_statement!(
             query_file,
             [],
@@ -278,10 +271,35 @@ where
         );
         self.execute_guarded_write(guarded(deletion, RowExpectation::Any))
             .await?;
-        if !self.retired_markers_remain(run).await? {
-            self.remove_approval_due(retired_run_key(run), at).await?;
+        if self.retired_markers_remain(run).await? {
+            self.schedule_retired_markers(run, occurrence, Some(later_mark(at)?), at)
+                .await?;
+        } else {
+            self.schedule_retired_markers(run, occurrence, None, at)
+                .await?;
+            self.wake_enrollment_after_markers(&owner.scope, at).await?;
         }
         Ok(())
+    }
+
+    async fn schedule_retired_markers(
+        &mut self,
+        run: &RouterRunId,
+        occurrence: CentralTime,
+        due: Option<CentralTime>,
+        at: CentralTime,
+    ) -> Result<(), ApprovalApplyFailure> {
+        let stamp = checked_engine_statement!(
+            query_file,
+            [],
+            "src/queries/set_retired_marker_due.sql",
+            timestamp = due.map(time_bind).transpose()?,
+            run = run.as_str().to_owned(),
+        );
+        self.execute_guarded_write(guarded(stamp, RowExpectation::Exactly(1)))
+            .await?;
+        self.schedule_cleanup(retired_run_key(run), occurrence, due, at)
+            .await
     }
 
     async fn retired_markers_remain(&mut self, run: &RouterRunId) -> Result<bool, StoreFailure> {
@@ -304,21 +322,26 @@ where
         anchor: &ApprovalHolderScope,
         at: CentralTime,
     ) -> Result<(), ApprovalApplyFailure> {
+        let due = approval_grid_mark(at)?;
         let mark = checked_engine_statement!(
             query_file,
             [],
             "src/queries/set_approval_enrollment_cleanup.sql",
             at = SafeInteger::try_from(at.timestamp_millis())
                 .map_err(|_| corrupt("approval_router_runs.enrollment_cleanup_ms"))?,
+            due = time_bind(due)?,
             run = anchor.run.router_run.as_str().to_owned(),
             organization = anchor.organization_id.as_str().to_owned(),
         );
         self.execute_guarded_write(guarded(mark, RowExpectation::Exactly(1)))
             .await?;
-        for write in plan_approval_due(ended_enrollment_key(&anchor.run.router_run), at, at)? {
-            self.execute_guarded_write(write).await?;
-        }
-        Ok(())
+        self.schedule_cleanup(
+            ended_enrollment_key(&anchor.run.router_run),
+            at,
+            Some(due),
+            at,
+        )
+        .await
     }
 
     async fn clean_ended_enrollment(
@@ -330,6 +353,10 @@ where
         let run = &anchor.run.router_run;
         let organization = anchor.organization_id.as_str();
         let enrollment = anchor.run.enrollment.enrollment_id.as_str();
+        if self.enrollment_has_markers(anchor).await? {
+            // The final marker page republishes this subject. Until then it owns no lane slot.
+            return self.set_enrollment_due(run, occurrence, None, at).await;
+        }
         let delete = checked_engine_statement!(
             query_file,
             [],
@@ -356,9 +383,10 @@ where
             .await?
             .rows
             .is_empty()
-            || self.retired_markers_remain(run).await?
         {
-            return Ok(());
+            return self
+                .set_enrollment_due(run, occurrence, Some(later_mark(at)?), at)
+                .await;
         }
         let last = checked_engine_statement!(
             query_file,
@@ -373,6 +401,101 @@ where
             .await?;
         self.remove_approval_due(ended_enrollment_key(run), at)
             .await
+    }
+
+    async fn enrollment_has_markers(
+        &mut self,
+        anchor: &ApprovalHolderScope,
+    ) -> Result<bool, StoreFailure> {
+        let query = checked_engine_statement!(
+            query_file,
+            [],
+            "src/queries/read_blocking_enrollment_marker.sql",
+            organization = anchor.organization_id.as_str().to_owned(),
+            enrollment = anchor.run.enrollment.enrollment_id.as_str().to_owned(),
+            machine = anchor.run.enrollment.machine_id.as_str().to_owned(),
+        );
+        Ok(!self
+            .transaction
+            .read_approval_statement(query)
+            .await?
+            .rows
+            .is_empty())
+    }
+
+    async fn wake_enrollment_after_markers(
+        &mut self,
+        owner: &ApprovalHolderScope,
+        at: CentralTime,
+    ) -> Result<(), ApprovalApplyFailure> {
+        let result = self
+            .transaction
+            .read_approval_statement(checked_engine_statement!(
+                query_file,
+                [],
+                "src/queries/read_parked_enrollment_cleanup.sql",
+                organization = owner.organization_id.as_str().to_owned(),
+                enrollment = owner.run.enrollment.enrollment_id.as_str().to_owned(),
+                machine = owner.run.enrollment.machine_id.as_str().to_owned(),
+            ))
+            .await?;
+        let [cells] = result.rows.as_slice() else {
+            return Ok(());
+        };
+        let run: RouterRunId =
+            fleet_runtime_ports::stored_values::string(&result, cells, "router_run_id")?
+                .parse()
+                .map_err(|_| corrupt("approval_router_runs.router_run_id"))?;
+        let anchor = read_approval_run(self.transaction, &run)
+            .await?
+            .ok_or_else(|| corrupt("approval_router_runs.router_run_id"))?;
+        let occurrence = anchor
+            .enrollment_cleanup_at
+            .ok_or_else(|| corrupt("approval_router_runs.enrollment_cleanup_ms"))?;
+        if !self.enrollment_has_markers(&anchor.scope).await? {
+            self.set_enrollment_due(&run, occurrence, Some(later_mark(at)?), at)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn set_enrollment_due(
+        &mut self,
+        anchor: &RouterRunId,
+        occurrence: CentralTime,
+        due: Option<CentralTime>,
+        at: CentralTime,
+    ) -> Result<(), ApprovalApplyFailure> {
+        let statement = checked_engine_statement!(
+            query_file,
+            [],
+            "src/queries/set_enrollment_cleanup_due.sql",
+            due = due.map(time_bind).transpose()?,
+            anchor = anchor.as_str().to_owned(),
+            occurrence = time_bind(occurrence)?,
+        );
+        self.execute_guarded_write(guarded(statement, RowExpectation::Exactly(1)))
+            .await?;
+        self.schedule_cleanup(ended_enrollment_key(anchor), occurrence, due, at)
+            .await
+    }
+
+    async fn schedule_cleanup(
+        &mut self,
+        key: DueItemKey,
+        occurrence: CentralTime,
+        due: Option<CentralTime>,
+        at: CentralTime,
+    ) -> Result<(), ApprovalApplyFailure> {
+        let Some(due) = due else {
+            return self.remove_approval_due(key, at).await;
+        };
+        self.execute_guarded_write(plan_due_item_attempt_clear(&key))
+            .await?;
+        for write in plan_approval_due_at(key, occurrence, due, at)? {
+            self.execute_guarded_write(write).await?;
+        }
+        Ok(())
     }
 
     async fn remove_approval_due(
@@ -391,4 +514,13 @@ where
 
 fn guarded(statement: Statement, expect: RowExpectation) -> GuardedStatement {
     GuardedStatement { statement, expect }
+}
+
+fn time_bind(at: CentralTime) -> Result<SafeInteger, StoreFailure> {
+    SafeInteger::try_from(at.timestamp_millis())
+        .map_err(|_| corrupt("approval_requests.due_occurrence"))
+}
+
+fn later_mark(at: CentralTime) -> Result<CentralTime, StoreFailure> {
+    next_five_minute_mark(at).map_err(|_| corrupt("approval_requests.due_mark"))
 }

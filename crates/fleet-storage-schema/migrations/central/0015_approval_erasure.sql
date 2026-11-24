@@ -16,6 +16,7 @@ CREATE INDEX approval_erased_requests_run
 ON approval_erased_requests (router_run_id, approval_row_id);
 
 ALTER TABLE approval_requests ADD COLUMN erase_after_ms INTEGER;
+ALTER TABLE approval_requests ADD COLUMN compact_ending_json TEXT;
 
 -- Approval-owned replay results carry their exact request row alongside the
 -- operation id. Generic organization request results leave this column empty.
@@ -26,6 +27,8 @@ ON runtime_request_log (approval_row_id)
 WHERE approval_row_id IS NOT NULL;
 
 ALTER TABLE approval_router_runs ADD COLUMN enrollment_cleanup_ms INTEGER;
+ALTER TABLE approval_router_runs ADD COLUMN enrollment_cleanup_due_ms INTEGER;
+ALTER TABLE approval_router_runs ADD COLUMN marker_cleanup_due_ms INTEGER;
 
 CREATE INDEX approval_router_runs_enrollment_cleanup
 ON approval_router_runs (organization_id, enrollment_id, registration_order);
@@ -36,26 +39,26 @@ CREATE VIEW approval_request_expiry_due_rows(
 ) AS
 WITH owner_timing AS (
     SELECT approval_row_id AS subject_key,
-           CASE record_state WHEN 'waiting' THEN deadline_ms ELSE erase_after_ms END AS occurrence_ms
+           CASE record_state WHEN 'waiting' THEN deadline_ms ELSE erase_after_ms END AS occurrence_ms, NULL AS cleanup_due_ms
     FROM approval_requests WHERE record_state IN ('waiting', 'ended')
     UNION ALL
     SELECT 'retired-run:' || runs.router_run_id,
-           CAST(round(unixepoch(runs.retired_at, 'subsec') * 1000) AS INTEGER)
+           CAST(round(unixepoch(runs.retired_at, 'subsec') * 1000) AS INTEGER), marker_cleanup_due_ms
     FROM approval_router_runs AS runs
-    WHERE runs.retired_at IS NOT NULL AND EXISTS (
+    WHERE runs.retired_at IS NOT NULL AND runs.marker_cleanup_due_ms IS NOT NULL AND EXISTS (
         SELECT 1 FROM approval_erased_requests AS marker
         WHERE marker.router_run_id = runs.router_run_id
     )
     UNION ALL
-    SELECT 'ended-enrollment:' || router_run_id, enrollment_cleanup_ms
-    FROM approval_router_runs WHERE enrollment_cleanup_ms IS NOT NULL
+    SELECT 'ended-enrollment:' || router_run_id, enrollment_cleanup_ms, enrollment_cleanup_due_ms
+    FROM approval_router_runs WHERE enrollment_cleanup_due_ms IS NOT NULL
 ), source_attempt AS (
     SELECT 1 AS control_present, due_at_ms FROM engine_due_attempt_controls
     WHERE machine_kind = 'engine_source' AND subject_key = 'approval_request'
 )
 SELECT 'on_grid', 1, owner_timing.subject_key, owner_timing.occurrence_ms,
        CASE WHEN attempt.uses_subject_attempt = 1 THEN attempt.due_at_ms
-            ELSE owner_timing.occurrence_ms + ((300000 - owner_timing.occurrence_ms % 300000) % 300000)
+            ELSE COALESCE(owner_timing.cleanup_due_ms, owner_timing.occurrence_ms + ((300000 - owner_timing.occurrence_ms % 300000) % 300000))
        END,
        source_attempt.control_present IS NULL
 FROM owner_timing

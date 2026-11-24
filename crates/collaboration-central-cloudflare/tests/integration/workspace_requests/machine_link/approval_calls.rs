@@ -131,6 +131,17 @@ impl ApprovalLinkFixture for Fixture {
         Ok(())
     }
 
+    async fn set_wall_millis(&self, millis: i64) -> Result<()> {
+        self.clock.set_utc(
+            chrono::DateTime::from_timestamp_millis(millis).ok_or("fixture milliseconds")?,
+        );
+        self.host.set_external_time_ms(millis).await?;
+        if !self.runtime().control::<bool>("clock", &millis).await? {
+            return Err("worker did not set approval fixture milliseconds".into());
+        }
+        Ok(())
+    }
+
     async fn fixture_write(&self, statement: Statement) -> Result<()> {
         let result = self
             .runtime()

@@ -40,11 +40,13 @@ where
         request: PassOnApprovalRequest,
     ) -> Result<PendingApprovalReply<PassOnApprovalReply>, ApprovalApplyFailure> {
         let (organization, session, address) = approval_session_address(admitted);
+        let at = self.sample_applying_time()?;
         let record = read_parent_approval_request(
             self.transaction,
             organization,
             &request.request_id,
             &session,
+            at,
         )
         .await?;
         let Some(record) = record else {
@@ -58,13 +60,6 @@ where
             .transaction
             .approval_decision_caller(organization, &actor)
             .await?;
-        let at = self.sample_applying_time()?;
-        if crate::approval_retention::hidden_at(&record.state, at)? {
-            return Ok(self.stage_reply(
-                address,
-                ApprovalTransitionOutput::with_reply(PassOnApprovalReply::NotVisible {}),
-            ));
-        }
         let cutoff = strict_cutoff(at).to_rfc3339();
         let digest = request_log_digest(&PassOnIntent {
             operation: "passOnApproval",

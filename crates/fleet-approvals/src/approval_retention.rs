@@ -1,13 +1,15 @@
 //! The elapsed-time cutoff shared by approval reads and physical erasure.
-use approval_request_protocol::{ApprovalRequestId, CentralTime, Delivery, ErasedApprovalMarker};
-use central_engine_model::{CENTRAL_RECORD_RETENTION_MILLIS, supported_time};
+use approval_request_protocol::{ApprovalRequestId, CentralTime, ErasedApprovalMarker};
+use central_engine_model::{
+    CENTRAL_RECORD_RETENTION_MILLIS, LAST_ALARM_GRID_UNIX_MILLIS, supported_time,
+};
 use central_storage::StoreFailure;
 #[cfg(test)]
 use fleet_engine::owner_sql::CheckedStorage;
 use fleet_engine::{checked_engine_statement, checked_subject_projection};
 use fleet_runtime_ports::{stored_values::json, workspace_decode_error::corrupt};
 
-use crate::{ApprovalHolderScope, ApprovalState, ApprovalStoreTransaction, EndedApproval};
+use crate::{ApprovalHolderScope, ApprovalStoreTransaction};
 
 checked_subject_projection!(StoredErasedApproval {
     request_id: String,
@@ -75,45 +77,11 @@ pub(crate) async fn read_erased_approval(
 }
 
 pub(crate) fn cutoff_at(ended_at: CentralTime) -> Result<CentralTime, StoreFailure> {
-    ended_at
+    let cutoff = ended_at
         .timestamp_millis()
-        .checked_add(CENTRAL_RECORD_RETENTION_MILLIS)
-        .and_then(CentralTime::from_timestamp_millis)
+        .saturating_add(CENTRAL_RECORD_RETENTION_MILLIS)
+        .min(LAST_ALARM_GRID_UNIX_MILLIS);
+    CentralTime::from_timestamp_millis(cutoff)
         .filter(|time| supported_time(*time))
         .ok_or_else(|| corrupt("approval_requests.erase_after_ms"))
-}
-
-pub(crate) fn hidden_at(state: &ApprovalState, at: CentralTime) -> Result<bool, StoreFailure> {
-    match state {
-        ApprovalState::Ended { closed, .. } => Ok(at >= cutoff_at(closed.ended_at)?),
-        ApprovalState::Unraised
-        | ApprovalState::Waiting { .. }
-        | ApprovalState::StoppedBeforeRaise { .. } => Ok(false),
-    }
-}
-
-/// The effective holder debt can lapse before the cleanup transaction.
-pub(crate) enum EffectiveEndingDelivery {
-    Owed,
-    ReceivedByHolder,
-    ClosedWithoutReceipt,
-    ReceiptUnknown,
-}
-
-impl EffectiveEndingDelivery {
-    pub(crate) fn at(ended: &EndedApproval, now: CentralTime) -> Result<Self, StoreFailure> {
-        match ended.delivery {
-            Delivery::Owed {} if now >= cutoff_at(ended.ended_at)? => Ok(Self::ReceiptUnknown),
-            Delivery::Owed {} => Ok(Self::Owed),
-            Delivery::ReceivedByHolder {} => Ok(Self::ReceivedByHolder),
-            Delivery::ClosedWithoutReceipt {} => Ok(Self::ClosedWithoutReceipt),
-        }
-    }
-
-    pub(crate) const fn is_owed(&self) -> bool {
-        match self {
-            Self::Owed => true,
-            Self::ReceivedByHolder | Self::ClosedWithoutReceipt | Self::ReceiptUnknown => false,
-        }
-    }
 }

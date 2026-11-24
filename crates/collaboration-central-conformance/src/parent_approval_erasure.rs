@@ -81,6 +81,10 @@ pub async fn destination_replays_and_unpaid_ending_at_cutoff(
         DecideApprovalAsSessionReply::NotVisible {},
     );
     require_receipt(raise(&mut setup.socket, &organization, next).await?)?;
+    fixture.fixture_write(Statement {
+        sql: "UPDATE approval_requests SET ending_json='corrupt expired evidence' WHERE request_id=?",
+        args: vec![SqlValue::Text(id.to_string())],
+    }).await?;
     fixture.hold_delivery_answer().await?;
     answer_ending(
         &mut setup.socket,
@@ -98,6 +102,16 @@ pub async fn destination_replays_and_unpaid_ending_at_cutoff(
         ],
         "the late holder answer did not change the stored delivery",
     );
+
+    fixture
+        .fixture_write(Statement {
+            sql: "UPDATE approval_requests SET ending_json=?1 WHERE request_id=?2",
+            args: vec![
+                SqlValue::Text(serde_json::to_string(&owed)?),
+                SqlValue::Text(id.to_string()),
+            ],
+        })
+        .await?;
 
     let ledger = Statement {
         sql: "SELECT count(*) FROM runtime_request_log WHERE approval_row_id=(SELECT approval_row_id FROM approval_requests WHERE request_id=?)",

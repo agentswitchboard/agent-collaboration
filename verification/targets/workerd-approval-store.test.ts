@@ -568,7 +568,7 @@ async function verifyRunReplacement(
   await assertRollbackAtEachWrite({
     central,
     database,
-    writes: 6,
+    writes: 7,
     command: { kind: "endEnrollment", holder: replacement },
   });
   const due = dueSchema.parse(

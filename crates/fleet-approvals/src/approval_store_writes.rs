@@ -149,12 +149,25 @@ pub(crate) fn plan_approval_due(
     occurrence: CentralTime,
     at: CentralTime,
 ) -> Result<Vec<GuardedStatement>, StoreFailure> {
-    let mark = if central_engine_model::on_five_minute_grid(occurrence) {
-        occurrence
+    let mark = approval_grid_mark(occurrence)?;
+    plan_approval_due_at(key, occurrence, mark, at)
+}
+
+pub(crate) fn approval_grid_mark(at: CentralTime) -> Result<CentralTime, StoreFailure> {
+    if central_engine_model::on_five_minute_grid(at) {
+        Ok(at)
     } else {
-        central_engine_model::next_five_minute_mark(occurrence)
-            .map_err(|_| corrupt("approval_requests.due_mark"))?
-    };
+        central_engine_model::next_five_minute_mark(at)
+            .map_err(|_| corrupt("approval_requests.due_mark"))
+    }
+}
+
+pub(crate) fn plan_approval_due_at(
+    key: DueItemKey,
+    occurrence: CentralTime,
+    mark: CentralTime,
+    at: CentralTime,
+) -> Result<Vec<GuardedStatement>, StoreFailure> {
     let mut timing = DueOwnerTiming::at(key, occurrence)?;
     timing.base_due = fleet_engine::DueMillis::try_from(mark.timestamp_millis())
         .map_err(|_| corrupt("approval_requests.due_mark"))?;
@@ -278,6 +291,10 @@ fn plan_first_ending(
             "approval_requests.erase_after_ms"
         )?,
         ending = encode_stored_json(&closed.ending, "approval_requests.ending_json")?,
+        compact = encode_stored_json(
+            &crate::approval_lifecycle_effects::standing(&closed.ending.clone().into_ending()),
+            "approval_requests.compact_ending_json"
+        )?,
         operation = closed
             .decided_operation_id
             .as_ref()

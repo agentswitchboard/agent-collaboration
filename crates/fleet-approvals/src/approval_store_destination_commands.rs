@@ -51,10 +51,16 @@ where
         {
             return Ok(refused());
         }
+        let at = self.sample_applying_time()?;
         let record = match &actor {
             ApprovalActor::Person(_) => {
-                read_people_approval_request(self.transaction, organization, &request.request_id)
-                    .await?
+                read_people_approval_request(
+                    self.transaction,
+                    organization,
+                    &request.request_id,
+                    at,
+                )
+                .await?
             }
             ApprovalActor::Session(session) => {
                 read_parent_approval_request(
@@ -62,6 +68,7 @@ where
                     organization,
                     &request.request_id,
                     session,
+                    at,
                 )
                 .await?
             }
@@ -92,9 +99,6 @@ where
         let key = saved.key.clone();
         let recipient = actor.identity();
         let at = self.sample_applying_time()?;
-        if crate::approval_retention::hidden_at(&record.state, at)? {
-            return Ok(refused());
-        }
         let caller = self
             .transaction
             .approval_decision_caller(organization, &actor)
@@ -169,8 +173,9 @@ where
         {
             return Ok(refused());
         }
+        let at = self.sample_applying_time()?;
         let record =
-            read_parent_approval_request(self.transaction, organization, request_id, &parent)
+            read_parent_approval_request(self.transaction, organization, request_id, &parent, at)
                 .await?;
         let Some(record) = record else {
             return Ok(refused());
@@ -226,8 +231,9 @@ where
                 next_after: None,
             }));
         }
+        let at = self.sample_applying_time()?;
         let mut records =
-            read_person_approval_page(self.transaction, organization, after, limit).await?;
+            read_person_approval_page(self.transaction, organization, after, limit, at).await?;
         let page_size = usize::from(limit.get());
         let next_after = if records.len() > page_size {
             records.truncate(page_size);
@@ -271,12 +277,12 @@ where
         if organization != self.transaction.organization_id() {
             return Ok(ApprovalTransitionOutput::with_reply(None));
         }
+        let at = self.sample_applying_time()?;
         let record =
-            read_people_approval_request(self.transaction, organization, request_id).await?;
+            read_people_approval_request(self.transaction, organization, request_id, at).await?;
         let Some(record) = record else {
             return Ok(ApprovalTransitionOutput::with_reply(None));
         };
-        let at = self.sample_applying_time()?;
         self.read_selected_approval(&record, &ApprovalActor::Person(person_id.clone()), at)
             .await
     }
@@ -290,9 +296,6 @@ where
         let Some(key) = record.state.key() else {
             return Ok(ApprovalTransitionOutput::with_reply(None));
         };
-        if crate::approval_retention::hidden_at(&record.state, at)? {
-            return Ok(ApprovalTransitionOutput::with_reply(None));
-        }
         let event = ApprovalEvent::Read {
             key: key.clone(),
             actor: actor.clone(),

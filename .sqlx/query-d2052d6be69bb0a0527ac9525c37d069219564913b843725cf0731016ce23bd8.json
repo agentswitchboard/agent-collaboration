@@ -266,6 +266,17 @@
             "name": "erase_after_ms"
           }
         }
+      },
+      {
+        "name": "compact_ending_json",
+        "ordinal": 24,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "compact_ending_json"
+          }
+        }
       }
     ],
     "parameters": {
@@ -295,6 +306,7 @@
       true,
       false,
       false,
+      true,
       true
     ]
   },

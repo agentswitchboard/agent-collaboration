@@ -27,6 +27,7 @@ use std::{future::Future, pin::pin};
 #[derive(Clone, Copy)]
 pub enum MacDeliveryEvent {
     BeforeEndingOffer,
+    BeforeEndingSocketWrite,
     AfterEndingOffer,
     BeforeNoticeOffer,
     AfterNoticeOffer,
@@ -38,6 +39,7 @@ impl MacDeliveryEvent {
     pub const fn control(self) -> &'static str {
         match self {
             Self::BeforeEndingOffer => "beforeMacEndingOffer",
+            Self::BeforeEndingSocketWrite => "beforeApprovalEndingWrite",
             Self::AfterEndingOffer => "afterMacEndingOffer",
             Self::BeforeNoticeOffer => "beforeMacNoticeOffer",
             Self::AfterNoticeOffer => "afterMacNoticeOffer",
@@ -63,7 +65,7 @@ pub trait LedgerFixture: ApprovalLinkFixture {
     fn mac_timer_waits(&self) -> impl Future<Output = Result<u64>>;
 }
 
-async fn wait_without_frame(
+pub(crate) async fn wait_without_frame(
     socket: &mut WebSocket,
     barrier: impl Future<Output = Result<()>>,
 ) -> Result<()> {

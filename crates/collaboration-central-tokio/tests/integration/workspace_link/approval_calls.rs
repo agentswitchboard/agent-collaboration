@@ -130,6 +130,13 @@ impl ApprovalLinkFixture for NativeApprovalFixture {
         Ok(())
     }
 
+    async fn set_wall_millis(&self, millis: i64) -> Result<()> {
+        self.link.clock.set_utc(
+            chrono::DateTime::from_timestamp_millis(millis).ok_or("fixture milliseconds")?,
+        );
+        Ok(())
+    }
+
     async fn fixture_write(&self, statement: Statement) -> Result<()> {
         let owner = self.link.host.central(&self.link.organization_id).await?;
         let result = owner

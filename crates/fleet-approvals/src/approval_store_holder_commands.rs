@@ -11,8 +11,7 @@ use crate::{
     ApprovalRouting, ApprovalSession, ApprovalSessionFacts, ApprovalState, PendingApprovalReply,
     ProviderSessionAvailability, RaiseAdmission,
     approval_lifecycle_admission::stop_binding,
-    approval_lifecycle_effects::standing,
-    approval_retention::{EffectiveEndingDelivery, hidden_at, read_erased_approval},
+    approval_retention::read_erased_approval,
     approval_store_reads::{
         ScopedHolderRequest, count_outstanding_approvals, read_holder_request,
         read_recoverable_approval_rows,
@@ -187,7 +186,7 @@ where
             run: scope.run.clone(),
             request_id: request_id.clone(),
         };
-        let record = match read_holder_request(self.transaction, scope, request_id).await? {
+        let record = match read_holder_request(self.transaction, scope, request_id, at).await? {
             ScopedHolderRequest::OtherHolder => {
                 return Ok(ApprovalTransitionOutput::with_reply(
                     command.request_belongs_to_other_holder(),
@@ -208,19 +207,16 @@ where
                     }
                 }
             }
-            ScopedHolderRequest::Retained(record) => {
-                if let ApprovalState::Ended { closed, .. } = &record.state
-                    && hidden_at(&record.state, at)?
-                {
-                    return Ok(ApprovalTransitionOutput::with_reply(
-                        command.erased_request(ErasedApprovalMarker {
-                            request_id: request_id.clone(),
-                            router_run: scope.run.router_run.clone(),
-                            ending: standing(&closed.ending.clone().into_ending()),
-                        }),
-                    ));
-                }
-                Some(record)
+            ScopedHolderRequest::Retained(record) => Some(record),
+            ScopedHolderRequest::PastCutoff(cutoff) => {
+                let reply = match &command {
+                    ApprovalHolderCommand::Raise(_) | ApprovalHolderCommand::Stop(_) => {
+                        command.erased_request(cutoff.marker(self.transaction).await?)
+                    }
+                    ApprovalHolderCommand::DeliveryReply { .. }
+                    | ApprovalHolderCommand::Reoffer { .. } => ApprovalHolderReply::NoReply,
+                };
+                return Ok(ApprovalTransitionOutput::with_reply(reply));
             }
         };
         let prior = record
@@ -280,14 +276,14 @@ where
         holder: &ApprovalHolderScope,
         request_id: &approval_request_protocol::ApprovalRequestId,
     ) -> Result<bool, central_storage::StoreFailure> {
-        let record = read_holder_request(self.transaction, holder, request_id).await?;
+        let at = self.sample_applying_time()?;
+        let record = read_holder_request(self.transaction, holder, request_id, at).await?;
         let ScopedHolderRequest::Retained(record) = record else {
             return Ok(false);
         };
-        let at = self.sample_applying_time()?;
         match &record.state {
             ApprovalState::Ended { closed, .. } => {
-                Ok(EffectiveEndingDelivery::at(closed, at)?.is_owed())
+                Ok(closed.delivery == (approval_request_protocol::Delivery::Owed {}))
             }
             ApprovalState::Unraised
             | ApprovalState::StoppedBeforeRaise { .. }
@@ -325,7 +321,7 @@ where
             let due_or_owed = match &record.state {
                 ApprovalState::Waiting { saved } => at >= saved.window.deadline(),
                 ApprovalState::Ended { closed, .. } => {
-                    EffectiveEndingDelivery::at(closed, at)?.is_owed()
+                    closed.delivery == (approval_request_protocol::Delivery::Owed {})
                 }
                 ApprovalState::Unraised | ApprovalState::StoppedBeforeRaise { .. } => false,
             };

@@ -52,7 +52,7 @@ impl ApprovalApplyingTime {
         transaction: &mut impl ApprovalStoreTransaction,
     ) -> Result<(), StoreFailure> {
         if let Some(statement) = self.advance
-            && transaction.execute_approval_statement(statement).await? != 1
+            && transaction.execute_approval_statement(statement).await? > 1
         {
             return Err(corrupt("approval_applying_time.organization_id"));
         }

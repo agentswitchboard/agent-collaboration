@@ -257,7 +257,7 @@ async fn session_end_enrollment_end_alarm_and_waiting_stop_roll_back_after_each_
     fixture.store_enrollment(&holder, "ended").await;
     // The run retires, two previously owed endings close, and the last
     // waiting request ends. The transaction also publishes enrollment cleanup.
-    assert_rollback_each_write(&fixture, 8, async |store| {
+    assert_rollback_each_write(&fixture, 9, async |store| {
         store.end_approval_enrollment(&scope).await
     })
     .await;

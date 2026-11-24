@@ -47,8 +47,9 @@ where
         session: &ApprovalSession,
         request_id: &ApprovalRequestId,
     ) -> Result<Option<CentralTime>, ApprovalApplyFailure> {
+        let at = self.sample_applying_time()?;
         let Some(record) =
-            read_parent_approval_request(self.transaction, organization, request_id, session)
+            read_parent_approval_request(self.transaction, organization, request_id, session, at)
                 .await?
         else {
             return Ok(None);

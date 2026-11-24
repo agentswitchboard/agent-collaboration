@@ -48,6 +48,9 @@ pub use delivery_cases::{
     stale_recovery_page,
 };
 pub use proof_cases::{ParentApprovalProof, observe_parent_proof};
+#[path = "parent_approval_cutoff.rs"]
+mod cutoff;
+pub use cutoff::{queued_ending_uses_persisted_cutoff, session_page_and_durable_cutoff};
 #[path = "parent_approval_erasure.rs"]
 mod erasure;
 pub use erasure::destination_replays_and_unpaid_ending_at_cutoff;

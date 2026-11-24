@@ -6,7 +6,7 @@ use approval_request_protocol::{
 };
 use central_engine_model::supported_time;
 use central_storage::{ReadOutcome, SqlValue, StoreFailure};
-use fleet_identity_protocol::{EnrollmentId, OrganizationId};
+use fleet_identity_protocol::EnrollmentId;
 use fleet_runtime_ports::{stored_values::json, workspace_decode_error::corrupt};
 
 use crate::{
@@ -14,7 +14,9 @@ use crate::{
     ApprovalSession, ApprovalState, EndedApproval, RetainedApproval,
     approval_lifecycle_admission::is_destination,
     approval_retention::cutoff_at,
-    approval_store_scope::{ApprovalDestinationRowId, ApprovalHolderScope, ApprovalRequestRowId},
+    approval_store_scope::{
+        ApprovalDestinationRowId, ApprovalHolderScope, ApprovalRequestRowId, decode_holder_scope,
+    },
     approval_stored_tags::{
         parse_delivery_state, parse_stop_marker, parse_stored_time, parse_waiting_status,
         request_kind_tag,
@@ -66,12 +68,38 @@ pub(super) fn decode_run_row(stored: StoredRunRow) -> Result<ApprovalRunRecord, 
             return Err(corrupt("approval_router_runs.enrollment_cleanup_ms"));
         }
     };
+    validate_cleanup_mark(
+        stored.enrollment_cleanup_due_ms.raw(),
+        enrollment_cleanup_at,
+    )?;
+    validate_cleanup_mark(stored.marker_cleanup_due_ms.raw(), retired_at)?;
     Ok(ApprovalRunRecord {
         scope,
         registration_order: order.get(),
         retired_at,
         enrollment_cleanup_at,
     })
+}
+
+fn validate_cleanup_mark(
+    raw: &SqlValue,
+    occurrence: Option<CentralTime>,
+) -> Result<(), StoreFailure> {
+    match raw {
+        SqlValue::Null => Ok(()),
+        SqlValue::Integer(value)
+            if CentralTime::from_timestamp_millis(value.get()).is_some_and(|mark| {
+                supported_time(mark)
+                    && central_engine_model::on_five_minute_grid(mark)
+                    && occurrence.is_some_and(|at| at <= mark)
+            }) =>
+        {
+            Ok(())
+        }
+        SqlValue::Integer(_) | SqlValue::Text(_) | SqlValue::Blob(_) => {
+            Err(corrupt("approval_router_runs.cleanup_due_ms"))
+        }
+    }
 }
 
 pub(super) fn decode_request_scope(
@@ -83,26 +111,6 @@ pub(super) fn decode_request_scope(
         stored.enrollment_id.stored_text()?,
         stored.router_run_id.stored_text()?,
     )
-}
-
-fn decode_holder_scope(
-    organization: &str,
-    machine: &str,
-    enrollment: &str,
-    run: &str,
-) -> Result<ApprovalHolderScope, StoreFailure> {
-    Ok(ApprovalHolderScope {
-        organization_id: OrganizationId::try_from(organization.to_owned())
-            .map_err(|_| corrupt("organization_id"))?,
-        run: ApprovalRun {
-            router_run: parse_identifier(run, "router_run_id")?,
-            enrollment: ApprovalEnrollment {
-                machine_id: parse_identifier(machine, "machine_id")?,
-                enrollment_id: EnrollmentId::try_from(enrollment.to_owned())
-                    .map_err(|_| corrupt("enrollment_id"))?,
-            },
-        },
-    })
 }
 
 pub(super) fn decode_request_row(
@@ -194,6 +202,16 @@ pub(super) fn decode_request_row(
                         return Err(corrupt("approval_requests.erase_after_ms"));
                     }
                     let closed = decode_ending(&stored, &saved, ended_at)?;
+                    let compact: approval_request_protocol::StopReceiptEnding = json(
+                        stored.compact_ending_json.stored_text()?,
+                        "approval_requests.compact_ending_json",
+                    )?;
+                    if crate::approval_lifecycle_effects::standing(
+                        &closed.ending.clone().into_ending(),
+                    ) != compact
+                    {
+                        return Err(corrupt("approval_requests.compact_ending_json"));
+                    }
                     if updated_at < ended_at {
                         return Err(corrupt("approval_requests.ending_chronology"));
                     }
@@ -218,6 +236,7 @@ fn require_unended(stored: &StoredApprovalRow) -> Result<(), StoreFailure> {
             stored.ended_at.raw(),
             stored.erase_after_ms.raw(),
             stored.ending_json.raw(),
+            stored.compact_ending_json.raw(),
             stored.decided_operation_id.raw(),
             stored.delivery_state.raw(),
         ],

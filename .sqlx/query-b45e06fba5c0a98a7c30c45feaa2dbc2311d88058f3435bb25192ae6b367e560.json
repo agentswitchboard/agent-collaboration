@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT router_run_id, organization_id, machine_id, enrollment_id,\n       registration_order, registered_at, retired_at, enrollment_cleanup_ms, created_at, updated_at\nFROM approval_router_runs\nWHERE organization_id = ?1 AND machine_id = ?2 AND enrollment_id = ?3\nORDER BY registration_order DESC\nLIMIT 1\n",
+  "query": "SELECT router_run_id, organization_id, machine_id, enrollment_id,\n       registration_order, registered_at, retired_at, enrollment_cleanup_ms, enrollment_cleanup_due_ms, marker_cleanup_due_ms, created_at, updated_at\nFROM approval_router_runs\nWHERE router_run_id = ?1\n",
   "describe": {
     "columns": [
       {
@@ -92,8 +92,30 @@
         }
       },
       {
-        "name": "created_at",
+        "name": "enrollment_cleanup_due_ms",
         "ordinal": 8,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "approval_router_runs",
+            "name": "enrollment_cleanup_due_ms"
+          }
+        }
+      },
+      {
+        "name": "marker_cleanup_due_ms",
+        "ordinal": 9,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "approval_router_runs",
+            "name": "marker_cleanup_due_ms"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 10,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -104,7 +126,7 @@
       },
       {
         "name": "updated_at",
-        "ordinal": 9,
+        "ordinal": 11,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -115,7 +137,7 @@
       }
     ],
     "parameters": {
-      "Right": 3
+      "Right": 1
     },
     "nullable": [
       false,
@@ -126,9 +148,11 @@
       false,
       true,
       true,
+      true,
+      true,
       false,
       false
     ]
   },
-  "hash": "8a7600ffe44930ff0af3d1e597a1ca7b2af466543dd1fc5a716f7c49d467df95"
+  "hash": "b45e06fba5c0a98a7c30c45feaa2dbc2311d88058f3435bb25192ae6b367e560"
 }

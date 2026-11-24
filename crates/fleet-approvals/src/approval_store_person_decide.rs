@@ -27,7 +27,6 @@ use crate::{
     EndedApproval, PendingApprovalReply,
     approval_decision_log::retained_answer_matches,
     approval_store_reads::{ApprovalReadRecord, read_people_approval_request},
-    approval_store_transaction::ApprovalStoreTransaction,
 };
 
 impl<Transaction, Sessions> ApprovalApplyingStore<'_, Transaction, Sessions>
@@ -48,13 +47,12 @@ where
             self.transaction,
             &request.organization,
             &request.request_id,
+            at,
         )
         .await?;
-        if let Some(record) = &record
-            && crate::approval_retention::hidden_at(&record.state, at)?
-        {
+        let Some(record) = record else {
             return Ok(None);
-        }
+        };
         let Some(stored) = self
             .read_person_decision(&request.operation_id, retained_at)
             .await?
@@ -66,8 +64,7 @@ where
         {
             return Ok(None);
         }
-        let reply =
-            decode_retained_decision(self.transaction, &stored, request, retry.person()).await?;
+        let reply = decode_retained_decision(&record, &stored, request, retry.person())?;
         let address = ApprovalReplyAddress::Person {
             organization: request.organization.clone(),
             person: retry.person().clone(),
@@ -99,16 +96,15 @@ where
             self.transaction,
             admission.organization(),
             &request.request_id,
+            at,
         )
         .await?;
-        if let Some(record) = &record
-            && crate::approval_retention::hidden_at(&record.state, at)?
-        {
+        let Some(record) = record else {
             return Ok(self.stage_reply(
                 address,
                 ApprovalTransitionOutput::with_reply(ApprovalDecideReply::NotVisible {}),
             ));
-        }
+        };
         if let Some(stored) = self
             .read_person_decision(&request.operation_id, retained_at)
             .await?
@@ -119,21 +115,16 @@ where
                 .await?;
             let reply = if actor.as_ref() == Some(&stored.caller) && digest == stored.content_digest
             {
-                decode_retained_decision(self.transaction, &stored, &request, admission.person())
-                    .await?
+                decode_retained_decision(&record, &stored, &request, admission.person())?
             } else {
                 ApprovalDecideReply::OperationConflict {}
             };
             return Ok(self.stage_reply(address, ApprovalTransitionOutput::with_reply(reply)));
         }
 
-        let applied = match &record {
-            Some(record) => {
-                self.apply_person_decision(admission, &request, record, at)
-                    .await?
-            }
-            None => ApprovalTransitionOutput::with_reply(ApprovalDecideReply::NotVisible {}),
-        };
+        let applied = self
+            .apply_person_decision(admission, &request, &record, at)
+            .await?;
         match &applied.reply {
             ApprovalDecideReply::SavedDecision { .. }
             | ApprovalDecideReply::AlreadyDecided { .. }
@@ -146,25 +137,15 @@ where
                     .await?;
                 let at = retained_at.to_rfc3339();
                 let cutoff = strict_cutoff(retained_at).to_rfc3339();
-                let writes = match record {
-                    Some(record) => crate::approval_decision_log::retain_approval_operation(
-                        &record.row_id,
-                        &request.operation_id,
-                        &caller,
-                        &digest,
-                        &applied.reply,
-                        &at,
-                        &cutoff,
-                    ),
-                    None => fleet_request_log::retain_organization_request(
-                        &request.operation_id,
-                        &caller,
-                        &digest,
-                        &applied.reply,
-                        &at,
-                        &cutoff,
-                    ),
-                }?;
+                let writes = crate::approval_decision_log::retain_approval_operation(
+                    &record.row_id,
+                    &request.operation_id,
+                    &caller,
+                    &digest,
+                    &applied.reply,
+                    &at,
+                    &cutoff,
+                )?;
                 for write in writes {
                     self.execute_guarded_write(write).await?;
                 }
@@ -340,8 +321,8 @@ fn ended_reply(closed: &EndedApproval) -> ApprovalDecideReply {
     }
 }
 
-async fn decode_retained_decision(
-    transaction: &mut impl ApprovalStoreTransaction,
+fn decode_retained_decision(
+    record: &ApprovalReadRecord,
     stored: &RetainedRequest,
     request: &ApprovalDecideRequest,
     person: &workspace_ids::PersonId,
@@ -354,7 +335,6 @@ async fn decode_retained_decision(
             {
                 return Err(invalid_retained_decision());
             }
-            let record = retained_person_approval(transaction, request).await?;
             let ApprovalState::Ended { closed, .. } = &record.state else {
                 return Err(invalid_retained_decision());
             };
@@ -365,7 +345,6 @@ async fn decode_retained_decision(
             }
         }
         ApprovalDecideReply::AlreadyDecided { .. } | ApprovalDecideReply::TooLate {} => {
-            let record = retained_person_approval(transaction, request).await?;
             let ApprovalState::Ended { closed, .. } = &record.state else {
                 return Err(invalid_retained_decision());
             };
@@ -380,15 +359,6 @@ async fn decode_retained_decision(
         }
     }
     Ok(reply)
-}
-
-async fn retained_person_approval(
-    transaction: &mut impl ApprovalStoreTransaction,
-    request: &ApprovalDecideRequest,
-) -> Result<ApprovalReadRecord, StoreFailure> {
-    read_people_approval_request(transaction, &request.organization, &request.request_id)
-        .await?
-        .ok_or_else(invalid_retained_decision)
 }
 
 fn invalid_retained_decision() -> StoreFailure {
