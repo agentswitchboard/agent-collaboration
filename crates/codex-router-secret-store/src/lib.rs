@@ -7,10 +7,12 @@ pub mod backend;
 mod central_credential_tests;
 pub mod central_credentials;
 pub mod credential_bundle;
+mod credential_cipher;
 pub mod credential_key;
 pub mod credential_migration;
 pub mod credential_store_lock;
 pub mod encrypted_credential_store;
+pub mod enrollment_row_sealer;
 pub mod file_backend;
 pub mod fleet_secret_key;
 pub mod keychain_data_key;
@@ -237,12 +239,19 @@ mod tests {
             if relative_path == Path::new("keychain_data_key.rs") {
                 continue;
             }
-            if relative_path == Path::new("keychain_data_key/temporary_keychain_tests.rs") {
+            let test_module_declaration = match relative_path.to_str() {
+                Some("keychain_data_key_test.rs") => {
+                    Some("#[cfg(test)]\n#[path = \"keychain_data_key_test.rs\"]\nmod tests;")
+                }
+                Some("keychain_data_key/temporary_keychain_tests.rs") => Some(
+                    "#[cfg(all(test, target_os = \"macos\"))]\n#[path = \"keychain_data_key/temporary_keychain_tests.rs\"]\npub(crate) mod temporary_keychain_tests;",
+                ),
+                _ => None,
+            };
+            if let Some(declaration) = test_module_declaration {
                 let keychain_module = fs::read_to_string(source_root.join("keychain_data_key.rs"))
                     .unwrap_or_else(|error| panic!("Keychain module should read: {error}"));
-                assert!(keychain_module.contains(
-                    "#[cfg(all(test, target_os = \"macos\"))]\n#[path = \"keychain_data_key/temporary_keychain_tests.rs\"]\npub(crate) mod temporary_keychain_tests;"
-                ));
+                assert!(keychain_module.contains(declaration));
                 continue;
             }
             let source = fs::read_to_string(&source_path)

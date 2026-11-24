@@ -69,6 +69,8 @@ impl DoConnection {
     {
         let tx = DoTransaction {
             sql: self.sql.clone(),
+            #[cfg(feature = "test-support")]
+            fetch_observer: self.fetch_observer.clone(),
         };
 
         // `Storage::transaction` and the callback's future hold JavaScript

@@ -1,19 +1,21 @@
-//! Native sign-in trust: real HTTP key publication and core-owned cache policy.
+//! Native sign-in trust: real HTTP key publication and Fleet issuer cache.
 
 use crate::sign_in_crypto::{NativeEd25519, NativeEs256};
-use collaboration_central_core::machine_token::{MachineTokenPolicy, MachineTokenVerifier};
 use collaboration_central_core::{
-    IssuerKeyCache, IssuerSignatureVerifier, SignInTrustSettings,
-    organization_authority::{
-        FleetOrganizationStatementTrust, FleetOrganizationStatementVerifier, SignInVerification,
-        SignInVerifiers,
-    },
+    SignInTrustSettings,
+    organization_authority::{SignInVerification, SignInVerifiers},
     person_request::{PersonRequestPolicy, PersonRequestVerifier},
 };
-use fleet_contracts::FleetOrganizationStatementRefusal;
 use fleet_identity_protocol::OrganizationId;
 use fleet_runtime_ports::Clock;
 use fleet_runtime_ports::{IssuerKeySource, KeyFetchFailure, RawJwks};
+use fleet_signin::{
+    IssuerKeyCache, IssuerSignatureVerifier,
+    machine_token::{MachineTokenPolicy, MachineTokenVerifier},
+    organization_authority::{
+        FleetOrganizationStatementTrust, FleetOrganizationStatementVerifier, InvalidStampTrust,
+    },
+};
 use std::sync::Arc;
 
 /// The host retains one trust configuration and key cache across its org runtimes.
@@ -40,9 +42,9 @@ impl NativeSignInTrust {
         &self,
         organization: OrganizationId,
         clock: Arc<dyn Clock>,
-    ) -> Result<Arc<dyn SignInVerification>, FleetOrganizationStatementRefusal> {
+    ) -> Result<Arc<dyn SignInVerification>, InvalidStampTrust> {
         if !self.settings.machine_audience_is_valid() {
-            return Err(FleetOrganizationStatementRefusal::InvalidConfiguration);
+            return Err(InvalidStampTrust);
         }
         let trust = FleetOrganizationStatementTrust::new(
             self.settings.issuer.clone(),
@@ -53,44 +55,39 @@ impl NativeSignInTrust {
             client: self.client.clone(),
             source: self.settings.jwks_url.clone(),
         };
-        Ok(Arc::new(SignInVerifiers {
-            statements: FleetOrganizationStatementVerifier::new(
-                NativeEd25519,
-                keys(),
-                self.cache.clone(),
-                clock.clone(),
-                trust,
-            ),
-            persons: PersonRequestVerifier::new(
-                IssuerSignatureVerifier::new(
-                    NativeEd25519,
-                    keys(),
-                    self.cache.clone(),
-                    clock.clone(),
-                ),
-                NativeEs256,
-                clock.clone(),
-                PersonRequestPolicy {
-                    issuer: self.settings.issuer.clone(),
-                    audience: self.settings.admin_audience.clone(),
-                    public_origin: self.settings.public_origin.clone(),
-                },
-            ),
-            machines: MachineTokenVerifier::new(
-                IssuerSignatureVerifier::new(
-                    NativeEd25519,
-                    keys(),
-                    self.cache.clone(),
-                    clock.clone(),
-                ),
-                clock,
-                MachineTokenPolicy {
-                    issuer: self.settings.issuer.clone(),
-                    audience: self.settings.machine_audience.clone(),
-                },
-            ),
-            sign_in_service: self.settings.service_id.clone(),
-        }))
+        let statement_verifier = FleetOrganizationStatementVerifier::new(
+            NativeEd25519,
+            keys(),
+            self.cache.clone(),
+            clock.clone(),
+            trust,
+        );
+        let person_request_verifier = PersonRequestVerifier::new(
+            IssuerSignatureVerifier::new(NativeEd25519, keys(), self.cache.clone(), clock.clone()),
+            NativeEs256,
+            clock.clone(),
+            PersonRequestPolicy {
+                issuer: self.settings.issuer.clone(),
+                audience: self.settings.admin_audience.clone(),
+                public_origin: self.settings.public_origin.clone(),
+            },
+        );
+        let machine_token_verifier = MachineTokenVerifier::new(
+            IssuerSignatureVerifier::new(NativeEd25519, keys(), self.cache.clone(), clock.clone()),
+            clock,
+            MachineTokenPolicy {
+                issuer: self.settings.issuer.clone(),
+                audience: self.settings.machine_audience.clone(),
+            },
+        );
+        Ok(Arc::new(SignInVerifiers::from_host_verifiers(
+            statement_verifier,
+            person_request_verifier,
+            machine_token_verifier,
+            self.settings.service_id.clone(),
+            &self.cache,
+            self.settings.person_link_audience.clone(),
+        )))
     }
 }
 

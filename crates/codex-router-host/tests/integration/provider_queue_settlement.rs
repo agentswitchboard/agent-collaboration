@@ -19,8 +19,8 @@ use collaboration_protocol::{
     ProviderOperationStage, ProviderRequestedPolicy, ProviderWorkingDirectory, RouterAccess,
     SessionId, SessionRef,
 };
-use collaboration_runtime::{ProviderOperationStore, ProviderSessionRecord};
 use std::sync::Arc;
+use switchboard_session_store::{ProviderOperationStore, ProviderSessionRecord};
 use tokio::sync::Mutex;
 
 fn prompt_request(
@@ -48,6 +48,7 @@ fn prompt_request(
 /// terminal write and mark commit in order.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_queued_message_commits_only_after_the_previous_settlement_is_written() {
+    let fixture_clock = crate::provider_test_clock();
     // Arrange
     let root = tempfile::tempdir().expect("fixture root");
     let receipt = root.path().join("wire.json");
@@ -60,6 +61,7 @@ async fn a_queued_message_commits_only_after_the_previous_settlement_is_written(
             vec!["reactive".to_owned(), receipt.display().to_string()],
         ),
         Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        fixture_clock.clone(),
     )
     .await
     .expect("fixture provider");
@@ -94,6 +96,7 @@ async fn a_queued_message_commits_only_after_the_previous_settlement_is_written(
                 runtime,
             }],
             Arc::clone(&store),
+            fixture_clock.clone(),
         )
         .expect("supervisor"),
     );

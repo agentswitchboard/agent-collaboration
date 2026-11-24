@@ -1,12 +1,10 @@
-//! A direct message nobody acknowledged is cancelled at its 5-minute mark by
-//! the due batch, which tells the sender (design 2026-11-17, owner record:218).
+//! An unacknowledged direct message settles at its deadline and tells the sender.
 use super::super::{Statement, support::*};
 use central_storage::SqlValue;
 use router_clock::RuntimeClock;
 use workspace_model::central_mail::{
     CentralMailAnswer as Answer, CentralMailOperation as Operation, CentralMailRequest,
-    CentralMailResult as Result, MessageBody, MessageCancellation, MessageDelivery, MessageOutcome,
-    MessageSender,
+    CentralMailResult as Result, MessageBody, MessageDelivery, MessageOutcome, MessageSender,
 };
 
 fn row_text(value: &SqlValue) -> Option<&str> {
@@ -17,7 +15,7 @@ fn row_text(value: &SqlValue) -> Option<&str> {
 }
 
 #[tokio::test]
-async fn an_unacknowledged_direct_message_is_cancelled_at_its_mark_and_the_sender_is_told() {
+async fn an_unconfirmed_direct_message_passes_its_mark_and_the_sender_is_told() {
     let fixture = Fixture::new().await;
     let runtime = fixture
         .host
@@ -47,7 +45,7 @@ async fn an_unacknowledged_direct_message_is_cancelled_at_its_mark_and_the_sende
     let Result::Done(Answer::Queued { message_id }) = answer else {
         panic!("send refused: {answer:?}")
     };
-    let mark = fleet_mail::message_deadline::cancel_due_at(sent_at, sent_at);
+    let mark = fleet_mail::message_deadline::direct_receipt_mark(sent_at, sent_at).unwrap();
     let stored = |sql: &'static str| {
         let runtime = &runtime;
         let message_id = message_id.clone();
@@ -108,7 +106,23 @@ async fn an_unacknowledged_direct_message_is_cancelled_at_its_mark_and_the_sende
     runtime.after_event().await.unwrap();
     assert_eq!(
         stored("SELECT state FROM mail_messages WHERE message_id=?").await[0][0],
-        SqlValue::Text("cancelled".to_owned())
+        SqlValue::Text("queued".to_owned())
+    );
+    let settlement = Statement {
+        sql: "SELECT deadline_settled_at FROM mail_messages WHERE message_id=?",
+        args: vec![text(&message_id)],
+    };
+    let settlement = runtime
+        .runtime()
+        .statement_host()
+        .read(settlement)
+        .await
+        .unwrap();
+    assert_eq!(
+        settlement.rows,
+        [[text(
+            mark.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+        )]]
     );
     let notices = runtime
         .runtime().statement_host()
@@ -135,9 +149,7 @@ async fn an_unacknowledged_direct_message_is_cancelled_at_its_mark_and_the_sende
         MessageBody::DeliveryOutcome {
             message_id: message_id.clone(),
             request_id: id(1500),
-            outcome: MessageOutcome::Cancelled {
-                reason: MessageCancellation::NotDeliveredWithin15Minutes,
-            },
+            outcome: MessageOutcome::DeliveryNotConfirmed,
         }
     );
     assert_eq!(

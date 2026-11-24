@@ -90,7 +90,7 @@ async fn the_owning_host_reopens_stored_state_with_zero_applied_migrations() {
     } else {
         capture(&root).await
     };
-    for (history, rows) in witness.histories.iter().zip([5, 1]) {
+    for (history, rows) in witness.histories.iter().zip([16, 1]) {
         assert_eq!(history.rows.len(), rows);
         assert_eq!(history.columns.len(), 6);
     }

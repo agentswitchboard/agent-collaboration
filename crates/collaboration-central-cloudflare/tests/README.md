@@ -14,6 +14,10 @@ implementation (`src/*_test.rs`).
   separate test bundle (`build-test-support/`). The cases themselves live in
   `verification/targets/workerd-central-storage.test.ts`; the production bundle check
   refuses a bundle that carries any of these routes.
+- `verification/targets/workerd-approval-store.test.ts` exercises the approvals
+  service and its checked statements in the same test-only SQLite Durable
+  Object. It restarts Workerd against persisted storage, injects apply
+  failures, and records the driver's rows-read count for the Engine index.
 
 The O1 bundle is built with `--features test-support`. The default Worker
 dispatches `/v1/organizations/{organization}/link` through the `CENTRAL`
@@ -123,6 +127,11 @@ paths return `404`.
 Setup cases exercise real signed create, non-null lookup, byte-identical replay,
 canonical name collisions, atomic directory/ledger/audit writes and facts-only
 digest reads outside both time bounds.
+
+`workspace_requests::organization_signin::person_approval_routes` runs the shared
+signed approval decision table on the private binding, including factor boundaries,
+visibility and deadlines, retained replies, permission changes and proof replay. A signed
+decision also reaches the live holder on the machine link.
 
 `workspace_requests::organization_signin::machine_login` drives the actual private
 Worker decision binding with exact approval snapshots, BA1 grant ordering and

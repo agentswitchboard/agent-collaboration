@@ -8,10 +8,10 @@ use crate::binding_dispatch_permit::{BindingOutcomes, PendingDispatch};
 use crate::binding_dispatch_permit::{BindingUncertainty, lock};
 use crate::provider_operation_custody::LaneWriteCustody;
 use collaboration_protocol::{OperationId, ProviderOperationStage};
-use collaboration_runtime::ProviderOperationStoreError;
 use provider_session_machines::session_owner::{OwnerIncarnation, OwnerInput};
 use router_clock::RuntimeClock;
 use std::sync::Arc;
+use switchboard_session_store::ProviderOperationStoreError;
 use tokio::sync::watch;
 use uuid::Uuid;
 

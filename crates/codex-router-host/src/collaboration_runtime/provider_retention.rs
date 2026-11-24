@@ -3,13 +3,13 @@
 //! first moment the retention rule allows a settled operation to go, and deletes only then.
 use super::{CollaborationRuntime, io};
 use crate::ExternalProviderSupervisor;
-use collaboration_runtime::{
-    BatchOutcome, ProviderOperationStore, ProviderOperationStoreError, WakeDrivenWorkerLoop,
-    WorkerObservation, WorkerPass, provider_operation_retention_cutoff_ms,
-};
+use collaboration_runtime::{BatchOutcome, WakeDrivenWorkerLoop, WorkerObservation, WorkerPass};
 use router_clock::RuntimeClock;
 use runtime_primitives::SyncTime;
 use std::{num::NonZeroU32, sync::Arc};
+use switchboard_session_store::{
+    ProviderOperationStore, ProviderOperationStoreError, provider_operation_retention_cutoff_ms,
+};
 use tokio::sync::Mutex;
 
 impl CollaborationRuntime {
@@ -48,6 +48,10 @@ impl CollaborationRuntime {
             clock,
         )
         .await;
+        #[cfg(test)]
+        {
+            self.provider_retention_observation = Some(worker_loop.observation());
+        }
         let shutdown = self.shutdown.clone();
         self.provider_retention = Some(tokio::spawn(async move {
             worker_loop.run(&mut pass, shutdown).await;

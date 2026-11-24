@@ -1,15 +1,26 @@
 //! One original socket across real object eviction, live authority and SQLite effects.
+use collaboration_central_conformance::fixture_link_reader::read_fixture_frame;
 mod alarm_rearm;
+mod approval_calls;
 mod batch;
 mod batch_restore;
 mod caller_authority;
 mod delivery;
 mod fixture;
+mod idle_expiry;
+mod link_boundary;
+mod person_admission;
+mod private_enrollment_invalidation;
 mod probe_diagnostic;
 mod receipt;
+mod receipt_enrollment_clock;
+mod receipt_frames;
 mod renewal;
+mod request_authority;
 mod request_status;
 mod revocation;
+mod session_calls;
+mod typed_calls;
 mod witness_assertions;
 
 use super::workerd_host::c2_controls::{
@@ -19,9 +30,9 @@ use central_link_protocol::{CorrelationId, DataFrame, ReplyPayload};
 use central_storage::{SqlValue, Statement};
 use collaboration_central_conformance::{ConformanceResult as Result, signin_fixtures as signed};
 use fixture::{ConnectedLink, Exchange, Fixture, MACHINE_ID, ORGANIZATION, OTHER_ORGANIZATION};
-use futures_util::{FutureExt, SinkExt, StreamExt};
-use receipt::{AreaReceipt, HibernationReceipt};
-use reqwest_websocket::{CloseCode, Message, RequestBuilderExt};
+use futures_util::{FutureExt, SinkExt};
+use receipt::{AreaReceipt, HibernationReceipt, receipt_result};
+use reqwest_websocket::{Message, RequestBuilderExt};
 use runtime_primitives::Clock;
 use std::{io::Write, panic::AssertUnwindSafe, path::PathBuf, time::Duration};
 use workspace_model::{
@@ -33,16 +44,46 @@ const WORKSPACE_NAME: &str = "Real hibernation workspace";
 const AREA_NAME: &str = "Area created after actual hibernation";
 
 #[tokio::test]
-async fn worker_keeps_the_link_open_after_an_unknown_ack() -> Result<()> {
+async fn signed_machine_bearer_with_retired_installation_id_is_refused() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    ConnectedLink::open(&fixture).await?.close().await?;
+
+    let signed_bearer = signed::resign_machine_token(
+        &fixture.token,
+        &[(
+            "principal",
+            serde_json::json!({
+                "kind": "machine",
+                "machine_id": MACHINE_ID,
+                "enrollment_id": fixture.enrollment,
+                "installation_id": MACHINE_ID,
+            }),
+        )],
+    )?;
+    let status = fixture
+        .client
+        .get(fixture.link_url(ORGANIZATION))
+        .bearer_auth(signed_bearer)
+        .upgrade()
+        .send()
+        .await?
+        .status();
+    fixture.close().await?;
+    if status != reqwest::StatusCode::UNAUTHORIZED {
+        return Err(format!("retired installation_id must return HTTP 401, got {status}").into());
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn worker_keeps_the_link_open_after_an_unknown_receipt() -> Result<()> {
     let fixture = Fixture::new().await?;
     let result = async {
         let mut link = ConnectedLink::open(&fixture).await?;
-        fixture::send(
+        receipt_result(
             &mut link.socket,
-            &DataFrame::Ack {
-                message_id: "019f0000-0000-7000-8000-00000000cf39".parse()?,
-                answer: central_link_protocol::DeliveryAnswer::Accepted,
-            },
+            "019f0000-0000-7000-8000-00000000cf39".parse()?,
+            central_link_protocol::ReceiptResult::NoSuchMessage,
         )
         .await?;
         let exchange = link
@@ -64,7 +105,7 @@ async fn worker_keeps_the_link_open_after_an_unknown_ack() -> Result<()> {
             workspace_reply(&exchange.reply)?.result,
             WorkspaceResult::Done(_)
         ) {
-            return Err("the same socket did not answer a workspace read after the Ack".into());
+            return Err("the same socket did not answer a workspace read after the receipt".into());
         }
         link.close().await
     }
@@ -121,7 +162,7 @@ async fn hibernation_journey(fixture: &Fixture) -> Result<HibernationReceipt> {
     let mut heartbeat_events = Vec::new();
     for _ in 0..3 {
         link.socket.send(Message::Text("ping".into())).await?;
-        match link.socket.next().await {
+        match read_fixture_frame(&mut link.socket, "machine link link frame").await? {
             Some(Ok(Message::Text(text))) if text == "pong" => {}
             _ => return Err("hibernated socket did not return the literal platform pong".into()),
         }
@@ -134,7 +175,10 @@ async fn hibernation_journey(fixture: &Fixture) -> Result<HibernationReceipt> {
     fixture.host.c2_witness(WitnessPhase::Deciding).await?;
     let deciding = link.call(create_area(&workspace)?).await?;
     // Capture before Show, raw store inspection, phase changes or socket close.
-    let deciding_events = fixture.host.c2_witness(WitnessPhase::Deciding).await?;
+    let deciding_events = fixture
+        .host
+        .c2_settle_alarms(WitnessPhase::Deciding, &[correlation(&deciding.request)?])
+        .await?;
     let (instance, restored_sequence) = witness_assertions::reconstruction(
         &before_events,
         &deciding_events,
@@ -234,7 +278,9 @@ async fn baseline(
         DataFrame::Welcome {
             machine_id,
             central_time,
+            effective_expires_at,
         } if machine_id.as_str() == MACHINE_ID
+            && effective_expires_at.timestamp() == signed::NOW_SECONDS + 600
             && central_time.timestamp_millis() == fixture.clock.now().unix_millis() => {}
         _ => return Err("Welcome must expose the machine_id and one injected clock".into()),
     }
@@ -258,7 +304,10 @@ async fn baseline(
     }
     let workspace = workspace.workspace_id.clone();
     fixture.allow_workspace(&workspace).await?;
-    let events = fixture.host.c2_witness(WitnessPhase::Baseline).await?;
+    let events = fixture
+        .host
+        .c2_settle_alarms(WitnessPhase::Baseline, &[correlation(&exchange.request)?])
+        .await?;
     let attachment =
         witness_assertions::baseline_attachment(&events, correlation(&exchange.request)?)?;
     Ok((link, exchange, workspace, events, attachment))
@@ -417,7 +466,6 @@ async fn route_and_caller_refusals(fixture: &Fixture) -> Result<()> {
 enum AuthorityChange {
     Expiry,
     Revocation,
-    Supersession,
 }
 
 #[tokio::test]
@@ -431,8 +479,18 @@ async fn hibernating_socket_refuses_revoked_enrollment() -> Result<()> {
 }
 
 #[tokio::test]
-async fn hibernating_socket_refuses_superseded_enrollment() -> Result<()> {
-    authority_refusal(AuthorityChange::Supersession).await
+async fn hibernating_socket_closes_on_private_supersession_before_a_guarded_frame() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    let result = async {
+        let (mut link, _, _, _, _) = baseline(&fixture).await?;
+        fixture.host.c2_witness(WitnessPhase::Evicting).await?;
+        fixture.host.c2_evict(&fixture.organization).await?;
+        private_enrollment_invalidation::supersede_and_require_old_close(&fixture, &mut link.socket)
+            .await
+    }
+    .await;
+    fixture.close().await?;
+    result
 }
 
 async fn authority_refusal(change: AuthorityChange) -> Result<()> {
@@ -448,7 +506,7 @@ async fn denied_journey(fixture: &Fixture, change: AuthorityChange) -> Result<()
         AuthorityChange::Expiry => {}
         AuthorityChange::Revocation => {
             let ended: std::result::Result<
-                Option<collaboration_central_core::identity_contract::EndedMachineClient>,
+                Option<fleet_contracts::EndedMachineClient>,
                 central_storage::StoreFailure,
             > = fixture
                 .runtime()
@@ -468,7 +526,6 @@ async fn denied_journey(fixture: &Fixture, change: AuthorityChange) -> Result<()
                 return Err("real revocation did not end the original client".into());
             }
         }
-        AuthorityChange::Supersession => fixture.supersede().await?,
     }
     let before = fixture.host.c2_witness(WitnessPhase::Evicting).await?;
     fixture.host.c2_evict(&fixture.organization).await?;
@@ -482,22 +539,30 @@ async fn denied_journey(fixture: &Fixture, change: AuthorityChange) -> Result<()
     fixture.host.c2_witness(WitnessPhase::Deciding).await?;
     let request = link.request_as(fixture::session_caller()?, create_area(&workspace)?)?;
     fixture::send(&mut link.socket, &request).await?;
-    // Both hosts answer the request MachineRevoked under its correlation, then
-    // close: the Router's only way on is a fresh connection.
+    let (expected_reply, expected_close) = match change {
+        AuthorityChange::Expiry => (
+            WorkspaceResult::CentralUnavailable,
+            central_link_protocol::MachineLinkCloseCode::Expired,
+        ),
+        AuthorityChange::Revocation => (
+            WorkspaceResult::Refused(RefusalReason::MachineRevoked),
+            central_link_protocol::MachineLinkCloseCode::Revoked,
+        ),
+    };
     let reply = fixture::receive(&mut link.socket).await?;
     let refused = matches!(
         &reply,
         DataFrame::Reply { correlation_id, .. } if correlation_id == correlation(&request)?
-    ) && workspace_reply(&reply)?.result
-        == WorkspaceResult::Refused(RefusalReason::MachineRevoked);
+    ) && workspace_reply(&reply)?.result == expected_reply;
     if !refused {
-        return Err(format!("stale authority must answer MachineRevoked first: {reply:?}").into());
+        return Err(
+            format!("{expected_close:?} must answer {expected_reply:?} first: {reply:?}").into(),
+        );
     }
-    match link.socket.next().await {
-        Some(Ok(Message::Close {
-            code: CloseCode::Policy,
-            reason,
-        })) if reason == "machine authority expired or revoked" => {}
+    match read_fixture_frame(&mut link.socket, "machine link link frame").await? {
+        Some(Ok(Message::Close { code, .. }))
+            if central_link_protocol::MachineLinkCloseCode::from_code(code.into())
+                == Some(expected_close) => {}
         other => {
             return Err(format!(
                 "stale authority must close the original socket before a semantic effect: {other:?}"
@@ -505,7 +570,10 @@ async fn denied_journey(fixture: &Fixture, change: AuthorityChange) -> Result<()
             .into());
         }
     }
-    let deciding = fixture.host.c2_witness(WitnessPhase::Deciding).await?;
+    let deciding = fixture
+        .host
+        .c2_settle_alarms(WitnessPhase::Deciding, &[correlation(&request)?])
+        .await?;
     witness_assertions::reconstruction(
         &before,
         &deciding,

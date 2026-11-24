@@ -3,6 +3,10 @@ use schemars::{JsonSchema, generate::SchemaSettings};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+use crate::message_tools::{
+    MessageInboxPage, MessageSendOutcome, MessageToolResult, MessageWriteStatus,
+};
+
 /// Generates serialized wire shapes, retaining required nullable result fields.
 pub fn protocol_type_schemas() -> Result<BTreeMap<String, Value>, serde_json::Error> {
     let mut schemas = BTreeMap::new();
@@ -19,6 +23,9 @@ pub fn protocol_type_schemas() -> Result<BTreeMap<String, Value>, serde_json::Er
     add_type::<crate::DeliveryReceipt>(&mut schemas)?;
     add_type::<crate::NativeSendReceipt>(&mut schemas)?;
     add_type::<crate::FiniteCommandRecord<Value, Value>>(&mut schemas)?;
+    add_type::<MessageToolResult<MessageSendOutcome>>(&mut schemas)?;
+    add_type::<MessageToolResult<MessageWriteStatus>>(&mut schemas)?;
+    add_type::<MessageToolResult<MessageInboxPage>>(&mut schemas)?;
     add_type::<crate::NativeObservationRecord>(&mut schemas)?;
     add_type::<crate::ConversationRecord>(&mut schemas)?;
     add_type::<crate::PermissionDiagnostic>(&mut schemas)?;

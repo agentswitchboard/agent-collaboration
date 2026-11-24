@@ -57,9 +57,6 @@ async fn the_static_alarm_query_combines_machine_and_legacy_control_deadlines() 
         .await
         .unwrap();
     assert_eq!(alarm(&mut connection).await, (None, None));
-    for forbidden in ["UNION", "INTERSECT", "EXCEPT"] {
-        assert!(!ALARM_INPUTS.contains(forbidden));
-    }
 }
 
 /// V5.4: with test-support the query registers six kinds, the second test table
@@ -67,16 +64,6 @@ async fn the_static_alarm_query_combines_machine_and_legacy_control_deadlines() 
 #[cfg(feature = "test-support")]
 #[tokio::test]
 async fn the_test_support_alarm_query_registers_six_kinds_and_the_sixth_contributes() {
-    for table in [
-        "FROM automation_wakes ",
-        "FROM automation_schedules ",
-        "FROM mail_notification_windows ",
-        "FROM mail_workspace_drains ",
-        "FROM engine_probe_items ",
-        "FROM engine_alarm_only_items ",
-    ] {
-        assert!(ALARM_INPUTS.contains(table), "{table}");
-    }
     let mut connection =
         database(&fleet_storage_schema::workspace_migrations::central_migrator()).await;
     sqlx::query("INSERT INTO engine_alarm_only_items VALUES (?,'1970-01-01T00:15:00.000Z','waiting','1970-01-01T00:00:00.000Z','1970-01-01T00:00:00.000Z')")
@@ -85,4 +72,28 @@ async fn the_test_support_alarm_query_registers_six_kinds_and_the_sixth_contribu
         .await
         .unwrap();
     assert_eq!(alarm(&mut connection).await, (Some(900_000), None));
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn fixture_alarm_sql_describes_the_rows_executed_by_both_hosts() {
+    let _ = sqlx::query_file!("../fleet-engine/src/queries/read_alarm_inputs.sql");
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn fixture_due_list_describes_the_probe_view() {
+    let _ = fleet_engine::check_timed_due_list!(Probes);
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn indexed_alarm_adds_only_the_fixture_contributors_in_test_builds() {
+    macro_rules! check_alarm {
+        ($file:literal) => {
+            sqlx::query_file!($file)
+        };
+    }
+    let _ = fleet_engine::check_fixture_alarm_query!(check_alarm);
+    let _ = fleet_engine::check_fixture_alarm_presence!(check_alarm);
 }

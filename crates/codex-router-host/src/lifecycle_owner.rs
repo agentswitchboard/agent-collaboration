@@ -329,8 +329,15 @@ impl HostRuntime {
             config.app_server_socket(),
         )
         .await;
+        let host_clock = Arc::new(router_clock::SystemRuntimeClock::new());
         let (router_result, app_server_result) = tokio::join!(
-            startup_convergence::start_router(&config, child_launch_plans.router_command.as_ref()),
+            startup_convergence::start_router(
+                &config,
+                child_launch_plans.router_command.as_ref(),
+                host_clock.as_ref(),
+                #[cfg(test)]
+                None,
+            ),
             startup_convergence::start_app_server(&config, child_launch_plans.app_server.clone()),
         );
         let (router_condition, mut router_child) = match router_result {
@@ -372,6 +379,7 @@ impl HostRuntime {
             &app_server,
             readiness.remote_control_server_name().cloned(),
             router_executable_check,
+            host_clock,
         )
         .await
         {
@@ -672,6 +680,9 @@ impl HostRuntime {
                     let mcp_listen_address = collaboration.as_ref()
                         .and_then(|owner| owner.mcp_listen_address());
                     let (snapshot, status_identity) = status_observation.snapshot(&state, mcp_listen_address);
+                    let snapshot = snapshot.with_message_system_status(
+                        collaboration.as_ref().and_then(|owner| owner.message_system_status()),
+                    );
                     if pending_identity.is_none() {
                         pending_identity = status_identity;
                     }

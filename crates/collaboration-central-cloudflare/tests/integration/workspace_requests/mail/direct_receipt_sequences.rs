@@ -1,0 +1,490 @@
+use super::super::{support::*, workerd_host::RemoteRuntime};
+use super::engine_probe_support::{PauseControl, integer, raw, runtime};
+use central_storage::{SqlValue, Statement, StoreFailure};
+use fleet_contracts::{MachineConnectionAttachment, mail_link::MailReceiptSettlement};
+use fleet_runtime::{EngineCommitFault, EngineCommitFaultKind, PausePoint};
+use std::sync::atomic::Ordering;
+use workspace_ids::MessageId;
+use workspace_model::central_mail::*;
+
+const REJECT_OUTCOME: &str = "CREATE TRIGGER reject_direct_outcome BEFORE INSERT ON mail_messages WHEN NEW.message_kind='deliveryOutcome' BEGIN SELECT RAISE(ABORT, 'rejected direct effect'); END";
+
+#[hegel::test(test_cases = 50, suppress_health_check = [hegel::HealthCheck::TooSlow])]
+fn the_stored_message_and_its_outcome_follow_the_receipt_sequence(case: hegel::TestCase) {
+    let order = case.draw(hegel::generators::integers::<u8>().max_value(11));
+    let reject_mark = case.draw(hegel::generators::booleans());
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(exercise_direct_receipt_sequence(order, reject_mark));
+}
+
+async fn exercise_direct_receipt_sequence(order: u8, reject_mark: bool) {
+    let fixture = Fixture::new().await;
+    let sent_at = chrono::DateTime::from_timestamp(FIXTURE_NOW, 0).unwrap();
+    let mark = fleet_mail::message_deadline::direct_receipt_mark(sent_at, sent_at).unwrap();
+    let central = fixture.host.central(&fixture.caller.organization_id).await;
+    let message_id = queue_direct(&fixture, sent_at, 981001).await;
+
+    let mut outcome = if order & 1 == 0 {
+        Some("deliveryNotConfirmed")
+    } else {
+        Some("deliveredSeenNotConfirmed")
+    };
+    let delivered = ReceiptKind::Delivered {
+        arrived_at: sent_at,
+    };
+    if order & 1 != 0 {
+        assert_eq!(
+            apply_fixture_receipt(&fixture, &central, &message_id, delivered.clone()).await,
+            MailReceiptSettlement::Applied
+        );
+    }
+    let (final_receipt, terminal, immediate_outcome, expected_status, contradiction) =
+        match order / 4 {
+            0 => (
+                ReceiptKind::Refused {
+                    reason: MessageRefusal::AmbiguousSession,
+                },
+                "refused",
+                Some("refused"),
+                MessageStatus::Refused {
+                    reason: MessageRefusal::AmbiguousSession,
+                },
+                ReceiptKind::Seen {
+                    completed_at: sent_at,
+                },
+            ),
+            1 => (
+                ReceiptKind::Refused {
+                    reason: MessageRefusal::UnknownSession,
+                },
+                "refused",
+                Some("refused"),
+                MessageStatus::Refused {
+                    reason: MessageRefusal::UnknownSession,
+                },
+                ReceiptKind::Refused {
+                    reason: MessageRefusal::AmbiguousSession,
+                },
+            ),
+            2 => (
+                ReceiptKind::Seen {
+                    completed_at: sent_at,
+                },
+                "seen",
+                None,
+                MessageStatus::Seen {
+                    completed_at: sent_at,
+                },
+                ReceiptKind::Seen {
+                    completed_at: sent_at + chrono::Duration::milliseconds(1),
+                },
+            ),
+            _ => panic!("invalid generated receipt class"),
+        };
+    if order & 2 != 0 {
+        assert_eq!(
+            apply_fixture_receipt(&fixture, &central, &message_id, final_receipt.clone()).await,
+            MailReceiptSettlement::Applied
+        );
+        outcome = immediate_outcome;
+    }
+    if order & 2 == 0 {
+        fixture.clock.0.store(
+            (mark - chrono::Duration::minutes(1)).timestamp_millis(),
+            Ordering::SeqCst,
+        );
+        central.after_event().await.unwrap();
+        let before = central
+            .read(Statement {
+                sql: "SELECT state FROM mail_messages WHERE message_id=?",
+                args: vec![text(&message_id)],
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            before.rows,
+            [vec![text(if order & 1 != 0 {
+                "delivered"
+            } else {
+                "queued"
+            })]]
+        );
+    }
+    let reject_due_write = reject_mark && order & 2 == 0;
+    if reject_due_write {
+        raw(&central, REJECT_OUTCOME, vec![]).await;
+    }
+    fixture
+        .clock
+        .0
+        .store(mark.timestamp_millis(), Ordering::SeqCst);
+    central.after_event().await.unwrap();
+    if reject_due_write {
+        assert_store(
+            &central,
+            &message_id,
+            if order & 1 == 0 {
+                "queued"
+            } else {
+                "delivered"
+            },
+            None,
+        )
+        .await;
+        let attempts = central
+            .read(Statement {
+                sql: "SELECT state,failure_count,last_failure FROM engine_work_attempts WHERE machine_kind='direct_message' AND subject_key=?",
+                args: vec![text(&message_id)],
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            attempts.rows,
+            [vec![
+                text("failing"),
+                integer(1),
+                text("statement_rejected")
+            ]]
+        );
+        raw(&central, "DROP TRIGGER reject_direct_outcome", vec![]).await;
+        let at = mark + chrono::Duration::minutes(5);
+        fixture
+            .clock
+            .0
+            .store(at.timestamp_millis(), Ordering::SeqCst);
+        central.after_event().await.unwrap();
+        let attempts = central
+            .read(Statement {
+                sql: "SELECT attempt_id FROM engine_work_attempts WHERE machine_kind='direct_message' AND subject_key=?",
+                args: vec![text(&message_id)],
+            })
+            .await
+            .unwrap();
+        assert!(
+            attempts.rows.is_empty(),
+            "successful retry clears the attempt"
+        );
+    }
+    assert_store(
+        &central,
+        &message_id,
+        if order & 2 != 0 {
+            terminal
+        } else if order & 1 == 0 {
+            "queued"
+        } else {
+            "delivered"
+        },
+        outcome,
+    )
+    .await;
+    if order & 2 == 0 {
+        fixture
+            .clock
+            .0
+            .store(sent_at.timestamp_millis(), Ordering::SeqCst);
+        let caller = fresh_auth(&fixture.host, &fixture.caller);
+        let status = fixture
+            .host
+            .request(&caller, status_query(message_id.clone()))
+            .await
+            .unwrap()
+            .result;
+        let expected = if order & 1 == 0 {
+            MessageStatus::Sent {
+                deadline_passed: false,
+            }
+        } else {
+            MessageStatus::Delivered {
+                arrived_at: sent_at,
+                deadline_passed: false,
+            }
+        };
+        assert_eq!(status, status_answer(expected));
+        fixture
+            .clock
+            .0
+            .store(mark.timestamp_millis(), Ordering::SeqCst);
+    }
+    central.cold_alarm().await.unwrap();
+
+    if order & 3 == 0 {
+        let saved_at = mark + chrono::Duration::milliseconds(137);
+        let first_outcome_row = || Statement {
+            sql: "SELECT message_id,body,created_at,updated_at FROM mail_messages WHERE message_kind='deliveryOutcome' AND json_extract(body,'$.messageId')=?",
+            args: vec![text(&message_id)],
+        };
+        let before = central.read(first_outcome_row()).await.unwrap();
+        assert_eq!(before.rows.len(), 1);
+        let late_delivery = ReceiptKind::Delivered {
+            arrived_at: saved_at,
+        };
+        assert_eq!(
+            apply_fixture_receipt(&fixture, &central, &message_id, late_delivery).await,
+            MailReceiptSettlement::Applied
+        );
+        let row = central.read(Statement {
+            sql: "SELECT state,delivered_arrived_at,deadline_settled_at IS NOT NULL FROM mail_messages WHERE message_id=?",
+            args: vec![text(&message_id)],
+        }).await.unwrap();
+        assert_eq!(
+            row.rows,
+            [vec![
+                text("delivered"),
+                text(saved_at.to_rfc3339()),
+                integer(1)
+            ]]
+        );
+        assert_eq!(
+            fixture
+                .host
+                .request(
+                    &fresh_auth(&fixture.host, &fixture.caller),
+                    status_query(message_id.clone())
+                )
+                .await
+                .unwrap()
+                .result,
+            status_answer(MessageStatus::Delivered {
+                arrived_at: saved_at,
+                deadline_passed: true,
+            })
+        );
+        assert_eq!(central.read(first_outcome_row()).await.unwrap(), before);
+    }
+    let first = apply_fixture_receipt(&fixture, &central, &message_id, final_receipt.clone()).await;
+    let expected = if order & 2 != 0 {
+        MailReceiptSettlement::Stop(ReceiptResult::Recorded)
+    } else {
+        MailReceiptSettlement::Applied
+    };
+    assert_eq!(first, expected);
+    assert_eq!(
+        apply_fixture_receipt(&fixture, &central, &message_id, final_receipt).await,
+        MailReceiptSettlement::Stop(ReceiptResult::Recorded)
+    );
+    assert_eq!(
+        apply_fixture_receipt(&fixture, &central, &message_id, delivered).await,
+        MailReceiptSettlement::Stop(ReceiptResult::Recorded)
+    );
+    assert_eq!(
+        apply_fixture_receipt(&fixture, &central, &message_id, contradiction).await,
+        MailReceiptSettlement::Stop(ReceiptResult::AlreadySettled)
+    );
+    assert_store(&central, &message_id, terminal, outcome).await;
+    let caller = fresh_auth(&fixture.host, &fixture.caller);
+    let actual = fixture
+        .host
+        .request(&caller, status_query(message_id))
+        .await
+        .unwrap()
+        .result;
+    assert_eq!(actual, status_answer(expected_status));
+    fixture.host.close().await;
+}
+
+pub(super) async fn apply_fixture_receipt(
+    fixture: &Fixture,
+    central: &RemoteRuntime,
+    message: &MessageId,
+    receipt: ReceiptKind,
+) -> MailReceiptSettlement {
+    submit_receipt(fixture, central, message, receipt)
+        .await
+        .unwrap()
+}
+
+async fn submit_receipt(
+    fixture: &Fixture,
+    central: &RemoteRuntime,
+    message: &MessageId,
+    receipt: ReceiptKind,
+) -> Result<MailReceiptSettlement, StoreFailure> {
+    let target = session(&fixture.caller);
+    let authority = MachineConnectionAttachment::from_token_claims(
+        fixture.caller.organization_id.clone(),
+        target.machine_id,
+        fixture.caller.enrollment_id.clone().try_into().unwrap(),
+        fixture.caller.enrollment_id.clone().try_into().unwrap(),
+        fleet_identity_protocol::UnixSeconds(fixture.clock.0.load(Ordering::SeqCst) / 1000 + 600),
+    );
+    central
+        .control("direct-receipt-fixture", &(authority, message, receipt))
+        .await
+        .unwrap()
+}
+
+pub(super) async fn queue_direct(
+    fixture: &Fixture,
+    sent_at: workspace_model::Timestamp,
+    request_number: u32,
+) -> MessageId {
+    let destination = session(&fixture.caller);
+    let queue = fixture
+        .host
+        .request_central(
+            &fixture.caller,
+            CentralMailRequest {
+                request_id: id(request_number),
+                operation: CentralMailOperation::SendMessage {
+                    to: destination.clone(),
+                    body: "receipt sequence".to_owned().try_into().unwrap(),
+                    delivery: MessageDelivery::Auto,
+                    reply_to: None,
+                    sent_at,
+                },
+            },
+        )
+        .await
+        .unwrap();
+    let CentralMailResult::Done(CentralMailAnswer::Queued { message_id }) = queue else {
+        panic!("send did not queue: {queue:?}");
+    };
+
+    message_id
+}
+
+#[tokio::test]
+async fn an_unobserved_direct_mark_commit_never_charges_an_attempt() {
+    for (number, kind, expected_state, expected_outcome) in [
+        (
+            981003,
+            EngineCommitFaultKind::NotAppliedAnswerLost,
+            "queued",
+            None,
+        ),
+        (
+            981004,
+            EngineCommitFaultKind::AppliedAnswerLost,
+            "queued",
+            Some("deliveryNotConfirmed"),
+        ),
+    ] {
+        let fixture = Fixture::new().await;
+        let central = runtime(&fixture).await;
+        let now = chrono::DateTime::from_timestamp(FIXTURE_NOW, 0).unwrap();
+        let mark = fleet_mail::message_deadline::direct_receipt_mark(now, now).unwrap();
+        let message_id = queue_direct(&fixture, now, number).await;
+
+        let fault = EngineCommitFault {
+            key: collaboration_central_core::engine_probe::InstanceKey(message_id.to_string()),
+            kind,
+        };
+        assert!(
+            central
+                .control::<bool>("engine-commit-fault", &fault)
+                .await
+                .unwrap()
+        );
+        fixture
+            .clock
+            .0
+            .store(mark.timestamp_millis(), Ordering::SeqCst);
+        central.after_event().await.unwrap();
+
+        assert!(
+            !central
+                .control::<bool>("engine-commit-fault-pending", &())
+                .await
+                .unwrap()
+        );
+        assert_store(&central, &message_id, expected_state, expected_outcome).await;
+        let attempts = central.read(Statement {
+            sql: "SELECT attempt_id FROM engine_work_attempts WHERE machine_kind='direct_message' AND subject_key=?",
+            args: vec![text(&message_id)],
+        }).await.unwrap();
+        assert!(
+            attempts.rows.is_empty(),
+            "an uncertain commit must never charge a due attempt"
+        );
+        fixture.host.close().await;
+    }
+}
+
+#[tokio::test]
+async fn an_eligible_direct_mark_records_a_corrupt_typed_row_without_settling_it() {
+    let fixture = Fixture::new().await;
+    let central = runtime(&fixture).await;
+    let now = chrono::DateTime::from_timestamp(FIXTURE_NOW, 0).unwrap();
+    let mark = fleet_mail::message_deadline::direct_receipt_mark(now, now).unwrap();
+    let message_id = queue_direct(&fixture, now, 981006).await;
+    raw(
+        &central,
+        "UPDATE mail_messages SET sender=x'01' WHERE message_id=?",
+        vec![text(&message_id)],
+    )
+    .await;
+
+    fixture
+        .clock
+        .0
+        .store(mark.timestamp_millis(), Ordering::SeqCst);
+    central.after_event().await.unwrap();
+
+    assert_store(&central, &message_id, "queued", None).await;
+    let attempts = central.read(Statement {
+        sql: "SELECT state,failure_count,last_failure,last_failure_detail FROM engine_work_attempts WHERE machine_kind='direct_message' AND subject_key=?",
+        args: vec![text(&message_id)],
+    }).await.unwrap();
+    assert!(
+        matches!(
+            attempts.rows.as_slice(),
+            [attempt] if matches!(attempt.as_slice(),
+                [state, count, kind, central_storage::SqlValue::Text(detail)]
+                    if state == &text("failing") && count == &integer(1)
+                        && kind == &text("corrupt_row") && detail.contains("sender")
+            )
+        ),
+        "stored attempts: {:?}",
+        attempts.rows
+    );
+    fixture.host.close().await;
+}
+
+pub(super) async fn assert_store(
+    central: &RemoteRuntime,
+    message_id: &MessageId,
+    state: &str,
+    outcome: Option<&str>,
+) {
+    let rows = central.read(Statement {
+        sql: "SELECT state,(SELECT json_extract(body,'$.outcome.kind') FROM mail_messages WHERE message_kind='deliveryOutcome' AND json_extract(body,'$.messageId')=direct.message_id) AS outcome,(SELECT COUNT(*) FROM mail_messages WHERE message_kind='deliveryOutcome' AND json_extract(body,'$.messageId')=direct.message_id) AS outcome_count FROM mail_messages AS direct WHERE message_id=?",
+        args: vec![text(message_id)],
+    }).await.unwrap();
+    assert_eq!(
+        rows.rows,
+        [vec![
+            text(state),
+            outcome.map_or(SqlValue::Null, text),
+            SqlValue::Integer(i64::from(outcome.is_some()).try_into().unwrap())
+        ]]
+    );
+}
+
+fn status_query(message_id: workspace_ids::MessageId) -> workspace_model::WorkspaceRequest {
+    use workspace_model as model;
+    model::WorkspaceRequest {
+        request_id: None,
+        workspace_id: None,
+        operation: model::WorkspaceOperation::List {
+            query: model::ListQuery::MessageStatus { message_id },
+            cursor: model::ListCursor::start(model::ListOrder::OldestFirst),
+            limit: 1.try_into().unwrap(),
+        },
+    }
+}
+
+fn status_answer(status: MessageStatus) -> workspace_model::WorkspaceResult {
+    workspace_model::WorkspaceResult::Done(workspace_model::WorkspaceAnswer::MessageStatus {
+        status,
+    })
+}
+
+mod notice_receipt_settlement;
+
+mod deadline_atomicity;
+
+mod deadline_precedence;

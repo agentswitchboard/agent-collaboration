@@ -1,40 +1,32 @@
 //! Owns FleetRuntime mailbox rows, delivery and timed message transitions.
 #![forbid(unsafe_code)]
 
-mod acknowledgement;
-mod delivery_reads;
+pub mod direct_mark_apply;
 mod direct_message;
 mod direct_message_rows;
-mod direct_message_store;
-mod direct_status;
+mod direct_recipient_admission;
+pub mod direct_status_apply;
+mod direct_store_port;
+pub mod direct_store_reads;
+mod direct_store_sender;
+pub mod direct_store_writes;
 mod due_queries;
+mod mail_write_failure;
 pub mod message_deadline;
 mod message_effects;
 mod message_insert;
 mod queued_notices;
 mod request_plan;
-mod sender_resolution;
 mod stored_messages;
 mod system_message_expiry;
 mod system_message_expiry_store;
+mod system_receipt_settlement;
 
-#[doc(hidden)]
-pub use fleet_engine::{
-    controlled_machine as __controlled_machine, machine_rows as __machine_rows,
-};
-
-pub use acknowledgement::settle_delivery_ack_held;
-pub use delivery_reads::{prepare_windowed_delivery_held, windowed_welcome_page_held};
-pub use direct_message::{
-    DirectMessage, DirectMessageRefusal, DirectMessageSubject, Effect as DirectMessageEffect,
-    Event as DirectMessageEvent, State as DirectMessageState,
-};
-pub use direct_message_store::DirectMessageStore;
-pub use direct_status::direct_message_status_held;
-pub use due_queries::{DIRECT_MESSAGE_LIST, SYSTEM_MESSAGE_EXPIRY_LIST};
+pub use direct_store_port::*;
+pub use due_queries::{due_direct_messages, due_system_message_expiries};
 pub use message_insert::insert_message;
-pub use queued_notices::{plan_cancel_queued_notices_held, validate_queued_notices_held};
-pub use request_plan::{DirectSendPlan, plan_direct_send, plan_sourced_notice};
+pub use queued_notices::plan_cancel_queued_notices_held;
+pub use request_plan::plan_sourced_notice;
 pub use stored_messages::queued_for_session_held;
 pub use system_message_expiry::{
     ExpireAt, ExpiryRefusal, State as SystemExpiryState, SystemMessageExpiry,

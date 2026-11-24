@@ -1,0 +1,78 @@
+use super::*;
+
+#[test]
+fn notice_admission_rejects_a_busy_current_owner_without_queueing_or_steering() {
+    let mut state = fresh();
+    let run = restore_live(&mut state, 1);
+    let foreground = input(run.generation, 2);
+    send_prompt(&mut state, &foreground);
+    let prior = state.snapshot();
+
+    let notice = input(run.generation, 3);
+    assert!(matches!(
+        decide(
+            &state,
+            OwnerEvent::Command(SessionOwnerCommand::NoticePrompt(notice))
+        ),
+        Err(SessionOwnerRejection::Refused(
+            SessionOwnerRefusal::EffectInProgress(EffectInProgress::TurnInProgress)
+        ))
+    ));
+    assert_eq!(state.snapshot().queue, prior.queue);
+}
+
+#[test]
+fn notice_admission_rejects_loading_and_uses_the_prompt_take_of_an_exact_idle_run() {
+    let mut state = fresh();
+    let run = open_wire(&mut state, 1);
+    let notice = input(run.generation, 2);
+    assert!(matches!(
+        decide(
+            &state,
+            OwnerEvent::Command(SessionOwnerCommand::NoticePrompt(notice.clone()))
+        ),
+        Err(SessionOwnerRejection::Refused(
+            SessionOwnerRefusal::GenerationChanged
+        ))
+    ));
+    apply(&mut state, restore_reply(run));
+    finish_preparation(&mut state, run);
+    let other_run = input(
+        SessionGeneration::from_number(run.generation.number() + 1),
+        3,
+    );
+    assert!(matches!(
+        decide(
+            &state,
+            OwnerEvent::Command(SessionOwnerCommand::NoticePrompt(other_run))
+        ),
+        Err(SessionOwnerRejection::Refused(
+            SessionOwnerRefusal::GenerationChanged
+        ))
+    ));
+
+    let admitted = command(
+        &mut state,
+        SessionOwnerCommand::NoticePrompt(notice.clone()),
+    );
+    assert!(
+        admitted.contains(&OwnerEffect::Store(SessionStoreRequest::MarkDispatch(
+            notice.clone()
+        )))
+    );
+    assert!(!admitted.iter().any(|effect| matches!(
+        effect,
+        OwnerEffect::InputQueued(_) | OwnerEffect::PromptTaken(_)
+    )));
+    let offered = apply(&mut state, mark_prompt(&notice));
+    assert!(
+        !offered
+            .iter()
+            .any(|effect| matches!(effect, OwnerEffect::PromptTaken(_)))
+    );
+    let taken = apply(
+        &mut state,
+        OwnerEvent::Dispatch(DispatchResult::Taken(authorization(&offered))),
+    );
+    assert!(taken.contains(&OwnerEffect::PromptTaken(notice)));
+}

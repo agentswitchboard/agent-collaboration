@@ -4,7 +4,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{CodexGeneration, SessionRef};
+use crate::{CodexGeneration, SessionRef, UuidIdentity};
 
 #[derive(JsonSchema, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -44,6 +44,9 @@ pub struct BoundedObservationRequest {
     pub after_sequence: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub epoch: Option<u64>,
+    /// Host run from the result that supplied the continuation position.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_epoch: Option<UuidIdentity>,
 }
 
 /// A retained event could not fit inside one message after JSON encoding.
@@ -59,6 +62,13 @@ pub struct ProviderObservationEventTooLarge {
 #[serde(rename_all = "camelCase")]
 pub enum ProviderObservationEventTooLargeKind {
     EventTooLarge,
+}
+
+/// The last position of the retained history sent by one provider observation.
+#[derive(JsonSchema, Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum ProviderSnapshotMarker {
+    SnapshotEnd { cursor: ObservationCursor },
 }
 
 /// The MCP notification method `events_observe` sends once for each event, as the event is

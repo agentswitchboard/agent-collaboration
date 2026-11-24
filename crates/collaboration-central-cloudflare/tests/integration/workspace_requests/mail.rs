@@ -3,7 +3,9 @@ mod automation_occurrences;
 mod automations;
 mod cold_alarm;
 mod corruption;
+mod direct_mark_guard;
 mod direct_message_cancel;
+mod direct_receipt_sequences;
 mod engine_publication;
 mod requests;
 mod stored_row_use;
@@ -20,11 +22,15 @@ mod replay;
 
 mod replay_failures;
 
+mod automation_live_cap;
 mod engine_alarm;
+mod engine_alarm_input_parity;
+mod engine_alarm_migration;
 mod engine_alarm_readback;
+mod engine_alarm_retention;
 mod engine_attempts;
 mod engine_cadence_hour;
-mod engine_event_support;
+pub(super) mod engine_event_support;
 mod engine_failure_overlap;
 mod engine_large_batch;
 mod engine_outcomes;
@@ -36,6 +42,7 @@ mod engine_request_alarm;
 mod engine_timing;
 mod engine_timing_races;
 mod engine_visit_order;
+mod overdue_wakes;
 mod probe_requests;
 mod timing_contract;
 

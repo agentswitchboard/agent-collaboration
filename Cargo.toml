@@ -1,8 +1,15 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/approval-request-protocol",
+    "crates/switchboard-approval-ports",
     "crates/central-link-protocol",
+    "crates/central-link-call-composition",
+    "crates/central-person-link",
     "crates/central-link-client",
+    "crates/switchboard-central-link",
+    "crates/switchboard-link-lease",
+    "crates/switchboard-central-link-test",
     "crates/workspace-ids",
     "crates/workspace-model",
     "crates/workspace-rules",
@@ -10,10 +17,20 @@ members = [
     "crates/central-engine-model",
     "crates/state-machine-core",
     "crates/provider-session-machines",
+    "crates/switchboard-approval-holder",
+    "crates/switchboard-session-start",
+    "crates/switchboard-message-system",
+    "crates/switchboard-harness-contracts",
+    "crates/switchboard-harness-shared-mechanics",
+    "crates/switchboard-machine-enrollment",
+    "crates/switchboard-machine-enrollment-store",
     "crates/fleet-runtime-ports",
     "crates/fleet-runtime",
+    "crates/fleet-request-log",
     "crates/fleet-engine",
+    "crates/fleet-lent-transaction",
     "crates/fleet-mail",
+    "crates/fleet-approvals",
     "crates/fleet-notices",
     "crates/fleet-wakes",
     "crates/fleet-schedules",
@@ -25,6 +42,11 @@ members = [
     "crates/fleet-storage-schema",
     "crates/fleet-store-sqlx",
     "crates/fleet-contracts",
+    "crates/fleet-rpc",
+    "crates/fleet-signin",
+    "crates/fleet-machine-login",
+    "crates/fleet-actor-identity",
+    "crates/fleet-workspace-service",
     "crates/router-clock",
     "crates/tailnet-verification-host",
     "crates/message-board",
@@ -43,6 +65,12 @@ members = [
     "crates/collaboration-service",
     "crates/collaboration-contracts",
     "crates/collaboration-runtime",
+    "crates/switchboard-session-events",
+    "crates/switchboard-session-payloads",
+    "crates/switchboard-session-calls",
+    "crates/switchboard-session-store",
+    "crates/switchboard-machine-core-store",
+    "crates/switchboard-message-custody",
     "crates/collaboration-protocol",
     "crates/collaboration-central-core",
     "crates/collaboration-central-cloudflare",
@@ -78,13 +106,27 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.157"
+version = "0.1.158"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 publish = false
 
 [workspace.dependencies]
+approval-request-protocol = { path = "crates/approval-request-protocol", version = "0.1.158" }
+switchboard-approval-holder = { path = "crates/switchboard-approval-holder", version = "0.1.158" }
+switchboard-approval-ports = { path = "crates/switchboard-approval-ports", version = "0.1.158" }
+switchboard-session-start = { path = "crates/switchboard-session-start", version = "0.1.158" }
+switchboard-message-system = { path = "crates/switchboard-message-system", version = "0.1.158" }
+switchboard-harness-shared-mechanics = { path = "crates/switchboard-harness-shared-mechanics", version = "0.1.158" }
+switchboard-harness-contracts = { path = "crates/switchboard-harness-contracts", version = "0.1.158" }
 central-link-protocol = { path = "crates/central-link-protocol", version = "0.1.153" }
+central-link-call-composition = { path = "crates/central-link-call-composition", version = "0.1.158" }
+central-person-link = { path = "crates/central-person-link", version = "0.1.158" }
+central-link-client = { path = "crates/central-link-client", version = "0.1.158" }
+switchboard-central-link = { path = "crates/switchboard-central-link", version = "0.1.158" }
+switchboard-link-lease = { path = "crates/switchboard-link-lease", version = "0.1.158" }
+collaboration-central-tokio = { path = "crates/collaboration-central-tokio", version = "0.1.158" }
+collaboration-central-conformance = { path = "crates/collaboration-central-conformance", version = "0.1.158" }
 workspace-ids = { path = "crates/workspace-ids", version = "0.1.149" }
 workspace-model = { path = "crates/workspace-model", version = "0.1.149" }
 central-storage = { path = "crates/central-storage", version = "0.1.149" }
@@ -94,9 +136,17 @@ provider-session-machines = { path = "crates/provider-session-machines", version
 fleet-runtime-ports = { path = "crates/fleet-runtime-ports", version = "0.1.156" }
 fleet-runtime-test-support = { path = "crates/fleet-runtime-test-support", version = "0.1.156" }
 fleet-contracts = { path = "crates/fleet-contracts", version = "0.1.156" }
+fleet-rpc = { path = "crates/fleet-rpc", version = "0.1.157" }
+fleet-signin = { path = "crates/fleet-signin", version = "0.1.157" }
+fleet-machine-login = { path = "crates/fleet-machine-login", version = "0.1.158" }
+fleet-actor-identity = { path = "crates/fleet-actor-identity", version = "0.1.158" }
+fleet-workspace-service = { path = "crates/fleet-workspace-service", version = "0.1.157" }
+fleet-request-log = { path = "crates/fleet-request-log", version = "0.1.156" }
 fleet-runtime = { path = "crates/fleet-runtime", version = "0.1.156" }
 fleet-engine = { path = "crates/fleet-engine", version = "0.1.156" }
+fleet-lent-transaction = { path = "crates/fleet-lent-transaction", version = "0.1.157" }
 fleet-mail = { path = "crates/fleet-mail", version = "0.1.156" }
+fleet-approvals = { path = "crates/fleet-approvals", version = "0.1.158" }
 fleet-notices = { path = "crates/fleet-notices", version = "0.1.156" }
 fleet-wakes = { path = "crates/fleet-wakes", version = "0.1.156" }
 fleet-schedules = { path = "crates/fleet-schedules", version = "0.1.156" }
@@ -107,6 +157,10 @@ fleet-workspace-directory = { path = "crates/fleet-workspace-directory", version
 fleet-storage-schema = { path = "crates/fleet-storage-schema", version = "0.1.156" }
 fleet-store-sqlx = { path = "crates/fleet-store-sqlx", version = "0.1.156" }
 router-clock = { path = "crates/router-clock", version = "0.1.136" }
+switchboard-machine-core-store = { path = "crates/switchboard-machine-core-store", version = "0.1.158" }
+switchboard-message-custody = { path = "crates/switchboard-message-custody", version = "0.1.158" }
+switchboard-session-events = { path = "crates/switchboard-session-events", version = "0.1.158" }
+switchboard-session-store = { path = "crates/switchboard-session-store", version = "0.1.158" }
 runtime-primitives = { version = "0.4.0", git = "https://github.com/agent-collaboration/agent-fleet-sync.git", rev = "b75d072c116afa46cfa82facd34db6317f380687", default-features = false }
 aes-gcm = { version = "=0.11.1", features = ["zeroize"] }
 apple-native-keyring-store = { version = "=1.0.2", default-features = false, features = ["keychain"] }
@@ -172,6 +226,9 @@ security-framework = "3.7"
 # SQLx crates stay pinned for checked-query and custom driver compatibility.
 sqlx = { version = "=0.9.0", default-features = false, features = ["runtime-tokio"] }
 sqlx-core = { version = "=0.9.0", default-features = false }
+specta = { version = "=2.0.0-rc.28", default-features = false }
+specta-serde = "=0.0.15"
+specta-typescript = "=0.0.15"
 sqlx-macros-core = { version = "=0.9.0", default-features = false }
 syn = { version = "2.0.118", features = ["full", "parsing"] }
 thiserror = "2.0.18"

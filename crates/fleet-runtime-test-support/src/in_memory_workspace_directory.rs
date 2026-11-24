@@ -82,11 +82,25 @@ struct InMemoryDirectoryStore(SqliteObjectStore);
 impl CentralStore for InMemoryDirectoryStore {
     async fn run_batch(&self, batch: StatementBatch) -> Result<BatchOutcome, StoreFailure> {
         assert!(matches!(batch.alarm, AlarmUpdate::Unchanged));
-        self.0.run_batch(batch).await.map(|(outcome, _)| outcome)
+        self.0
+            .run_batch(batch, async |_| Err(StoreFailure::Unavailable))
+            .await
+            .map(|(outcome, _)| outcome)
     }
 
     async fn read(&self, statement: Statement) -> Result<ReadOutcome, StoreFailure> {
         self.0.read(statement).await
+    }
+
+    async fn read_timed_due_rows(
+        &self,
+        _: fleet_runtime_ports::DueListQuery,
+    ) -> Result<Vec<fleet_runtime_ports::DueRow>, StoreFailure> {
+        Err(StoreFailure::Unavailable)
+    }
+
+    async fn engine_alarm_inputs(&self) -> Result<central_storage::EngineAlarmTimes, StoreFailure> {
+        Err(StoreFailure::Unavailable)
     }
 
     async fn published_alarm(&self) -> Result<Option<EngineTime>, StoreFailure> {

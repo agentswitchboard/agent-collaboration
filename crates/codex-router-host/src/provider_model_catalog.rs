@@ -1,40 +1,8 @@
 //! Project agent-advertised model choices for one provider connection.
 
-use collaboration_runtime::{ProviderModelEntry, ProviderReasoningChoice};
+use collaboration_contracts::{ProviderModelEntry, ProviderReasoningChoice};
 use provider_session_machines::ProviderSettingKind;
 use provider_session_machines::{ModelReasoning, ProviderSettingsCatalog};
-
-pub(crate) struct SupervisorModelCatalog {
-    supervisor: std::sync::Arc<crate::ExternalProviderSupervisor>,
-}
-impl SupervisorModelCatalog {
-    pub(crate) fn new(supervisor: std::sync::Arc<crate::ExternalProviderSupervisor>) -> Self {
-        Self { supervisor }
-    }
-}
-impl collaboration_runtime::SessionModelCatalog for SupervisorModelCatalog {
-    fn read_models(
-        &self,
-        session: message_board::SessionRef,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<
-                    Output = Result<
-                        Vec<ProviderModelEntry>,
-                        collaboration_runtime::SessionModelCatalogError,
-                    >,
-                > + Send
-                + '_,
-        >,
-    > {
-        Box::pin(async move {
-            let target = serde_json::to_value(session)
-                .and_then(serde_json::from_value)
-                .map_err(|_| collaboration_runtime::SessionModelCatalogError::Unavailable)?;
-            self.supervisor.session_model_catalog(&target).await
-        })
-    }
-}
 
 pub(crate) fn provider_default_model() -> Result<ProviderModelEntry, &'static str> {
     ProviderModelEntry::try_new(

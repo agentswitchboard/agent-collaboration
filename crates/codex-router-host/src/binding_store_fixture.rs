@@ -10,6 +10,7 @@ pub(crate) enum BindingFixtureWait {
     LatePromptRepair,
     QueuedDispatchParked,
     QueuedDispatchObserved(OperationId),
+    QueuedDispatchOffered(OperationId),
 }
 
 #[derive(Default)]

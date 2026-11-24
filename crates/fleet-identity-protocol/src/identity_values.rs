@@ -5,9 +5,10 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
 macro_rules! identity_value {
-    ($name:ident, $inner:ty) => {
+    ($(#[$attribute:meta])* $name:ident, $inner:ty) => {
         #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
         #[serde(transparent)]
+        $(#[$attribute])*
         pub struct $name($inner);
         impl JsonSchema for $name {
             fn schema_name() -> Cow<'static, str> {
@@ -36,10 +37,23 @@ macro_rules! identity_value {
         }
     };
 }
-identity_value!(OrganizationId, RecordId);
-identity_value!(EnrollmentId, RecordId);
+identity_value!(
+    #[cfg_attr(
+        all(feature = "wire-export", not(target_arch = "wasm32")),
+        derive(specta::Type)
+    )]
+    OrganizationId,
+    RecordId
+);
+identity_value!(
+    #[cfg_attr(
+        all(feature = "wire-export", not(target_arch = "wasm32")),
+        derive(specta::Type)
+    )]
+    EnrollmentId,
+    RecordId
+);
 identity_value!(RemoteStartId, RecordId);
-identity_value!(IsolationInstanceId, RecordId);
 identity_value!(InstallationId, ServiceId);
 
 macro_rules! bounded_value {
@@ -70,44 +84,61 @@ macro_rules! bounded_value {
 bounded_value!(AbsolutePath, 4096, "^/[^\\u0000]*$", |value: &str| !value
     .contains('\0')
     && value.starts_with('/'));
-bounded_value!(RepositoryLocator, 2048, "^[^\\u0000]+$", |value: &str| {
-    !value.contains('\0')
-});
-bounded_value!(ModelName, 256, "^[^\\u0000]+$", |value: &str| !value
-    .contains('\0'));
-bounded_value!(
-    CommitId,
-    64,
-    "^(?:[0-9a-f]{40}|[0-9a-f]{64})$",
-    |value: &str| matches!(value.len(), 40 | 64)
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-);
+const MAXIMUM_WIRE_TIMESTAMP: i64 = 9_007_199_254_740_991;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct UnixSeconds(pub i64);
-impl JsonSchema for UnixSeconds {
-    fn schema_name() -> Cow<'static, str> {
-        "UnixSeconds".into()
-    }
-    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
-        i64::json_schema(generator)
-    }
+macro_rules! unix_wire_timestamp {
+    ($timestamp:ident) => {
+        #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize)]
+        #[serde(transparent)]
+        #[cfg_attr(
+            all(feature = "wire-export", not(target_arch = "wasm32")),
+            derive(specta::Type)
+        )]
+        pub struct $timestamp(
+            #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = specta_typescript::Number))]
+            pub i64,
+        );
+
+        impl TryFrom<i64> for $timestamp {
+            type Error = IdentityValidationError;
+
+            fn try_from(timestamp: i64) -> Result<Self, Self::Error> {
+                if (0..=MAXIMUM_WIRE_TIMESTAMP).contains(&timestamp) {
+                    Ok(Self(timestamp))
+                } else {
+                    Err(IdentityValidationError {
+                        field: stringify!($timestamp),
+                        requirement: "must be a nonnegative exact JSON integer",
+                    })
+                }
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $timestamp {
+            fn deserialize<Decoder: serde::Deserializer<'de>>(
+                decoder: Decoder,
+            ) -> Result<Self, Decoder::Error> {
+                Self::try_from(i64::deserialize(decoder)?).map_err(serde::de::Error::custom)
+            }
+        }
+
+        impl JsonSchema for $timestamp {
+            fn schema_name() -> Cow<'static, str> {
+                stringify!($timestamp).into()
+            }
+
+            fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+                let mut schema = i64::json_schema(generator);
+                schema.insert("minimum".into(), 0.into());
+                schema.insert("maximum".into(), MAXIMUM_WIRE_TIMESTAMP.into());
+                schema
+            }
+        }
+    };
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct UnixMillis(pub i64);
-impl JsonSchema for UnixMillis {
-    fn schema_name() -> Cow<'static, str> {
-        "UnixMillis".into()
-    }
-    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
-        i64::json_schema(generator)
-    }
-}
+unix_wire_timestamp!(UnixSeconds);
+unix_wire_timestamp!(UnixMillis);
 
 /// A report or attach counter that every JSON consumer can read exactly.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]

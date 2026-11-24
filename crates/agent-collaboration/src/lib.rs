@@ -27,10 +27,12 @@ pub fn command_help() -> String {
         "{}\nCollaboration:\n  conversation create --endpoint ID --cwd PATH --access write-restricted|workspace-write [--operation-id UUID] [--mode ID] [--model ID] [--effort LEVEL] [--fork SESSION] [--generation JSON] [--timeout-seconds 300] --json\n  conversation settings set --target ADDRESS --actor ADDRESS --setting mode|model|effort --value ID --json\n  conversation settings accept --target ADDRESS --actor ADDRESS --json\n  conversation prompt --endpoint ID --new|--session ID|--fork ID|--to ADDRESS [--cwd PATH] [--operation-id UUID] [--prompt-operation-id UUID] [--generation JSON] --text-file PATH --json\n  conversation load --target ADDRESS --cwd PATH --access write-restricted|workspace-write [--operation-id UUID] [--generation JSON] --json\n  conversation resume --target ADDRESS --cwd PATH --access write-restricted|workspace-write [--operation-id UUID] [--generation JSON] --json\n  conversation close --target ADDRESS [--operation-id UUID] [--generation JSON] --json\n  conversation cancel --target ADDRESS --target-operation-id UUID [--operation-id UUID] [--generation JSON] --json\n  conversation operation show|wait|reconcile --operation-id UUID --json\n  sessions list --endpoint ID --view stored|loaded|active --cwd PATH|--checkout PATH|--repo PATH|--any [--source interactive|subagents|all] --json\n  events listen --endpoint ID --session ID --attach [--timeout-seconds 60]\n  whoami [--json] (this agent's SessionRef from CODEX_THREAD_ID, CLAUDE_CODE_SESSION_ID or CURSOR_CONVERSATION_ID)\n  endpoints list --json [--service-directory PATH]\n  addresses list --endpoint ID --json [--cursor CURSOR]\n  session inspect --endpoint ID --session ID --json\n  session rename --endpoint ID --session ID --name TEXT --json\n  turn interrupt --endpoint ID --session ID --turn ID --json\n  native --endpoint ID\n  acp --endpoint ID\n  journal status --json\n  journal read --endpoint ID --journal-id UUID --after SEQUENCE --json\n",
         agent_session_inventory::sessions::command_help("agent-collaboration")
     );
-    help.replace(
+    let mut help = help.replace(
         "  events listen --endpoint ID --session ID --attach [--timeout-seconds 60]\n",
         "  events listen --endpoint ID --session ID --attach [--timeout-seconds 60]\n  events observe --endpoint ID --session ID --attach [--timeout-seconds 60] [--max-events 256] [--max-bytes 262144] [--after-sequence N --epoch N]\n",
-    )
+    );
+    help.push_str(collaboration_client::protocol::message_tools::MESSAGE_CLI_HELP);
+    help
 }
 
 /// Usage for the standalone session picker executable.
@@ -40,6 +42,8 @@ pub fn session_command_help() -> String {
 }
 
 mod current_session_identity;
+mod message_commands;
+pub use message_commands::{is_message_command, run_message_command};
 mod endpoint_commands;
 mod permission_diagnostic_reporting;
 pub use endpoint_commands::run_endpoint_command;

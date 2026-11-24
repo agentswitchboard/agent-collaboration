@@ -1,0 +1,32 @@
+[package]
+name = "switchboard-message-custody"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+autotests = false
+
+[dependencies]
+central-link-client.workspace = true
+central-link-protocol.workspace = true
+router-clock.workspace = true
+runtime-primitives.workspace = true
+state-machine-core.workspace = true
+switchboard-machine-core-store.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+workspace-ids.workspace = true
+workspace-model.workspace = true
+
+[dev-dependencies]
+chrono.workspace = true
+hegel = { package = "hegeltest", version = "=0.52.6", features = ["static-engine"] }
+router-clock = { workspace = true, features = ["test-support"] }
+tempfile = "3.27.0"
+
+[lints]
+workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/integration/main.rs"

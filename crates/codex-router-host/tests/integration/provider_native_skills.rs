@@ -273,7 +273,7 @@ async fn native_selected_refusal_is_correlated_before_any_send_and_valid_input_k
         removal
             .pointer("/result/turn/id")
             .and_then(Value::as_str)
-            .ok_or("removal turn ID")?,
+            .ok_or_else(|| format!("removal turn ID missing from correlated reply: {removal}"))?,
         &mut notifications,
     )
     .await?;

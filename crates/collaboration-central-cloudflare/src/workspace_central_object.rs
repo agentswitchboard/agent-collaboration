@@ -1,15 +1,20 @@
 //! Org-scoped central: shared core over a statement-only DO adapter, no Fleet engine.
+use crate::workspace_approval_transactions::WorkerApprovalTransactions;
+use crate::workspace_session_transactions::{WorkerSessionTransactions, fill_session_secret};
 use crate::{
     object_location::ObjectAddress,
     sign_in_trust::CloudflareSignInTrust,
     statement_store::{self, AlarmPolicy},
     worker_clock::WorkspaceClock,
 };
+use central_link_call_composition::OrganizationLinkDispatcher;
 use central_storage::{
     BatchOutcome, ReadOutcome, Statement, StatementBatch, StoreCall, StoreFailure, StoreReply,
 };
 use collaboration_central_core::WorkspaceRuntime;
+use fleet_contracts::{WorkspaceRequest, WorkspaceResponse, WorkspaceServiceProtocol};
 use fleet_identity_protocol::OrganizationId;
+use fleet_rpc::{CallFailure, Envelope, Transport};
 use fleet_runtime::{ClockIds, FleetRuntime};
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
 use futures_util::lock::Mutex;
@@ -28,7 +33,9 @@ struct CentralStatements {
     zero_next_write_alarm: Arc<std::sync::atomic::AtomicBool>,
     #[cfg(feature = "test-support")]
     witness_env: SendWrapper<Env>,
-    connection: SendWrapper<DoConnection>,
+    #[cfg(feature = "test-support")]
+    witnesses: workspace_link_witness::PendingWitnesses,
+    connection: Arc<SendWrapper<DoConnection>>,
     state: Arc<SendWrapper<State>>,
     clock: WorkspaceClock,
     decide_alarm: central_storage::EngineAlarmDecider,
@@ -50,33 +57,28 @@ impl CentralStore for CentralStatements {
             if let Some(failure) = self.faults.take_alarm_batch_failure(&batch) {
                 return Err(failure);
             }
-            let decide_alarm = self.decide_alarm.clone();
+            let decide_alarm = self.engine_decider(
+                !batch.statements.is_empty()
+                    && matches!(batch.alarm, central_storage::AlarmUpdate::Engine(_)),
+            );
             #[cfg(feature = "test-support")]
-            let decide_alarm = if !batch.statements.is_empty()
-                && matches!(
-                    batch.alarm,
-                    central_storage::AlarmUpdate::SetEngineFromQuery { .. }
-                )
-                && self
-                    .zero_next_write_alarm
-                    .swap(false, std::sync::atomic::Ordering::SeqCst)
-            {
-                // The store calls this after the guarded SQL. Workerd rejects epoch zero at setAlarm.
-                let zero_alarm: central_storage::EngineAlarmDecider =
-                    Arc::new(move |times, now, write| {
-                        decide_alarm(times, now, write)?;
-                        Ok(Some(0))
-                    });
-                zero_alarm
-            } else {
-                decide_alarm
-            };
+            let (decide_alarm, captured_alarm) = workspace_link_witness::capture_alarm_inputs(
+                &self.witness_env,
+                decide_alarm,
+                &batch,
+            );
             let result = statement_store::run_batch(
                 &self.connection,
                 batch.into(),
                 AlarmPolicy::Engine(self.state.storage(), self.clock.clone(), decide_alarm),
             )
             .await;
+            #[cfg(feature = "test-support")]
+            if let (Some(capture), Ok(BatchOutcome::Applied { publication, .. })) =
+                (captured_alarm, &result)
+            {
+                self.witnesses.alarm_committed(capture, publication);
+            }
             #[cfg(feature = "test-support")]
             if fault.is_some_and(|fault| {
                 matches!(
@@ -104,16 +106,32 @@ impl CentralStore for CentralStatements {
             let sql = statement.sql;
             let result = statement_store::read(&self.connection, statement.into()).await;
             #[cfg(feature = "test-support")]
-            workspace_link_witness::read_completed(
-                &self.witness_env,
-                self.state.id().to_string(),
-                sql,
-                &result,
-            )
-            .await
-            .map_err(|_| StoreFailure::Unavailable)?;
+            self.witnesses
+                .read_completed(&self.witness_env, &self.state, sql, &result);
             result
         })
+    }
+    fn read_timed_due_rows(
+        &self,
+        query: fleet_runtime_ports::DueListQuery,
+    ) -> impl std::future::Future<
+        Output = std::result::Result<Vec<fleet_runtime_ports::DueRow>, StoreFailure>,
+    > + Send {
+        SendFuture::new(async move {
+            #[cfg(feature = "test-support")]
+            if let Some(failure) = self.faults.take_due_read_failure(query.kind()) {
+                return Err(failure);
+            }
+            statement_store::read_timed_due_rows(&self.connection, query).await
+        })
+    }
+
+    fn engine_alarm_inputs(
+        &self,
+    ) -> impl std::future::Future<
+        Output = std::result::Result<central_storage::EngineAlarmTimes, StoreFailure>,
+    > + Send {
+        SendFuture::new(async move { statement_store::engine_alarm_inputs(&self.connection).await })
     }
     fn published_alarm(
         &self,
@@ -146,6 +164,8 @@ struct WorkspaceTransport {
     env: Arc<SendWrapper<Env>>,
     #[cfg(feature = "test-support")]
     lose_read: Arc<std::sync::atomic::AtomicBool>,
+    #[cfg(feature = "test-support")]
+    legacy_workspace_calls: Arc<std::sync::atomic::AtomicUsize>,
 }
 impl WorkspaceStores for WorkspaceTransport {
     fn call_workspace(
@@ -156,6 +176,9 @@ impl WorkspaceStores for WorkspaceTransport {
     {
         let id = id.clone();
         SendFuture::new(async move {
+            #[cfg(feature = "test-support")]
+            self.legacy_workspace_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             #[cfg(feature = "test-support")]
             let is_read = matches!(&call, StoreCall::Read(_));
             let answer = crate::cloudflare_transport::call_store(&self.env, id, call.into()).await;
@@ -171,11 +194,38 @@ impl WorkspaceStores for WorkspaceTransport {
         })
     }
 }
-type OrgRuntime = WorkspaceRuntime<CentralStatements, WorkspaceTransport>;
-enum AlarmFailure {
-    Store(StoreFailure),
-    Platform(worker::Error),
+impl Transport<WorkspaceServiceProtocol> for WorkspaceTransport {
+    fn exchange(
+        &self,
+        request: Envelope<workspace_ids::WorkspaceId, WorkspaceRequest>,
+    ) -> impl std::future::Future<
+        Output = std::result::Result<
+            Envelope<workspace_ids::WorkspaceId, WorkspaceResponse>,
+            CallFailure,
+        >,
+    > + Send {
+        SendFuture::new(async move {
+            let answer = crate::cloudflare_transport::workspace_exchange(
+                &self.env,
+                request.target.clone(),
+                "/workspace-rpc",
+                &request,
+                None,
+            )
+            .await;
+            #[cfg(feature = "test-support")]
+            if self
+                .lose_read
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err(CallFailure::AnswerLost);
+            }
+            answer
+        })
+    }
 }
+
+type OrgRuntime = WorkspaceRuntime<CentralStatements, WorkspaceTransport>;
 #[durable_object]
 pub struct CentralObject {
     state: Arc<SendWrapper<State>>,
@@ -183,10 +233,16 @@ pub struct CentralObject {
     connection: DoConnection,
     runtime: Mutex<Option<Arc<OrgRuntime>>>,
     clock: WorkspaceClock,
+    link_ids: Arc<ClockIds<WorkspaceClock>>,
+    pending_mac_calls: workspace_pending_mac_calls::PendingMacCalls,
     due_batches: Arc<fleet_runtime::DueBatchState>,
+    mail_retirements: Arc<std::sync::Mutex<std::collections::BTreeSet<workspace_ids::MachineId>>>,
     mail_pushes: Arc<std::sync::Mutex<Vec<fleet_contracts::MailDeliveryReady>>>,
+    mail_offers: workspace_machine_link_io::WorkerMailOffers,
     #[cfg(feature = "test-support")]
     controls: workspace_cases::Controls,
+    #[cfg(feature = "test-support")]
+    witnesses: workspace_link_witness::PendingWitnesses,
     #[cfg(feature = "test-support")]
     launcher_clock_sampled: Mutex<bool>,
 }
@@ -205,6 +261,42 @@ impl CentralObject {
     }
 
     fn statement_host(&self) -> Arc<CentralStatements> {
+        let connection = DoConnection::new(self.state.storage());
+        #[cfg(feature = "test-support")]
+        let connection = {
+            let observations = self.controls.workspace_page_reads.clone();
+            let retired_observations = self.controls.retired_page_reads.clone();
+            let mark_guard_observations = self.controls.direct_mark_guard_reads.clone();
+            connection.with_fetch_observer(move |sql, rows_read| {
+                if sql
+                    == include_str!(
+                        "../../fleet-workspace-directory/src/queries/read_workspace_page.sql"
+                    )
+                    && let Some(armed) = observations
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .as_mut()
+                {
+                    armed.push(rows_read);
+                }
+                if sql == include_str!("../../fleet-mail/src/queries/read_due_mark_guard.sql")
+                    && let Some(armed) = mark_guard_observations
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .as_mut()
+                {
+                    armed.push(rows_read);
+                }
+                if fleet_engine::is_retired_attempt_page_sql(sql)
+                    && let Some(armed) = retired_observations
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .as_mut()
+                {
+                    armed.push(rows_read);
+                }
+            })
+        };
         Arc::new(CentralStatements {
             #[cfg(feature = "test-support")]
             faults: self.controls.faults.clone(),
@@ -212,7 +304,9 @@ impl CentralObject {
             zero_next_write_alarm: self.controls.zero_next_write_alarm.clone(),
             #[cfg(feature = "test-support")]
             witness_env: SendWrapper::new(self.env.clone()),
-            connection: SendWrapper::new(DoConnection::new(self.state.storage())),
+            #[cfg(feature = "test-support")]
+            witnesses: self.witnesses.clone(),
+            connection: Arc::new(SendWrapper::new(connection)),
             state: self.state.clone(),
             clock: self.clock.clone(),
             decide_alarm: fleet_runtime::engine_alarm_decider(self.due_batches.clone()),
@@ -227,13 +321,14 @@ impl CentralObject {
         .map_err(|_| StoreFailure::Unavailable)
     }
     async fn runtime(&self, organization: OrganizationId) -> Result<Arc<OrgRuntime>> {
-        self.runtime_checked(organization)
+        self.runtime_checked(organization, ColdAlarmStart::RecoverOverdueWakes)
             .await
             .map_err(|error| worker::Error::RustError(error.to_string()))
     }
     async fn runtime_checked(
         &self,
         organization: OrganizationId,
+        startup: ColdAlarmStart,
     ) -> std::result::Result<Arc<OrgRuntime>, StoreFailure> {
         let mut initialized = self.runtime.lock().await;
         if let Some(runtime) = initialized.as_ref() {
@@ -242,92 +337,138 @@ impl CentralObject {
         self.migrate().await?;
         let host = self.statement_host();
         let clock: Arc<dyn fleet_runtime_ports::Clock> = Arc::new(self.clock.clone());
-        let runtime = WorkspaceRuntime::new(FleetRuntime::open(
-            organization.clone(),
-            host,
-            WorkspaceTransport {
-                env: Arc::new(SendWrapper::new(self.env.clone())),
+        let central = WorkspaceRuntime::new(
+            FleetRuntime::open(
+                organization.clone(),
+                host.clone(),
+                WorkspaceTransport {
+                    env: Arc::new(SendWrapper::new(self.env.clone())),
+                    #[cfg(feature = "test-support")]
+                    lose_read: self.controls.lose_read.clone(),
+                    #[cfg(feature = "test-support")]
+                    legacy_workspace_calls: self.controls.legacy_workspace_calls.clone(),
+                },
+                clock.clone(),
+                self.link_ids.clone(),
+                self.due_batches.clone(),
+                Arc::new(crate::signin_observation::observe_signin),
+            ),
+            host.clone(),
+            host.clone(),
+        );
+        let ending_transport = Arc::new(
+            workspace_typed_link::approval_delivery::WorkerApprovalDelivery::new(
+                self.state.clone(),
+                self.clock.clone(),
+                self.pending_mac_calls.clone(),
+            ),
+        );
+        let dispatcher = Arc::new(OrganizationLinkDispatcher::new(
+            WorkerSessionTransactions {
+                connection: host.connection.clone(),
                 #[cfg(feature = "test-support")]
-                lose_read: self.controls.lose_read.clone(),
+                fail_reserved_session_reply: self.controls.fail_reserved_session_reply.clone(),
             },
+            WorkerApprovalTransactions {
+                connection: host.connection.clone(),
+                state: self.state.clone(),
+                clock: self.clock.clone(),
+                decide_alarm: host.decide_alarm.clone(),
+                #[cfg(feature = "test-support")]
+                fail_after_write: self.controls.fail_approval_after_write.clone(),
+            },
+            ending_transport.clone(),
             clock.clone(),
-            Arc::new(ClockIds::new(self.clock.clone())),
-            self.due_batches.clone(),
-            Arc::new(crate::signin_observation::observe_signin),
+            self.link_ids.clone(),
+            fill_session_secret,
         ));
-        let runtime = match crate::organization_signin_link::trust_settings(&self.env) {
+        let central = central.with_person_approval_transactions(dispatcher.clone());
+        #[cfg(not(feature = "test-support"))]
+        let central = central.with_link_call_dispatcher(dispatcher);
+        #[cfg(feature = "test-support")]
+        let central = if self
+            .env
+            .var("TEST_SUPPORT_LINK_CALLS")
+            .is_ok_and(|mode| mode.to_string() == "legacy")
+        {
+            central.with_fixture_link_call_dispatcher(dispatcher)
+        } else {
+            central.with_link_call_dispatcher(dispatcher)
+        };
+        let central = match crate::organization_signin_link::trust_settings(&self.env) {
             Ok(Some(settings)) => {
                 match CloudflareSignInTrust::new(settings).for_organization(organization, clock) {
-                    Ok(check) => runtime.with_sign_in_verification(check),
-                    Err(
-                        fleet_contracts::FleetOrganizationStatementRefusal::InvalidConfiguration,
-                    ) => runtime,
-                    Err(_) => return Err(StoreFailure::Unavailable),
+                    Ok(check) => central.with_sign_in_verification(check),
+                    Err(fleet_signin::organization_authority::InvalidStampTrust) => central,
                 }
             }
             // Invalid/missing trust never permits sign-in. The default checker
             // returns the closed InvalidConfiguration refusal for core to observe.
-            Ok(None) | Err(_) => runtime,
+            Ok(None) | Err(_) => central,
         };
         let mail_pushes = self.mail_pushes.clone();
+        let mail_retirements = self.mail_retirements.clone();
         let state_for_revocation = self.state.clone();
-        let runtime = Arc::new(
-            runtime
+        let calls_for_revocation = self.pending_mac_calls.clone();
+        let state_for_person_revision = self.state.clone();
+        let deadline_state = self.state.clone();
+        let central = Arc::new(
+            central
+                .with_approval_delivery_completion(Arc::new(move |work| {
+                    deadline_state.wait_until(work)
+                }))
                 .with_mail_delivery_observer(Arc::new(move |message| {
                     mail_pushes
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .push(message);
                 }))
-                .with_machine_revocation_observer(Arc::new(move |machine_id| {
-                    for socket in state_for_revocation.get_websockets_with_tag(machine_id.as_str())
-                    {
-                        let _ = socket.close(Some(1008), Some("machine authority revoked"));
-                    }
+                .with_mail_retirement_observer(Arc::new(move |machine| {
+                    mail_retirements
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(machine.machine_id);
+                }))
+                .with_person_revision_observer(Arc::new(move |revision| {
+                    workspace_person_socket::close_affected(&state_for_person_revision, &revision);
+                }))
+                .with_enrollment_invalidation_observer(Arc::new(move |invalidation| {
+                    workspace_machine_link::close_enrollment_sockets(
+                        &state_for_revocation,
+                        &calls_for_revocation,
+                        &invalidation,
+                        None,
+                    );
                 })),
         );
-        runtime.recompute_alarm().await?;
-        *initialized = Some(runtime.clone());
-        Ok(runtime)
-    }
-    async fn alarm_runtime(
-        &self,
-    ) -> std::result::Result<Option<(OrganizationId, Arc<OrgRuntime>)>, AlarmFailure> {
-        self.migrate().await.map_err(AlarmFailure::Store)?;
-        let host = self.statement_host();
-        let identity = collaboration_central_core::prepare_central_alarm(host.as_ref())
-            .await
-            .map_err(AlarmFailure::Store)?;
-        let collaboration_central_core::CentralOrganizationIdentity::Stamped { organization_id } =
-            identity
-        else {
-            return Ok(None);
-        };
-        self.check_physical_organization(&organization_id)
-            .map_err(AlarmFailure::Platform)?;
-        #[cfg(feature = "test-support")]
-        signin_launcher_controls::sample_clock(self, &organization_id)
-            .await
-            .map_err(AlarmFailure::Platform)?;
-        let runtime = self
-            .runtime_checked(organization_id.clone())
-            .await
-            .map_err(AlarmFailure::Store)?;
-        Ok(Some((organization_id, runtime)))
+        ending_transport.install_runtime(&central);
+        match startup {
+            ColdAlarmStart::DriveFollows => central.recompute_alarm().await?,
+            ColdAlarmStart::RecoverOverdueWakes => Box::pin(central.recover_cold_alarm()).await?,
+        }
+        *initialized = Some(central.clone());
+        Ok(central)
     }
 }
 impl DurableObject for CentralObject {
     fn new(state: State, env: Env) -> Self {
+        let clock = WorkspaceClock::default();
         Self {
             connection: DoConnection::new(state.storage()),
             state: Arc::new(SendWrapper::new(state)),
             env,
             runtime: Mutex::new(None),
-            clock: WorkspaceClock::default(),
+            link_ids: Arc::new(ClockIds::new(clock.clone())),
+            clock,
+            pending_mac_calls: workspace_pending_mac_calls::PendingMacCalls::default(),
             due_batches: Arc::new(fleet_runtime::DueBatchState::default()),
             mail_pushes: Default::default(),
+            mail_retirements: Default::default(),
+            mail_offers: Default::default(),
             #[cfg(feature = "test-support")]
             controls: workspace_cases::Controls::default(),
+            #[cfg(feature = "test-support")]
+            witnesses: workspace_link_witness::PendingWitnesses::default(),
             #[cfg(feature = "test-support")]
             launcher_clock_sampled: Mutex::new(false),
         }
@@ -351,6 +492,9 @@ impl DurableObject for CentralObject {
                 return workspace_cases::raw_control(self, request).await;
             }
         }
+        if workspace_typed_link::is_mac_call_path(&request.path()) {
+            return self.handle_mac_call(request, organization).await;
+        }
         self.migrate()
             .await
             .map_err(|error| worker::Error::RustError(error.to_string()))?;
@@ -370,7 +514,10 @@ impl DurableObject for CentralObject {
             return workspace_cases::control(self, organization, request).await;
         }
         if crate::organization_signin_link::is_signin_path(&request.path()) {
-            let runtime = match self.runtime_checked(organization).await {
+            let runtime = match self
+                .runtime_checked(organization, ColdAlarmStart::RecoverOverdueWakes)
+                .await
+            {
                 Ok(runtime) => runtime,
                 Err(_) => return Response::empty().map(|response| response.with_status(503)),
             };
@@ -389,12 +536,19 @@ impl DurableObject for CentralObject {
             self.flush_ready_mail(&runtime).await;
             return response.try_into();
         }
-        if let Some(path_organization) = crate::workspace_link_entry::organization(&request.path())
-        {
-            if path_organization.as_ref() != Ok(&organization) {
-                return Response::error("wrong organization", 403);
-            }
-            return self.upgrade_machine_link(organization, &request).await;
+        use crate::workspace_link_entry::{LinkRoute, link_route};
+        if let Some(route) = link_route(&request.path()) {
+            return match route {
+                LinkRoute::Machine(Ok(target)) if target == organization => {
+                    self.upgrade_machine_link(organization, &request).await
+                }
+                LinkRoute::Person(Ok(target)) if target == organization => {
+                    self.upgrade_person_socket(organization, &request).await
+                }
+                LinkRoute::Machine(_) | LinkRoute::Person(_) => {
+                    Response::error("wrong organization", 403)
+                }
+            };
         }
         Response::error("unknown central route", 404)
     }
@@ -404,7 +558,11 @@ impl DurableObject for CentralObject {
         socket: worker::WebSocket,
         message: worker::WebSocketIncomingMessage,
     ) -> Result<()> {
-        self.handle_machine_message(socket, message).await
+        if workspace_person_socket::is_person_socket(&self.state, &socket)? {
+            self.handle_person_socket(socket, message).await
+        } else {
+            self.handle_machine_message(socket, message).await
+        }
     }
     async fn websocket_close(
         &self,
@@ -413,34 +571,18 @@ impl DurableObject for CentralObject {
         _reason: String,
         _was_clean: bool,
     ) -> Result<()> {
-        socket.close(Some(1000), Some("closed"))
+        self.close_machine_link(&socket, 1000, Some("closed"))
     }
     async fn websocket_error(
         &self,
         socket: worker::WebSocket,
         _error: worker::Error,
     ) -> Result<()> {
-        socket.close(Some(1011), Some("link error"))
+        self.close_machine_link(&socket, 1011, Some("link error"))
     }
 
     async fn alarm(&self) -> Result<Response> {
-        #[cfg(feature = "test-support")]
-        return workspace_cases::alarm_with_receipt(self).await;
-        #[cfg(not(feature = "test-support"))]
-        {
-            let runtime = match self.alarm_runtime().await {
-                Ok(Some((_, runtime))) => runtime,
-                Ok(None) => return Response::ok("unprovisioned"),
-                Err(AlarmFailure::Store(error)) => {
-                    return Err(worker::Error::RustError(error.to_string()));
-                }
-                Err(AlarmFailure::Platform(error)) => return Err(error),
-            };
-            let result = runtime.after_event().await;
-            self.flush_ready_mail(&runtime).await;
-            result.map_err(|error| worker::Error::RustError(error.to_string()))?;
-            Response::ok("alarm applied")
-        }
+        self.drive_workspace_alarm().await
     }
 }
 
@@ -454,7 +596,39 @@ mod signin_launcher_controls;
 
 #[path = "workspace_machine_link.rs"]
 mod workspace_machine_link;
+#[path = "workspace_machine_link_io.rs"]
+mod workspace_machine_link_io;
+
+#[path = "workspace_pending_mac_calls.rs"]
+mod workspace_pending_mac_calls;
+
+#[path = "workspace_socket_attachment.rs"]
+mod workspace_socket_attachment;
+
+#[path = "workspace_typed_link.rs"]
+pub(crate) mod workspace_typed_link;
 
 #[cfg(feature = "test-support")]
 #[path = "workspace_link_witness.rs"]
 mod workspace_link_witness;
+
+#[path = "workspace_alarm_decision.rs"]
+mod workspace_alarm_decision;
+
+#[path = "workspace_stamp_store.rs"]
+mod stamp_store;
+
+#[path = "workspace_direct_mail.rs"]
+mod direct_mail;
+
+#[path = "workspace_alarm_owner.rs"]
+mod workspace_alarm_owner;
+#[cfg(feature = "test-support")]
+use workspace_alarm_owner::AlarmFailure;
+use workspace_alarm_owner::ColdAlarmStart;
+
+#[path = "workspace_link_text.rs"]
+mod workspace_link_text;
+
+#[path = "workspace_person_socket.rs"]
+mod workspace_person_socket;

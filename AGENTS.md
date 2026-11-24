@@ -68,6 +68,56 @@ No wall-clock testing. Time comes from one injected clock, created in one place 
 - Check that driver with `cargo test -p codex-router-tailnet-verification-host`
   and `cargo clippy -p codex-router-tailnet-verification-host --all-targets -- -D warnings`.
 
+## Where This Repository Is Going
+
+TODO: remove this section after the production change-over. It is here because
+agents kept designing and building against it.
+
+- The Router, central and sign-in are being rebuilt as one new system. In it,
+  every Router enrolls with central, nothing works without central, and a
+  session is named by machine id and session id everywhere. Production stays on
+  the released version until the owner declares one change-over. That
+  change-over is not close; build the system first.
+- The change-over is a clean start. The new system starts on empty state. The
+  old Router's and the old central's stored state is moved somewhere safe at
+  that time as a backup, and new code never reads it.
+- So do not design or write any of these: a migration of old stored data; a
+  reader for an old stored form; a remembered old identity, such as an old
+  machine id or session id; a door that still accepts an old request form; a
+  test or proof that a store made by an older build upgrades. A migration has
+  only to apply to an empty store.
+- Wires and doors change once. The old form is refused with a message that says
+  what to send. No backward compatibility, no shim, no flag.
+- Do not design or build the change-over itself (the backup, the install, the
+  enrollment procedure) until the owner asks for it.
+- When stored data makes you want to preserve it or to ask what happens to it
+  across the change-over, the answer is already here: it is left behind.
+- The owner's production machines stay on 0.1.125 until the new system is
+  built. Nothing built here is deployed before then, so nothing here has to keep
+  0.1.125's behaviour, data or request forms working. Do not weigh a design by
+  what it costs an installed 0.1.125.
+- No stand-in for a system the owner has decided on. When work needs something
+  that is decided and not yet built (the approval system, sessions in central,
+  session secrets), build that thing's first complete component and hold the
+  step that depends on it. Do not invent an interim rule that lets the step
+  work without it, and do not ask the owner to choose among such rules. Build
+  by components; each component is complete.
+- A call that shows no proof of who it is does nothing on its own. What needs
+  the owner's say goes through the approval system. Nothing is deployed until
+  the approval system is done with central.
+- The approval system is built whole: the request and its lifecycle, central's
+  store, the link, the owner's signed-in way to answer, the Mac's half,
+  delegates and pass-on, attached clients, and questions. Building it by
+  components sets the order of the work; it does not make a smaller system
+  acceptable. No part of it is replaced by a question to the owner about doing
+  less, and nothing that depends on approvals is served until the whole system
+  is done with central.
+- The owner's words, 22 November 2026: "I kept saying cut over, what did you
+  carry over?"; "Just build the approval system or some part to fit. Please
+  don't do shortcuts"; "Don't repeat same mistakes with keeping old stuff and
+  worrying about backward compatibility. I'm gonna stay on 125 until we build
+  this."; "Build the whole thing".
+
 ## Release And Homebrew Distribution
 
 - Before merging a user-facing code change, advance the workspace package

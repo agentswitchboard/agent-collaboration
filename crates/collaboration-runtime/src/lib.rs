@@ -12,24 +12,10 @@ mod private_socket_listener;
 pub use native_relay_listener::NativeRelayListener;
 pub use private_socket_listener::{OwnerOnlySocket, SocketCleanup};
 mod codex_conversation_operation_recorder;
-mod provider_operation_store;
 pub use codex_conversation_operation_recorder::{
     CodexConversationOperationRecorder, CodexPermissionModes,
     UnavailableConversationOperationRecorder,
 };
-mod provider_session_event_hub;
-mod provider_session_record;
-pub use provider_operation_store::StoredUncertainOperation;
-pub use provider_operation_store::{
-    PROVIDER_OPERATION_RETENTION_MONTHS, ProviderOperationAdmission,
-    ProviderOperationAdmissionResult, ProviderOperationRecord, ProviderOperationStore,
-    ProviderOperationStoreError, provider_operation_retention_cutoff_ms,
-};
-#[cfg(any(test, feature = "test-support"))]
-pub use provider_session_event_hub::HeldSessionHistory;
-pub use provider_session_event_hub::owner_inbox;
-pub use provider_session_event_hub::{HubReceiveError, ProviderSessionEventHub, receive_hub_event};
-pub use provider_session_record::{ProviderSessionRecord, ProviderSessionResumeInputs};
 mod app_server_event_forwarding;
 mod app_server_item_metadata;
 mod app_server_item_translation;
@@ -53,9 +39,10 @@ pub(crate) const AUTO_SESSION_MODE: &str = "auto";
 mod provider_acp_busy_prompt;
 mod provider_acp_session_route;
 mod router_session_app_server;
-pub use app_server_model_catalog::{
-    InvalidProviderModelEntry, ProviderModelEntry, ProviderModelReasoning, ProviderReasoningChoice,
-    SessionModelCatalog, SessionModelCatalogError, render_model_list,
+#[cfg(test)]
+use collaboration_contracts::{InvalidProviderModelEntry, ProviderReasoningChoice};
+use collaboration_contracts::{
+    ProviderModelReasoning, SessionModelCatalog, SessionModelCatalogError,
 };
 pub use router_session_app_server::{
     AppServerConnectionError, RouterSessionAppServerContext, RouterSessionAppServerListener,
@@ -96,7 +83,7 @@ mod wake_driven_worker_observation;
 pub use wake_driven_worker_loop::{BatchOutcome, WakeDrivenWorkerLoop, WakeSource, WorkerPass};
 pub use wake_driven_worker_observation::WorkerObservation;
 #[cfg(any(test, feature = "test-support"))]
-pub use wake_driven_worker_observation::{LoopSnapshot, SleepGate};
+pub use wake_driven_worker_observation::{LoopSnapshot, SleepGate, SourceWaitProbe};
 
 /// Test-only hooks for causal runtime steps observed through the application.
 #[cfg(feature = "test-support")]

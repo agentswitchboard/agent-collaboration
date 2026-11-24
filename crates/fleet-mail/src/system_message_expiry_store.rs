@@ -3,42 +3,75 @@ use crate::{
     message_deadline::{EXPIRED_24_HOURS, system_message_deadline},
     system_message_expiry::{State, SystemMessageExpiry},
 };
-use central_engine_model::{EngineTime, InstanceKey, StateTag};
-use central_storage::{GuardedStatement, ReadOutcome, SqlValue, Statement, StoreFailure};
+use central_engine_model::{EngineTime, FailureRecord, InstanceKey, StateTag};
+use central_storage::{GuardedStatement, RowExpectation, SqlValue, Statement, StoreFailure};
+use fleet_contracts::{AttemptGuard, EngineSubject};
 use fleet_engine::{
-    EngineHost, LoadFailure, StoreAdapter, Versioned, decode_load_failure, guarded_attempt_sql,
-    load_store_failure, raw_version,
+    EngineHost, MachineStoreAdapter, SubjectAttemptWriter, SubjectLoadFailure,
+    VersionedSubjectState, checked_engine_statement, checked_subject_attempt,
+    checked_subject_projection, classify_subject_decode_failure, classify_subject_read_failure,
+    owner_sql::guard_bind,
 };
 use fleet_runtime_ports::CentralStore as _;
 use fleet_runtime_ports::stored_values::format_utc_millis;
-use fleet_runtime_ports::{
-    guarded_statements::{exact, text},
-    stored_values::{column, string},
-    workspace_decode_error::corrupt,
-};
+use fleet_runtime_ports::workspace_decode_error::corrupt;
 use std::convert::Infallible;
 
-const EXPIRY_FAILURE: &str = guarded_attempt_sql!(
-    "EXISTS(SELECT 1 FROM mail_messages WHERE message_id IS ?20 AND message_kind IS ?21 AND state IS ?22 AND failure_reason IS ?23 AND delivery_window_ends_at IS ?24 AND created_at IS ?25 AND updated_at IS ?26)"
-);
+checked_subject_projection!(StoredSystemExpiry {
+    message_id: Option<String> => MessageId,
+    message_kind: String => MessageKind,
+    state: String => State,
+    failure_reason: Option<String> => FailureReason,
+    delivery_window_ends_at: Option<String> => DeliveryWindowEndsAt,
+    created_at: String => CreatedAt,
+    updated_at: String => UpdatedAt,
+}; SystemExpiryVersion, expiry_columns);
 
-fn decode_queued(rows: &ReadOutcome, row: &[SqlValue]) -> Result<State, StoreFailure> {
-    string(rows, row, "message_id")?
-        .parse::<workspace_ids::MessageId>()
-        .map_err(|_| corrupt("mail_messages.message_id"))?;
-    if !matches!(column(rows, row, "failure_reason")?, SqlValue::Null) {
-        return Err(corrupt("mail_messages.failure_reason"));
-    }
-    let time = |field| {
-        string(rows, row, field)?
+#[cfg(test)]
+type CheckedSystemExpiry = StoredSystemExpiry<fleet_engine::owner_sql::CheckedStorage>;
+
+fn plan_system_expiry_read(key: &InstanceKey) -> Statement {
+    checked_engine_statement!(
+        query_file_as,
+        [CheckedSystemExpiry],
+        "src/queries/read_system_expiry.sql",
+        message_id = key.0.clone(),
+    )
+}
+
+impl StoredSystemExpiry {
+    fn decode_queued(&self) -> Result<State, StoreFailure> {
+        self.message_id
+            .stored_text()?
+            .parse::<workspace_ids::MessageId>()
+            .map_err(|_| corrupt("mail_messages.message_id"))?;
+        if !matches!(
+            self.message_kind.stored_text()?,
+            "notice" | "deliveryOutcome"
+        ) {
+            return Err(corrupt("mail_messages.message_kind"));
+        }
+        if self.state.stored_text()? != "queued" {
+            return Err(corrupt("mail_messages.state"));
+        }
+        if !matches!(self.failure_reason.raw(), SqlValue::Null) {
+            return Err(corrupt("mail_messages.failure_reason"));
+        }
+        let deadline = self
+            .delivery_window_ends_at
+            .stored_text()?
             .parse::<EngineTime>()
-            .map_err(|_| corrupt(field))
-    };
-    let deadline = time("delivery_window_ends_at")?;
-    if system_message_deadline(time("created_at")?) != Some(deadline) {
-        return Err(corrupt("mail_messages.delivery_window_ends_at"));
+            .map_err(|_| corrupt("delivery_window_ends_at"))?;
+        let created = self
+            .created_at
+            .stored_text()?
+            .parse::<EngineTime>()
+            .map_err(|_| corrupt("created_at"))?;
+        if system_message_deadline(created) != Some(deadline) {
+            return Err(corrupt("mail_messages.delivery_window_ends_at"));
+        }
+        Ok(State::Queued { deadline })
     }
-    Ok(State::Queued { deadline })
 }
 
 pub struct SystemMessageExpiryStore<'a, R: EngineHost>(&'a R);
@@ -49,39 +82,48 @@ impl<'a, R: EngineHost> SystemMessageExpiryStore<'a, R> {
     }
 }
 
-impl<R: EngineHost> StoreAdapter<SystemMessageExpiry> for SystemMessageExpiryStore<'_, R> {
-    async fn load(&self, key: &InstanceKey) -> Result<Option<Versioned<State>>, LoadFailure> {
-        let rows = self.0.host().read(Statement {
-            sql: "SELECT message_id,message_kind,state,failure_reason,delivery_window_ends_at,created_at,updated_at FROM mail_messages WHERE message_id=? AND state='queued' AND message_kind IN ('notice','deliveryOutcome')",
-            args: vec![text(&key.0)],
-        }).await.map_err(load_store_failure)?;
-        let Some(version) = raw_version(&rows)? else {
+impl<R: EngineHost> MachineStoreAdapter<SystemMessageExpiry> for SystemMessageExpiryStore<'_, R> {
+    type Version = SystemExpiryVersion;
+
+    async fn load_subject_state(
+        &self,
+        key: &InstanceKey,
+    ) -> Result<
+        Option<VersionedSubjectState<State, Self::Version>>,
+        SubjectLoadFailure<Self::Version>,
+    > {
+        let rows = self
+            .0
+            .central_store()
+            .read(plan_system_expiry_read(key))
+            .await
+            .map_err(classify_subject_read_failure)?;
+        let Some((stored, version)) = StoredSystemExpiry::observe(&rows)? else {
             return Ok(None);
         };
-        let state = decode_queued(&rows, &version.0)
-            .map_err(|failure| decode_load_failure(failure, version.clone()))?;
-        Ok(Some(Versioned { state, version }))
+        let state = stored
+            .decode_queued()
+            .map_err(|failure| classify_subject_decode_failure(failure, version.clone()))?;
+        Ok(Some(VersionedSubjectState {
+            decoded_state: state,
+            observed_subject_version: version,
+        }))
     }
 
-    fn save(
+    fn plan_subject_state_write(
         &self,
         _key: &InstanceKey,
-        prior: &Versioned<State>,
+        prior: &VersionedSubjectState<State, Self::Version>,
         next: &State,
     ) -> Result<GuardedStatement, StoreFailure> {
-        let mut args = vec![
-            text(next.state_tag()),
-            text(EXPIRED_24_HOURS),
-            text(format_utc_millis(self.0.now()?)),
-        ];
-        args.extend(prior.version.0.clone());
-        Ok(exact(
-            "UPDATE mail_messages SET state=?1,failure_reason=?2,updated_at=?3 WHERE message_id IS ?4 AND message_kind IS ?5 AND state IS ?6 AND failure_reason IS ?7 AND delivery_window_ends_at IS ?8 AND created_at IS ?9 AND updated_at IS ?10",
-            args,
-        ))
+        plan_system_expiry_transition(
+            &prior.observed_subject_version,
+            next.state_tag(),
+            self.0.current_engine_time()?,
+        )
     }
 
-    fn effect_statements(
+    fn plan_machine_effect_writes(
         &self,
         _key: &InstanceKey,
         effect: &Infallible,
@@ -89,7 +131,56 @@ impl<R: EngineHost> StoreAdapter<SystemMessageExpiry> for SystemMessageExpirySto
         match *effect {}
     }
 
-    fn failure_sql(&self) -> &'static str {
-        EXPIRY_FAILURE
+    fn attempt_failure_writer(&self) -> SubjectAttemptWriter<Self::Version> {
+        plan_system_expiry_attempt
     }
+}
+
+fn plan_system_expiry_transition(
+    version: &SystemExpiryVersion,
+    state: &str,
+    now: EngineTime,
+) -> Result<GuardedStatement, StoreFailure> {
+    Ok(GuardedStatement {
+        statement: checked_engine_statement!(
+            query_file,
+            [],
+            "src/queries/advance_system_expiry.sql",
+            next_state = state.to_owned(),
+            expiry_reason = EXPIRED_24_HOURS.to_owned(),
+            updated_at = format_utc_millis(now),
+            message_id = guard_bind::<expiry_columns::MessageId>(&version.message_id),
+            message_kind = guard_bind::<expiry_columns::MessageKind>(&version.message_kind),
+            prior_state = guard_bind::<expiry_columns::State>(&version.state),
+            failure_reason = guard_bind::<expiry_columns::FailureReason>(&version.failure_reason),
+            deadline = guard_bind::<expiry_columns::DeliveryWindowEndsAt>(
+                &version.delivery_window_ends_at
+            ),
+            owner_created_at = guard_bind::<expiry_columns::CreatedAt>(&version.created_at),
+            prior_updated_at = guard_bind::<expiry_columns::UpdatedAt>(&version.updated_at),
+        ),
+        expect: RowExpectation::Exactly(1),
+    })
+}
+
+fn plan_system_expiry_attempt(
+    subject: &EngineSubject,
+    record: &FailureRecord,
+    prior: Option<&AttemptGuard>,
+    version: &SystemExpiryVersion,
+) -> Result<GuardedStatement, StoreFailure> {
+    Ok(checked_subject_attempt!(
+        "src/queries/upsert_system_expiry_attempt.sql",
+        subject,
+        record,
+        prior,
+        message_id = guard_bind::<expiry_columns::MessageId>(&version.message_id),
+        message_kind = guard_bind::<expiry_columns::MessageKind>(&version.message_kind),
+        prior_state = guard_bind::<expiry_columns::State>(&version.state),
+        failure_reason = guard_bind::<expiry_columns::FailureReason>(&version.failure_reason),
+        deadline =
+            guard_bind::<expiry_columns::DeliveryWindowEndsAt>(&version.delivery_window_ends_at),
+        owner_created_at = guard_bind::<expiry_columns::CreatedAt>(&version.created_at),
+        prior_updated_at = guard_bind::<expiry_columns::UpdatedAt>(&version.updated_at),
+    ))
 }

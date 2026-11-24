@@ -26,6 +26,8 @@ use super::{
     supervise_detached_connection_handler,
 };
 #[cfg(test)]
+use crate::db_write_actor::QuotaWriteCompletion;
+#[cfg(test)]
 use crate::server::runtime_lifecycle::test_credential_store_for_config;
 
 /// Runtime configuration for the assembled loopback router.
@@ -272,9 +274,11 @@ impl LoopbackRouterRuntime {
         credential_store: RuntimeCredentialStore,
     ) -> Result<Self, LoopbackRouterRuntimeError> {
         let caller_dispatcher = tracing::dispatcher::get_default(|dispatcher| dispatcher.clone());
-        Self::start_with_test_maintenance_completion_sender(
+        Self::start_with_test_completion_senders(
             config,
             credential_store,
+            None,
+            #[cfg(test)]
             None,
             caller_dispatcher,
         )
@@ -286,6 +290,27 @@ impl LoopbackRouterRuntime {
     ) -> Result<Self, LoopbackRouterRuntimeError> {
         let credential_store = test_credential_store_for_config(&config)?;
         Self::start(config, credential_store)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn start_for_test_with_quota_write_completion_sender(
+        config: LoopbackRouterRuntimeConfig,
+        completion_sender: tokio::sync::mpsc::UnboundedSender<QuotaWriteCompletion>,
+    ) -> Result<Self, LoopbackRouterRuntimeError> {
+        let credential_store = test_credential_store_for_config(&config)?;
+        let caller_dispatcher = tracing::dispatcher::get_default(|dispatcher| dispatcher.clone());
+        Self::start_with_test_completion_senders(
+            config,
+            credential_store,
+            None,
+            Some(completion_sender),
+            caller_dispatcher,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn db_write_actor_for_test(&self) -> DbWriteActor {
+        self.db_write_actor.clone()
     }
 
     #[cfg(test)]
@@ -304,21 +329,25 @@ impl LoopbackRouterRuntime {
         completion_sender: std::sync::mpsc::Sender<crate::maintenance_actor::MaintenanceCompletion>,
     ) -> Result<Self, LoopbackRouterRuntimeError> {
         let caller_dispatcher = tracing::dispatcher::get_default(|dispatcher| dispatcher.clone());
-        Self::start_with_test_maintenance_completion_sender(
+        Self::start_with_test_completion_senders(
             config,
             credential_store,
             Some(completion_sender),
+            None,
             caller_dispatcher,
         )
     }
 
-    pub(super) fn start_with_test_maintenance_completion_sender(
+    fn start_with_test_completion_senders(
         config: LoopbackRouterRuntimeConfig,
         credential_store: RuntimeCredentialStore,
         #[cfg(test)] completion_sender: Option<
             std::sync::mpsc::Sender<crate::maintenance_actor::MaintenanceCompletion>,
         >,
         #[cfg(not(test))] _completion_sender: Option<()>,
+        #[cfg(test)] quota_write_completion: Option<
+            tokio::sync::mpsc::UnboundedSender<QuotaWriteCompletion>,
+        >,
         caller_dispatcher: tracing::dispatcher::Dispatch,
     ) -> Result<Self, LoopbackRouterRuntimeError> {
         let session_affinity_cache = config.session_account_affinity_cache();
@@ -375,11 +404,14 @@ impl LoopbackRouterRuntime {
         let websocket_revocations = WebSocketRevocationRegistry::new();
         let route_band_queue_health = RouteBandQueueHealth::default();
         let selection_reservation_lock = SelectionReservationLock::default();
+        let db_write_repository =
+            SqliteDbWriteRepository::new(writable_state_stores.db_write_state_store.clone());
+        #[cfg(test)]
+        let db_write_repository =
+            db_write_repository.with_quota_write_completion(quota_write_completion);
         let db_write_actor = DbWriteActor::start_on_handle(
             runtime.handle(),
-            Arc::new(SqliteDbWriteRepository::new(
-                writable_state_stores.db_write_state_store.clone(),
-            )),
+            Arc::new(db_write_repository),
             Arc::clone(&route_band_queue_health),
             PROVIDER_EXHAUSTION_QUEUE_CAPACITY,
         );

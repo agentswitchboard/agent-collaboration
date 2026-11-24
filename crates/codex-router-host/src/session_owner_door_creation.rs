@@ -6,7 +6,9 @@ use acp_client_runtime::{
     ExternalProviderRuntimeError, RequestedProviderSettings,
     owner_session_creation::OwnerCreatedSetup,
     owner_session_open::{OwnerOpenedSession, OwnerSessionOpenSetup},
-    session_owner_task::{OwnerCompletionPort, OwnerTaskError, SessionOwnerPorts},
+    session_owner_task::{
+        OwnerCallerWakes, OwnerCompletionPort, OwnerTaskError, SessionOwnerPorts,
+    },
 };
 use collaboration_protocol::{EndpointRef, OperationId, SessionId, SessionRef};
 use provider_session_machines::session_owner::{
@@ -43,6 +45,18 @@ struct ProvisionalCreate {
 }
 
 impl SessionOwnerDoor {
+    #[cfg(test)]
+    pub(crate) fn provisional_snapshots_for_test(
+        &self,
+        operation: &OperationId,
+    ) -> Option<
+        tokio::sync::watch::Receiver<provider_session_machines::session_owner::SessionSnapshot>,
+    > {
+        self.registry
+            .provisional_owner(operation)
+            .map(|owner| owner.handle.snapshots())
+    }
+
     pub(crate) async fn create(
         self: &Arc<Self>,
         endpoint: EndpointRef,
@@ -212,6 +226,7 @@ impl ProvisionalCreate {
         operation: Uuid,
         provider_id: String,
         completions: &OwnerCompletionPort,
+        caller_wakes: &mut OwnerCallerWakes,
     ) -> Result<Option<OwnerEvent>, OwnerTaskError> {
         let door = self.door.upgrade().ok_or(OwnerTaskError::ExecutorStopped)?;
         let id = match SessionId::try_from(provider_id) {
@@ -257,8 +272,12 @@ impl ProvisionalCreate {
             )
             .map_err(|_| OwnerTaskError::ExecutorStopped)?;
         if let Some(batch) = self.rebase.take()
-            && let Some(result) =
-                ports.execute(address, OwnerEffect::Publish(batch), completions)?
+            && let Some(result) = ports.execute(
+                address,
+                OwnerEffect::Publish(batch),
+                completions,
+                caller_wakes,
+            )?
         {
             completions.reserve(address)?.send(result);
         }
@@ -318,7 +337,12 @@ impl ProvisionalCreate {
         Ok(())
     }
 
-    fn reply(&mut self, address: OwnerAddress, outcome: CreateOutcome) {
+    fn reply(
+        &mut self,
+        address: OwnerAddress,
+        outcome: CreateOutcome,
+        caller_wakes: &mut OwnerCallerWakes,
+    ) {
         if let Some(configuring) = self.configuring.take() {
             configuring.cancel();
         }
@@ -336,7 +360,7 @@ impl ProvisionalCreate {
             },
         };
         if let Some(response) = self.response.take() {
-            let _caller_gone = response.send(result);
+            caller_wakes.send(response, result);
         }
         if self.adopted.is_none() {
             if let Some(door) = self.door.upgrade() {
@@ -355,6 +379,7 @@ impl SessionOwnerPorts for ProvisionalCreate {
         address: OwnerAddress,
         effect: OwnerEffect,
         completions: &OwnerCompletionPort,
+        caller_wakes: &mut OwnerCallerWakes,
     ) -> Result<Option<OwnerEvent>, OwnerTaskError> {
         match effect {
             OwnerEffect::Wire(SessionWireRequest::Create { operation }) => {
@@ -363,9 +388,9 @@ impl SessionOwnerPorts for ProvisionalCreate {
             OwnerEffect::AdoptProviderId {
                 operation,
                 provider_id,
-            } => self.adopt(address, operation, provider_id, completions),
+            } => self.adopt(address, operation, provider_id, completions, caller_wakes),
             OwnerEffect::CreateSettled { outcome, .. } => {
-                self.reply(address, outcome);
+                self.reply(address, outcome, caller_wakes);
                 Ok(None)
             }
             OwnerEffect::Publish(batch) if self.adopted.is_none() => {
@@ -388,13 +413,18 @@ impl SessionOwnerPorts for ProvisionalCreate {
                     ports.prepare_created(opened);
                     self.settings = Some(*settings);
                 }
-                ports.execute(address, OwnerEffect::Publish(batch), completions)
+                ports.execute(
+                    address,
+                    OwnerEffect::Publish(batch),
+                    completions,
+                    caller_wakes,
+                )
             }
             other => self
                 .adopted
                 .as_mut()
                 .ok_or(OwnerTaskError::ExecutorStopped)?
-                .execute(address, other, completions),
+                .execute(address, other, completions, caller_wakes),
         }
     }
 }

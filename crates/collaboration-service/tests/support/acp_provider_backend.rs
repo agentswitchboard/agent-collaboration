@@ -25,7 +25,7 @@ use session_event_model::{
 use std::sync::Mutex;
 use tokio::sync::broadcast;
 
-impl collaboration_runtime::SessionModelCatalog for ScriptedProviderBackend {
+impl collaboration_contracts::SessionModelCatalog for ScriptedProviderBackend {
     fn read_models(
         &self,
         _: SessionRef,
@@ -33,8 +33,8 @@ impl collaboration_runtime::SessionModelCatalog for ScriptedProviderBackend {
         Box<
             dyn std::future::Future<
                     Output = Result<
-                        Vec<collaboration_runtime::ProviderModelEntry>,
-                        collaboration_runtime::SessionModelCatalogError,
+                        Vec<collaboration_contracts::ProviderModelEntry>,
+                        collaboration_contracts::SessionModelCatalogError,
                     >,
                 > + Send
                 + '_,
@@ -254,44 +254,51 @@ impl SessionEventHub for ScriptedProviderBackend {
             if !exists {
                 return Err(SessionEventHubError::SessionNotFound);
             }
+            let snapshot: Vec<_> = vec![HubEvent {
+                sequence: 1,
+                event: SessionEvent::CapabilitiesChanged {
+                    capabilities: CapabilityReport {
+                        load: true,
+                        resume: true,
+                        steer: true,
+                        queue: Some(QueueSupport {
+                            kind: QueueCapability::Router,
+                            can_cancel: true,
+                        }),
+                        ..CapabilityReport::default()
+                    },
+                },
+            }]
+            .into_iter()
+            .chain(history_available.then_some(HubEvent {
+                sequence: 2,
+                event: SessionEvent::ItemStarted {
+                    item: SessionItem {
+                        item_id: "historical-item".into(),
+                        kind: SessionItemKind::AgentMessage,
+                        text: Some("Prior reply".into()),
+                    },
+                },
+            }))
+            .chain(running.then_some(HubEvent {
+                sequence: 2,
+                event: SessionEvent::TurnStarted {
+                    turn_id: "turn-1".into(),
+                    input_id: session_event_model::InputId::generate(),
+                },
+            }))
+            .chain(snapshot_events)
+            .collect();
+            let latest_issued_sequence = snapshot
+                .iter()
+                .map(|event| event.sequence)
+                .max()
+                .unwrap_or(0);
             Ok(SessionEventAttachment {
-                snapshot: vec![HubEvent {
-                    sequence: 1,
-                    event: SessionEvent::CapabilitiesChanged {
-                        capabilities: CapabilityReport {
-                            load: true,
-                            resume: true,
-                            steer: true,
-                            queue: Some(QueueSupport {
-                                kind: QueueCapability::Router,
-                                can_cancel: true,
-                            }),
-                            ..CapabilityReport::default()
-                        },
-                    },
-                }]
-                .into_iter()
-                .chain(history_available.then_some(HubEvent {
-                    sequence: 2,
-                    event: SessionEvent::ItemStarted {
-                        item: SessionItem {
-                            item_id: "historical-item".into(),
-                            kind: SessionItemKind::AgentMessage,
-                            text: Some("Prior reply".into()),
-                        },
-                    },
-                }))
-                .chain(running.then_some(HubEvent {
-                    sequence: 2,
-                    event: SessionEvent::TurnStarted {
-                        turn_id: "turn-1".into(),
-                        input_id: session_event_model::InputId::generate(),
-                    },
-                }))
-                .chain(snapshot_events)
-                .collect(),
+                snapshot,
                 receiver,
                 epoch: 0,
+                latest_issued_sequence,
             })
         })
     }

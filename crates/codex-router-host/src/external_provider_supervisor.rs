@@ -3,8 +3,8 @@
 mod provider_admission_policy;
 mod provider_operation_admission;
 mod provider_operation_index;
-#[cfg(test)]
-pub(crate) use provider_operation_index::HeldResult;
+#[cfg(any(test, feature = "test-support"))]
+pub use provider_operation_index::HeldResult;
 use provider_operation_index::{LiveOperation, LiveOperations, UncertaintyCells};
 mod provider_operation_failure;
 mod provider_operation_finish;
@@ -13,6 +13,7 @@ mod provider_operation_handoff;
 #[path = "external_provider_supervisor/provider_operation_property_test.rs"]
 mod provider_operation_properties;
 mod provider_owner_delivery;
+pub use provider_owner_delivery::ManagedClaudeNoticeAdapter;
 mod provider_owner_operations;
 mod provider_owner_prompt;
 pub(crate) use provider_owner_prompt::{SessionQueuePlan, WarmRun};
@@ -45,6 +46,7 @@ use collaboration_contracts::ProviderConversationBackend;
 use collaboration_contracts::ProviderConversationFuture;
 use collaboration_contracts::ProviderSessionInspectFuture;
 use collaboration_contracts::ProviderSettingsFuture;
+use collaboration_contracts::SessionTokenAtCreation;
 use collaboration_protocol::{
     ConversationAdmissionState, ConversationBindingIdentity, ConversationCancelRequest,
     ConversationCloseRequest, ConversationCreateRequest, ConversationLoadRequest,
@@ -59,10 +61,6 @@ use collaboration_protocol::{
     ProviderOperationStage, ProviderReconciliationState, ProviderSessionInspectRequest,
     ProviderSettingsAcceptRequest, ProviderSettingsSetRequest, SessionId, SessionRef,
 };
-use collaboration_runtime::ProviderOperationAdmission;
-use collaboration_runtime::ProviderOperationAdmissionResult;
-use collaboration_runtime::ProviderOperationRecord;
-use collaboration_runtime::ProviderOperationStore;
 use collaboration_service::conversation_operation_snapshot as snapshot_from_record;
 use std::{
     collections::HashMap,
@@ -70,6 +68,10 @@ use std::{
     sync::{Arc, Mutex as StdMutex},
     time::Duration,
 };
+use switchboard_session_store::ProviderOperationAdmission;
+use switchboard_session_store::ProviderOperationAdmissionResult;
+use switchboard_session_store::ProviderOperationRecord;
+use switchboard_session_store::ProviderOperationStore;
 use tokio::sync::Mutex;
 use tokio_util::task::TaskTracker;
 
@@ -90,6 +92,7 @@ struct SupervisorInner {
     bindings: HashMap<EndpointRef, RuntimeBinding>,
     store: Arc<Mutex<ProviderOperationStore>>,
     clock: Arc<dyn router_clock::RuntimeClock>,
+    session_token_at_creation: Arc<dyn SessionTokenAtCreation>,
     live_operations: Arc<StdMutex<LiveOperations>>,
     operation_tasks: TaskTracker,
     operation_cleanup_cancel: tokio_util::sync::CancellationToken,
@@ -105,6 +108,8 @@ struct SupervisorInner {
     settings_catalogs:
         Arc<Mutex<HashMap<SessionRef, provider_session_machines::ProviderSettingsCatalog>>>,
     started_at_ms: i64,
+    #[cfg(test)]
+    owner_hub: Arc<switchboard_session_events::ProviderSessionEventHub>,
     #[cfg(test)]
     admission_test_pause: StdMutex<Option<AdmissionTestPause>>,
     #[cfg(test)]
@@ -293,59 +298,6 @@ impl ExternalProviderSupervisor {
         }
     }
 
-    /// Holds `operation_id` live, as admitting it to a provider does.
-    #[cfg(test)]
-    pub(crate) fn hold_live_operation(&self, operation_id: OperationId) {
-        self.inner
-            .live_operations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .operations
-            .insert(operation_id, Arc::new(LiveOperation::pending()));
-    }
-
-    /// The result lock of a held operation, which a test holds as a reader of the result
-    /// would.
-    #[cfg(test)]
-    pub(crate) fn held_result_for_test(&self, operation_id: &OperationId) -> Option<HeldResult> {
-        self.inner
-            .live_operations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .operations
-            .get(operation_id)
-            .cloned()
-            .map(HeldResult)
-    }
-
-    /// Publishes a held operation's result through the path a finished operation takes,
-    /// with no store write. Returns whether the operation was held.
-    #[cfg(test)]
-    pub(crate) async fn publish_held_result(&self, operation_id: &OperationId) -> bool {
-        let live = self
-            .inner
-            .live_operations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .operations
-            .get(operation_id)
-            .cloned();
-        let Some(live) = live else {
-            return false;
-        };
-        let result = Err(unavailable_failure(operation_id.clone(), None));
-        live.finish_write(CustodyEnd::NoWrite);
-        self.inner
-            .publish_result(
-                operation_id.clone(),
-                &live,
-                result,
-                provider_operation_finish::Retention::Settled,
-            )
-            .await;
-        true
-    }
-
     /// A receiver that wakes after each live operation publishes its result. Subscribe
     /// before checking an operation, so a completion in between is not missed.
     #[must_use]
@@ -363,31 +315,47 @@ impl ExternalProviderSupervisor {
             .map(|(operation_id, _)| operation_id.clone())
             .collect()
     }
+    #[cfg(any(test, feature = "test-support"))]
     pub fn new(
         bindings: Vec<ExternalProviderBinding>,
         store: Arc<Mutex<ProviderOperationStore>>,
+        clock: Arc<dyn router_clock::RuntimeClock>,
     ) -> Result<Self, &'static str> {
-        Self::new_with_hub(bindings, store, None, None)
+        Self::new_with_hub(bindings, store, None, None, clock)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn new_with_hub(
         bindings: Vec<ExternalProviderBinding>,
         store: Arc<Mutex<ProviderOperationStore>>,
-        hub: Option<Arc<collaboration_runtime::ProviderSessionEventHub>>,
+        hub: Option<Arc<switchboard_session_events::ProviderSessionEventHub>>,
         scratch_root: Option<PathBuf>,
+        clock: Arc<dyn router_clock::RuntimeClock>,
     ) -> Result<Self, &'static str> {
-        let clock = bindings.first().map_or_else(
-            || {
-                Arc::new(router_clock::SystemRuntimeClock::new())
-                    as Arc<dyn router_clock::RuntimeClock>
-            },
-            |binding| binding.runtime.owner_clock(),
-        );
+        Self::new_with_session_tokens(
+            bindings,
+            store,
+            hub,
+            scratch_root,
+            clock,
+            Arc::new(collaboration_contracts::V0SessionTokenIssuer),
+        )
+    }
+
+    pub(crate) fn new_with_session_tokens(
+        bindings: Vec<ExternalProviderBinding>,
+        store: Arc<Mutex<ProviderOperationStore>>,
+        hub: Option<Arc<switchboard_session_events::ProviderSessionEventHub>>,
+        scratch_root: Option<PathBuf>,
+        clock: Arc<dyn router_clock::RuntimeClock>,
+        session_token_at_creation: Arc<dyn SessionTokenAtCreation>,
+    ) -> Result<Self, &'static str> {
         let started_at_ms = clock.utc_now().timestamp_millis();
         let queued_operations = ProviderQueueOperationRegistry::new(clock.clone());
         let owner_hub = hub.unwrap_or_else(|| {
-            Arc::new(collaboration_runtime::ProviderSessionEventHub::new(
+            Arc::new(switchboard_session_events::ProviderSessionEventHub::new(
                 Arc::clone(&store),
+                clock.clone(),
             ))
         });
         let mut runtimes = HashMap::with_capacity(bindings.len());
@@ -487,6 +455,7 @@ impl ExternalProviderSupervisor {
                 bindings: runtimes,
                 store,
                 clock,
+                session_token_at_creation,
                 live_operations,
                 operation_tasks: TaskTracker::new(),
                 operation_cleanup_cancel: tokio_util::sync::CancellationToken::new(),
@@ -496,6 +465,8 @@ impl ExternalProviderSupervisor {
                 scratch_root,
                 settings_catalogs,
                 started_at_ms,
+                #[cfg(test)]
+                owner_hub,
                 #[cfg(test)]
                 admission_test_pause: StdMutex::new(None),
                 #[cfg(test)]
@@ -929,3 +900,15 @@ mod provider_delivery_submission;
 mod tests;
 #[cfg(test)]
 pub(crate) use provider_delivery_submission::ProviderPromptDispatch;
+#[cfg(test)]
+pub(crate) use tests::restore_recovery_tests::restore_recovery_fixture::{
+    RestoreRig, wait_request,
+};
+
+#[cfg(test)]
+#[path = "external_provider_supervisor/clock_injection_test.rs"]
+mod clock_injection_tests;
+
+#[cfg(test)]
+#[path = "external_provider_supervisor/provider_operation_settlement_test.rs"]
+mod checked_settlement_tests;

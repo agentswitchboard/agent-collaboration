@@ -2,8 +2,9 @@ use super::probe_machine::{EngineProbe, ProbeEffect, ProbeState};
 use central_engine_model::{EngineTime, InstanceKey, StateTag};
 use central_storage::{GuardedStatement, ReadOutcome, SqlValue, Statement, StoreFailure};
 use fleet_engine::{
-    EngineHost, LoadFailure, StoreAdapter, Versioned, decode_load_failure, guarded_attempt_sql,
-    load_store_failure, raw_version,
+    EngineHost, MachineStoreAdapter, SubjectLoadFailure, VersionedSubjectState,
+    classify_subject_decode_failure, classify_subject_read_failure, guarded_attempt_upsert_sql,
+    read_observed_subject_version,
 };
 use fleet_runtime_ports::CentralStore as _;
 use fleet_runtime_ports::stored_values::format_utc_millis;
@@ -14,7 +15,7 @@ use fleet_runtime_ports::{
 };
 
 pub(crate) struct ProbeStore<'a, R: EngineHost>(pub &'a R);
-const FAILURE: &str = guarded_attempt_sql!(
+const FAILURE: &str = guarded_attempt_upsert_sql!(
     "EXISTS(SELECT 1 FROM engine_probe_items WHERE item_id IS ?20 AND group_id IS ?21 AND due_at IS ?22 AND claim IS ?23 AND state IS ?24 AND completed_claim IS ?25 AND created_at IS ?26 AND updated_at IS ?27 AND machine_kind='engine_probe' AND state NOT IN ('fired','stopped'))"
 );
 
@@ -65,36 +66,47 @@ fn decode(rows: &ReadOutcome) -> Result<ProbeState, StoreFailure> {
         _ => Err(corrupt("engine_probe_items.state")),
     }
 }
-impl<R: EngineHost> StoreAdapter<EngineProbe> for ProbeStore<'_, R> {
-    async fn load(&self, key: &InstanceKey) -> Result<Option<Versioned<ProbeState>>, LoadFailure> {
-        let rows=self.0.host().read(Statement {
+impl<R: EngineHost> MachineStoreAdapter<EngineProbe> for ProbeStore<'_, R> {
+    type Version = fleet_contracts::SubjectVersion;
+
+    async fn load_subject_state(
+        &self,
+        key: &InstanceKey,
+    ) -> Result<
+        Option<VersionedSubjectState<ProbeState, Self::Version>>,
+        SubjectLoadFailure<Self::Version>,
+    > {
+        let rows=self.0.central_store().read(Statement {
             sql:"SELECT item_id,group_id,due_at,claim,state,completed_claim,created_at,updated_at FROM engine_probe_items WHERE item_id=? AND machine_kind='engine_probe'",
             args:vec![text(&key.0)],
-        }).await.map_err(load_store_failure)?;
-        let Some(version) = raw_version(&rows)? else {
+        }).await.map_err(classify_subject_read_failure)?;
+        let Some(version) = read_observed_subject_version(&rows)? else {
             return Ok(None);
         };
-        let state =
-            decode(&rows).map_err(|failure| decode_load_failure(failure, version.clone()))?;
-        Ok(Some(Versioned { state, version }))
+        let state = decode(&rows)
+            .map_err(|failure| classify_subject_decode_failure(failure, version.clone()))?;
+        Ok(Some(VersionedSubjectState {
+            decoded_state: state,
+            observed_subject_version: version,
+        }))
     }
-    fn save(
+    fn plan_subject_state_write(
         &self,
         _key: &InstanceKey,
-        prior: &Versioned<ProbeState>,
+        prior: &VersionedSubjectState<ProbeState, Self::Version>,
         next: &ProbeState,
     ) -> Result<GuardedStatement, StoreFailure> {
         let mut args = vec![
             text(next.state_tag()),
-            text(format_utc_millis(self.0.now()?)),
+            text(format_utc_millis(self.0.current_engine_time()?)),
         ];
-        args.extend(prior.version.0.clone());
+        args.extend(prior.observed_subject_version.0.clone());
         Ok(exact(
             "UPDATE engine_probe_items SET state=?1,updated_at=?2 WHERE item_id IS ?3 AND group_id IS ?4 AND due_at IS ?5 AND claim IS ?6 AND state IS ?7 AND completed_claim IS ?8 AND created_at IS ?9 AND updated_at IS ?10 AND machine_kind='engine_probe'",
             args,
         ))
     }
-    fn effect_statements(
+    fn plan_machine_effect_writes(
         &self,
         key: &InstanceKey,
         effect: &ProbeEffect,
@@ -110,7 +122,15 @@ impl<R: EngineHost> StoreAdapter<EngineProbe> for ProbeStore<'_, R> {
             )],
         })
     }
-    fn failure_sql(&self) -> &'static str {
-        FAILURE
+    fn attempt_failure_writer(&self) -> fleet_engine::SubjectAttemptWriter<Self::Version> {
+        |subject, record, prior, version| {
+            fleet_engine::owner_sql::plan_guarded_attempt_upsert(
+                FAILURE,
+                subject,
+                record,
+                prior,
+                version.0.clone(),
+            )
+        }
     }
 }

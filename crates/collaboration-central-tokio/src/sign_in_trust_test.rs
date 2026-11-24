@@ -35,6 +35,7 @@ fn settings(jwks_url: String) -> SignInTrustSettings {
         issuer: "https://sign-in.example.invalid".into(),
         audience: "https://central.example.invalid/identity".into(),
         admin_audience: "https://central.example.invalid/admin".into(),
+        person_link_audience: None,
         machine_audience: "https://central.example.invalid/machine".into(),
         public_origin: "https://central.example.invalid".into(),
         jwks_url,
@@ -210,7 +211,7 @@ async fn native_factory_refuses_invalid_trust_configuration() -> TestResult {
     );
     assert!(matches!(
         verifier,
-        Err(FleetOrganizationStatementRefusal::InvalidConfiguration)
+        Err(fleet_signin::organization_authority::InvalidStampTrust)
     ));
     Ok(())
 }

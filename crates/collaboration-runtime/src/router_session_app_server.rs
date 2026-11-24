@@ -1,7 +1,6 @@
 //! Codex app-server protocol transport for Router-owned provider sessions.
 use crate::app_server_event_forwarding::AppServerEventForwarding;
 use crate::app_server_event_forwarding::historical_turns;
-use crate::app_server_model_catalog::ProviderModelEntry;
 use crate::app_server_model_catalog::render_model_list;
 use crate::private_socket_listener::PrivateSocketListener;
 use collaboration_contracts::CommandContent;
@@ -9,6 +8,7 @@ use collaboration_contracts::CreateSessionCommand;
 use collaboration_contracts::HubEvent;
 use collaboration_contracts::HubSessionSummary;
 use collaboration_contracts::PromptSessionCommand;
+use collaboration_contracts::ProviderModelEntry;
 use collaboration_contracts::SessionCommandPort;
 use collaboration_contracts::SessionEventAttachment;
 use collaboration_contracts::SessionEventHub;
@@ -190,9 +190,52 @@ struct HandledAppServerRequest {
     session_attachment: Option<(SessionRef, SessionEventAttachment)>,
 }
 
+async fn send_model_list_response(
+    id: Value,
+    session: Option<SessionRef>,
+    catalog_reader: Arc<dyn crate::SessionModelCatalog>,
+    sender: mpsc::Sender<Result<HandledAppServerRequest, AppServerConnectionError>>,
+) {
+    let catalog = match session {
+        Some(session) => catalog_reader.read_models(session).await,
+        None => Ok(Vec::new()),
+    };
+    let response = match catalog {
+        Ok(catalog) => json!({"id":id,"result":render_model_list(&catalog)}),
+        Err(error) => json!({"id":id,"error":{"code":match error {
+            crate::SessionModelCatalogError::SessionNotFound => -32002,
+            crate::SessionModelCatalogError::Unavailable => -32000,
+        },"message":error.to_string()}}),
+    };
+    let _sent = sender
+        .send(Ok(HandledAppServerRequest {
+            binding_attempt: None,
+            input_id: None,
+            method: "model/list".into(),
+            response,
+            post_response_frames: Vec::new(),
+            session_attachment: None,
+        }))
+        .await;
+}
+
 pub async fn serve_router_session_app_server_connection(
     stream: UnixStream,
     context: Arc<RouterSessionAppServerContext>,
+) -> Result<(), AppServerConnectionError> {
+    serve_app_server_connection(
+        stream,
+        context,
+        #[cfg(test)]
+        None,
+    )
+    .await
+}
+
+async fn serve_app_server_connection(
+    stream: UnixStream,
+    context: Arc<RouterSessionAppServerContext>,
+    #[cfg(test)] model_dispatch: Option<mpsc::UnboundedSender<Value>>,
 ) -> Result<(), AppServerConnectionError> {
     let mut websocket = accept_async(stream).await?;
     let (event_sender, mut event_receiver) =
@@ -369,29 +412,20 @@ pub async fn serve_router_session_app_server_connection(
             let session = skill_bindings.model_session().cloned();
             let catalog_reader = Arc::clone(&context.model_catalog);
             let sender = response_sender.clone();
-            request_tasks.spawn(async move {
-                let catalog = match session {
-                    Some(session) => catalog_reader.read_models(session).await,
-                    None => Ok(Vec::new()),
-                };
-                let response = match catalog {
-                    Ok(catalog) => json!({"id":id,"result":render_model_list(&catalog)}),
-                    Err(error) => json!({"id":id,"error":{"code":match error {
-                        crate::SessionModelCatalogError::SessionNotFound => -32002,
-                        crate::SessionModelCatalogError::Unavailable => -32000,
-                    },"message":error.to_string()}}),
-                };
-                let _sent = sender
-                    .send(Ok(HandledAppServerRequest {
-                        binding_attempt: None,
-                        input_id: None,
-                        method: "model/list".into(),
-                        response,
-                        post_response_frames: Vec::new(),
-                        session_attachment: None,
-                    }))
-                    .await;
-            });
+            #[cfg(test)]
+            let (observed_id, pending_workers) = (id.clone(), request_tasks.len());
+            request_tasks.spawn(send_model_list_response(
+                id,
+                session,
+                catalog_reader,
+                sender,
+            ));
+            #[cfg(test)]
+            if request_tasks.len() > pending_workers
+                && let Some(dispatched) = &model_dispatch
+            {
+                let _fixture_gone = dispatched.send(observed_id);
+            }
             continue;
         }
         if request.get("method").and_then(Value::as_str) == Some("skills/list") {

@@ -15,9 +15,21 @@ crate-type = ["cdylib"]
 [features]
 link = []
 # The storage boundary's workerd cases (Verification O1); never in a production bundle.
-test-support = ["fleet-runtime/test-support", "fleet-storage-schema/test-support", "collaboration-central-core/test-support", "dep:sqlx"]
+test-support = ["central-link-call-composition/test-support", "fleet-engine/test-support", "fleet-runtime/test-support", "fleet-storage-schema/test-support", "collaboration-central-core/test-support", "central-link-protocol/test-support", "sqlx-durable-object/test-support", "dep:sqlx", "dep:fleet-actor-identity", "dep:fleet-approvals", "dep:fleet-machine-login", "fleet-machine-login/test-support", "dep:central-engine-model", "dep:approval-request-protocol"]
 
 [dependencies]
+central-link-call-composition.workspace = true
+central-engine-model = { workspace = true, optional = true }
+fleet-actor-identity = { workspace = true, optional = true }
+fleet-machine-login = { workspace = true, optional = true }
+fleet-lent-transaction.workspace = true
+fleet-approvals = { workspace = true, features = ["test-support"], optional = true }
+approval-request-protocol = { workspace = true, optional = true }
+fleet-signin.workspace = true
+fleet-mail.workspace = true
+fleet-rpc.workspace = true
+fleet-engine.workspace = true
+fleet-workspace-service.workspace = true
 central-storage.workspace = true
 central-link-protocol.workspace = true
 fleet-contracts.workspace = true
@@ -53,12 +65,12 @@ web-sys = { version = "=0.3.106", features = ["WorkerGlobalScope", "Crypto", "Su
 js-sys = "=0.3.106"
 
 [dev-dependencies]
-fleet-mail.workspace = true
+hegel = { package = "hegeltest", version = "=0.52.6", features = ["static-engine"] }
 runtime-primitives.workspace = true
 base64 = "0.22.1"
 central-link-client = { path = "../central-link-client", version = "0.1.152" }
 reqwest-websocket = "=0.5.1"
-collaboration-central-conformance = { path = "../collaboration-central-conformance", version = "0.1.150", features = ["signin-test-support"] }
+collaboration-central-conformance = { path = "../collaboration-central-conformance", version = "0.1.150", features = ["signin-test-support", "session-link-test-support"] }
 router-clock = {path="../router-clock",version="0.1.150",features=["test-support"]}
 tempfile = "3.27.0"
 reqwest = {workspace=true,features=["json"]}

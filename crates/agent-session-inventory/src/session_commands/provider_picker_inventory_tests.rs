@@ -266,10 +266,10 @@ async fn hosted_refresh_keeps_equal_provider_and_codex_ids_as_two_rows() {
         EndpointDescription, ProviderRequestedPolicy, ProviderWorkingDirectory, RouterAccess,
         SessionRef,
     };
-    use collaboration_runtime::ProviderOperationStore;
-    use collaboration_runtime::ProviderSessionRecord;
     use collaboration_service::ApplicationFixture;
     use std::sync::Arc;
+    use switchboard_session_store::ProviderOperationStore;
+    use switchboard_session_store::ProviderSessionRecord;
     use tokio::sync::Mutex;
 
     let root = tempfile::Builder::new()

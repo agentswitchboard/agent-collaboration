@@ -3,6 +3,23 @@ use serde_json::{Value, json};
 pub fn explicit_negatives(name: &str, literals: &[Value]) -> Vec<Value> {
     let mut invalid = vec![Value::Null];
     match name {
+        "RevokeMachineEnrollmentRequest"
+        | "MachineEnrollmentRevocationResult"
+        | "ProvisionOrganization"
+        | "ProvisionOrganizationResult"
+        | "ReadOrganizationStatementDigest"
+        | "OrganizationStatementDigestReply" => {
+            for literal in literals {
+                for field in literal.as_object().unwrap().keys() {
+                    let mut missing = literal.clone();
+                    missing.as_object_mut().unwrap().remove(field);
+                    invalid.push(missing);
+                }
+            }
+            if name == "MachineEnrollmentRevocationResult" {
+                invalid.push(json!({"result":"refused","reason":"unrecognizedVariant"}));
+            }
+        }
         "AuthorizationRevision" | "AuthorizationRevisionAcknowledgement" => {
             for literal in literals {
                 for field in literal.as_object().unwrap().keys() {
@@ -42,6 +59,35 @@ pub fn explicit_negatives(name: &str, literals: &[Value]) -> Vec<Value> {
                 json!({"result":"refused","reason":"unrecognizedVariant"}),
                 json!({"result":"refused","reason":{"kind":"nameInUse"}}),
             ]);
+            let allowance = literals
+                .iter()
+                .filter_map(|value| value["records"].as_array())
+                .flatten()
+                .find(|record| record["kind"] == "machineAllowanceChanged")
+                .unwrap();
+            let mut retired = allowance.clone();
+            let retired = retired.as_object_mut().unwrap();
+            retired.remove("machineId");
+            retired.remove("workspaceId");
+            retired.remove("state");
+            retired.insert("kind".into(), json!("allowanceChanged"));
+            retired.insert("targetId".into(), allowance["workspaceId"].clone());
+            invalid.push(json!({"result":"records","records":[retired]}));
+            for field in ["machineId", "workspaceId", "state"] {
+                let mut missing = allowance.clone();
+                missing.as_object_mut().unwrap().remove(field);
+                invalid.push(json!({"result":"records","records":[missing]}));
+            }
+            for (field, value) in [
+                ("state", json!("inactive")),
+                ("machineId", json!(7)),
+                ("workspaceId", Value::Null),
+                ("targetId", allowance["machineId"].clone()),
+            ] {
+                let mut wrong = allowance.clone();
+                wrong[field] = value;
+                invalid.push(json!({"result":"records","records":[wrong]}));
+            }
         }
         "CreateWorkspaceRequest" => {
             let mut missing_description = literals[0].clone();
@@ -54,12 +100,18 @@ pub fn explicit_negatives(name: &str, literals: &[Value]) -> Vec<Value> {
             wrong_operation["operationId"] = json!("00000000-0000-4000-8000-000000000001");
             invalid.push(wrong_operation);
         }
-        "ReadChangeRecordsRequest" => {
+        "ReadChangeRecordsRequest" | "ListWorkspacesRequest" => {
             for limit in [json!(0), json!(101), json!(1.5)] {
                 let mut wrong_limit = literals[0].clone();
                 wrong_limit["limit"] = limit;
                 invalid.push(wrong_limit);
             }
+        }
+        "ListWorkspacesResult" => {
+            let first_row = literals.iter()
+                .find_map(|reply| reply["workspaces"].as_array()?.first()).unwrap();
+            invalid.push(json!({"result":"workspaces","workspaces":vec![first_row.clone(); 101],"next":null}));
+            invalid.push(json!({"result":"workspaces","workspaces":[]}));
         }
         "OrganizationAdminIntent" => {
             for literal in literals {
@@ -90,30 +142,6 @@ pub fn explicit_negatives(name: &str, literals: &[Value]) -> Vec<Value> {
                 invalid.push(wrong_params);
             }
         }
-        "AdmitMachineConnection" | "AdmittedMachine" | "MachineConnectionAdmission" => {
-            if let Some(first) = literals.first() {
-                let legacy_fields: &[&str] = if name == "AdmitMachineConnection" {
-                    &["installation"]
-                } else {
-                    &["installation", "peer"]
-                };
-                for field in legacy_fields {
-                    let mut value = first.clone();
-                    let target = if name == "MachineConnectionAdmission" {
-                        &mut value["machine"]
-                    } else {
-                        &mut value
-                    };
-                    target[*field] = json!("019a3dce-2000-7000-8000-000000000001");
-                    invalid.push(value);
-                }
-                if name == "AdmittedMachine" {
-                    for peer in ["00000000-0000-4000-8000-000000000001", "019A3DCE-2000-7000-8000-000000000001"] {
-                        let mut value = first.clone(); value["peer"] = json!(peer); invalid.push(value);
-                    }
-                }
-            }
-        }
         "DecideDeviceLogin" | "PresentedMachine" => {
             if let Some(first) = literals.first() {
                 for peer in ["00000000-0000-4000-8000-000000000001", "019A3DCE-2000-7000-8000-000000000001"] {
@@ -121,9 +149,6 @@ pub fn explicit_negatives(name: &str, literals: &[Value]) -> Vec<Value> {
                 }
             }
         }
-        "OwnerRefusal" => invalid.push(json!({"kind":"secondFactorRequired","withinSeconds":900})),
-        "IdentityLookupResult" | "WorkspaceLookupResult" | "MachineLookupResult" | "CommandStatusResult" | "WhoIsLoggedInResult" => invalid.push(json!({"result":"refused","reason":{"kind":"secondFactorRequired","withinSeconds":900}})),
-        "IdentityLookup" => invalid.push(json!({"organizationId":"019a3dce-2000-7000-8000-000000000001","subject":{"kind":"person","personId":"019a3dce-2000-7000-8000-000000000001"}})),
         "AbsolutePath" => invalid.extend([
             json!("relative"), json!("C:\\x"), json!(""), json!("/nul\0"),
             json!(format!("/{}", "a".repeat(4096))),
@@ -152,16 +177,15 @@ pub fn explicit_negatives(name: &str, literals: &[Value]) -> Vec<Value> {
         "SequenceNumber" => invalid.extend([json!(9007199254740992_u64), json!(-1), json!(1.5)]),
         "IsolationKind" => invalid.extend([json!("Host"),json!("process-sandbox"),json!("unknown")]),
         "MachineEnvironment" => invalid.extend([json!("Physical"),json!("cloud-vm"),json!("unknown")]),
-        "Activity" | "SessionEndCause" | "HarnessKind" | "RemoteLaunchAccess" | "StandingRole" | "SessionStateView" | "AllowanceState" => {
+        "Activity" | "SessionEndCause" | "HarnessKind" | "RemoteLaunchAccess" | "AllowanceState" => {
             invalid.push(json!("unrecognizedVariant"));
             for literal in literals { if let Some(value) = literal.as_str() { invalid.push(json!(value.to_uppercase())); } }
         }
         "Heartbeat" => invalid.push(json!({"capabilities":["RemoteStart"]})),
-        "ReportSessionActivity" | "MachinePresenceAnswer" => {
+        "ReportSessionActivity" => {
             if let Some(first) = literals.first() {
                 let mut value = first.clone();
-                let field = if name == "ReportSessionActivity" { "sequence" } else { "attachSequence" };
-                value[field] = json!(9007199254740992_u64);
+                value["sequence"] = json!(9007199254740992_u64);
                 invalid.push(value);
             }
         }
@@ -297,16 +321,7 @@ fn description_byte_overflows(name: &str, literals: &[Value]) -> Vec<Value> {
 // bound. Each owning contract must reject them through its registered keyword.
 fn composed_byte_overflows(name: &str, literals: &[Value]) -> Vec<Value> {
     let fields: &[(&str, usize)] = match name {
-        "DecideDeviceLogin" | "AllowedMachineRow" | "MachineLookupResult" => &[("/label", 256)],
-        "CreateWorkspace" | "ProjectRef" | "WorkspaceRef" => &[("/name", 256)],
-        "IdentityLookup" | "RemoveSession" | "SessionRow" => &[("/session/sessionId", 4096)],
-        "MachineRow" => &[("/label", 256), ("/sessions/0/session/sessionId", 4096)],
-        "WhoIsLoggedInResult" => &[
-            ("/machines/0/label", 256),
-            ("/machines/0/sessions/0/session/sessionId", 4096),
-        ],
-        "IdentityLookupResult" => &[("/launchContext/workingDirectory", 4096)],
-        "WorkspaceLookupResult" => &[("/workspace/name", 256), ("/allowedMachines/0/label", 256)],
+        "DecideDeviceLogin" => &[("/label", 256)],
         _ => &[],
     };
     fields
@@ -317,11 +332,7 @@ fn composed_byte_overflows(name: &str, literals: &[Value]) -> Vec<Value> {
                 .find(|literal| literal.pointer(pointer).is_some())
                 .unwrap_or_else(|| panic!("{name} has no literal with {pointer}"))
                 .clone();
-            let overflow = if *pointer == "/launchContext/workingDirectory" {
-                format!("/{}", "é".repeat(maximum_bytes / 2))
-            } else {
-                format!("{}a", "é".repeat(maximum_bytes / 2))
-            };
+            let overflow = format!("{}a", "é".repeat(maximum_bytes / 2));
             assert_eq!(overflow.len(), maximum_bytes + 1);
             *invalid.pointer_mut(pointer).unwrap() = json!(overflow);
             invalid

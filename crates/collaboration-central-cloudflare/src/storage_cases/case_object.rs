@@ -70,8 +70,10 @@ struct SeamState {
 #[durable_object]
 pub struct StorageCaseObject {
     state: State,
+    env: Env,
     connection: DoConnection,
     opened: Cell<bool>,
+    approvals_opened: Cell<bool>,
     pauses: PausePoints,
     turns: Arc<WorkspaceTurns>,
     holds: RefCell<BTreeMap<(WorkspaceId, CasePausePoint), HeldPause>>,
@@ -231,6 +233,28 @@ impl StorageCaseObject {
                     &statement_store::read(&self.connection, read.statement().into()).await,
                 )
             }
+            "sessions" if migrator == CaseMigrator::Sessions => {
+                let Some(name) = request.headers().get("x-case-object")? else {
+                    return Response::error("missing organization object", 400);
+                };
+                let namespace = self.env.durable_object("STORAGE_CASES")?;
+                let owner = namespace.id_from_name(&name)?;
+                if owner.to_string() != self.state.id().to_string() {
+                    return Response::error("wrong organization object", 400);
+                }
+                let (organization, _) = name
+                    .split_once('.')
+                    .ok_or_else(|| case_error("missing organization scope"))?;
+                let organization =
+                    fleet_identity_protocol::OrganizationId::try_from(organization.to_owned())
+                        .map_err(case_error)?;
+                super::session_cases::apply(
+                    self.state.storage(),
+                    organization,
+                    request.json().await?,
+                )
+                .await
+            }
             "alarm" => {
                 Response::from_json(&json!({ "alarmMs": self.state.storage().get_alarm().await? }))
             }
@@ -291,12 +315,14 @@ impl StorageCaseObject {
 }
 
 impl DurableObject for StorageCaseObject {
-    fn new(state: State, _env: Env) -> Self {
+    fn new(state: State, env: Env) -> Self {
         let connection = DoConnection::new(state.storage());
         Self {
             state,
+            env,
             connection,
             opened: Cell::new(false),
+            approvals_opened: Cell::new(false),
             pauses: PausePoints::default(),
             turns: Arc::new(WorkspaceTurns::default()),
             holds: RefCell::new(BTreeMap::new()),
@@ -304,6 +330,15 @@ impl DurableObject for StorageCaseObject {
     }
 
     async fn fetch(&self, request: Request) -> Result<Response> {
+        if request.path() == "/approval-store" {
+            return super::approval_store_witness::apply_fixture(
+                &self.state,
+                &self.connection,
+                &self.approvals_opened,
+                request,
+            )
+            .await;
+        }
         let migrator: CaseMigrator = serde_json::from_str(
             &request
                 .headers()

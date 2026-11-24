@@ -11,6 +11,7 @@ import {
   C2WitnessRecorder,
   assertC2Restore,
   c2AttachmentSchema,
+  c2EventSchema,
   c2RecordSchema,
   type C2WitnessRecord,
 } from "./c2-witness.ts";
@@ -147,7 +148,7 @@ test("compiled-class wrapper shape hibernates and delegates on the original work
     await once(socket, "open");
     const [text] = await welcome;
     assert.equal(String(text), "welcome");
-    const initial = witness.snapshot();
+    const initial = await witness.settledLifecycle("upgrade", 1);
     assert.deepEqual(
       initial.map((record) => record.event.kind),
       ["constructor", "upgrade"],
@@ -170,7 +171,7 @@ test("compiled-class wrapper shape hibernates and delegates on the original work
       delegated: "actual-delegation-probe",
       clock: { milliseconds: clock },
     });
-    const final = witness.snapshot();
+    const final = await witness.settledLifecycle("handler", 1);
     assert.deepEqual(
       final.map((record) => record.event.kind),
       ["constructor", "upgrade", "constructor", "handler"],
@@ -180,6 +181,42 @@ test("compiled-class wrapper shape hibernates and delegates on the original work
     const handler = final[3]?.event;
     assert.ok(handler?.kind === "handler");
     assert.deepEqual(handler.attachment, attachment);
+
+    // Keep one callback held after its reply and all the way through eviction.
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const finished = Promise.withResolvers<number>();
+    const observe = witness.observe;
+    Object.defineProperty(witness, "observe", {
+      value: async (...args: Parameters<typeof observe>) => {
+        const [request] = args;
+        const event = c2EventSchema.parse(await request.clone().json());
+        if (event.kind !== "handler") return observe(...args);
+        entered.resolve();
+        await release.promise;
+        const response = await observe(...args);
+        finished.resolve(response.status);
+        return response;
+      },
+    });
+    const delayedReply = once(socket, "message");
+    socket.send("held-recorder-eviction");
+    assert.deepEqual(JSON.parse(String((await delayedReply)[0])), {
+      delegated: "held-recorder-eviction",
+      clock: { milliseconds: clock },
+    });
+    await entered.promise;
+    try {
+      await host.evictCentral(organization);
+    } finally {
+      release.resolve();
+    }
+    assert.equal(
+      await finished.promise,
+      503,
+      "a cancelled old callback cannot record after eviction",
+    );
+    assert.deepEqual(witness.snapshot(), final, "eviction must preserve the prior witness history");
   } finally {
     const closed = once(socket, "close");
     socket.close(1000, "complete");

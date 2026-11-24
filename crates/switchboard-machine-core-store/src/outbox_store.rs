@@ -1,0 +1,194 @@
+//! The Mac outbox in machine_local.sqlite (owner 2026-11-15, record:210). Every
+//! time comes from the caller's injected clock; stored values are decoded
+//! through Rust types and an invalid row is refused, never coerced.
+use crate::{
+    LocalOutboxRefusal, MachineLocalStore, OutboxQueuedWrite, OutboxRequestKey,
+    OutboxRequestStatus, OutboxWriteTarget, RowCorruption,
+};
+use sqlite_storage_maintenance::TransactionStart;
+use workspace_ids::RequestId;
+use workspace_model::{Caller, Timestamp};
+
+mod outbox_queries;
+mod outbox_row_effects;
+mod outbox_row_machine;
+mod outbox_row_state;
+mod outbox_rows;
+mod outbox_transitions;
+
+use outbox_rows::{decode_row, outbox_content, read_owned_outbox, read_row};
+pub use outbox_transitions::ClaimedBatch;
+
+#[derive(Debug, thiserror::Error)]
+pub enum OutboxStoreError {
+    #[error("outbox timestamp {field} is out of range")]
+    InvalidTimestamp { field: &'static str },
+    #[error("claim deadline threshold {required_deadline_after_ms} precedes current time {now_ms}")]
+    ClaimDeadlineThresholdBeforeNow {
+        required_deadline_after_ms: i64,
+        now_ms: i64,
+    },
+    #[error("outbox outcome does not settle the claimed operation for request {request}")]
+    InvalidOutcome { request: RequestId },
+    #[error("central reported contradictory final outcomes for request {request}")]
+    ContradictoryFinalOutcome { request: RequestId },
+    #[error("outbox request {request} ended without being sent and cannot have a late outcome")]
+    LateOutcomeForNotSent { request: RequestId },
+    #[error("central delivery outcome does not match request {request}")]
+    DeliveryOutcomeMismatch { request: RequestId },
+    #[error("the outbox insert did not start")]
+    InsertNotStarted(#[source] sqlx::Error),
+    #[error("outbox storage unavailable")]
+    Database(#[from] sqlx::Error),
+    #[error("outbox write could not be encoded")]
+    Encode(#[from] serde_json::Error),
+    #[error("outbox item {request_id} has an invalid stored {field}")]
+    CorruptItem {
+        request_id: String,
+        field: &'static str,
+    },
+    #[error("outbox write content could not be digested")]
+    Digest,
+    #[error("the payload does not carry request id {request}")]
+    RequestIdMismatch { request: RequestId },
+    #[error("outbox item {request} is not {expected}")]
+    UnexpectedState {
+        request: RequestId,
+        expected: &'static str,
+    },
+}
+
+impl From<RowCorruption> for OutboxStoreError {
+    fn from(row: RowCorruption) -> Self {
+        Self::CorruptItem {
+            request_id: row.key,
+            field: row.field,
+        }
+    }
+}
+
+/// A write entering the outbox, with the mark its receipt promises.
+#[derive(Clone, Debug)]
+pub struct NewOutboxItem {
+    pub request: RequestId,
+    pub caller: Caller,
+    pub payload: OutboxQueuedWrite,
+    pub flush_at_ms: i64,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum OutboxInsert {
+    Stored,
+    /// The same caller already stored this exact write.
+    AlreadyStored(OutboxRequestStatus),
+    /// The id is taken by a different write or another caller.
+    Refused(LocalOutboxRefusal),
+}
+
+/// A write loaded for sending in a batch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StoredOutboxWrite {
+    pub request: RequestId,
+    pub caller: Caller,
+    pub payload: OutboxQueuedWrite,
+    pub sent_at: Timestamp,
+}
+
+/// A claimed write awaiting reconciliation by custody.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnansweredOutboxClaim {
+    pub key: OutboxRequestKey,
+    pub caller: Caller,
+    pub target: OutboxWriteTarget,
+    pub deadline_ms: i64,
+    /// The original validated write, used to bind the reconciled outcome.
+    pub payload: OutboxQueuedWrite,
+}
+
+/// Answered writes are kept this long after their answer, then deleted.
+pub(crate) const ANSWERED_RETENTION_MILLIS: i64 = 60 * 24 * 60 * 60 * 1000;
+
+/// The outbox table, borrowed from the machine-local store whose
+/// connection and signalled transactions it uses.
+pub struct MacOutbox<'store> {
+    store: &'store mut MachineLocalStore,
+}
+
+impl<'store> MacOutbox<'store> {
+    pub const fn new(store: &'store mut MachineLocalStore) -> Self {
+        Self { store }
+    }
+
+    /// Stores a write in the outbox, or reports the earlier identical write.
+    pub async fn insert(
+        &mut self,
+        item: &NewOutboxItem,
+        now_ms: i64,
+    ) -> Result<OutboxInsert, OutboxStoreError> {
+        validate_write_timestamp(now_ms, "created_at")?;
+        validate_write_timestamp(item.flush_at_ms, "flush_at_ms")?;
+        if item.payload.request_id() != Some(&item.request) {
+            return Err(OutboxStoreError::RequestIdMismatch {
+                request: item.request.clone(),
+            });
+        }
+        let request_id = item.request.as_str();
+        let caller_json = serde_json::to_string(&item.caller)?;
+        let payload_json = serde_json::to_string(&item.payload)?;
+        let state = outbox_row_machine::OutboxRowMachine::INITIAL_STATE.as_str();
+        let flush_at_ms = item.flush_at_ms;
+        let mut transaction = self
+            .store
+            .transaction(TransactionStart::Immediate)
+            .await
+            .map_err(OutboxStoreError::InsertNotStarted)?;
+        let existing = read_row(&mut transaction, &item.request).await?;
+        if let Some(row) = existing {
+            let stored = decode_row(&row)?;
+            return outbox_row_machine::OutboxRowMachine::replay_insert(&stored, item);
+        }
+        // The creation stamp is the agent's send time (design 2026-11-17).
+        outbox_content(request_id, &item.payload)?;
+        let expires_at_ms = crate::outbox_deadline::expires_at_ms(now_ms);
+        sqlx::query!(
+            "INSERT INTO outbox_items
+               (request_id, caller_json, payload_json, item_state, flush_at_ms, expires_at_ms,
+                outcome_json, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)",
+            request_id,
+            caller_json,
+            payload_json,
+            state,
+            flush_at_ms,
+            expires_at_ms,
+            now_ms,
+            now_ms
+        )
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(OutboxInsert::Stored)
+    }
+
+    /// The caller's own write; another caller's id answers NotFound.
+    pub async fn request_status(
+        &mut self,
+        caller: &Caller,
+        request: &RequestId,
+    ) -> Result<OutboxRequestStatus, OutboxStoreError> {
+        let Some(stored) = read_owned_outbox(&mut self.store.connection, caller, request).await?
+        else {
+            return Ok(OutboxRequestStatus::NotFound);
+        };
+        Ok(stored.status())
+    }
+}
+fn validate_write_timestamp(value: i64, field: &'static str) -> Result<(), OutboxStoreError> {
+    Timestamp::from_timestamp_millis(value)
+        .map(|_| ())
+        .ok_or(OutboxStoreError::InvalidTimestamp { field })
+}
+
+#[cfg(test)]
+#[path = "outbox_store_test.rs"]
+mod tests;

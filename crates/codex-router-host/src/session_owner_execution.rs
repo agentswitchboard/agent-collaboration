@@ -12,7 +12,9 @@ use acp_client_runtime::{
     owner_session_setting::{OwnerSettingWirePlan, RestoreSettingPlan},
     owner_session_stream::OwnerStreamTarget,
     owner_wire::OwnerAcpWire,
-    session_owner_task::{OwnerCompletionPort, OwnerTaskError, SessionOwnerPorts},
+    session_owner_task::{
+        OwnerCallerWakes, OwnerCompletionPort, OwnerTaskError, SessionOwnerPorts,
+    },
 };
 use collaboration_protocol::{ProviderIdentity, SessionRef};
 use provider_session_machines::{
@@ -50,7 +52,7 @@ pub struct SessionOwnerExecution {
     routes: BTreeMap<SessionGeneration, OwnerRun>,
     created: Option<OwnerOpenedSession>,
     work_roots: crate::provider_work_roots::ProviderWorkRoots,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     preparation_fixture: Arc<crate::session_owner_preparation_fixture::PreparationFixture>,
 }
 
@@ -74,13 +76,6 @@ struct ActiveTurnApproval {
 }
 
 impl SessionOwnerExecution {
-    #[cfg_attr(
-        test,
-        expect(
-            clippy::too_many_arguments,
-            reason = "Tests inject the Host preparation seam."
-        )
-    )]
     pub(crate) fn new(
         target: SessionRef,
         wire: Arc<OwnerAcpWire>,
@@ -91,9 +86,6 @@ impl SessionOwnerExecution {
         publisher: SessionOwnerPublisher,
         calls: Arc<SessionOwnerCalls>,
         work_roots: crate::provider_work_roots::ProviderWorkRoots,
-        #[cfg(test)] preparation_fixture: Arc<
-            crate::session_owner_preparation_fixture::PreparationFixture,
-        >,
     ) -> Self {
         let tasks = storage.task_tracker();
         let cancel_drains = acp_client_runtime::OwnerCancelDrainExecutor::new(approvals.clone());
@@ -110,9 +102,18 @@ impl SessionOwnerExecution {
             opens: Arc::default(),
             routes: BTreeMap::new(),
             created: None,
-            #[cfg(test)]
-            preparation_fixture,
+            #[cfg(any(test, feature = "test-support"))]
+            preparation_fixture: Arc::default(),
         }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn with_preparation_fixture(
+        mut self,
+        fixture: Arc<crate::session_owner_preparation_fixture::PreparationFixture>,
+    ) -> Self {
+        self.preparation_fixture = fixture;
+        self
     }
 
     fn session_id(&self) -> String {
@@ -333,6 +334,12 @@ impl SessionOwnerExecution {
         completions: &OwnerCompletionPort,
     ) -> Result<Option<OwnerEvent>, OwnerTaskError> {
         let provider_id = self.session_id();
+        let notice = match &work {
+            AuthorizedWork::Prompt(input) => self.calls.notice(&input.input),
+            AuthorizedWork::Cancel(_)
+            | AuthorizedWork::Steer(_)
+            | AuthorizedWork::Setting { .. } => None,
+        };
         let setting_operation = match &work {
             AuthorizedWork::Setting { setting, .. } => Some(setting.change.attempt.0),
             _ => None,
@@ -408,6 +415,11 @@ impl SessionOwnerExecution {
             return Ok(Some(OwnerEvent::Dispatch(
                 DispatchResult::DefinitelyUnsent(authorization),
             )));
+        }
+        if let Some(notice) = notice {
+            return Ok(notice
+                .take(&authorization, &self.wire)
+                .map(OwnerEvent::Dispatch));
         }
         Ok(self
             .wire
@@ -509,6 +521,7 @@ impl SessionOwnerPorts for SessionOwnerExecution {
         owner: OwnerAddress,
         effect: OwnerEffect,
         completions: &OwnerCompletionPort,
+        caller_wakes: &mut OwnerCallerWakes,
     ) -> Result<Option<OwnerEvent>, OwnerTaskError> {
         match effect {
             OwnerEffect::RecordDeliveryEvidence(placement) => {
@@ -521,7 +534,13 @@ impl SessionOwnerPorts for SessionOwnerExecution {
             }
             OwnerEffect::Store(request) => self.storage.execute(owner, request, completions),
             OwnerEffect::Wire(SessionWireRequest::Restore { run, via }) => {
-                self.restore(owner, run, via, completions)
+                let result = self.restore(owner, run, via, completions);
+                #[cfg(any(test, feature = "test-support"))]
+                self.wire.fence_dispatch_for_test(
+                    Self::transport_run(owner, run.generation),
+                    acp_client_runtime::owner_wire::FixtureDispatchPoint::Restore,
+                );
+                result
             }
             OwnerEffect::Wire(SessionWireRequest::RestoreMode {
                 run,
@@ -582,7 +601,7 @@ impl SessionOwnerPorts for SessionOwnerExecution {
                         stage: PreparationStage::HostSetup,
                     },
                 };
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-support"))]
                 {
                     let failed = move || RestorePreparation::Failed {
                         run,
@@ -633,9 +652,16 @@ impl SessionOwnerPorts for SessionOwnerExecution {
                 expired,
             } => {
                 let session = self.session_id();
+                #[cfg(any(test, feature = "test-support"))]
+                let run = Self::transport_run(owner, authorization.run);
                 let result = self
                     .cancel_drains
                     .take(&self.wire, session, authorization, expired);
+                #[cfg(any(test, feature = "test-support"))]
+                self.wire.fence_dispatch_for_test(
+                    run,
+                    acp_client_runtime::owner_wire::FixtureDispatchPoint::Cancel,
+                );
                 Ok(Some(OwnerEvent::Dispatch(result)))
             }
             OwnerEffect::Revoke { authorization, .. } => {
@@ -702,16 +728,16 @@ impl SessionOwnerPorts for SessionOwnerExecution {
                 {
                     self.storage.forget_setting(*setting);
                 }
-                self.calls.settle(reply, true);
+                self.calls.settle(reply, true, Some(caller_wakes));
                 Ok(None)
             }
             OwnerEffect::ReplyUnsaved(reply) => {
                 self.storage.release_dispatch_wait(&reply);
-                self.calls.settle(reply, false);
+                self.calls.settle(reply, false, Some(caller_wakes));
                 Ok(None)
             }
             OwnerEffect::RestoreSettled { operation, result } => {
-                self.calls.deliver_restore(operation, result);
+                self.calls.deliver_restore(operation, result, caller_wakes);
                 Ok(None)
             }
             OwnerEffect::RetireRoute(run) => {
@@ -732,7 +758,7 @@ impl SessionOwnerPorts for SessionOwnerExecution {
             }
             OwnerEffect::InputQueued(input) => {
                 self.calls
-                    .accepted(input.operation, InputAcceptance::Queued);
+                    .accepted(input.operation, InputAcceptance::Queued, Some(caller_wakes));
                 Ok(None)
             }
             OwnerEffect::SettingQueued { .. } => {
@@ -741,7 +767,7 @@ impl SessionOwnerPorts for SessionOwnerExecution {
                 Ok(None)
             }
             OwnerEffect::PromptTaken(input) => {
-                self.calls.prompt_taken(input.clone());
+                self.calls.prompt_taken(input.clone(), caller_wakes);
                 Ok(self.submitted_input(input))
             }
             OwnerEffect::SteerSubmitted(input) => Ok(self.submitted_input(input)),
@@ -760,7 +786,7 @@ impl SessionOwnerPorts for SessionOwnerExecution {
                     );
                 }
                 self.calls
-                    .settle_cancel(&authorization, operation, Ok(drain));
+                    .settle_cancel(&authorization, operation, Ok(drain), caller_wakes);
                 Ok(None)
             }
             OwnerEffect::CancelNotSent {
@@ -769,7 +795,7 @@ impl SessionOwnerPorts for SessionOwnerExecution {
                 reason,
             } => {
                 self.calls
-                    .settle_cancel(&authorization, operation, Err(reason));
+                    .settle_cancel(&authorization, operation, Err(reason), caller_wakes);
                 Ok(None)
             }
             OwnerEffect::ProviderStartedTurn(input) => {

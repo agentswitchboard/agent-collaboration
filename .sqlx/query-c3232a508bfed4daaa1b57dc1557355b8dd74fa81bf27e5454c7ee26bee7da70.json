@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT MIN(due_at_ms) AS \"approval_due_ms?: i64\"\nFROM approval_request_expiry_due_rows\nWHERE contributes_to_alarm = 1\n  AND EXISTS (SELECT 1 FROM signin_provisioned_for_engine)\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "approval_due_ms?: i64",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "c3232a508bfed4daaa1b57dc1557355b8dd74fa81bf27e5454c7ee26bee7da70"
+}

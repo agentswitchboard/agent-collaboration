@@ -119,26 +119,56 @@ async fn expiry_crossed_before_sample_refuses_and_post_sample_time_remains_linea
     f.close().await;
 }
 #[tokio::test]
-async fn provisioning_first_stamp_arms_pending_wake_and_actual_alarm_fires_once() {
+async fn first_stamp_rolls_back_on_physical_alarm_failure_then_arms_and_fires_once() {
     use central_storage::SqlValue;
     let f = Fixture::new().await;
     let runtime = f.runtime().await;
     let due = chrono::DateTime::from_timestamp((NOW_SECONDS.div_euclid(300) + 1) * 300, 0).unwrap();
     let target = workspace_ids::SessionRef {
-        machine_id: "019f0000-0000-7000-8000-00000000d222".parse().unwrap(),
+        machine_id: FIXTURE_MACHINE.parse().unwrap(),
         session_id: "pending-signin".to_owned().try_into().unwrap(),
     };
     // Arrange pending durable work before the first organization authority exists.
     // Authenticated SetWake cannot run before provisioning at this hard cut.
-    f.execute("INSERT INTO login_machines(machine_id,label,state,allowed_workspaces,created_at,updated_at) VALUES (?,'Pending wake host','enrolled','[]',?,?)",vec![SqlValue::Text(target.machine_id.to_string()),SqlValue::Text(due.to_rfc3339()),SqlValue::Text(due.to_rfc3339())]).await;
-    // As SetWake would store it: canonical millisecond UTC, created now, due later.
+    f.seed_machine("Pending wake host").await;
+    // Seed the same owner row and projection that SetWake puts in one transaction.
+    use central_storage::{
+        AlarmUpdate, BatchOutcome, GuardedStatement, RowExpectation, Statement, StatementBatch,
+    };
+    let wake = "019f0000-0000-7000-8000-00000000d226";
     let stored_due = due.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    let created = chrono::DateTime::from_timestamp(NOW_SECONDS, 0)
-        .unwrap()
-        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    f.execute("INSERT INTO automation_wakes(wake_id,target,due_at,text,state,created_at,updated_at) VALUES (?,?,?,?,'active',?,?)",vec![SqlValue::Text("019f0000-0000-7000-8000-00000000d226".to_owned()),SqlValue::Text(serde_json::to_string(&target).unwrap()),SqlValue::Text(stored_due.clone()),SqlValue::Text(serde_json::to_string("pending").unwrap()),SqlValue::Text(created.clone()),SqlValue::Text(created)]).await;
+    let now = chrono::DateTime::from_timestamp(NOW_SECONDS, 0).unwrap();
+    let created = now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let seeded = runtime.run_batch(StatementBatch {
+        statements: vec![
+            GuardedStatement {
+                statement: Statement {
+                    sql: "INSERT INTO automation_wakes(wake_id,target,due_at,text,state,created_at,updated_at) VALUES (?,?,?,?,'active',?,?)",
+                    args: vec![SqlValue::Text(wake.to_owned()),SqlValue::Text(serde_json::to_string(&target).unwrap()),SqlValue::Text(stored_due),SqlValue::Text(serde_json::to_string("pending").unwrap()),SqlValue::Text(created.clone()),SqlValue::Text(created)],
+                },
+                expect: RowExpectation::Exactly(1),
+            },
+            crate::workspace_requests::mail::engine_event_support::fixture_due_item(fleet_engine::DueKind::WakeTimer, wake, due, now),
+        ],
+        alarm: AlarmUpdate::Unchanged,
+    }).await.unwrap();
+    assert!(matches!(seeded, BatchOutcome::Applied { .. }));
     let before: Option<i64> = runtime.control("raw-alarm-time", &()).await.unwrap();
     assert_eq!(before, None);
+    let before_rows = f.counts().await;
+    assert!(
+        runtime
+            .control::<bool>("zero-next-write-alarm", &())
+            .await
+            .unwrap()
+    );
+    assert_eq!(f.provision().await, (503, serde_json::Value::Null));
+    let after: Option<i64> = runtime.control("raw-alarm-time", &()).await.unwrap();
+    assert_eq!(after, before);
+    assert_eq!(f.counts().await, before_rows);
+    let reset: Result<bool, central_storage::StoreFailure> = runtime.control("crash", &()).await;
+    assert!(reset.is_err());
+    assert_eq!(f.counts().await, before_rows);
     assert_eq!(f.provision().await.0, 200);
     let armed: Option<i64> = runtime.control("raw-alarm-time", &()).await.unwrap();
     assert_eq!(armed, Some(due.timestamp_millis()));

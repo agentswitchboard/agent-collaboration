@@ -1,21 +1,35 @@
 //! Real public native links: signed admission, ordinary client identity and live frames.
+use collaboration_central_conformance::fixture_link_reader::read_fixture_frame;
 mod alarm_rearm;
+mod approval_calls;
 mod authority_races;
 mod batch_contract;
 mod batch_restore;
 mod caller_authority;
 mod delivery;
 mod fixture;
+mod idle_expiry;
+mod link_boundary;
 mod link_support;
+#[path = "workspace_link/person_admission.rs"]
+mod person_admission;
+mod private_enrollment_invalidation;
+mod receipt_enrollment_clock;
+mod receipt_frames;
 mod renewal_contract;
+mod request_authority;
 mod revocation;
 mod revocation_backpressure;
+mod session_calls;
 mod transport_contract;
+mod typed_call_holder;
+mod typed_call_write_state;
+mod typed_calls;
 use central_link_client::{ClientAction, ClientEvent, LinkClient};
 use central_link_protocol::{DataFrame, LinkFrame, ReplyPayload, RequestPayload};
 use collaboration_central_conformance::{ConformanceResult as Result, signin_fixtures as signed};
-use fixture::{Fixture, INSTALLATION, OTHER_MACHINE, OTHER_ORG, receive, send};
-use futures_util::{SinkExt, StreamExt};
+use fixture::{Fixture, INSTALLATION, OTHER_MACHINE, OTHER_ORG, receive, send, start_fixture};
+use futures_util::SinkExt;
 use reqwest_websocket::{Message, RequestBuilderExt};
 use serde_json::json;
 use std::time::Duration;
@@ -32,11 +46,12 @@ use workspace_model::{
 async fn ordinary_client_uses_installation_and_receives_correlated_workspace_and_mail_replies()
 -> Result<()> {
     // Arrange: the client knows only its machine_id and issued bearer token.
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let mut client = LinkClient::new(INSTALLATION.parse()?, fixture.clock.clone());
     let Some(ClientAction::Connect { attempt }) = client.poll_time() else {
         return Err("client did not connect".into());
     };
+    client.dial_started(&attempt)?;
     let mut socket = fixture.connect().await?;
 
     // Act / Assert: Welcome and storage must use the same Router machine id.
@@ -47,9 +62,15 @@ async fn ordinary_client_uses_installation_and_receives_correlated_workspace_and
             machine_id: INSTALLATION.parse()?,
             central_time: chrono::DateTime::from_timestamp(signed::NOW_SECONDS, 0)
                 .ok_or("fixture UTC")?,
+            effective_expires_at: chrono::DateTime::from_timestamp(signed::NOW_SECONDS + 600, 0)
+                .ok_or("fixture expiry")?,
         })
     );
-    assert_eq!(client.receive(&attempt, welcome)?, ClientEvent::Welcomed);
+    assert!(matches!(
+        client.receive(&attempt, welcome)?,
+        ClientEvent::Welcomed { .. }
+    ));
+    client.ready(&attempt)?;
     let runtime = fixture
         .host
         .central(&signed::ORGANIZATION.to_owned().try_into()?)
@@ -119,13 +140,15 @@ async fn ordinary_client_uses_installation_and_receives_correlated_workspace_and
 )]
 #[tokio::test]
 async fn semantic_requests_recheck_caller_and_original_grant_expiry() -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let mut client = LinkClient::new(INSTALLATION.parse()?, fixture.clock.clone());
     let Some(ClientAction::Connect { attempt }) = client.poll_time() else {
         return Err("client did not connect".into());
     };
+    client.dial_started(&attempt)?;
     let mut socket = fixture.connect().await?;
     client.receive(&attempt, receive(&mut socket).await?)?;
+    client.ready(&attempt)?;
     let payload = |request_id| -> Result<RequestPayload> {
         Ok(RequestPayload::Workspace(serde_json::from_value(json!({
             "requestId":request_id,"workspaceId":null,"operation":{"kind":"createWorkspace","name":"Must not create"},
@@ -154,8 +177,8 @@ async fn semantic_requests_recheck_caller_and_original_grant_expiry() -> Result<
     ));
     // Business time advances only through the host's injected clock.
     fixture.clock.advance(Duration::from_secs(600))?;
-    send(&mut socket, &LinkFrame::Ping).await?;
-    assert_eq!(receive(&mut socket).await?, LinkFrame::Pong);
+    collaboration_central_conformance::machine_link_boundary::expect_transport_pong(&mut socket)
+        .await?;
     let caller = link_support::caller()?;
     send(
         &mut socket,
@@ -167,7 +190,7 @@ async fn semantic_requests_recheck_caller_and_original_grant_expiry() -> Result<
         client.receive(&attempt, reply)?,
         ClientEvent::Reply {
             result: ReplyPayload::Workspace(workspace_model::WorkspaceReply {
-                result: WorkspaceResult::Refused(RefusalReason::MachineRevoked),
+                result: WorkspaceResult::CentralUnavailable,
                 ..
             }),
             ..
@@ -189,8 +212,7 @@ async fn semantic_requests_recheck_caller_and_original_grant_expiry() -> Result<
             .rows
             .is_empty()
     );
-    socket
-        .close(reqwest_websocket::CloseCode::Normal, None)
+    collaboration_central_conformance::machine_link_boundary::expect_close(&mut socket, 4102)
         .await?;
     fixture.close().await
 }
@@ -201,7 +223,7 @@ async fn semantic_requests_recheck_caller_and_original_grant_expiry() -> Result<
 )]
 #[tokio::test]
 async fn public_route_requires_upgrade_and_header_token_and_matching_organization() -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let client = fixture.client()?;
     assert!(
         !client
@@ -254,32 +276,110 @@ async fn public_route_requires_upgrade_and_header_token_and_matching_organizatio
     fixture.close().await
 }
 
+#[tokio::test]
+async fn signed_machine_bearer_with_retired_installation_id_is_refused() -> Result<()> {
+    let fixture = start_fixture().await?;
+    let mut control = fixture.connect().await?;
+    if !matches!(
+        receive(&mut control).await?,
+        LinkFrame::Data(DataFrame::Welcome { .. })
+    ) {
+        return Err("the enrolled machine must receive Welcome with the current principal".into());
+    }
+    control
+        .close(reqwest_websocket::CloseCode::Normal, None)
+        .await?;
+
+    let signed_bearer = signed::resign_machine_token(
+        &fixture.token,
+        &[(
+            "principal",
+            json!({
+                "kind": "machine",
+                "machine_id": INSTALLATION,
+                "enrollment_id": fixture.enrollment_id,
+                "installation_id": INSTALLATION,
+            }),
+        )],
+    )?;
+    let status = fixture
+        .client()?
+        .get(fixture.url(signed::ORGANIZATION))
+        .bearer_auth(signed_bearer)
+        .upgrade()
+        .send()
+        .await?
+        .status();
+    fixture.close().await?;
+    if status != reqwest::StatusCode::UNAUTHORIZED {
+        return Err(format!("retired installation_id must return HTTP 401, got {status}").into());
+    }
+    Ok(())
+}
+
+async fn receipt_result(
+    socket: &mut reqwest_websocket::WebSocket,
+    message_id: workspace_ids::MessageId,
+    expected: central_link_protocol::ReceiptResult,
+) -> Result<()> {
+    let correlation_id = "019f0000-0000-7000-8000-00000000c201".parse()?;
+    let frame = DataFrame::Receipts {
+        correlation_id,
+        receipts: central_link_protocol::ReceiptBatch::new(vec![central_link_protocol::Receipt {
+            message_id,
+            kind: central_link_protocol::ReceiptKind::Delivered {
+                arrived_at: chrono::DateTime::from_timestamp(signed::NOW_SECONDS, 0)
+                    .ok_or("fixture UTC")?,
+            },
+        }])?,
+    };
+    let DataFrame::Receipts { correlation_id, .. } = &frame else {
+        return Err("receipt fixture changed".into());
+    };
+    let expected_correlation = correlation_id.clone();
+    send(socket, &LinkFrame::Data(frame)).await?;
+    if receive(socket).await?
+        != LinkFrame::Data(DataFrame::ReceiptResults {
+            correlation_id: expected_correlation,
+            results: vec![expected],
+        })
+    {
+        return Err("receipt result or correlation changed".into());
+    }
+    Ok(())
+}
+
 #[expect(
     clippy::panic_in_result_fn,
-    reason = "The real socket must stay open after an unknown Ack and drain on shutdown."
+    reason = "The real socket must stay open after an unknown receipt and drain on shutdown."
 )]
 #[tokio::test]
-async fn unknown_ack_keeps_the_link_open_and_shutdown_drains_it() -> Result<()> {
-    let fixture = Fixture::new().await?;
+async fn unknown_receipt_keeps_the_link_open_and_shutdown_drains_it() -> Result<()> {
+    let fixture = start_fixture().await?;
     let mut socket = fixture.connect().await?;
     receive(&mut socket).await?;
-    socket
-        .send(Message::Text(serde_json::to_string(&DataFrame::Ack {
-            message_id: "019f0000-0000-7000-8000-00000000ce30".parse()?,
-            answer: central_link_protocol::DeliveryAnswer::Accepted,
-        })?))
-        .await?;
+    receipt_result(
+        &mut socket,
+        "019f0000-0000-7000-8000-00000000ce30".parse()?,
+        central_link_protocol::ReceiptResult::NoSuchMessage,
+    )
+    .await?;
     socket.send(Message::Text("ping".into())).await?;
-    assert!(matches!(socket.next().await, Some(Ok(Message::Text(text))) if text == "pong"));
+    assert!(
+        matches!(read_fixture_frame(&mut socket, "workspace link link frame").await?, Some(Ok(Message::Text(text))) if text == "pong")
+    );
     fixture.close().await?;
-    assert!(!matches!(socket.next().await, Some(Ok(Message::Text(_)))));
+    assert!(!matches!(
+        read_fixture_frame(&mut socket, "link close").await?,
+        Some(Ok(Message::Text(_)))
+    ));
     Ok(())
 }
 
 #[tokio::test]
 async fn real_public_tcp_excludes_all_private_paths_before_and_after_owner_credentials()
 -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let result = private_route_boundary(&fixture).await;
     fixture.close().await?;
     result
@@ -350,6 +450,69 @@ async fn private_route_boundary(fixture: &Fixture) -> Result<()> {
     }
     if runtime.runtime().statement_host().read(rows()).await? != before {
         return Err("private route refusals changed owning rows".into());
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn public_machine_link_fixture_uses_the_supplied_clock_and_mints_fresh_tokens() -> Result<()>
+{
+    use collaboration_central_tokio::test_support::start_machine_link_fixture;
+    use router_clock::ManualClock;
+    use runtime_primitives::SyncTime;
+    use std::sync::Arc;
+
+    let initial_time = signed::NOW_SECONDS + 1200;
+    let clock = Arc::new(ManualClock::starting_at(SyncTime::from_unix_millis(
+        initial_time * 1000,
+    ))?);
+    let fixture = start_machine_link_fixture(clock.clone()).await?;
+    let origin = fixture.origin();
+    let observed = async {
+        let mut first = fixture.connect().await?;
+        require_fixture_welcome(&mut first, initial_time).await?;
+
+        clock.advance(Duration::from_secs(30))?;
+        let renewed_token = fixture.mint_machine_token().await?;
+        let mut current = fixture
+            .client()?
+            .get(format!(
+                "{origin}/v1/organizations/{}/link",
+                fixture.organization_id.as_str()
+            ))
+            .bearer_auth(renewed_token)
+            .upgrade()
+            .send()
+            .await?
+            .into_websocket()
+            .await?;
+        require_fixture_welcome(&mut current, initial_time + 30).await
+    }
+    .await;
+    fixture.close().await?;
+    observed?;
+
+    let address = origin
+        .strip_prefix("http://")
+        .ok_or("HTTP fixture origin")?;
+    if tokio::net::TcpStream::connect(address).await.is_ok() {
+        return Err("the fixture listener survived its shutdown".into());
+    }
+    Ok(())
+}
+
+async fn require_fixture_welcome(
+    socket: &mut reqwest_websocket::WebSocket,
+    now: i64,
+) -> Result<()> {
+    let welcome = receive(socket).await?;
+    if !matches!(welcome,
+        LinkFrame::Data(DataFrame::Welcome { machine_id, central_time, effective_expires_at })
+            if machine_id.as_str() == INSTALLATION
+            && central_time.timestamp() == now
+            && effective_expires_at.timestamp() == now + 600)
+    {
+        return Err("fixture Welcome did not carry the enrolled machine and injected clock".into());
     }
     Ok(())
 }

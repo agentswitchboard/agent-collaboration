@@ -1,0 +1,25 @@
+[package]
+name = "switchboard-link-lease"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+autotests = false
+
+[lints]
+workspace = true
+
+[dependencies]
+central-link-client.workspace = true
+router-clock.workspace = true
+switchboard-central-link.workspace = true
+switchboard-machine-enrollment = { path = "../switchboard-machine-enrollment", version = "0.1.158" }
+tokio.workspace = true
+
+[dev-dependencies]
+hegel = { package = "hegeltest", version = "=0.52.6", features = ["static-engine"] }
+router-clock = { workspace = true, features = ["test-support"] }
+
+[[test]]
+name = "integration"
+path = "tests/integration/main.rs"

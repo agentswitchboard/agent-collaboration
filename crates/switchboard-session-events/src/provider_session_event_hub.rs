@@ -1,0 +1,621 @@
+//! In-memory event order and attach replay for Router-owned provider Sessions.
+
+use std::{collections::BTreeMap, sync::Arc};
+
+use message_board::{SessionEndpointRef, SessionRef};
+use router_clock::RuntimeClock;
+use session_event_model::{
+    PendingInteraction, PendingInteractions, SessionEvent, SessionSettings, SessionState,
+    TurnLostReason, TurnOutcome,
+};
+use tokio::sync::{Mutex, broadcast, watch};
+
+use collaboration_contracts::HubEvent;
+
+use collaboration_contracts::HubFuture;
+
+use collaboration_contracts::HubSessionSummary;
+
+use switchboard_session_store::ProviderOperationStore;
+
+use collaboration_contracts::SessionEventAttachment;
+
+use collaboration_contracts::SessionEventHub;
+
+use collaboration_contracts::SessionEventHubError;
+
+#[path = "provider_session_inventory_metadata.rs"]
+mod inventory_metadata;
+use inventory_metadata::SessionInventoryMetadata;
+
+#[path = "provider_session_event_hub_inbox.rs"]
+pub mod owner_inbox;
+
+pub struct ProviderSessionEventHub {
+    store: Arc<Mutex<ProviderOperationStore>>,
+    clock: Arc<dyn RuntimeClock>,
+    histories: Mutex<BTreeMap<SessionRef, Arc<Mutex<SessionHistory>>>>,
+    owner_inboxes: std::sync::Mutex<BTreeMap<SessionRef, owner_inbox::HubSessionInbox>>,
+    subscriber_capacity: usize,
+}
+
+struct SessionHistory {
+    skill_view: watch::Sender<session_event_model::SkillView>,
+    replay_epoch: u64,
+    next_sequence: u64,
+    events: BTreeMap<u64, HubEvent>,
+    items: BTreeMap<String, RetainedItem>,
+    sender: broadcast::Sender<HubEvent>,
+    subscriber_capacity: usize,
+    state: SessionState,
+    settings: Option<SessionSettings>,
+    pending: BTreeMap<String, PendingInteraction>,
+    turn_running: bool,
+    inventory_metadata: SessionInventoryMetadata,
+}
+
+#[derive(Default)]
+struct RetainedItem {
+    latest: Option<HubEvent>,
+    completion: Option<HubEvent>,
+}
+
+#[derive(Debug)]
+enum HubProjectionDiagnostic {
+    PendingAtTurnEnd,
+    DuplicateInteraction,
+    UnknownInteractionResolution,
+    PendingStateConflict,
+    EmptyRequiresAction,
+    UnexpectedResyncEvent,
+}
+
+impl SessionHistory {
+    fn new(subscriber_capacity: usize) -> Self {
+        let (sender, _) = broadcast::channel(subscriber_capacity);
+        Self {
+            skill_view: watch::channel(session_event_model::SkillView::Unknown).0,
+            replay_epoch: 0,
+            next_sequence: 1,
+            events: BTreeMap::new(),
+            items: BTreeMap::new(),
+            sender,
+            subscriber_capacity,
+            state: SessionState::Unloaded,
+            settings: None,
+            pending: BTreeMap::new(),
+            turn_running: false,
+            inventory_metadata: SessionInventoryMetadata::default(),
+        }
+    }
+
+    fn snapshot(&self) -> Vec<HubEvent> {
+        let mut snapshot = self.events.values().cloned().collect::<Vec<_>>();
+        for retained in self.items.values() {
+            snapshot.extend(retained.latest.iter().cloned());
+            snapshot.extend(retained.completion.iter().cloned());
+        }
+        snapshot.sort_by_key(|event| event.sequence);
+        snapshot
+    }
+
+    fn project(&mut self, event: &SessionEvent) -> Result<(), HubProjectionDiagnostic> {
+        if let SessionEvent::ItemStarted { item } | SessionEvent::ItemUpdated { item } = event {
+            self.inventory_metadata.observe_item(item);
+        }
+        match event {
+            SessionEvent::TurnStarted { .. } => {
+                self.turn_running = true;
+                self.state = if self.pending.is_empty() {
+                    SessionState::Running
+                } else {
+                    self.requires_action_state()?
+                };
+            }
+            SessionEvent::TurnEnded { outcome, .. } => {
+                if !self.pending.is_empty() {
+                    return Err(HubProjectionDiagnostic::PendingAtTurnEnd);
+                }
+                self.turn_running = false;
+                self.state = match outcome {
+                    TurnOutcome::Ended { .. } => SessionState::Idle,
+                    TurnOutcome::Lost {
+                        reason: TurnLostReason::EndNotObservable,
+                    } => SessionState::Idle,
+                    TurnOutcome::Lost { .. } => SessionState::Unloaded,
+                };
+            }
+            SessionEvent::InteractionRequested { interaction } => {
+                if self.pending.contains_key(interaction.request_id()) {
+                    return Err(HubProjectionDiagnostic::DuplicateInteraction);
+                }
+                self.pending
+                    .insert(interaction.request_id().to_owned(), interaction.clone());
+                self.state = self.requires_action_state()?;
+            }
+            SessionEvent::InteractionResolved { request_id } => {
+                if self.pending.remove(request_id).is_none() {
+                    return Err(HubProjectionDiagnostic::UnknownInteractionResolution);
+                }
+                self.state = if self.pending.is_empty() {
+                    if self.turn_running {
+                        SessionState::Running
+                    } else {
+                        SessionState::Idle
+                    }
+                } else {
+                    self.requires_action_state()?
+                };
+            }
+            SessionEvent::StateChanged { state } => {
+                if let SessionState::RequiresAction { pending } = state {
+                    let advertised: BTreeMap<String, PendingInteraction> = pending
+                        .iter()
+                        .map(|interaction| {
+                            (interaction.request_id().to_owned(), interaction.clone())
+                        })
+                        .collect();
+                    if !self.pending.is_empty() && self.pending != advertised {
+                        return Err(HubProjectionDiagnostic::PendingStateConflict);
+                    }
+                    self.pending = advertised;
+                } else if !self.pending.is_empty() {
+                    return Err(HubProjectionDiagnostic::PendingStateConflict);
+                }
+                self.state = state.clone();
+                if matches!(state, SessionState::Unloaded | SessionState::Closed) {
+                    self.skill_view
+                        .send_replace(session_event_model::SkillView::Unknown);
+                }
+                match state {
+                    SessionState::Running => self.turn_running = true,
+                    SessionState::RequiresAction { .. } => {}
+                    _ => self.turn_running = false,
+                }
+            }
+            SessionEvent::InputAccepted { .. }
+            | SessionEvent::ItemStarted { .. }
+            | SessionEvent::ItemUpdated { .. }
+            | SessionEvent::ItemCompleted { .. }
+            | SessionEvent::CapabilitiesChanged { .. } => {}
+            SessionEvent::SettingsChanged { settings } => {
+                self.settings = Some(settings.clone());
+            }
+            SessionEvent::ResyncRequired { .. } => {
+                return Err(HubProjectionDiagnostic::UnexpectedResyncEvent);
+            }
+        }
+        Ok(())
+    }
+
+    fn requires_action_state(&self) -> Result<SessionState, HubProjectionDiagnostic> {
+        let pending = PendingInteractions::new(self.pending.values().cloned().collect())
+            .ok_or(HubProjectionDiagnostic::EmptyRequiresAction)?;
+        Ok(SessionState::RequiresAction { pending })
+    }
+
+    fn reset_after_projection_rejection(&mut self) -> HubEvent {
+        let replay_epoch = self.replay_epoch.wrapping_add(1);
+        let control = HubEvent {
+            sequence: self.next_sequence,
+            event: SessionEvent::ResyncRequired { replay_epoch },
+        };
+        let _ = self.sender.send(control.clone());
+        let (sender, _) = broadcast::channel(self.subscriber_capacity);
+        self.sender = sender;
+        self.events.clear();
+        self.items.clear();
+        self.pending.clear();
+        self.turn_running = false;
+        self.state = SessionState::Unloaded;
+        self.settings = None;
+        self.next_sequence = 1;
+        self.replay_epoch = replay_epoch;
+        control
+    }
+}
+
+impl ProviderSessionEventHub {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn store_for_fixture(&self) -> Arc<Mutex<ProviderOperationStore>> {
+        self.store.clone()
+    }
+
+    pub async fn publish_skill_view(
+        &self,
+        session: SessionRef,
+        view: session_event_model::SkillView,
+    ) -> Result<(), SessionEventHubError> {
+        let history = self
+            .histories
+            .lock()
+            .await
+            .entry(session)
+            .or_insert_with(|| Arc::new(Mutex::new(SessionHistory::new(self.subscriber_capacity))))
+            .clone();
+        let history = history.lock().await;
+        history.skill_view.send_if_modified(|current| {
+            if *current == view {
+                false
+            } else {
+                *current = view;
+                true
+            }
+        });
+        Ok(())
+    }
+    #[must_use]
+    pub fn new(store: Arc<Mutex<ProviderOperationStore>>, clock: Arc<dyn RuntimeClock>) -> Self {
+        Self::with_capacity(store, clock, 256)
+    }
+
+    #[must_use]
+    pub fn with_capacity(
+        store: Arc<Mutex<ProviderOperationStore>>,
+        clock: Arc<dyn RuntimeClock>,
+        subscriber_capacity: usize,
+    ) -> Self {
+        Self {
+            store,
+            clock,
+            histories: Mutex::new(BTreeMap::new()),
+            owner_inboxes: std::sync::Mutex::default(),
+            subscriber_capacity: subscriber_capacity.max(1),
+        }
+    }
+
+    /// Test support: holds `session`'s history lock until the returned guard
+    /// drops, as a slow publication for that session would (M5 scenarios).
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn hold_history_for_test(&self, session: SessionRef) -> HeldSessionHistory {
+        let history = self
+            .histories
+            .lock()
+            .await
+            .entry(session)
+            .or_insert_with(|| Arc::new(Mutex::new(SessionHistory::new(self.subscriber_capacity))))
+            .clone();
+        HeldSessionHistory {
+            _held: history.lock_owned().await,
+        }
+    }
+
+    /// Publishing and attach share the lock for this Session only.
+    pub async fn publish(
+        &self,
+        session: SessionRef,
+        event: SessionEvent,
+    ) -> Result<HubEvent, SessionEventHubError> {
+        let history = self
+            .histories
+            .lock()
+            .await
+            .entry(session.clone())
+            .or_insert_with(|| Arc::new(Mutex::new(SessionHistory::new(self.subscriber_capacity))))
+            .clone();
+        let mut history = history.lock().await;
+        history
+            .inventory_metadata
+            .observe_activity_at(self.clock.utc_now().timestamp());
+        let sequence = history.next_sequence;
+        let next_sequence = sequence
+            .checked_add(1)
+            .ok_or(SessionEventHubError::Unavailable)?;
+        if let Err(projection_failure) = history.project(&event) {
+            tracing::warn!(
+                ?session,
+                ?projection_failure,
+                "provider Session hub projection rejected; Session history reset"
+            );
+            return Ok(history.reset_after_projection_rejection());
+        }
+        history.next_sequence = next_sequence;
+        let item = HubEvent { sequence, event };
+        match &item.event {
+            SessionEvent::ItemStarted { item: snapshot }
+            | SessionEvent::ItemUpdated { item: snapshot } => {
+                history
+                    .items
+                    .entry(snapshot.item_id.clone())
+                    .or_default()
+                    .latest = Some(item.clone());
+            }
+            SessionEvent::ItemCompleted { item_id } => {
+                history.items.entry(item_id.clone()).or_default().completion = Some(item.clone());
+            }
+            _ => {
+                history.events.insert(sequence, item.clone());
+            }
+        }
+        let _ = history.sender.send(item.clone());
+        if matches!(
+            &item.event,
+            SessionEvent::StateChanged {
+                state: SessionState::Unloaded | SessionState::Closed
+            }
+        ) || matches!(&item.event, SessionEvent::TurnEnded { .. })
+            && history.state == SessionState::Unloaded
+        {
+            let replay_epoch = history
+                .replay_epoch
+                .checked_add(1)
+                .ok_or(SessionEventHubError::Unavailable)?;
+            let _ = history.sender.send(HubEvent {
+                sequence: history.next_sequence,
+                event: SessionEvent::ResyncRequired { replay_epoch },
+            });
+            let (sender, _) = broadcast::channel(self.subscriber_capacity);
+            history.sender = sender;
+            history.events.clear();
+            history.items.clear();
+            history.next_sequence = 1;
+            history.replay_epoch = replay_epoch;
+        }
+        Ok(item)
+    }
+
+    /// Start a fresh agent history replay after provider loss or explicit close. Old subscribers
+    /// receive a control event and must attach again to the new epoch.
+    pub async fn begin_history_replay(
+        &self,
+        session: SessionRef,
+    ) -> Result<u64, SessionEventHubError> {
+        let history = self
+            .histories
+            .lock()
+            .await
+            .entry(session)
+            .or_insert_with(|| Arc::new(Mutex::new(SessionHistory::new(self.subscriber_capacity))))
+            .clone();
+        let mut history = history.lock().await;
+        if !matches!(history.state, SessionState::Unloaded | SessionState::Closed) {
+            return Err(SessionEventHubError::Unavailable);
+        }
+        history
+            .skill_view
+            .send_replace(session_event_model::SkillView::Unknown);
+        let replay_epoch = history
+            .replay_epoch
+            .checked_add(1)
+            .ok_or(SessionEventHubError::Unavailable)?;
+        let _ = history.sender.send(HubEvent {
+            sequence: history.next_sequence,
+            event: SessionEvent::ResyncRequired { replay_epoch },
+        });
+        let (sender, _) = broadcast::channel(self.subscriber_capacity);
+        history.sender = sender;
+        history.events.clear();
+        history.items.clear();
+        history.pending.clear();
+        history.turn_running = false;
+        history.state = SessionState::Unloaded;
+        history.settings = None;
+        history.next_sequence = 1;
+        history.replay_epoch = replay_epoch;
+        Ok(replay_epoch)
+    }
+}
+
+impl SessionEventHub for ProviderSessionEventHub {
+    fn skill_view(
+        &self,
+        session: SessionRef,
+        cwd: std::path::PathBuf,
+    ) -> HubFuture<'_, collaboration_contracts::SkillViewAttachment> {
+        Box::pin(async move {
+            if !self
+                .sessions(session.endpoint.clone())
+                .await?
+                .iter()
+                .any(|summary| summary.session == session && summary.working_directory == cwd)
+            {
+                return Err(SessionEventHubError::SessionNotFound);
+            }
+            let history = self
+                .histories
+                .lock()
+                .await
+                .entry(session)
+                .or_insert_with(|| {
+                    Arc::new(Mutex::new(SessionHistory::new(self.subscriber_capacity)))
+                })
+                .clone();
+            let history = history.lock().await;
+            let receiver = history.skill_view.subscribe();
+            let snapshot = receiver.borrow().clone();
+            Ok(collaboration_contracts::SkillViewAttachment { snapshot, receiver })
+        })
+    }
+    fn attach(&self, session: SessionRef) -> HubFuture<'_, SessionEventAttachment> {
+        Box::pin(async move {
+            let already_loaded = self.histories.lock().await.contains_key(&session);
+            let stored = if already_loaded {
+                true
+            } else {
+                self.persisted_session_exists(&session).await?
+            };
+            let mut histories = self.histories.lock().await;
+            if !stored && !histories.contains_key(&session) {
+                return Err(SessionEventHubError::SessionNotFound);
+            }
+            let history = histories
+                .entry(session)
+                .or_insert_with(|| {
+                    Arc::new(Mutex::new(SessionHistory::new(self.subscriber_capacity)))
+                })
+                .clone();
+            drop(histories);
+            let history = history.lock().await;
+            Ok(SessionEventAttachment {
+                snapshot: history.snapshot(),
+                receiver: history.sender.subscribe(),
+                epoch: history.replay_epoch,
+                latest_issued_sequence: history.next_sequence - 1,
+            })
+        })
+    }
+
+    fn state(&self, session: SessionRef) -> HubFuture<'_, SessionState> {
+        Box::pin(async move {
+            if let Some(history) = self.histories.lock().await.get(&session).cloned() {
+                return Ok(history.lock().await.state.clone());
+            }
+            if self.persisted_session_exists(&session).await? {
+                if let Some(history) = self.histories.lock().await.get(&session).cloned() {
+                    return Ok(history.lock().await.state.clone());
+                }
+                return Ok(SessionState::Unloaded);
+            }
+            Err(SessionEventHubError::SessionNotFound)
+        })
+    }
+
+    fn sessions(&self, endpoint: SessionEndpointRef) -> HubFuture<'_, Vec<HubSessionSummary>> {
+        Box::pin(async move {
+            let stored_endpoint = to_stored_endpoint(&endpoint)?;
+            let inventory = self
+                .store
+                .lock()
+                .await
+                .list_sessions(&stored_endpoint)
+                .await
+                .map_err(|_| SessionEventHubError::Unavailable)?;
+            let histories = self.histories.lock().await.clone();
+            let mut summaries = Vec::with_capacity(inventory.len());
+            for entry in inventory {
+                let session = from_stored_session(&entry.target)?;
+                let history = if let Some(history) = histories.get(&session) {
+                    Some(history.lock().await)
+                } else {
+                    None
+                };
+                let state = history
+                    .as_ref()
+                    .map_or(SessionState::Unloaded, |history| history.state.clone());
+                let settings = history
+                    .as_ref()
+                    .and_then(|history| history.settings.as_ref());
+                summaries.push(HubSessionSummary {
+                    session,
+                    approver: entry
+                        .approver
+                        .to_board_identity()
+                        .map_err(|_| SessionEventHubError::Unavailable)?,
+                    working_directory: std::path::PathBuf::from(String::from(
+                        entry.working_directory,
+                    )),
+                    updated_at_seconds: history
+                        .as_ref()
+                        .and_then(|history| history.inventory_metadata.latest_activity_at_seconds())
+                        .unwrap_or_else(|| entry.updated_at_ms.div_euclid(1_000)),
+                    preview: history.as_ref().map_or_else(String::new, |history| {
+                        history.inventory_metadata.preview().to_owned()
+                    }),
+                    name: history
+                        .as_ref()
+                        .and_then(|history| history.inventory_metadata.name().map(str::to_owned)),
+                    model: settings.and_then(|settings| settings.model.clone()),
+                    mode: settings.and_then(|settings| settings.mode.clone()),
+                    state,
+                });
+            }
+            Ok(summaries)
+        })
+    }
+}
+
+impl ProviderSessionEventHub {
+    async fn persisted_session_exists(
+        &self,
+        session: &SessionRef,
+    ) -> Result<bool, SessionEventHubError> {
+        let stored_session = to_stored_session(session)?;
+        self.store
+            .lock()
+            .await
+            .session_record(&stored_session)
+            .await
+            .map(|record| record.is_some())
+            .map_err(|_| SessionEventHubError::Unavailable)
+    }
+}
+
+fn to_stored_session(
+    session: &SessionRef,
+) -> Result<collaboration_protocol::SessionRef, SessionEventHubError> {
+    Ok(collaboration_protocol::SessionRef {
+        endpoint: to_stored_endpoint(&session.endpoint)?,
+        session_id: collaboration_protocol::SessionId::try_from(
+            session.session_id.as_str().to_owned(),
+        )
+        .map_err(|_| SessionEventHubError::Unavailable)?,
+    })
+}
+
+fn to_stored_endpoint(
+    endpoint: &SessionEndpointRef,
+) -> Result<collaboration_protocol::EndpointRef, SessionEventHubError> {
+    Ok(collaboration_protocol::EndpointRef {
+        service_id: collaboration_protocol::UuidIdentity::try_from(
+            endpoint.service_id.as_str().to_owned(),
+        )
+        .map_err(|_| SessionEventHubError::Unavailable)?,
+        endpoint_id: collaboration_protocol::EndpointId::try_from(
+            endpoint.endpoint_id.as_str().to_owned(),
+        )
+        .map_err(|_| SessionEventHubError::Unavailable)?,
+    })
+}
+
+fn from_stored_session(
+    session: &collaboration_protocol::SessionRef,
+) -> Result<SessionRef, SessionEventHubError> {
+    Ok(SessionRef {
+        endpoint: SessionEndpointRef {
+            service_id: message_board::ServiceId::try_from(String::from(
+                session.endpoint.service_id.clone(),
+            ))
+            .map_err(|_| SessionEventHubError::Unavailable)?,
+            endpoint_id: message_board::EndpointId::try_from(String::from(
+                session.endpoint.endpoint_id.clone(),
+            ))
+            .map_err(|_| SessionEventHubError::Unavailable)?,
+        },
+        session_id: message_board::SessionId::try_from(String::from(session.session_id.clone()))
+            .map_err(|_| SessionEventHubError::Unavailable)?,
+    })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum HubReceiveError {
+    #[error("resyncRequired")]
+    ResyncRequired,
+}
+
+/// Test support: one session's history lock, held until dropped.
+#[cfg(any(test, feature = "test-support"))]
+pub struct HeldSessionHistory {
+    _held: tokio::sync::OwnedMutexGuard<SessionHistory>,
+}
+
+pub async fn receive_hub_event(
+    receiver: &mut broadcast::Receiver<HubEvent>,
+) -> Result<HubEvent, HubReceiveError> {
+    match receiver.recv().await {
+        Ok(HubEvent {
+            event: SessionEvent::ResyncRequired { .. },
+            ..
+        })
+        | Err(broadcast::error::RecvError::Lagged(_))
+        | Err(broadcast::error::RecvError::Closed) => Err(HubReceiveError::ResyncRequired),
+        Ok(event) => Ok(event),
+    }
+}
+
+#[cfg(test)]
+#[path = "provider_session_event_hub_test.rs"]
+mod tests;
+
+#[cfg(test)]
+#[path = "provider_session_event_hub_node_tap_test.rs"]
+mod node_tap_tests;

@@ -10,9 +10,11 @@ autotests = false
 workspace = true
 
 [features]
-test-support = ["fleet-runtime/test-support"]
+wire-export = ["dep:specta"]
+test-support = ["central-engine-model/test-support", "fleet-runtime/test-support"]
 
 [dependencies]
+fleet-lent-transaction.workspace = true
 central-engine-model.workspace = true
 central-storage.workspace = true
 fleet-contracts.workspace = true
@@ -24,10 +26,14 @@ futures-util.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sqlx = { version = "=0.9.0", default-features = false, features = ["derive"] }
 thiserror.workspace = true
 uuid = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
 fleet-storage-schema.workspace = true
-sqlx = { workspace = true, features = ["sqlite", "migrate"] }
+sqlx = { workspace = true, features = ["sqlite", "migrate", "macros"] }
 tokio.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+specta = { workspace = true, features = ["derive"], optional = true }

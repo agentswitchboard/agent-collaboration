@@ -11,10 +11,11 @@ mod sign_in_crypto;
 mod sign_in_trust;
 #[cfg(feature = "test-support")]
 pub use object_storage::ObjectStorage;
-pub use object_storage::StoreMigrations;
+pub use object_storage::{StoreMigrations, direct_mail::NativeDirectMessageStore};
 pub use sign_in_trust::NativeSignInTrust;
 mod workspace_host;
 pub use workspace_host::{TokioWorkspaceHost, TokioWorkspaceStores};
+mod machine_call_queue;
 mod machine_push_registry;
 mod workspace_link;
 pub use workspace_link::WorkspaceLink;
@@ -22,3 +23,6 @@ pub use workspace_link::WorkspaceLink;
 mod workspace_server;
 #[cfg(unix)]
 pub use workspace_server::{TokioWorkspaceServer, TokioWorkspaceServerError};
+
+#[cfg(all(unix, feature = "test-support"))]
+pub mod test_support;

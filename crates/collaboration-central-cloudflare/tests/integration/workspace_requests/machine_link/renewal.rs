@@ -5,14 +5,12 @@ use super::fixture::{self, Fixture, MACHINE_ID, ORGANIZATION};
 use super::{baseline, create_area};
 use central_link_protocol::RequestPayload;
 use central_link_protocol::{DataFrame, TokenRenewalRefusal, TokenRenewalResult};
+use collaboration_central_conformance::fixture_link_reader::read_fixture_frame;
 use collaboration_central_conformance::{ConformanceResult as Result, signin_fixtures as signed};
-use futures_util::StreamExt;
-use reqwest_websocket::{CloseCode, Message};
+use reqwest_websocket::Message;
 use runtime_primitives::Clock;
 use std::time::Duration;
-use workspace_model::{
-    RefusalReason, WorkspaceId, WorkspaceOperation, WorkspaceRequest, WorkspaceResult,
-};
+use workspace_model::{WorkspaceId, WorkspaceOperation, WorkspaceRequest, WorkspaceResult};
 
 fn renew(correlation: &str, token: &str) -> Result<DataFrame> {
     Ok(DataFrame::RenewMachineToken {
@@ -96,6 +94,10 @@ async fn renewal_journey(fixture: &Fixture) -> Result<()> {
     if renewed
         != (TokenRenewalResult::Renewed {
             effective_expires_at: expected,
+            central_time: chrono::DateTime::from_timestamp_millis(
+                fixture.clock.now().unix_millis(),
+            )
+            .ok_or("renewal clock")?,
         })
     {
         return Err(format!("the fresh token must renew the socket: {renewed:?}").into());
@@ -155,7 +157,7 @@ pub(super) async fn advance(fixture: &Fixture, seconds: u64) -> Result<()> {
 }
 
 /// A fresh token for the fixture's enrollment, decided at `now` with a grant to `until`.
-fn fresh(fixture: &Fixture, now: i64, until: i64) -> Result<String> {
+pub(super) fn fresh(fixture: &Fixture, now: i64, until: i64) -> Result<String> {
     signed::machine_token(
         ORGANIZATION,
         MACHINE_ID,
@@ -165,9 +167,26 @@ fn fresh(fixture: &Fixture, now: i64, until: i64) -> Result<String> {
     )
 }
 
-fn not_active() -> TokenRenewalResult {
+fn retryable_expiry() -> TokenRenewalResult {
     TokenRenewalResult::Refused {
-        reason: TokenRenewalRefusal::EnrollmentNotActive,
+        reason: TokenRenewalRefusal::CentralUnavailable,
+    }
+}
+
+async fn expect_expired_close(link: &mut super::ConnectedLink) -> Result<()> {
+    let close = read_fixture_frame(&mut link.socket, "link close").await?;
+    if !matches!(close, Some(Ok(Message::Close { code, .. }))
+        if central_link_protocol::MachineLinkCloseCode::from_code(code.into()) ==
+            Some(central_link_protocol::MachineLinkCloseCode::Expired))
+    {
+        return Err(format!("expected the old transport deadline close: {close:?}").into());
+    }
+    Ok(())
+}
+
+fn connection_enrollment_ended() -> TokenRenewalResult {
+    TokenRenewalResult::Refused {
+        reason: TokenRenewalRefusal::ConnectionEnrollmentEnded,
     }
 }
 
@@ -194,7 +213,7 @@ fn is_done(frame: &DataFrame) -> bool {
 }
 
 #[tokio::test]
-async fn a_renewal_just_before_the_deadline_renews_and_at_or_after_it_is_refused() -> Result<()> {
+async fn a_renewal_at_the_live_deadline_answers_retryably_then_closes() -> Result<()> {
     let fixture = Fixture::new().await?;
     let result = deadline_journey(&fixture).await;
     fixture.close().await?;
@@ -223,29 +242,22 @@ async fn deadline_journey(fixture: &Fixture) -> Result<()> {
         renew("019f0000-0000-7000-8000-00000000c312", &late)?,
     )
     .await?;
-    advance(fixture, 1).await?;
-    let after = renewal(
-        &mut link,
-        renew("019f0000-0000-7000-8000-00000000c313", &late)?,
-    )
-    .await?;
-
     // Assert
     let renewed_to =
         chrono::DateTime::from_timestamp(signed::NOW_SECONDS + 1199, 0).ok_or("renewed expiry")?;
     if just_before
         != (TokenRenewalResult::Renewed {
             effective_expires_at: renewed_to,
+            central_time: chrono::DateTime::from_timestamp(signed::NOW_SECONDS + 599, 0)
+                .ok_or("renewal clock")?,
         })
     {
         return Err(format!("one second before the deadline must renew: {just_before:?}").into());
     }
-    if at_deadline != not_active() || after != not_active() {
-        return Err(format!(
-            "at and after the deadline renewal is refused: {at_deadline:?}, {after:?}"
-        )
-        .into());
+    if at_deadline != retryable_expiry() {
+        return Err(format!("expected retryable expiry: {at_deadline:?}").into());
     }
+    expect_expired_close(&mut link).await?;
     drop(link);
     Ok(())
 }
@@ -261,6 +273,17 @@ async fn every_refused_renewal_keeps_the_deadline_through_eviction() -> Result<(
 async fn refusals_journey(fixture: &Fixture) -> Result<()> {
     // Arrange: the open socket counts until +600.
     let (mut link, _, workspace, _, _) = baseline(fixture).await?;
+    let DataFrame::Welcome {
+        effective_expires_at,
+        ..
+    } = &link.welcome
+    else {
+        return Err("expected the initial Welcome deadline".into());
+    };
+    let initial_lifetime = u64::try_from(effective_expires_at.timestamp() - signed::NOW_SECONDS)?;
+    if initial_lifetime != 600 {
+        return Err("Welcome must advertise the original grant deadline".into());
+    }
     let other_machine = signed::machine_token(
         ORGANIZATION,
         OTHER_INSTALLATION,
@@ -307,10 +330,52 @@ async fn refusals_journey(fixture: &Fixture) -> Result<()> {
     ] {
         answers.push(renewal(&mut link, renew(correlation, token)?).await?);
     }
+    // Hold the verified token before its applying sample under the org turn.
+    let runtime = fixture.runtime();
+    let pause = "beforeRenewalApplyingSample";
+    if !runtime.control::<bool>("hold-central", &pause).await? {
+        return Err("could not arm the renewal applying pause".into());
+    }
+    let correlation_id: central_link_protocol::CorrelationId =
+        "019f0000-0000-7000-8000-00000000c327".parse()?;
+    fixture::send(
+        &mut link.socket,
+        &DataFrame::RenewMachineToken {
+            correlation_id: correlation_id.clone(),
+            token: fresh(fixture, 0, 60)?.try_into()?,
+        },
+    )
+    .await?;
+    tokio::select! {
+        arrived = runtime.control::<bool>("until-held-central", &pause) => {
+            if !arrived? {
+                return Err("verified renewal did not reach the applying pause".into());
+            }
+        }
+        early = read_fixture_frame(&mut link.socket, "renewal link frame")=> {
+            return Err(format!("renewal settled before its applying sample: {early:?}").into());
+        }
+    }
+    advance(fixture, 60).await?;
+    if !runtime.control::<bool>("release-central", &pause).await? {
+        return Err("could not release the renewal applying pause".into());
+    }
+    match fixture::receive(&mut link.socket).await? {
+        DataFrame::MachineTokenRenewal {
+            correlation_id: received,
+            result,
+        } if received == correlation_id
+            && serde_json::to_value(&result)?
+                == serde_json::json!({"kind":"refused","reason":"presentedTokenExpired"}) => {}
+        other => {
+            return Err(format!("expected correlated presentedTokenExpired: {other:?}").into());
+        }
+    }
+
     fixture.host.c2_evict(&fixture.organization).await?;
     // The restored attachment still carries +600: a write at +599 lands, and
     // at +600 even a valid fresh token cannot renew it.
-    advance(fixture, 599).await?;
+    advance(fixture, initial_lifetime - 60 - 1).await?;
     let before = link
         .call_as(
             fixture::session_caller()?,
@@ -346,15 +411,17 @@ async fn refusals_journey(fixture: &Fixture) -> Result<()> {
     if !is_done(&before.reply) {
         return Err(format!("the old deadline still admits +599: {:?}", before.reply).into());
     }
-    if at_deadline != not_active() {
-        return Err(format!("the old deadline still ends at +600: {at_deadline:?}").into());
+    if at_deadline != retryable_expiry() {
+        return Err(format!("expected retryable expiry: {at_deadline:?}").into());
     }
+    expect_expired_close(&mut link).await?;
     drop(link);
     Ok(())
 }
 
 #[tokio::test]
-async fn a_renewal_after_the_enrollment_is_superseded_is_refused_as_not_active() -> Result<()> {
+async fn a_renewal_after_the_enrollment_is_superseded_is_refused_as_connection_enrollment_ended()
+-> Result<()> {
     let fixture = Fixture::new().await?;
     let result = superseded_journey(&fixture).await;
     fixture.close().await?;
@@ -364,18 +431,42 @@ async fn a_renewal_after_the_enrollment_is_superseded_is_refused_as_not_active()
 async fn superseded_journey(fixture: &Fixture) -> Result<()> {
     let (mut link, _, _, _, _) = baseline(fixture).await?;
     let token = fresh(fixture, 0, 900)?;
-    fixture.supersede().await?;
-
+    // Restore from a committed terminal row with no immediate host signal.
+    fixture.runtime().run_batch(central_storage::StatementBatch {
+        statements: vec![
+            central_storage::GuardedStatement {
+                statement: central_storage::Statement {
+                    sql: "UPDATE login_machine_approvals SET state='ended',end_reason='superseded',last_grant_at=NULL,ended_at=updated_at WHERE approval_id=?",
+                    args: vec![central_storage::SqlValue::Text(fixture.enrollment.as_str().to_owned())],
+                },
+                expect: central_storage::RowExpectation::Exactly(1),
+            },
+            central_storage::GuardedStatement {
+                statement: central_storage::Statement {
+                    sql: "UPDATE login_machines SET state='revoked',enrollment_generation=enrollment_generation+1 WHERE machine_id=?",
+                    args: vec![central_storage::SqlValue::Text(MACHINE_ID.to_owned())],
+                },
+                expect: central_storage::RowExpectation::Exactly(1),
+            },
+        ],
+        alarm: central_storage::AlarmUpdate::Unchanged,
+    }).await?;
+    advance(fixture, 600).await?;
     let answer = renewal(
         &mut link,
         renew("019f0000-0000-7000-8000-00000000c331", &token)?,
     )
     .await?;
-
-    if answer != not_active() {
-        return Err(format!("a superseded enrollment cannot renew: {answer:?}").into());
+    if answer != connection_enrollment_ended() {
+        return Err(format!("a stored ending wins over the old deadline: {answer:?}").into());
     }
-    drop(link);
+    let close = read_fixture_frame(&mut link.socket, "link close").await?;
+    if !matches!(close, Some(Ok(Message::Close { code, .. }))
+        if central_link_protocol::MachineLinkCloseCode::from_code(code.into()) ==
+            Some(central_link_protocol::MachineLinkCloseCode::Inactive))
+    {
+        return Err(format!("expected the terminal enrollment close: {close:?}").into());
+    }
     Ok(())
 }
 
@@ -406,7 +497,7 @@ async fn lapsed_batch_journey(fixture: &Fixture) -> Result<()> {
             )?),
         ])
         .await?;
-    let closed = link.socket.next().await;
+    let closed = read_fixture_frame(&mut link.socket, "link close").await?;
 
     for reply in &replies {
         let refused = matches!(
@@ -414,7 +505,7 @@ async fn lapsed_batch_journey(fixture: &Fixture) -> Result<()> {
             DataFrame::Reply { result, .. } if matches!(
                 result.as_ref(),
                 central_link_protocol::ReplyPayload::Workspace(reply)
-                    if reply.result == WorkspaceResult::Refused(RefusalReason::MachineRevoked)
+                    if reply.result == WorkspaceResult::CentralUnavailable
             )
         );
         if !refused {
@@ -422,60 +513,15 @@ async fn lapsed_batch_journey(fixture: &Fixture) -> Result<()> {
         }
     }
     match closed {
-        Some(Ok(Message::Close {
-            code: CloseCode::Policy,
-            reason,
-        })) if reason == "machine authority expired or revoked" => Ok(()),
+        Some(Ok(Message::Close { code, .. }))
+            if central_link_protocol::MachineLinkCloseCode::from_code(code.into())
+                == Some(central_link_protocol::MachineLinkCloseCode::Expired) =>
+        {
+            Ok(())
+        }
         other => Err(format!("the lapsed link closes after the batch: {other:?}").into()),
     }
 }
 
-#[tokio::test]
-async fn a_renewal_whose_key_cannot_be_fetched_is_central_unavailable() -> Result<()> {
-    let fixture = Fixture::new().await?;
-    let result = key_fetch_journey(&fixture).await;
-    fixture.close().await?;
-    result
-}
-
-async fn key_fetch_journey(fixture: &Fixture) -> Result<()> {
-    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-    let (mut link, _, workspace, _, _) = baseline(fixture).await?;
-    fixture.keys().fail_fetches();
-    // A fresh token whose header names a key central never cached.
-    let fresh = fresh(fixture, 0, 900)?;
-    let rest = fresh.split_once('.').ok_or("token header")?.1;
-    let header =
-        URL_SAFE_NO_PAD.encode(br#"{"alg":"EdDSA","typ":"at+jwt","kid":"stamp-uncached"}"#);
-
-    let answer = renewal(
-        &mut link,
-        renew(
-            "019f0000-0000-7000-8000-00000000c351",
-            &format!("{header}.{rest}"),
-        )?,
-    )
-    .await?;
-    let still_open = link
-        .call_as(
-            fixture::session_caller()?,
-            area(
-                "019f0000-0000-7000-8000-00000000cf51",
-                "Still open",
-                &workspace,
-            )?,
-        )
-        .await?;
-
-    let unavailable = TokenRenewalResult::Refused {
-        reason: TokenRenewalRefusal::CentralUnavailable,
-    };
-    if answer != unavailable {
-        return Err(format!("an unreachable key set is CentralUnavailable: {answer:?}").into());
-    }
-    if !is_done(&still_open.reply) {
-        return Err(format!("the link stays up: {:?}", still_open.reply).into());
-    }
-    drop(link);
-    Ok(())
-}
+#[path = "renewal_issuer_cases.rs"]
+mod issuer_cases;

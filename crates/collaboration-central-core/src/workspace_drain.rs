@@ -30,6 +30,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
     ) -> Result<(), StoreFailure> {
         let due = now
             .checked_add_signed(chrono::Duration::seconds(5))
+            .filter(|due| central_engine_model::supported_time(*due))
             .ok_or_else(|| corrupt("drain_due_at"))?;
         applied(self.execution.statement_host().run_batch(StatementBatch{statements:vec![exact("INSERT INTO mail_workspace_drains(workspace_id,drained_through_position,drain_due_at,created_at,updated_at) VALUES (?,0,?,?,?) ON CONFLICT(workspace_id) DO UPDATE SET drain_due_at=COALESCE(mail_workspace_drains.drain_due_at,excluded.drain_due_at),updated_at=excluded.updated_at",vec![text(workspace),text(format_utc_millis(due)),text(format_utc_millis(now)),text(format_utc_millis(now))])],alarm:alarm_update()}).await?)
     }
@@ -56,20 +57,20 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         workspace: &WorkspaceId,
     ) -> Result<(), StoreFailure> {
         use central_engine_model::{InstanceKey, MachineKind, RetirementThreshold};
-        use fleet_contracts::{ControlGate, EngineSubject, FailureOutcome, SubjectVersion};
-        use fleet_engine::{CONTROL_WRITE, Engine};
+        use fleet_contracts::{ControlGate, EngineSubject, FailureOutcome};
+        use fleet_engine::FleetEngine;
         let subject = EngineSubject {
             kind: MachineKind("legacy_workspace_drains"),
             key: InstanceKey("all".into()),
         };
-        match Engine::new(self)
-            .control_gate(&subject, RetirementThreshold::NOTICE_UNITS)
+        match FleetEngine::new(self)
+            .check_attempt_control_gate(&subject, RetirementThreshold::NOTICE_UNITS)
             .await
         {
             ControlGate::Run(_) => {}
             ControlGate::Skip | ControlGate::Uncertain => return Ok(()),
             ControlGate::CentralDown(failure) => {
-                Engine::new(self).observe_engine_store_down(&subject, failure);
+                FleetEngine::new(self).observe_engine_store_down(&subject, failure);
                 return Ok(());
             }
         }
@@ -79,24 +80,22 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         match self.drain_workspace_held(workspace).await {
             Ok(_) => Ok(()),
             Err(LegacyUnitOutcome::CentralDown(failure)) => {
-                Engine::new(self).observe_engine_store_down(&subject, failure);
+                FleetEngine::new(self).observe_engine_store_down(&subject, failure);
                 Ok(())
             }
             Err(outcome) => {
                 let outcome = outcome.in_workspace(workspace);
                 if let Some(class) = outcome.failure_class()
-                    && let FailureOutcome::StoreDown(failure) = Engine::new(self)
-                        .record_failure_naming(
+                    && let FailureOutcome::StoreDown(failure) = FleetEngine::new(self)
+                        .record_control_attempt_failure_for_workspaces(
                             &subject,
-                            CONTROL_WRITE,
-                            &SubjectVersion(vec![]),
                             class,
                             RetirementThreshold::NOTICE_UNITS,
                             outcome.affected_workspaces(),
                         )
                         .await
                 {
-                    Engine::new(self).observe_engine_store_down(&subject, failure);
+                    FleetEngine::new(self).observe_engine_store_down(&subject, failure);
                 }
                 Ok(())
             }

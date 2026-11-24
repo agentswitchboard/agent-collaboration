@@ -9,7 +9,11 @@ publish.workspace = true
 [features]
 # Scenario tests only (design note §11.8): the terminal-write named point and
 # the FIFO's retry delay. Enabled only from this crate's own dev-dependencies.
-test-support = []
+test-support = [
+    "acp-client-runtime/test-observation",
+    "switchboard-session-events/test-support",
+    "switchboard-session-store/test-support",
+]
 runtime-test-support = [
     "router-clock/test-support",
     "collaboration-runtime/test-support",
@@ -31,6 +35,10 @@ nix = { workspace = true, features = ["event"] }
 sha2.workspace = true
 codex-acp-adapter = { path = "../codex-acp-adapter", version = "0.1.14" }
 collaboration-runtime = { version = "0.1.105", path = "../collaboration-runtime" }
+switchboard-session-events.workspace = true
+switchboard-session-store.workspace = true
+switchboard-message-custody.workspace = true
+switchboard-message-system.workspace = true
 collaboration-contracts = { version = "0.1.105", path = "../collaboration-contracts" }
 sqlx = { workspace = true, features = ["sqlite"] }
 runtime-primitives = { workspace = true, features = ["tokio"] }
@@ -65,6 +73,12 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
+central-link-client.workspace = true
+central-link-protocol.workspace = true
+switchboard-machine-core-store.workspace = true
+workspace-model.workspace = true
+switchboard-session-events = { workspace = true, features = ["test-support"] }
+switchboard-session-store = { workspace = true, features = ["test-support"] }
 hegel = { package = "hegeltest", version = "=0.52.6", features = ["static-engine"] }
 router-clock = { workspace = true, features = ["test-support"] }
 owned-process-test-support = { path = "../owned-process-test-support", version = "0.1.126" }

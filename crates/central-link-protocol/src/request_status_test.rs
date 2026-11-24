@@ -50,10 +50,19 @@ fn replay_answers_keep_the_logged_reply_and_domain_refusal_shapes() {
         json!({"kind":"refused","value":{"kind":"workspace","reason":{"kind":"workspaceNotAllowed"}}}),
         json!({"kind":"refused","value":{"kind":"mail","reason":{"kind":"notSession"}}}),
         json!({"kind":"notFound"}),
+        json!({"kind":"centralUnavailable","value":{}}),
     ];
     for wire in cases {
         let answer: RequestStatusAnswer = serde_json::from_value(wire.clone()).unwrap();
         assert_eq!(serde_json::to_value(answer).unwrap(), wire);
+    }
+    for wire in [
+        json!({"kind":"centralUnavailable"}),
+        json!({"kind":"centralUnavailable","value":null}),
+        json!({"kind":"centralUnavailable","retry":true}),
+        json!({"kind":"centralUnavailable","value":{"reason":"store"}}),
+    ] {
+        assert!(serde_json::from_value::<RequestStatusAnswer>(wire).is_err());
     }
     let rejected = json!({"kind":"refused","value":{"kind":"workspace","reason":{"kind":"credentialRefused"}}});
     assert!(serde_json::from_value::<RequestStatusAnswer>(rejected).is_err());
@@ -67,14 +76,13 @@ fn message_status_shapes_refuse_extra_fields_and_open_reasons() {
         query,
         workspace_model::ListQuery::MessageStatus { .. }
     ));
-    use workspace_model::central_mail::{DeliveryAnswer, MessageFailureReason, MessageStatus};
+    use workspace_model::central_mail::{MessageRefusal, MessageStatus, ReceiptKind};
     for (reason, wire_reason) in [
-        (MessageFailureReason::UnknownSession, "unknownSession"),
-        (MessageFailureReason::AmbiguousSession, "ambiguousSession"),
-        (MessageFailureReason::SenderUnresolved, "senderUnresolved"),
+        (MessageRefusal::UnknownSession, "unknownSession"),
+        (MessageRefusal::AmbiguousSession, "ambiguousSession"),
     ] {
-        let failed = MessageStatus::Failed { reason };
-        let wire = json!({"kind":"failed","reason":wire_reason});
+        let failed = MessageStatus::Refused { reason };
+        let wire = json!({"kind":"refused","reason":wire_reason});
         assert_eq!(serde_json::to_value(failed).unwrap(), wire);
         assert_eq!(
             serde_json::from_value::<MessageStatus>(wire).unwrap(),
@@ -82,7 +90,7 @@ fn message_status_shapes_refuse_extra_fields_and_open_reasons() {
         );
     }
     assert!(
-        serde_json::from_value::<DeliveryAnswer>(
+        serde_json::from_value::<ReceiptKind>(
             json!({"kind":"refused","reason":"senderUnresolved"})
         )
         .is_err()
@@ -93,6 +101,9 @@ fn message_status_shapes_refuse_extra_fields_and_open_reasons() {
         json!({"kind":"queued","reason":"unknownSession"}),
         json!({"kind":"delivered","messageId":REQUEST}),
         json!({"kind":"notFound","messageId":REQUEST}),
+        json!({"kind":"notSeen","waiting":"busy"}),
+        json!({"kind":"delivered","arrivedAt":"2030-01-01T00:00:00Z","deadlinePassed":true,"waiting":null}),
+        json!({"kind":"refused","reason":"sessionClosed"}),
     ] {
         assert!(serde_json::from_value::<MessageStatus>(wire).is_err());
     }

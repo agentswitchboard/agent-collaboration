@@ -16,10 +16,8 @@ impl MachineFixture {
     }
 }
 
-pub(super) type RevokeResult = std::result::Result<
-    Option<collaboration_central_core::identity_contract::EndedMachineClient>,
-    central_storage::StoreFailure,
->;
+pub(super) type RevokeResult =
+    std::result::Result<Option<fleet_contracts::EndedMachineClient>, central_storage::StoreFailure>;
 pub(super) fn revoke_control(
     serial: u16,
     machine_id: &str,

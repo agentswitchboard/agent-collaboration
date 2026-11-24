@@ -1,0 +1,45 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT\n    'legacy_notice_windows' AS \"kind!: String\",\n    window_id AS \"key!: String\",\n    due_at AS \"stored_time!: String\"\nFROM mail_notification_windows\nWHERE due_at IS NOT NULL\nUNION ALL\nSELECT 'legacy_workspace_drains', workspace_id, drain_due_at\nFROM mail_workspace_drains\nWHERE drain_due_at IS NOT NULL\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "kind!: String",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "name": "key!: String",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mail_notification_windows",
+            "name": "window_id"
+          }
+        }
+      },
+      {
+        "name": "stored_time!: String",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mail_notification_windows",
+            "name": "due_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "ec972764664a3f965959c56df0296c68380bf75eb6fcbe4e9a2ff6e37946d08e"
+}

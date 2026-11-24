@@ -7,7 +7,7 @@ mod persistence_overlay_tests;
 #[path = "tests/reconcile_reservation_test.rs"]
 mod reconcile_reservation_tests;
 #[path = "tests/restore_recovery_test.rs"]
-mod restore_recovery_tests;
+pub(super) mod restore_recovery_tests;
 #[path = "tests/steered_input_join_test.rs"]
 mod steered_input_join_tests;
 #[path = "tests/uncertainty_admission_test.rs"]
@@ -158,23 +158,13 @@ pub(crate) fn requester() -> SessionRef {
     }
 }
 
-struct NoLivePeer;
-
-impl crate::LiveSessionOwnershipCheck for NoLivePeer {
-    fn check<'a>(
-        &'a self,
-        _target: &'a SessionRef,
-    ) -> collaboration_contracts::DeliveryFuture<'a, crate::LiveSessionOwnership> {
-        Box::pin(async { Ok(crate::LiveSessionOwnership::NotLive) })
-    }
-}
-
 #[tokio::test]
 async fn delivery_prompt_reports_submission_before_turn_settles() {
     let root = tempfile::tempdir().expect("temporary root");
     let runtime = ExternalProviderRuntime::initialize(
         pending_prompt_fixture(),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("fixture initializes");
@@ -187,6 +177,7 @@ async fn delivery_prompt_reports_submission_before_turn_settles() {
             runtime,
         }],
         Arc::new(Mutex::new(store)),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .expect("supervisor initializes");
     let operation_id = OperationId::generate();
@@ -227,6 +218,7 @@ async fn delivery_prompt_without_loaded_session_is_known_not_submitted() {
     let runtime = ExternalProviderRuntime::initialize(
         create_fixture(),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("fixture initializes");
@@ -239,6 +231,7 @@ async fn delivery_prompt_without_loaded_session_is_known_not_submitted() {
             runtime,
         }],
         Arc::new(Mutex::new(store)),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .expect("supervisor");
 
@@ -276,8 +269,10 @@ async fn router_queue_drains_provider_prompts_in_fifo_order() {
         .await
         .expect("operation store opens");
     let store = Arc::new(Mutex::new(store));
-    let hub = Arc::new(collaboration_runtime::ProviderSessionEventHub::new(
+    let clock = crate::external_provider_runtime::acp_scripted_fixture::manual_clock();
+    let hub = Arc::new(switchboard_session_events::ProviderSessionEventHub::new(
         Arc::clone(&store),
+        clock.clone(),
     ));
     let hub_endpoint: message_board::SessionEndpointRef =
         serde_json::from_value(serde_json::to_value(endpoint()).expect("endpoint JSON"))
@@ -290,7 +285,7 @@ async fn router_queue_drains_provider_prompts_in_fifo_order() {
         Arc::clone(&hub),
         hub_endpoint,
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        clock.clone(),
     )
     .await
     .expect("fixture initializes");
@@ -302,6 +297,7 @@ async fn router_queue_drains_provider_prompts_in_fifo_order() {
             }],
             Arc::clone(&store),
             Arc::clone(&hub),
+            clock,
         )
         .expect("supervisor initializes"),
     );
@@ -315,8 +311,21 @@ async fn router_queue_drains_provider_prompts_in_fifo_order() {
     };
     let mut queued_input_ids = Vec::new();
     let mut expected_lines = Vec::new();
+    let mut dispatch_offers = Vec::new();
     for text in ["first", "second"] {
         let operation_id = OperationId::generate();
+        let offer = backend
+            .inner
+            .uncertainty
+            .slot(&target.endpoint)
+            .fixture
+            .notice_wait(
+                target.clone(),
+                crate::binding_store_fixture::BindingFixtureWait::QueuedDispatchOffered(
+                    operation_id.clone(),
+                ),
+            );
+        dispatch_offers.push((operation_id.clone(), offer));
         let input_id = session_event_model::InputId::generate();
         queued_input_ids.push(input_id.clone());
         let push_id = PushId::try_from(agent_automation::AttemptId::generate().as_str().to_owned())
@@ -357,17 +366,30 @@ async fn router_queue_drains_provider_prompts_in_fifo_order() {
         );
     }
 
-    for expected in expected_lines {
-        let (mut stream, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
-            .await
-            .expect("prompt event deadline")
-            .expect("prompt event");
+    let retirement = backend
+        .runtime_for(&endpoint())
+        .expect("provider runtime")
+        .retirement();
+    for ((operation_id, mut offer), expected) in dispatch_offers.into_iter().zip(expected_lines) {
+        if let Err(error) = offer.try_recv() {
+            drop(offer);
+            backend.shutdown().await.expect("supervisor shuts down");
+            panic!("owner must offer the queued head at the scheduler checkpoint: {error}");
+        }
+        let (mut stream, _) = tokio::select! {
+            accepted = listener.accept() => accepted.expect("prompt event"),
+            () = retirement.cancelled() => panic!("provider retired before delivering prompt: {expected}"),
+        };
         let mut bytes = Vec::new();
         stream
             .read_to_end(&mut bytes)
             .await
             .expect("prompt event bytes");
         assert_eq!(bytes, expected.as_bytes());
+        backend
+            .wait(wait_request(operation_id))
+            .await
+            .expect("queued head settles");
     }
     backend.cancel_waiting_owner_inputs().await;
     let hub_target: message_board::SessionRef =
@@ -394,6 +416,7 @@ async fn router_queue_shutdown_drops_an_unstarted_prompt() {
     let runtime = ExternalProviderRuntime::initialize(
         pending_prompt_fixture(),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("fixture initializes");
@@ -409,6 +432,7 @@ async fn router_queue_shutdown_drops_an_unstarted_prompt() {
                 runtime,
             }],
             Arc::clone(&store),
+            crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
         )
         .expect("supervisor"),
     );
@@ -498,6 +522,7 @@ async fn provider_retirement_settles_queued_input_without_resubmission() {
     let runtime = ExternalProviderRuntime::initialize(
         pending_prompt_fixture(),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("fixture initializes");
@@ -513,6 +538,7 @@ async fn provider_retirement_settles_queued_input_without_resubmission() {
                 runtime,
             }],
             Arc::clone(&store),
+            crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
         )
         .expect("supervisor"),
     );
@@ -753,6 +779,7 @@ async fn provider_error_code_fixtures_project_without_agent_text() {
         let runtime = ExternalProviderRuntime::initialize(
             fixture,
             std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+            crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
         )
         .await
         .expect("fixture initializes");

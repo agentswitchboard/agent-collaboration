@@ -1,32 +1,40 @@
 //! A tool call that holds one request slot until the test releases it, for listener admission
 //! tests in this crate and in the client and CLI crates.
 //!
-//! The holding call is a real `events_observe` on a recorded provider Session: it waits on the
-//! Session hub and ends at its first event, so releasing it is publishing one event, not
-//! waiting for a timer.
+//! The holding call is a real `events_observe` on a recorded provider Session. Hold its
+//! attachment so the transport has sent no notification when a test drops the reader or
+//! sends a second call. Releasing it publishes one event for the attached call to collect.
+use collaboration_contracts::{
+    HubFuture, HubSessionSummary, SessionEventAttachment, SessionEventHub, SkillViewAttachment,
+};
 use collaboration_protocol::{
     EndpointDescription, ProviderRequestedPolicy, ProviderWorkingDirectory, RouterAccess,
     SessionRef,
 };
-use collaboration_runtime::{
-    ProviderOperationStore, ProviderSessionEventHub, ProviderSessionRecord,
-};
 use collaboration_service::ApplicationFixture;
 use serde_json::{Value, json};
-use std::{io, path::Path, sync::Arc};
+use std::{
+    io,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+use switchboard_session_events::ProviderSessionEventHub;
+use switchboard_session_store::{ProviderOperationStore, ProviderSessionRecord};
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 
 /// The provider Session whose observation holds the slot, and the hub that releases it.
 pub struct RequestSlotHolder {
     hub: Arc<ProviderSessionEventHub>,
     target: SessionRef,
+    release_attachment: CancellationToken,
 }
 
 impl RequestSlotHolder {
     /// Gives `identity`, whose service is `service_id`, a provider endpoint with one recorded
     /// Session to observe. Its provider operation store lives in `directory`.
     pub async fn install(
-        identity: ApplicationFixture,
+        mut identity: ApplicationFixture,
         service_id: &str,
         directory: &Path,
     ) -> io::Result<(ApplicationFixture, Self)> {
@@ -62,10 +70,16 @@ impl RequestSlotHolder {
             })
             .await
             .map_err(io::Error::other)?;
-        let hub = Arc::new(ProviderSessionEventHub::with_capacity(store, 16));
-        let identity = identity.with_provider_session_hub(
-            Arc::clone(&hub) as Arc<dyn collaboration_contracts::SessionEventHub>
-        );
+        let hub = Arc::new(ProviderSessionEventHub::with_capacity(
+            store,
+            identity.clock_for_fixture(),
+            16,
+        ));
+        let release_attachment = CancellationToken::new();
+        let identity = identity.with_provider_session_hub(Arc::new(HeldAttachment {
+            hub: Arc::clone(&hub),
+            release_attachment: release_attachment.clone(),
+        }));
         let description: EndpointDescription = serde_json::from_value(json!({
             "endpoint": endpoint,
             "label": "Slot holder",
@@ -80,7 +94,14 @@ impl RequestSlotHolder {
             .endpoint_directory()
             .publish(description)
             .map_err(io::Error::other)?;
-        Ok((identity, Self { hub, target }))
+        Ok((
+            identity,
+            Self {
+                hub,
+                target,
+                release_attachment,
+            },
+        ))
     }
 
     /// The tool that holds a slot until [`Self::release`].
@@ -107,7 +128,44 @@ impl RequestSlotHolder {
         self.hub
             .publish(session, event)
             .await
-            .map(|_| ())
-            .map_err(io::Error::other)
+            .map_err(io::Error::other)?;
+        self.release_attachment.cancel();
+        Ok(())
+    }
+}
+
+struct HeldAttachment {
+    hub: Arc<ProviderSessionEventHub>,
+    release_attachment: CancellationToken,
+}
+
+impl SessionEventHub for HeldAttachment {
+    fn attach(&self, session: message_board::SessionRef) -> HubFuture<'_, SessionEventAttachment> {
+        Box::pin(async move {
+            self.release_attachment.cancelled().await;
+            self.hub.attach(session).await
+        })
+    }
+
+    fn skill_view(
+        &self,
+        session: message_board::SessionRef,
+        cwd: PathBuf,
+    ) -> HubFuture<'_, SkillViewAttachment> {
+        self.hub.skill_view(session, cwd)
+    }
+
+    fn state(
+        &self,
+        session: message_board::SessionRef,
+    ) -> HubFuture<'_, session_event_model::SessionState> {
+        self.hub.state(session)
+    }
+
+    fn sessions(
+        &self,
+        endpoint: message_board::SessionEndpointRef,
+    ) -> HubFuture<'_, Vec<HubSessionSummary>> {
+        self.hub.sessions(endpoint)
     }
 }

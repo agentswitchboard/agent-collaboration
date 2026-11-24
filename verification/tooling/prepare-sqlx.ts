@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { runCommands, runProcess, type CommandRunner } from "./process-command.ts";
@@ -14,7 +14,11 @@ export interface SqlitePreparationTarget {
   readonly packageName: string;
   readonly migrationSources: readonly string[];
   readonly databaseFilename: string;
+  readonly features?: readonly string[];
+  readonly fixtureMigration?: string;
 }
+
+const centralMigrationSource = "crates/fleet-storage-schema/migrations/central";
 
 export const sqlitePreparationTargets: readonly SqlitePreparationTarget[] = [
   {
@@ -23,16 +27,112 @@ export const sqlitePreparationTargets: readonly SqlitePreparationTarget[] = [
     databaseFilename: "account-schema.sqlite",
   },
   {
-    packageName: "collaboration-runtime",
-    migrationSources: ["crates/collaboration-runtime/migrations"],
+    packageName: "switchboard-session-store",
+    migrationSources: ["crates/switchboard-session-store/migrations"],
     databaseFilename: "provider-operation-schema.sqlite",
+  },
+  {
+    packageName: "switchboard-machine-core-store",
+    migrationSources: ["crates/switchboard-machine-core-store/migrations"],
+    databaseFilename: "machine-core-schema.sqlite",
   },
   {
     packageName: "ui-preference-store",
     migrationSources: ["crates/ui-preference-store/migrations"],
     databaseFilename: "ui-preferences-schema.sqlite",
   },
+  {
+    packageName: "fleet-workspace-service",
+    migrationSources: ["crates/fleet-storage-schema/migrations/workspace"],
+    databaseFilename: "fleet-workspace-schema.sqlite",
+  },
+  {
+    packageName: "fleet-approvals",
+    migrationSources: [centralMigrationSource],
+    databaseFilename: "fleet-approvals-central-schema.sqlite",
+  },
+  {
+    packageName: "fleet-engine",
+    migrationSources: [centralMigrationSource],
+    databaseFilename: "fleet-central-schema.sqlite",
+  },
+  {
+    packageName: "fleet-wakes",
+    migrationSources: [centralMigrationSource],
+    databaseFilename: "fleet-wakes-central-schema.sqlite",
+  },
+  {
+    packageName: "fleet-schedules",
+    migrationSources: [centralMigrationSource],
+    databaseFilename: "fleet-schedules-central-schema.sqlite",
+  },
+  {
+    packageName: "fleet-mail",
+    migrationSources: [centralMigrationSource],
+    databaseFilename: "fleet-mail-central-schema.sqlite",
+  },
+  {
+    packageName: "fleet-request-log",
+    migrationSources: [centralMigrationSource],
+    databaseFilename: "fleet-request-log-central-schema.sqlite",
+  },
+  {
+    packageName: "collaboration-central-core",
+    migrationSources: [centralMigrationSource],
+    databaseFilename: "fleet-central-engine-fixtures-schema.sqlite",
+    features: ["test-support"],
+    fixtureMigration:
+      "crates/fleet-storage-schema/tests/fixtures/engine_migrations/0001_engine_probe.sql",
+  },
+  {
+    packageName: "fleet-workspace-access",
+    migrationSources: [centralMigrationSource],
+    databaseFilename: "fleet-central-workspace-access.sqlite",
+  },
+  {
+    packageName: "fleet-workspace-directory",
+    migrationSources: [centralMigrationSource],
+    databaseFilename: "fleet-central-workspace-directory.sqlite",
+  },
+  {
+    packageName: "fleet-signin",
+    migrationSources: [centralMigrationSource],
+    databaseFilename: "fleet-central-signin.sqlite",
+  },
+  {
+    packageName: "fleet-actor-identity",
+    migrationSources: [centralMigrationSource],
+    databaseFilename: "fleet-actor-identity-central-schema.sqlite",
+  },
+  {
+    packageName: "fleet-machine-login",
+    migrationSources: [centralMigrationSource],
+    databaseFilename: "fleet-central-machine-login.sqlite",
+  },
 ];
+
+function appendFixtureMigration(
+  repositoryRoot: string,
+  directory: string,
+  target: SqlitePreparationTarget,
+): readonly string[] {
+  if (target.fixtureMigration === undefined) return target.migrationSources;
+  const lastVersion = target.migrationSources
+    .flatMap((source) => readdirSync(join(repositoryRoot, source)))
+    .reduce((latest, filename) => {
+      const version = /^(\d+)_.*\.sql$/.exec(filename)?.[1];
+      if (version === undefined) return latest;
+      const current = BigInt(version);
+      return current > latest ? current : latest;
+    }, 0n);
+  const fixtures = join(directory, "engine-fixture-migrations");
+  mkdirSync(fixtures);
+  copyFileSync(
+    join(repositoryRoot, target.fixtureMigration),
+    join(fixtures, `${lastVersion + 1n}_engine_probe.sql`),
+  );
+  return [...target.migrationSources, fixtures];
+}
 
 export interface PreparationOptions {
   readonly repositoryRoot: string;
@@ -69,7 +169,7 @@ export function prepareSqlxMetadata(options: PreparationOptions): number {
         };
         const schemaCommands = [
           [sqlx, "database", "create"],
-          ...target.migrationSources.map((source, index) => [
+          ...appendFixtureMigration(repositoryRoot, directory, target).map((source, index) => [
             sqlx,
             "migrate",
             "run",
@@ -88,7 +188,15 @@ export function prepareSqlxMetadata(options: PreparationOptions): number {
         const compileStatus = runCommands(
           [
             ["cargo", "clean", "--package", packageSpec],
-            ["cargo", "check", "--locked", "--package", packageSpec, "--all-targets"],
+            [
+              "cargo",
+              "check",
+              "--locked",
+              "--package",
+              packageSpec,
+              "--all-targets",
+              ...(target.features === undefined ? [] : ["--features", target.features.join(",")]),
+            ],
           ],
           { cwd: repositoryRoot, env: describing, inherit: true },
           runner,

@@ -32,15 +32,17 @@ async fn start_and_show_report_requested_and_actual_mode_with_the_reason() {
         std::sync::Arc::new(acp_provider_adapters::ClaudeAcpBehavior::new(
             acp_provider_adapters::ClaudeSkillSource::Annotated,
         )),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .unwrap();
     let store =
-        collaboration_runtime::ProviderOperationStore::open(&base.join("operations.sqlite"))
+        switchboard_session_store::ProviderOperationStore::open(&base.join("operations.sqlite"))
             .await
             .unwrap();
     let binding = crate::external_provider_supervisor::tests::binding();
     let requester = crate::external_provider_supervisor::tests::requester();
+    let clock = runtime.owner_clock();
     let backend = ExternalProviderSupervisor::new_with_hub(
         vec![ExternalProviderBinding {
             identity: binding.clone(),
@@ -49,6 +51,7 @@ async fn start_and_show_report_requested_and_actual_mode_with_the_reason() {
         std::sync::Arc::new(tokio::sync::Mutex::new(store)),
         None,
         Some(base.join("scratch")),
+        clock,
     )
     .unwrap();
     for (requested, actual, reason) in [

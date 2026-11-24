@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 /// supervisor grants no folder.
 pub(super) async fn prepare_provider_session_scratch(
     scratch_root: Option<&Path>,
+    clock: &dyn router_clock::RuntimeClock,
 ) -> Result<Option<PathBuf>, &'static str> {
     let Some(scratch_root) = scratch_root else {
         return Ok(None);
@@ -20,10 +21,13 @@ pub(super) async fn prepare_provider_session_scratch(
         .map_err(|_| "session scratch scope could not be minted")?;
     let folder = scratch_root.join(format!("session-{}", String::from(scope)));
     let prepared = folder.clone();
-    tokio::task::spawn_blocking(move || codex_native_integration::prepare_scratch_scope(&prepared))
-        .await
-        .map_err(|_| "session scratch folder preparation did not complete")?
-        .map_err(|_| "session scratch folder could not be prepared")?;
+    let used_at = std::time::SystemTime::from(clock.utc_now());
+    tokio::task::spawn_blocking(move || {
+        codex_native_integration::prepare_scratch_scope_used_at(&prepared, used_at)
+    })
+    .await
+    .map_err(|_| "session scratch folder preparation did not complete")?
+    .map_err(|_| "session scratch folder could not be prepared")?;
     Ok(Some(folder))
 }
 

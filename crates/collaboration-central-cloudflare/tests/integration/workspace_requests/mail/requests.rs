@@ -35,6 +35,92 @@ fn send(to: workspace_ids::SessionRef, body: &str) -> Operation {
 }
 
 #[tokio::test]
+async fn direct_send_admits_an_enrolled_machine_without_a_session_actor() {
+    let fixture = Fixture::new().await;
+    let mut unregistered = session(&fixture.caller);
+    unregistered.session_id = "unregistered-direct-recipient"
+        .to_owned()
+        .try_into()
+        .unwrap();
+
+    let send_result = request(
+        &fixture,
+        &fixture.caller,
+        909_002,
+        send(unregistered.clone(), "D6"),
+    )
+    .await;
+    assert!(matches!(send_result, Result::Done(Answer::Queued { .. })));
+
+    let wake = Operation::SetWake {
+        target: unregistered.clone(),
+        due_at: chrono::DateTime::from_timestamp(FIXTURE_NOW + 300, 0).unwrap(),
+        text: "still requires a session".to_owned().try_into().unwrap(),
+    };
+    let schedule = Operation::SetAutomation {
+        target: unregistered.clone(),
+        timing: serde_json::from_str(r#"{"kind":"after","seconds":300}"#).unwrap(),
+        text: "still requires a session".to_owned().try_into().unwrap(),
+    };
+    for (request_id, operation) in [(909_003, wake), (909_004, schedule)] {
+        assert_eq!(
+            request(&fixture, &fixture.caller, request_id, operation).await,
+            Result::Refused(Refusal::UnknownSession {
+                target: unregistered.clone()
+            }),
+        );
+    }
+    fixture.host.close().await;
+}
+
+#[tokio::test]
+async fn a_fresh_send_refused_for_clock_does_not_create_its_sender_actor() {
+    let fixture = Fixture::new().await;
+    let upper_bound = collaboration_central_core::MAX_ALARM_UNIX_MILLIS;
+    let valid = m::Timestamp::from_timestamp_millis(upper_bound - 1_000).unwrap();
+    let out_of_range = m::Timestamp::from_timestamp_millis(upper_bound + 1_000).unwrap();
+    use std::sync::atomic::Ordering;
+    fixture
+        .clock
+        .0
+        .store(valid.timestamp_millis(), Ordering::SeqCst);
+    let mut caller = relocate_authority(&fixture.host, &fixture.caller).await;
+    let mut sender = session(&caller);
+    sender.session_id = "fresh-mail-clock-refusal".to_owned().try_into().unwrap();
+    caller.caller = m::Caller::Session(sender.clone());
+    let central = fixture.host.central(&caller.organization_id).await;
+    fixture
+        .clock
+        .0
+        .store(out_of_range.timestamp_millis(), Ordering::SeqCst);
+    let store = central.statement_host();
+    let actor_facts = || Statement {
+        sql: "SELECT actor_identity_id,identity FROM access_actor_identities ORDER BY actor_identity_id",
+        args: vec![],
+    };
+    let before = store.read(actor_facts()).await.unwrap();
+    let reply = fixture
+        .host
+        .request_central(
+            &caller,
+            CentralMailRequest {
+                request_id: id(909005),
+                operation: send(sender, "invalid applying time"),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        reply,
+        Result::Refused(Refusal::TimeOutOfRange {
+            field: "anchorAt".into()
+        })
+    );
+    assert_eq!(store.read(actor_facts()).await.unwrap(), before);
+    fixture.host.close().await;
+}
+
+#[tokio::test]
 async fn direct_mail_replays_expires_and_routes_to_both_machines() {
     let mut fixture = Fixture::new().await;
     let first = session(&fixture.caller);
@@ -134,6 +220,7 @@ async fn direct_mail_replays_expires_and_routes_to_both_machines() {
         Result::Done(Answer::Queued { .. })
     ));
     let mut unknown = second.clone();
+    unknown.machine_id = id(909_001);
     unknown.session_id = "unknown".to_owned().try_into().unwrap();
     assert_eq!(
         request(

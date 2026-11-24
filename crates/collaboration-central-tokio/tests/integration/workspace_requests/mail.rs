@@ -3,8 +3,13 @@ mod automation_occurrences;
 mod automations;
 mod corruption;
 mod delivery_ack;
+mod direct_mark_guard;
 mod direct_message_cancel;
+mod direct_receipt_sequences;
+mod due_table_history;
+
 mod message_status;
+mod receipt_composition;
 mod requests;
 mod stored_row_use;
 mod wakes;
@@ -25,8 +30,11 @@ mod replay;
 
 mod replay_failures;
 
+mod automation_live_cap;
 mod engine_alarm;
+mod engine_alarm_input_parity;
 mod engine_alarm_readback;
+mod engine_alarm_retention;
 mod engine_attempts;
 mod engine_drive_gate;
 mod engine_event_support;
@@ -43,5 +51,6 @@ mod engine_settle_shutdown;
 mod engine_timing;
 mod engine_timing_races;
 mod engine_visit_order;
+mod overdue_wakes;
 mod probe_requests;
 mod timing_contract;

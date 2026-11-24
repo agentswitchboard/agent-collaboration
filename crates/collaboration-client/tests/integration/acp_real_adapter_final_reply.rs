@@ -43,7 +43,7 @@ impl UnmaterializedBindingStore for EmptyUnmaterializedBindings {
 
     fn restore(&self, _binding: codex_acp_adapter::AcpSessionBinding) {}
 
-    fn finish(&self, _session_id: &str) {}
+    fn finish(&self, _session_id: &str, _generation: &collaboration_protocol::CodexGeneration) {}
 
     fn host_tasks(&self) -> tokio_util::task::TaskTracker {
         self.host_tasks.clone()

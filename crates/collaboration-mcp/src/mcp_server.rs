@@ -45,6 +45,10 @@ mod conversation_operation_tools;
 mod conversation_tool_requests;
 mod conversation_tool_results;
 mod interaction_tools;
+mod message_tools;
+#[cfg(test)]
+#[path = "mcp_server/provider_observation_schema_test.rs"]
+mod provider_observation_schema_test;
 mod result_converters;
 mod schema_binding;
 mod session_tools;
@@ -86,7 +90,8 @@ impl ToolSurface {
     pub(crate) fn new(native_definitions: Option<&NativeSchemaDefinitions>) -> Self {
         let mut router = CollaborationMcpServer::session_tool_router()
             + CollaborationMcpServer::provider_control_tool_router()
-            + CollaborationMcpServer::carrier_tool_router();
+            + CollaborationMcpServer::carrier_tool_router()
+            + CollaborationMcpServer::message_tool_router();
         register_conversation_operation_tools(&mut router);
         let tools = resolve_tool_schemas(
             &router,

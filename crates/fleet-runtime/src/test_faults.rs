@@ -2,19 +2,33 @@
 //! core has constructed the real transaction. No stand-in replaces storage.
 use central_engine_model::InstanceKey;
 use central_storage::{
-    AlarmUpdate, BatchOutcome, CorruptReason, SqlValue, Statement, StatementBatch, StoreFailure,
+    AlarmPublicationFailure, AlarmUpdate, BatchOutcome, CorruptReason, SqlValue, Statement,
+    StatementBatch, StoreFailure,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{
+    Mutex, PoisonError,
+    atomic::{AtomicBool, Ordering},
+};
 
 #[derive(Default)]
 pub struct TestFaults {
     commit: Mutex<Option<EngineCommitFault>>,
     read: Mutex<Option<EngineReadFault>>,
     alarm_batch: Mutex<Option<StoreFailure>>,
+    alarm_publication: Mutex<Option<AlarmPublicationFailure>>,
+    lost_provisioning_reply: AtomicBool,
 }
 
 impl TestFaults {
+    pub fn arm_lost_provisioning_reply(&self) {
+        self.lost_provisioning_reply.store(true, Ordering::SeqCst);
+    }
+
+    pub fn take_lost_provisioning_reply(&self) -> bool {
+        self.lost_provisioning_reply.swap(false, Ordering::SeqCst)
+    }
+
     pub fn arm_commit(&self, fault: EngineCommitFault) {
         *self.commit.lock().unwrap_or_else(PoisonError::into_inner) = Some(fault);
     }
@@ -35,13 +49,45 @@ impl TestFaults {
         }
     }
 
+    /// Direct marks use a typed operation in place of the guarded-batch matcher.
+    pub fn take_direct_mark_answer_loss(
+        &self,
+        message: &workspace_model::MessageId,
+    ) -> Option<DirectMarkAnswerLoss> {
+        let mut armed = self.commit.lock().unwrap_or_else(PoisonError::into_inner);
+        let fault = armed
+            .as_ref()
+            .filter(|fault| fault.key.0 == message.as_str())?;
+        let loss = match fault.kind {
+            EngineCommitFaultKind::NotAppliedAnswerLost => DirectMarkAnswerLoss::BeforeApplying,
+            EngineCommitFaultKind::AppliedAnswerLost => DirectMarkAnswerLoss::AfterCommit,
+            _ => return None,
+        };
+        armed.take();
+        Some(loss)
+    }
+
     pub fn arm_read(&self, fault: EngineReadFault) {
         *self.read.lock().unwrap_or_else(PoisonError::into_inner) = Some(fault);
     }
 
     pub fn take_read_failure(&self, statement: &Statement) -> Option<StoreFailure> {
+        self.take_read_failure_matching(|fault| fault.matches_sql(statement.sql))
+    }
+
+    pub fn take_due_read_failure(
+        &self,
+        kind: fleet_runtime_ports::DueListKind,
+    ) -> Option<StoreFailure> {
+        self.take_read_failure_matching(|fault| fault.kind == kind.machine_kind())
+    }
+
+    fn take_read_failure_matching(
+        &self,
+        matches: impl FnOnce(&EngineReadFault) -> bool,
+    ) -> Option<StoreFailure> {
         let mut armed = self.read.lock().unwrap_or_else(PoisonError::into_inner);
-        if armed.as_ref().is_some_and(|fault| fault.matches(statement)) {
+        if armed.as_ref().is_some_and(matches) {
             armed.take();
             Some(StoreFailure::Corrupt {
                 reason: CorruptReason::BadValue {
@@ -53,6 +99,20 @@ impl TestFaults {
         }
     }
 
+    pub fn arm_alarm_publication(&self, failure: AlarmPublicationFailure) {
+        *self
+            .alarm_publication
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(failure);
+    }
+
+    pub fn take_alarm_publication_failure(&self) -> Option<AlarmPublicationFailure> {
+        self.alarm_publication
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+    }
+
     pub fn arm_alarm_batch(&self, failure: StoreFailure) {
         *self
             .alarm_batch
@@ -60,11 +120,18 @@ impl TestFaults {
             .unwrap_or_else(PoisonError::into_inner) = Some(failure);
     }
 
+    pub fn alarm_batch_pending(&self) -> bool {
+        self.alarm_batch
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_some()
+    }
+
     pub fn take_alarm_batch_failure(&self, batch: &StatementBatch) -> Option<StoreFailure> {
         if batch.statements.is_empty()
             && matches!(
                 batch.alarm,
-                AlarmUpdate::SetFromQuery(_) | AlarmUpdate::SetEngineFromQuery { .. }
+                AlarmUpdate::SetFromQuery(_) | AlarmUpdate::Engine(_)
             )
         {
             self.alarm_batch
@@ -75,6 +142,11 @@ impl TestFaults {
             None
         }
     }
+}
+
+pub enum DirectMarkAnswerLoss {
+    BeforeApplying,
+    AfterCommit,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -103,6 +175,14 @@ impl EngineCommitFault {
     pub fn matches(&self, batch: &StatementBatch) -> bool {
         batch.statements.iter().any(|statement| {
             let sql = statement.statement.sql;
+            // Admin reads and repairs all reserve the exact signed proof in
+            // the applying batch, even when they have no subject UPDATE.
+            if sql.starts_with("INSERT INTO admin_used_requests\n") {
+                return matches!(
+                    statement.statement.args.first(),
+                    Some(SqlValue::Text(proof_id)) if proof_id == &self.key.0
+                );
+            }
             (sql.starts_with("UPDATE automation_wakes SET")
                 || sql.starts_with("UPDATE automation_schedules SET")
                 || sql.starts_with("UPDATE engine_probe_items SET")
@@ -148,15 +228,13 @@ pub struct EngineReadFault {
     pub kind: String,
 }
 impl EngineReadFault {
-    pub fn matches(&self, statement: &Statement) -> bool {
-        statement
-            .sql
-            .starts_with("SELECT subject_key,occurrence_ms,effective_due_ms")
+    fn matches_sql(&self, sql: &str) -> bool {
+        sql.starts_with("SELECT subject_key AS \"subject_key?: String\"")
             && match self.kind.as_str() {
-                "wake_timer" => statement.sql.contains("FROM automation_wakes s"),
-                "automation_timer" => statement.sql.contains("FROM automation_schedules s"),
-                "direct_message" => statement.sql.contains("FROM mail_messages s"),
-                "engine_probe" => statement.sql.contains("s.machine_kind='engine_probe'"),
+                "wake_timer" => sql.contains("FROM wake_due_rows"),
+                "automation_timer" => sql.contains("FROM schedule_due_rows"),
+                "direct_message" => sql.contains("FROM direct_message_due_rows"),
+                "engine_probe" => sql.contains("FROM engine_probe_due_rows"),
                 _ => false,
             }
     }

@@ -19,9 +19,9 @@ use collaboration_protocol::{
     ProviderSettingsFailureKind, ProviderSettingsSetRequest, ProviderTransport,
     ProviderWorkingDirectory, RouterAccess, SessionId, SessionRef, UuidIdentity,
 };
-use collaboration_runtime::ProviderOperationStore;
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::Arc};
+use switchboard_session_store::ProviderOperationStore;
 use tokio::sync::Mutex;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -209,6 +209,7 @@ fn assert_process_reaped(process_id_path: &std::path::Path) -> TestResult {
 async fn supervisor(
     root: &tempfile::TempDir,
     bindings: Vec<(ProviderBindingIdentity, ExternalProviderRuntime)>,
+    clock: Arc<router_clock::ManualClock>,
 ) -> TestResult<ExternalProviderSupervisor> {
     let store =
         ProviderOperationStore::open(&root.path().join("provider-operations.sqlite")).await?;
@@ -218,6 +219,7 @@ async fn supervisor(
             .map(|(identity, runtime)| ExternalProviderBinding { identity, runtime })
             .collect(),
         Arc::new(Mutex::new(store)),
+        clock,
     )?)
 }
 
@@ -251,26 +253,14 @@ async fn await_admission(
     backend: &dyn ProviderConversationBackend,
     operation_id: &OperationId,
 ) -> TestResult {
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        loop {
-            match backend
-                .show(ConversationOperationShowRequest {
-                    operation_id: operation_id.clone(),
-                })
-                .await
-            {
-                Ok(_) => return Ok(()),
-                Err(error) if error.kind == ConversationOperationFailureKind::NotFound => {
-                    tokio::task::yield_now().await;
-                }
-                Err(error) => {
-                    return Err(format!("provider admission failed: {error:?}").into());
-                }
-            }
-        }
-    })
-    .await
-    .map_err(|_| "provider admission timed out")?
+    operation(
+        backend
+            .show(ConversationOperationShowRequest {
+                operation_id: operation_id.clone(),
+            })
+            .await,
+    )
+    .map(|_| ())
 }
 
 #[path = "../external_provider_supervisor/settings_projection_tests.rs"]

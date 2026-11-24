@@ -9,6 +9,10 @@ pub const AUTHORIZATION_REVISIONS_ROUTE: &str = "/internal/organization-authoriz
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum OrganizationFenceState {
     Active,
     Stopped,
@@ -17,51 +21,24 @@ pub enum OrganizationFenceState {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum PersonFenceState {
     Active,
     Inactive,
 }
 
-/// A fence revision: a positive JavaScript-safe integer.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
-#[serde(try_from = "i64", into = "i64")]
-pub struct FenceRevision(i64);
-impl TryFrom<i64> for FenceRevision {
-    type Error = FenceRevisionError;
-    fn try_from(value: i64) -> Result<Self, Self::Error> {
-        if !(1..=9_007_199_254_740_991).contains(&value) {
-            return Err(FenceRevisionError);
-        }
-        Ok(Self(value))
-    }
-}
-impl From<FenceRevision> for i64 {
-    fn from(value: FenceRevision) -> Self {
-        value.0
-    }
-}
-impl FenceRevision {
-    #[must_use]
-    pub const fn get(self) -> i64 {
-        self.0
-    }
-}
-impl JsonSchema for FenceRevision {
-    fn schema_name() -> std::borrow::Cow<'static, str> {
-        "FenceRevision".into()
-    }
-    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        schemars::json_schema!({"type":"integer","minimum":1,"maximum":9_007_199_254_740_991_i64})
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-#[error("fence revision must be an integer in 1..=2^53-1")]
-pub struct FenceRevisionError;
+pub use fleet_signin::{FenceRevision, FenceRevisionError};
 
 /// Lowercase hex SHA-256 of the sign-in service's canonical permission policy.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct PermissionPolicyDigest(String);
 impl TryFrom<String> for PermissionPolicyDigest {
     type Error = FenceRevisionError;
@@ -106,6 +83,10 @@ pub type FencePersonId = message_board::RecordId;
     rename_all_fields = "camelCase",
     deny_unknown_fields
 )]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum AuthorizationRevision {
     Organization {
         organization_id: OrganizationId,
@@ -138,6 +119,10 @@ impl AuthorizationRevision {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct AuthorizationRevisionAcknowledgement {
     /// The floor central retains after the commit; may exceed the sent revision.
     pub acknowledged_revision: FenceRevision,

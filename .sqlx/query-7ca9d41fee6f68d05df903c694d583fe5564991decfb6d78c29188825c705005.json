@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE approval_requests\nSET waiting_status = 'passed_on', updated_at = MAX(updated_at, ?1)\nWHERE approval_row_id = ?2 AND organization_id = ?3 AND contents_digest = ?4\n  AND record_state = 'waiting' AND waiting_status = ?6 AND deadline_ms = ?5\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "7ca9d41fee6f68d05df903c694d583fe5564991decfb6d78c29188825c705005"
+}

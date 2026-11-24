@@ -10,13 +10,19 @@ publish.workspace = true
 workspace = true
 
 [features]
+wire-export = ["dep:specta","dep:specta-typescript","fleet-contracts/wire-export","fleet-engine/wire-export","fleet-identity-protocol/wire-export","fleet-runtime-ports/wire-export","fleet-signin/wire-export","message-board/wire-export","workspace-ids/wire-export"]
 conformance = []
 # Test seams (pause points, the storage conformance schema); never in a production build.
-test-support = ["fleet-engine/test-support", "fleet-runtime/test-support", "dep:sqlx-core", "fleet-storage-schema/test-support"]
+test-support = ["central-link-protocol/test-support", "fleet-signin/test-support", "fleet-engine/test-support", "fleet-runtime/test-support", "dep:sqlx-core", "fleet-storage-schema/test-support"]
 
 [dependencies]
+fleet-approvals.workspace = true
+fleet-signin.workspace = true
+fleet-machine-login.workspace = true
+fleet-rpc.workspace = true
 central-storage.workspace = true
 central-link-protocol.workspace = true
+central-person-link.workspace = true
 central-engine-model.workspace = true
 fleet-contracts.workspace = true
 fleet-engine.workspace = true
@@ -27,6 +33,7 @@ fleet-schedules.workspace = true
 fleet-timer-policy.workspace = true
 fleet-runtime-ports.workspace = true
 fleet-runtime.workspace = true
+fleet-request-log.workspace = true
 fleet-workspace-access.workspace = true
 fleet-workspace-directory.workspace = true
 workspace-model.workspace = true
@@ -53,12 +60,13 @@ uuid = { workspace = true, features = ["serde"] }
 uuid = { version = "=1.26.0", features = ["v7", "js"] }
 
 [dev-dependencies]
+approval-request-protocol.workspace = true
 agent-automation = {path="../agent-automation",version="0.1.149"}
 central-engine-test-support = { workspace = true, features = ["sqlite-fixtures"] }
 fleet-runtime-test-support.workspace = true
 fleet-storage-schema.workspace = true
 hegel = { package = "hegeltest", version = "=0.52.6", features = ["static-engine"] }
-sqlx = { workspace = true, features = ["sqlite", "migrate"] }
+sqlx = { workspace = true, features = ["sqlite", "migrate", "macros"] }
 ring = "0.17.14"
 jsonschema.workspace = true
 tokio.workspace = true
@@ -66,3 +74,11 @@ tokio.workspace = true
 [[test]]
 name = "integration"
 path = "tests/integration/main.rs"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+specta = { workspace = true, features = ["derive","chrono","uuid"], optional = true }
+specta-typescript = { workspace = true, optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+specta-serde.workspace = true
+tempfile = "3.27.0"

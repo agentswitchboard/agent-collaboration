@@ -1,20 +1,15 @@
 //! Shared values for mailbox delivery over a machine link.
+pub use central_link_protocol::MachineLinkCloseCode;
 use workspace_ids::MessageId;
 use workspace_model::{ResolvedSender, Timestamp, central_mail::MessageRecord};
 
-/// The result of applying an Ack to the central message row.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MailAckSettlement {
+/// Per-receipt applying decision. Authority failure aborts its whole frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MailReceiptSettlement {
     Applied,
-    Ignored(MailAckIgnored),
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MailAckIgnored {
-    UnknownMessage,
-    WrongMachine,
-    AlreadySettled,
-    MachineAuthorityLapsed,
+    Stop(workspace_model::central_mail::ReceiptResult),
+    AuthorityLapsed(MachineLinkCloseCode),
 }
 
 pub const WELCOME_PAGE_SIZE: usize = central_engine_model::DueBatchPolicy::DEFAULT.per_kind_cap;
@@ -42,7 +37,7 @@ impl WindowedDelivery {
 
 pub enum WelcomeDeliveryPage {
     Ready(Vec<WindowedDelivery>),
-    AuthorityLapsed,
+    AuthorityLapsed(MachineLinkCloseCode),
 }
 
 /// The row and its current sender at one authorized push to the addressed machine.
@@ -55,7 +50,5 @@ pub struct ResolvedMailDelivery {
 pub enum WindowedDeliveryDecision {
     Ready(ResolvedMailDelivery),
     Ineligible,
-    /// Central terminally settled the message without offering a frame.
-    SenderUnresolved,
-    AuthorityLapsed,
+    AuthorityLapsed(MachineLinkCloseCode),
 }

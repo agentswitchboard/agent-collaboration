@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT message_kind FROM mail_messages WHERE message_id=? AND target_machine_id=?\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "message_kind",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mail_messages",
+            "name": "message_kind"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "fccbacf50f72e6c2d4daeddc31a79f2280329b596b3e7374b7badf66150d12dd"
+}

@@ -1,12 +1,10 @@
-use crate::stored_rows::WAKE_FAILURE;
-use central_engine_model::{EngineTime, ItemFailureClass, MachineKind};
-use central_storage::ReadOutcome;
-use fleet_engine::{DiscardStore, LoadFailure, Versioned, raw_version};
-use fleet_runtime_ports::stored_values::format_utc_millis;
-use fleet_runtime_ports::{
-    guarded_statements::{exact, text},
-    stored_values::string,
+use crate::{
+    stored_rows::{StoredWake, WakeVersion, plan_wake_read},
+    timed_store::{plan_wake_attempt, plan_wake_transition},
 };
+use central_engine_model::{EngineTime, ItemFailureClass, MachineKind, StateTag};
+use central_storage::ReadOutcome;
+use fleet_engine::{DiscardSubjectStatements, SubjectLoadFailure, VersionedSubjectState};
 use fleet_timer_policy::{FinishKind, Lifecycle, LifecycleFinish};
 
 pub struct WakeKind;
@@ -17,46 +15,37 @@ pub type WakeFinish = LifecycleFinish<WakeKind>;
 
 /// Only the lifecycle column is decoded; an unknown value is the one case the
 /// finishing view cannot act on, and it is never coerced.
-fn lifecycle(rows: &ReadOutcome, column: &'static str) -> Result<Lifecycle, ItemFailureClass> {
-    let corrupt = || ItemFailureClass::CorruptRow {
-        column: column.to_owned(),
-        raw_value: None,
-    };
-    let row = rows.rows.first().ok_or_else(corrupt)?;
-    Lifecycle::from_stored_tag(string(rows, row, "state").map_err(|_| corrupt())?)
-        .ok_or_else(corrupt)
-}
-
 fn decode_lifecycle(
     rows: &ReadOutcome,
-    state_column: &'static str,
-) -> Result<Option<Versioned<Lifecycle>>, LoadFailure> {
-    let Some(version) = raw_version(rows)? else {
+) -> Result<Option<VersionedSubjectState<Lifecycle, WakeVersion>>, SubjectLoadFailure<WakeVersion>>
+{
+    let Some((stored, version)) = StoredWake::observe(rows)? else {
         return Ok(None);
     };
-    match lifecycle(rows, state_column) {
-        Ok(state) => Ok(Some(Versioned { state, version })),
-        Err(class) => Err(LoadFailure::Corrupt { class, version }),
-    }
+    let state = stored
+        .lifecycle()
+        .map_err(|_| SubjectLoadFailure::CorruptSubjectRow {
+            failure_class: ItemFailureClass::CorruptRow {
+                column: "automation_wakes.state".into(),
+                raw_value: None,
+            },
+            observed_subject_version: Box::new(version.clone()),
+        })?;
+    Ok(Some(VersionedSubjectState {
+        decoded_state: state,
+        observed_subject_version: version,
+    }))
 }
 
-pub fn wake_finish_store() -> DiscardStore<WakeFinish> {
-    DiscardStore {
-        read_sql: "SELECT wake_id,target,due_at,text,state,created_at,updated_at FROM automation_wakes WHERE wake_id=?",
-        decode: |rows| decode_lifecycle(rows, "automation_wakes.state"),
-        save: |prior, next, now: EngineTime| {
-            let mut args = vec![
-                text(central_engine_model::StateTag::state_tag(next)),
-                text(format_utc_millis(now)),
-            ];
-            args.extend(prior.version.0.clone());
-            Ok(exact(
-                "UPDATE automation_wakes SET state=?1,updated_at=?2 WHERE wake_id IS ?3 AND target IS ?4 AND due_at IS ?5 AND text IS ?6 AND state IS ?7 AND created_at IS ?8 AND updated_at IS ?9",
-                args,
-            ))
+pub fn wake_finish_store() -> DiscardSubjectStatements<WakeFinish, WakeVersion> {
+    DiscardSubjectStatements {
+        plan_discard_subject_read: plan_wake_read,
+        decode_discard_subject: decode_lifecycle,
+        plan_discard_subject_write: |prior, next, now: EngineTime| {
+            plan_wake_transition(&prior.observed_subject_version, next.state_tag(), now)
         },
-        effect_statements: |effect| match *effect {},
-        failure_sql: WAKE_FAILURE,
+        plan_discard_effect_writes: |effect| match *effect {},
+        discard_attempt_failure_writer: plan_wake_attempt,
     }
 }
 

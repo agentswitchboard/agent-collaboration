@@ -8,12 +8,12 @@ use collaboration_protocol::{
     ConversationBindingIdentity, OperationId, ProviderBindingIdentity, ProviderOperationEffect,
     ProviderOperationKind, ProviderOperationStage, ProviderReconciliationState, SessionRef,
 };
-use collaboration_runtime::{ProviderOperationRecord, ProviderOperationStoreError};
 use state_machine_core::{StateMachine, TransitionError};
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
+use switchboard_session_store::{ProviderOperationRecord, ProviderOperationStoreError};
 use tokio::sync::{OnceCell, watch};
 use uuid::Uuid;
 

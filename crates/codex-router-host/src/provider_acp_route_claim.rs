@@ -7,8 +7,8 @@ use collaboration_contracts::RouteUnavailableReason;
 use collaboration_contracts::UnsentCause;
 use collaboration_protocol::{EndpointAvailability, EndpointRef, SessionRef, UuidIdentity};
 use collaboration_runtime::EndpointDirectory;
-use collaboration_runtime::ProviderOperationStore;
 use std::{collections::HashSet, sync::Arc};
+use switchboard_session_store::ProviderOperationStore;
 use tokio::sync::Mutex;
 
 pub(crate) struct ProviderAcpRouteClaim {
@@ -160,11 +160,12 @@ mod tests {
         ObservationTimestamp, SessionId, SessionRef, UuidIdentity,
     };
     use collaboration_runtime::EndpointDirectory;
-    use collaboration_runtime::ProviderOperationStore;
     use std::sync::Arc;
+    use switchboard_session_store::ProviderOperationStore;
 
     #[tokio::test]
     async fn disabled_provider_claim_preserves_catalog_reason_and_fix() {
+        let fixture_clock = crate::external_provider_runtime::acp_scripted_fixture::manual_clock();
         let root = tempfile::tempdir().expect("provider store root");
         let store = Arc::new(tokio::sync::Mutex::new(
             ProviderOperationStore::open(&root.path().join("operations.sqlite"))
@@ -196,7 +197,8 @@ mod tests {
             })
             .expect("endpoint publication");
         let supervisor = Arc::new(
-            ExternalProviderSupervisor::new(Vec::new(), Arc::clone(&store)).expect("supervisor"),
+            ExternalProviderSupervisor::new(Vec::new(), Arc::clone(&store), fixture_clock.clone())
+                .expect("supervisor"),
         );
         let claim = ProviderAcpRouteClaim::new(
             service_id,

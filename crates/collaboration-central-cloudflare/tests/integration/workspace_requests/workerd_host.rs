@@ -107,7 +107,7 @@ struct Transport {
     process: Arc<Process>,
     clock_responses: AtomicUsize,
 }
-fn workerd_control_http_client() -> reqwest::Client {
+pub(super) fn workerd_control_http_client() -> reqwest::Client {
     // These independent fixture RPCs must not borrow an idle socket while
     // workerd closes it. A lost POST is not a missing object clock.
     reqwest::Client::builder()

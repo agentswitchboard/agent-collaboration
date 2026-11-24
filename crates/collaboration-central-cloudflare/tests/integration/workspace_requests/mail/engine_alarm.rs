@@ -373,6 +373,9 @@ async fn a_failed_final_publication_fails_the_alarm_handler() {
     fixture.host.close().await;
 }
 
+#[path = "engine_alarm_direct_mail.rs"]
+mod direct_mail_recovery;
+
 #[tokio::test]
 async fn a_failed_due_read_for_one_kind_still_handles_the_others() {
     let fixture = Fixture::new().await;
@@ -411,5 +414,146 @@ async fn a_failed_due_read_for_one_kind_still_handles_the_others() {
         vec![vec![text("failing"), integer(1), text("corrupt_row")]]
     );
     assert_eq!(alarm_ms(&runtime).await, ms(at(start, 10, 0)));
+    fixture.host.close().await;
+}
+
+#[tokio::test]
+async fn an_out_of_band_wake_with_a_null_key_creates_no_dispatch_or_source_attempt() {
+    let fixture = Fixture::new().await;
+    let runtime = runtime(&fixture).await;
+    let start = now(&fixture);
+    let cutoff = at(start, 5, 0);
+    raw(
+        &runtime,
+        "INSERT INTO automation_wakes VALUES (NULL, 'target', ?, 'wake', 'active', ?, ?)",
+        vec![
+            text(cutoff.to_rfc3339()),
+            text(start.to_rfc3339()),
+            text(start.to_rfc3339()),
+        ],
+    )
+    .await;
+    set_now(&fixture, cutoff);
+    let completion = runtime.after_event().await.unwrap();
+    assert_eq!(completion.wakes_fired, 0);
+    assert!(source_attempt(&runtime, "wake_timer").await.is_empty());
+    fixture.host.close().await;
+}
+
+#[tokio::test]
+async fn applying_recompute_dispatches_one_indexed_select_and_clear_dispatches_none() {
+    use central_storage::{
+        AlarmPublication, AlarmUpdate, BatchOutcome, EngineAlarmPlan, GuardedStatement,
+        RowExpectation, StatementBatch,
+    };
+
+    let fixture = Fixture::new_capturing_logs().await;
+    let runtime = runtime(&fixture).await;
+    let due = at(now(&fixture), 5, 0);
+    let store = runtime.statement_host();
+    let witness = |seen: usize, selection: &str| {
+        fixture
+            .host
+            .captured_logs()
+            .into_iter()
+            .skip(seen)
+            .filter(|line| line.contains(selection))
+            .filter_map(|line| {
+                line.split_once("Central alarm input SELECTs:")
+                    .and_then(|(_, receipt)| receipt.split_once(';'))
+                    .map(|(reads, _)| reads.trim().to_owned())
+            })
+            .collect::<Vec<_>>()
+    };
+    for production in [false, true] {
+        let wake = probe_id(100 + u32::from(production)).to_string();
+        if production {
+            store
+                .run_batch(StatementBatch {
+                    statements: [
+                        "DROP VIEW engine_due_rows",
+                        "DROP VIEW engine_probe_due_rows",
+                        "DROP VIEW engine_alarm_only_due_rows",
+                        "DROP TABLE engine_probe_items",
+                        "DROP TABLE engine_probe_groups",
+                        "DROP TABLE engine_alarm_only_items",
+                        "CREATE VIEW engine_due_rows AS SELECT * FROM engine_production_due_rows",
+                    ]
+                    .into_iter()
+                    .map(|sql| GuardedStatement {
+                        statement: Statement { sql, args: vec![] },
+                        expect: RowExpectation::Any,
+                    })
+                    .collect(),
+                    alarm: AlarmUpdate::Unchanged,
+                })
+                .await
+                .unwrap();
+        }
+        let before = fixture.host.captured_logs().len();
+        let actual = store.run_batch(StatementBatch {
+            statements: vec![GuardedStatement {
+                statement: Statement {
+                    sql: "INSERT INTO automation_wakes VALUES (?, 'target', ?, 'wake', 'active', ?, ?)",
+                    args: vec![text(&wake), text(due.to_rfc3339()), text(due.to_rfc3339()), text(due.to_rfc3339())],
+                },
+                expect: RowExpectation::Exactly(1),
+            }, super::engine_event_support::fixture_due_item(fleet_engine::DueKind::WakeTimer, wake.clone(), due, now(&fixture))],
+            alarm: AlarmUpdate::Engine(EngineAlarmPlan::Recompute),
+        }).await.unwrap();
+        assert_eq!(
+            actual,
+            BatchOutcome::Applied {
+                rows_affected: vec![1, 1],
+                publication: AlarmPublication::Set {
+                    unix_millis: due.timestamp_millis()
+                },
+            }
+        );
+        let recompute = format!("plan=Recompute; at=Some({})", due.timestamp_millis());
+        fixture.host.until_log_after(before, &recompute).await;
+        assert_eq!(
+            witness(before, &recompute),
+            [if production { "2" } else { "3" }]
+        );
+
+        let before = fixture.host.captured_logs().len();
+        use collaboration_central_core::engine_probe::InstanceKey;
+        let remove = fleet_engine::plan_due_table_change(
+            &fleet_engine::DueTableChange::RemoveItem(fleet_engine::DueItemKey {
+                kind: fleet_engine::DueKind::WakeTimer,
+                subject: InstanceKey(wake),
+            }),
+            due,
+        )
+        .unwrap()
+        .pop()
+        .unwrap();
+        assert_eq!(
+            store
+                .run_batch(StatementBatch {
+                    statements: vec![
+                        GuardedStatement {
+                            statement: Statement {
+                                sql: "DELETE FROM automation_wakes",
+                                args: vec![]
+                            },
+                            expect: RowExpectation::Exactly(1),
+                        },
+                        remove
+                    ],
+                    alarm: AlarmUpdate::Engine(EngineAlarmPlan::Clear),
+                })
+                .await
+                .unwrap(),
+            BatchOutcome::Applied {
+                rows_affected: vec![1, 1],
+                publication: AlarmPublication::Cleared
+            },
+        );
+        let clear = "plan=Clear; at=None";
+        fixture.host.until_log_after(before, clear).await;
+        assert_eq!(witness(before, clear), ["0"]);
+    }
     fixture.host.close().await;
 }

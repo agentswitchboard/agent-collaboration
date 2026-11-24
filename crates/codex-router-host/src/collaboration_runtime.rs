@@ -2,8 +2,8 @@
 use crate::BackendPublication;
 use crate::RemoteControlServerName;
 use collaboration_protocol::{
-    CodexGeneration, EndpointAvailability, EndpointId, EndpointRef, NonEmptyText,
-    ObservationTimestamp, ProviderKind, RouterExecutableRelation, SchemaDigest, UuidIdentity,
+    CodexGeneration, EndpointId, EndpointRef, NonEmptyText, ObservationTimestamp, ProviderKind,
+    RouterExecutableRelation, SchemaDigest, UuidIdentity,
 };
 use collaboration_runtime::NativeRelayListener;
 use collaboration_runtime::load_installation_peer;
@@ -30,9 +30,13 @@ pub struct CollaborationRuntimeInputs {
 /// Host-owned startup facts that are not part of the public collaboration runtime inputs.
 pub(crate) struct HostCollaborationInputs {
     pub collaboration_runtime: CollaborationRuntimeInputs,
+    pub message_roots: Option<switchboard_message_system::MessageRoots>,
     pub router_proxy_endpoint: SocketAddr,
     pub remote_access: Option<crate::RemoteAccess>,
+    pub provider_operation_retention_days: Option<std::num::NonZeroU32>,
 }
+
+mod message_startup;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExternalProviderLaunchBinding {
     pub endpoint_id: EndpointId,
@@ -130,17 +134,21 @@ pub enum CollaborationFailure {
 }
 pub struct CollaborationRuntime {
     clock: std::sync::Arc<dyn router_clock::RuntimeClock>,
+    message_system: Option<switchboard_message_system::MessageSystem>,
     owner_human_id: Option<message_board::HumanId>,
-    provider_store:
-        Option<std::sync::Arc<tokio::sync::Mutex<collaboration_runtime::ProviderOperationStore>>>,
+    provider_store: Option<
+        std::sync::Arc<tokio::sync::Mutex<switchboard_session_store::ProviderOperationStore>>,
+    >,
     #[cfg(feature = "runtime-test-support")]
-    provider_test_hub: Option<std::sync::Weak<collaboration_runtime::ProviderSessionEventHub>>,
+    provider_test_hub: Option<std::sync::Weak<switchboard_session_events::ProviderSessionEventHub>>,
     external_provider_supervisor: Option<std::sync::Arc<crate::ExternalProviderSupervisor>>,
     /// Keeps Claude's prompt cache warm; stopped before the supervisor so nothing submits after.
     provider_cache_warm: Option<std::sync::Arc<crate::provider_cache_warm::ProviderCacheWarm>>,
     provider_delivery_route: Option<std::sync::Arc<crate::ProviderAcpDeliveryRoute>>,
     session_delivery_router: Option<std::sync::Arc<collaboration_runtime::SessionDeliveryRouter>>,
     provider_retention: Option<tokio::task::JoinHandle<()>>,
+    #[cfg(test)]
+    provider_retention_observation: Option<collaboration_runtime::WorkerObservation>,
     /// Scratch scopes with a Codex session open in this Host.
     open_scratch_scopes: std::sync::Arc<collaboration_runtime::OpenScratchScopes>,
     scratch_sweep: Option<tokio::task::JoinHandle<()>>,
@@ -166,6 +174,18 @@ pub struct CollaborationRuntime {
 }
 
 impl CollaborationRuntime {
+    /// The central message custody entry when this Host owns Router roots.
+    pub fn message_front(&self) -> Option<switchboard_message_system::MessageFront> {
+        self.message_system.as_ref().map(|system| system.front())
+    }
+
+    /// The latest live observation from the message system.
+    pub fn message_status(&self) -> Option<switchboard_message_system::MessageSystemStatus> {
+        self.message_system
+            .as_ref()
+            .map(|system| *system.status().borrow())
+    }
+
     #[cfg(feature = "runtime-test-support")]
     pub async fn attach_provider_events_for_test(
         &self,
@@ -256,13 +276,6 @@ fn create_private_socket_directory(path: &std::path::Path) -> io::Result<()> {
         }
         Err(error) => Err(error),
     }
-}
-
-fn current_observation_timestamp() -> io::Result<ObservationTimestamp> {
-    ObservationTimestamp::try_from(
-        chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-    )
-    .map_err(io::Error::other)
 }
 
 #[path = "collaboration_runtime/provider_retention.rs"]

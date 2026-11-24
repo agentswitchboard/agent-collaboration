@@ -7,9 +7,10 @@ use collaboration_protocol::{
     ProviderRequestedPolicy, ProviderSettingName, ProviderSettingsMappingStatus,
     ProviderWorkingDirectory, SessionRef,
 };
-use collaboration_runtime::ProviderOperationStoreError;
-use collaboration_runtime::{ProviderOperationRecord, ProviderOperationStore};
-use collaboration_runtime::{ProviderSessionRecord, ProviderSessionResumeInputs};
+use switchboard_session_store::{
+    ProviderOperationRecord, ProviderOperationStore, ProviderOperationStoreError,
+    ProviderSessionRecord, ProviderSessionResumeInputs,
+};
 
 pub(crate) enum ProviderOperationCompletion {
     Success {
@@ -41,6 +42,8 @@ pub(crate) async fn persist_provider_success(
     target: Option<&SessionRef>,
     session_record: Option<&ProviderSessionRecord>,
     terminal_stop_reason: Option<ProviderPromptStopReason>,
+    clock: &dyn router_clock::RuntimeClock,
+    #[cfg(test)] observe_target: Option<&(dyn Fn(&ProviderOperationRecord) + Sync)>,
 ) -> Result<Option<ProviderOperationRecord>, ProviderOperationStoreError> {
     if let Some(session_record) = session_record {
         return store
@@ -49,9 +52,13 @@ pub(crate) async fn persist_provider_success(
             .map(|()| None);
     }
     if let Some(target) = target {
-        store
-            .record_target(operation_id, target, chrono::Utc::now().timestamp_millis())
+        let _target_record = store
+            .record_target(operation_id, target, clock.utc_now().timestamp_millis())
             .await?;
+        #[cfg(test)]
+        if let Some(observe) = observe_target {
+            observe(&_target_record);
+        }
     }
     store
         .record_terminal(
@@ -59,7 +66,7 @@ pub(crate) async fn persist_provider_success(
             ProviderOperationEffect::Applied,
             ProviderReconciliationState::Confirmed,
             terminal_stop_reason,
-            chrono::Utc::now().timestamp_millis(),
+            clock.utc_now().timestamp_millis(),
         )
         .await
         .map(Some)

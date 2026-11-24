@@ -7,6 +7,7 @@ use session_event_model::SkillSourceError;
 use std::time::Duration;
 use std::{
     ffi::OsString,
+    future::Future,
     path::{Path, PathBuf},
 };
 use tokio::process::Command;
@@ -51,12 +52,17 @@ struct QualifiedImports {
     node_version: String,
 }
 
-pub async fn prepare_claude_launch(mut launch: ExternalProviderLaunch) -> PreparedClaudeLaunch {
-    let qualification = qualify_launch(&launch).await.and_then(|identity| {
-        let library_url = file_url(&identity.library)?;
-        let sdk_url = file_url(&identity.sdk)?;
-        Ok((identity, library_url, sdk_url))
-    });
+pub async fn prepare_claude_launch<Deadline: Future<Output = ()>>(
+    mut launch: ExternalProviderLaunch,
+    deadline: impl FnOnce(Duration) -> Deadline,
+) -> PreparedClaudeLaunch {
+    let qualification = qualify_launch(&launch, deadline)
+        .await
+        .and_then(|identity| {
+            let library_url = file_url(&identity.library)?;
+            let sdk_url = file_url(&identity.sdk)?;
+            Ok((identity, library_url, sdk_url))
+        });
     match qualification {
         Ok((identity, library_url, sdk_url)) => {
             launch.executable = identity.node.clone();
@@ -89,8 +95,9 @@ fn file_url(path: &Path) -> Result<String, ClaudeLaunchUnavailable> {
         .map_err(|()| ClaudeLaunchUnavailable::UnqualifiedPackage)
 }
 
-async fn qualify_launch(
+async fn qualify_launch<Deadline: Future<Output = ()>>(
     launch: &ExternalProviderLaunch,
+    deadline: impl FnOnce(Duration) -> Deadline,
 ) -> Result<ClaudeLaunchIdentity, ClaudeLaunchUnavailable> {
     if !launch.arguments.is_empty() {
         return Err(ClaudeLaunchUnavailable::UnsupportedArguments);
@@ -147,10 +154,11 @@ async fn qualify_launch(
         .arg(&library)
         .envs(launch.environment.iter().map(|(key, value)| (key, value)))
         .kill_on_drop(true);
-    let output = tokio::time::timeout(Duration::from_secs(5), command.output())
-        .await
-        .map_err(|_| ClaudeLaunchUnavailable::PublicApiUnavailable)?
-        .map_err(|_| ClaudeLaunchUnavailable::NodeUnavailable)?;
+    let output = tokio::select! {
+        biased;
+        output = command.output() => output.map_err(|_| ClaudeLaunchUnavailable::NodeUnavailable)?,
+        () = deadline(Duration::from_secs(5)) => return Err(ClaudeLaunchUnavailable::PublicApiUnavailable),
+    };
     if !output.status.success() {
         return Err(ClaudeLaunchUnavailable::PublicApiUnavailable);
     }

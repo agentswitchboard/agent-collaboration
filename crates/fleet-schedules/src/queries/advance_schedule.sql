@@ -1,0 +1,1 @@
+UPDATE automation_schedules SET evaluated_through_at=?1,state=?2,updated_at=?3 WHERE automation_id IS ?4 AND target IS ?5 AND timing_rule IS ?6 AND anchor_at IS ?7 AND expires_at IS ?8 AND evaluated_through_at IS ?9 AND text IS ?10 AND next_due_at IS ?11 AND state IS ?12 AND created_at IS ?13 AND updated_at IS ?14

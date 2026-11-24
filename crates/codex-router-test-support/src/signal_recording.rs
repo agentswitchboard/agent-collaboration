@@ -15,8 +15,18 @@ pub enum SignalFixtureMode {
 
 /// Runs a child fixture until its selected signal outcome.
 pub async fn run_signal_fixture(mode: SignalFixtureMode, event_file: &Path) -> std::io::Result<()> {
+    run_signal_fixture_with_ready(mode, event_file, || Ok(())).await
+}
+
+/// Announces readiness once the SIGTERM handler is installed and its event log is ready.
+pub async fn run_signal_fixture_with_ready(
+    mode: SignalFixtureMode,
+    event_file: &Path,
+    announce_ready: impl FnOnce() -> std::io::Result<()>,
+) -> std::io::Result<()> {
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     std::fs::write(event_file, "ready\n")?;
+    announce_ready()?;
     let _signal = terminate.recv().await;
     append_event(event_file, "sigterm\n")?;
     match mode {

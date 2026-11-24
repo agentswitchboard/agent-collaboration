@@ -4,6 +4,7 @@ use crate::callback_router::CallbackRouter;
 pub use crate::callback_router::{CallbackKind, CallbackResolution};
 use crate::in_folder_allowance::{InFolderGrant, InFolderPermission};
 pub use crate::transport_run::TransportRun;
+use crate::transport_run::authorization_run;
 use agent_client_protocol::schema::v1::PermissionOptionId;
 use provider_session_machines::{
     SessionGeneration,
@@ -22,12 +23,7 @@ use std::{
 };
 use tokio::sync::mpsc;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SlotEvidence {
-    Offered,
-    Taken,
-    Revoked,
-}
+pub use switchboard_harness_contracts::SlotEvidence;
 
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum TransportRefusal {
@@ -338,7 +334,7 @@ impl<Frame> AcpTransport<Frame> {
         frame: Frame,
     ) -> Result<(), TransportRefusal> {
         let mut state = self.state();
-        let run = TransportRun::of(&authorization);
+        let run = authorization_run(&authorization);
         let route = state
             .routes
             .get(&run)
@@ -348,7 +344,7 @@ impl<Frame> AcpTransport<Frame> {
         }
         if (authorization.target == AuthorizationTarget::NewTurn) != new_turn.is_some()
             || state.slot.iter().any(|(key, slot)| {
-                TransportRun::of(key) == run
+                authorization_run(key) == run
                     && key.input_id == authorization.input_id
                     && (slot.evidence() == SlotEvidence::Offered
                         || key.authorization_seq == authorization.authorization_seq)
@@ -391,7 +387,7 @@ impl<Frame> AcpTransport<Frame> {
             }
             AuthorizationSlot::Offered { new_turn, .. } => *new_turn,
         };
-        let run = TransportRun::of(authorization);
+        let run = authorization_run(authorization);
         if state
             .routes
             .get(&run)
@@ -447,7 +443,7 @@ impl<Frame> AcpTransport<Frame> {
             .filter(|(key, _)| key.incarnation == incarnation)
             .map(|(key, entry)| {
                 if let Some(turn) = entry.revoke() {
-                    callbacks.revoke_new_turn(TransportRun::of(key), turn);
+                    callbacks.revoke_new_turn(authorization_run(key), turn);
                 }
                 (key.clone(), entry.evidence())
             })
@@ -533,7 +529,7 @@ impl<Frame> TransportState<Frame> {
     fn revoke_slot(&mut self, key: &DispatchAuthorization) -> Option<DispatchResult> {
         let slot = self.slot.get_mut(key)?;
         if let Some(turn) = slot.revoke() {
-            self.callbacks.revoke_new_turn(TransportRun::of(key), turn);
+            self.callbacks.revoke_new_turn(authorization_run(key), turn);
         }
         Some(if matches!(slot, AuthorizationSlot::Taken) {
             DispatchResult::AlreadyTaken(key.clone())

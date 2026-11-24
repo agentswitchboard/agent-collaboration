@@ -6,11 +6,15 @@ license.workspace = true
 publish = false
 autotests = false
 
+[features]
+wire-export = ["dep:specta"]
+
 [dependencies]
 serde.workspace = true
 schemars.workspace = true
 thiserror.workspace = true
-uuid.workspace = true
+# IDs are parsed and validated here. Minting belongs to the owning process.
+uuid = { version = "1.26.0", default-features = false }
 
 [dev-dependencies]
 serde_json.workspace = true
@@ -18,3 +22,6 @@ hegel = { package = "hegeltest", version = "=0.52.6", features = ["static-engine
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+specta = { workspace = true, features = ["derive"], optional = true }

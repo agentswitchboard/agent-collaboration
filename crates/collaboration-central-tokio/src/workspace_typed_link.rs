@@ -1,0 +1,267 @@
+//! Typed calls over the active Tokio socket, using the owning link's send and close paths.
+use super::{LinkWrites, Runtime, link_io::write_central_text};
+use crate::machine_call_queue::{MacCallReceiver, QueuedMacCall};
+use axum::extract::ws::{WebSocket, close_code};
+use central_link_protocol::{
+    CentralCall, CorrelationId, DataFrame, LinkFrame, MachineLinkCloseCode, TypedCallResult,
+    encode_central_egress,
+};
+use collaboration_central_core::{
+    TypedCallCarrier, ValidatedMachineConnection, is_approval_holder_call,
+};
+use std::{
+    future::{Future, poll_fn},
+    task::{Context, Poll},
+};
+
+pub(super) async fn reply_to_typed_call(
+    socket: &mut WebSocket,
+    writes: &LinkWrites<'_>,
+    runtime: &Runtime,
+    connection: &ValidatedMachineConnection,
+    calls: &MacCallReceiver,
+    correlation_id: CorrelationId,
+    request: Option<CentralCall>,
+) -> bool {
+    let (carrier, turn) = if is_approval_holder_call(request.as_ref()) {
+        #[cfg(feature = "test-support")]
+        runtime
+            .runtime()
+            .pause_points()
+            .reached_central(fleet_runtime::PausePoint::BeforeApprovalCarrierTurn)
+            .await;
+        let turn = runtime.runtime().take_central_turn_for_admission().await;
+        if writes.stop.is_cancelled() || writes.replaced.is_cancelled() {
+            return false;
+        }
+        (
+            TypedCallCarrier::Approval {
+                registered_run: calls.registered_run(),
+                recover_after_registration: calls.should_recover_after_registration(),
+            },
+            Some(turn),
+        )
+    } else {
+        (TypedCallCarrier::Session, None)
+    };
+    let dispatched = match runtime
+        .dispatch_typed_central_call(connection.attachment_ref(), request, carrier)
+        .await
+    {
+        Ok(dispatched) => dispatched,
+        Err(_) => {
+            writes
+                .close(socket, close_code::ERROR, "central unavailable")
+                .await;
+            return false;
+        }
+    };
+    if let Some(run) = dispatched.registered_run {
+        calls.bind_run(run);
+    }
+    drop(turn);
+    if !send_central_call_result(socket, writes, correlation_id, dispatched.result).await {
+        return false;
+    }
+    if let Some(completion) = dispatched.completion {
+        writes.schedule_completion(completion);
+    }
+    true
+}
+
+#[cfg(feature = "test-support")]
+pub(super) async fn reply_to_fixture_probe(
+    socket: &mut WebSocket,
+    writes: &LinkWrites<'_>,
+    runtime: &Runtime,
+    connection: &ValidatedMachineConnection,
+    correlation_id: CorrelationId,
+    request: central_link_protocol::fixture_central_probe::ProbeRequestEnvelope,
+) -> bool {
+    match runtime
+        .dispatch_fixture_central_probe(connection.attachment_ref(), request)
+        .await
+    {
+        Ok(answer @ TypedCallResult::Answered { .. }) => {
+            let Ok(text) = central_link_protocol::fixture_central_probe::encode_probe_reply(
+                correlation_id,
+                answer,
+            ) else {
+                return false;
+            };
+            let Ok(encoded) = central_link_protocol::CentralEgress::from_fixture_text(text) else {
+                return false;
+            };
+            writes.send_prepared_text(socket, encoded).await
+        }
+        Ok(TypedCallResult::Refused { reason }) => {
+            send_central_call_result(
+                socket,
+                writes,
+                correlation_id,
+                TypedCallResult::Refused { reason },
+            )
+            .await
+        }
+        Err(_) => {
+            writes
+                .close(socket, close_code::ERROR, "central unavailable")
+                .await;
+            false
+        }
+    }
+}
+
+async fn send_central_call_result(
+    socket: &mut WebSocket,
+    writes: &LinkWrites<'_>,
+    correlation_id: CorrelationId,
+    result: TypedCallResult<central_link_protocol::CentralCallReply>,
+) -> bool {
+    let lapsed = match &result {
+        TypedCallResult::Refused { reason } => reason.authority_close(),
+        TypedCallResult::Answered { .. } => None,
+    };
+    let reply = LinkFrame::Data(DataFrame::CentralCallReply {
+        correlation_id,
+        result: Box::new(result),
+    });
+    if let Some(cause) = lapsed {
+        writes
+            .send_terminal_refusal_then_close(socket, Some(&reply), cause)
+            .await;
+        return false;
+    }
+    writes.send(socket, &reply).await
+}
+
+pub(super) async fn offer_mac_call(
+    socket: &mut WebSocket,
+    writes: &LinkWrites<'_>,
+    runtime: &Runtime,
+    connection: &ValidatedMachineConnection,
+    calls: &MacCallReceiver,
+    queued: QueuedMacCall,
+) -> bool {
+    #[cfg(feature = "test-support")]
+    if queued.is_approval_ending() {
+        runtime
+            .runtime()
+            .pause_points()
+            .reached_central(fleet_runtime::PausePoint::BeforeApprovalEndingWrite)
+            .await;
+    }
+    #[cfg(feature = "test-support")]
+    if queued.approval_notice().is_some() {
+        runtime
+            .runtime()
+            .pause_points()
+            .reached_central(fleet_runtime::PausePoint::BeforeApprovalNoticeWrite)
+            .await;
+    }
+    #[cfg(feature = "test-support")]
+    let is_notice = queued.approval_notice().is_some();
+    let deadline = queued.deadline();
+    let Ok(encoded) = encode_central_egress(&queued.frame()) else {
+        return true;
+    };
+    let prevented = queued.prewrite_cancellation();
+    let attachment = connection.attachment();
+    let waker = poll_fn(|context| Poll::Ready(context.waker().clone())).await;
+    let outcome = 'write: {
+        let send = write_central_text(socket, encoded);
+        tokio::pin!(send);
+        // Keep the organization turn through the first poll. Backpressure after that
+        // poll belongs to the socket, so subsequent polls do not hold the turn.
+        let first = tokio::select! {
+            biased;
+            () = writes.stop.cancelled() => break 'write WriteOutcome::LinkEnded,
+            () = writes.replaced.cancelled() => break 'write WriteOutcome::LinkEnded,
+            () = prevented.cancelled() => break 'write WriteOutcome::Skipped,
+            () = tokio::task::unconstrained(writes.clock.sleep_until(deadline)) => break 'write WriteOutcome::Skipped,
+            first = async {
+                let _turn = runtime.runtime().take_central_turn_for_admission().await;
+                if let Err(cause) = runtime.restore_machine_in_held_turn(&attachment).await? {
+                    return Ok::<_, central_storage::StoreFailure>(Err(cause));
+                }
+                if let Some((holder, request)) = queued.committed_ending()
+                    && !runtime.approval_ending_is_owed_in_held_turn(holder, request).await?
+                {
+                    return Ok(Ok(None));
+                }
+                if let Some(notice) = queued.approval_notice() {
+                    match runtime.approval_notice_deadline_in_held_turn(notice).await {
+                        Ok(Some(deadline)) if writes.clock.now().unix_millis() < deadline.timestamp_millis() => {}
+                        Ok(_) => return Ok(Ok(None)),
+                        Err(failure) => {
+                            tracing::warn!(?failure, "could not validate queued approval notice");
+                            return Ok(Ok(None));
+                        }
+                    }
+                }
+                if writes.stop.is_cancelled() || writes.replaced.is_cancelled() || prevented.is_cancelled() {
+                    return Ok(Ok(None));
+                }
+                if writes.clock.now().unix_millis().div_euclid(1_000) >= connection.effective_expires_at().0 {
+                    return Ok(Err(MachineLinkCloseCode::Expired));
+                }
+                let mut context = Context::from_waker(&waker);
+                Ok(Ok(calls.start_write(queued, writes.clock, connection, || {
+                    send.as_mut().poll(&mut context).map(|result| result.is_ok())
+                })))
+            } => first,
+        };
+        match first {
+            Ok(Ok(None)) => WriteOutcome::Skipped,
+            Ok(Ok(Some(Poll::Ready(sent)))) => WriteOutcome::Finished(sent),
+            Ok(Ok(Some(Poll::Pending))) => {
+                let send = writes.send_until_stopped(async { send.await.is_ok() });
+                let sent = router_clock::timeout_at(writes.clock, deadline, send)
+                    .await
+                    .unwrap_or(false);
+                WriteOutcome::Finished(sent)
+            }
+            Ok(Err(cause)) => WriteOutcome::AuthorityLapsed(cause),
+            Err(_) => WriteOutcome::Unavailable,
+        }
+    };
+    #[cfg(feature = "test-support")]
+    if is_notice {
+        runtime
+            .runtime()
+            .pause_points()
+            .reached_central(fleet_runtime::PausePoint::AfterApprovalNoticeAttempt)
+            .await;
+    }
+    match outcome {
+        WriteOutcome::Skipped | WriteOutcome::Finished(true) => true,
+        WriteOutcome::Finished(false) => {
+            writes.close_if_authority_cancelled(socket).await;
+            false
+        }
+        WriteOutcome::LinkEnded => {
+            writes
+                .close(socket, close_code::NORMAL, "machine link ended")
+                .await;
+            false
+        }
+        WriteOutcome::AuthorityLapsed(cause) => {
+            writes.close_authority(socket, cause).await;
+            false
+        }
+        WriteOutcome::Unavailable => {
+            writes
+                .close(socket, close_code::ERROR, "central unavailable")
+                .await;
+            false
+        }
+    }
+}
+
+enum WriteOutcome {
+    Skipped,
+    Finished(bool),
+    LinkEnded,
+    AuthorityLapsed(MachineLinkCloseCode),
+    Unavailable,
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE login_machine_allowances\nSET state = 'withdrawn', change_request_id = ?4, change_origin = ?5, updated_at = ?6\nWHERE machine_id = ?1 AND workspace_id = ?2 AND allowance_id = ?3 AND state = 'active'\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "649a40e5e13ee68c68da574eaf9f5386618ac62636e0488a6c1e0110891ba502"
+}

@@ -186,7 +186,28 @@ pub(super) async fn exercise_non_utc_and_terminal_rows(f: &Fixture) {
         .await,
         Result::Done(_)
     ));
-    assert!(matches!(r.statement_host().run_batch(StatementBatch{statements:vec![GuardedStatement{statement:Statement{sql:"UPDATE mail_messages SET state='delivered',body='retired corrupt body' WHERE message_id=(SELECT message_id FROM mail_messages WHERE message_kind='notice' AND state='queued' LIMIT 1)",args:vec![]},expect:RowExpectation::Exactly(1)}],alarm:AlarmUpdate::Unchanged}).await.unwrap(),central_storage::BatchOutcome::Applied{..}));
+    let store = r.statement_host();
+    let row = store.read(Statement {
+        sql: "SELECT message_id FROM mail_messages WHERE message_kind='notice' AND state='queued' ORDER BY message_id LIMIT 1",
+        args: vec![],
+    }).await.unwrap();
+    let central_storage::SqlValue::Text(notice) = &row.rows[0][0] else {
+        panic!("queued notice id")
+    };
+    let notice: workspace_ids::MessageId = notice.parse().unwrap();
+    let receipt = workspace_model::central_mail::ReceiptKind::Delivered { arrived_at: now(f) };
+    assert_eq!(
+        super::super::direct_receipt_sequences::apply_fixture_receipt(f, &r, &notice, receipt)
+            .await,
+        fleet_contracts::mail_link::MailReceiptSettlement::Applied,
+    );
+    assert!(matches!(store.run_batch(StatementBatch {
+        statements: vec![GuardedStatement {
+            statement: Statement { sql: "UPDATE mail_messages SET body='retired corrupt body' WHERE message_id=?", args: vec![text(&notice)] },
+            expect: RowExpectation::Exactly(1),
+        }],
+        alarm: AlarmUpdate::Unchanged,
+    }).await.unwrap(), central_storage::BatchOutcome::Applied { .. }));
     let area = f.area(46104).await;
     let thread = f.thread(46105, area).await;
     created(

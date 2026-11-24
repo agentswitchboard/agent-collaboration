@@ -6,10 +6,9 @@
 
 use crate::store_wire::{OwnedAlarmUpdate, OwnedBatch, OwnedStatement};
 use central_storage::{
-    AlarmPublication, AlarmPublicationFailure, BatchOutcome, ConstraintKind, CorruptReason,
-    EngineAlarmDecider, EngineAlarmTimes, ReadOutcome, SafeInteger, SqlValue, StoreFailure,
+    AlarmPublication, BatchOutcome, ConstraintKind, CorruptReason, EngineAlarmDecider,
+    EngineAlarmTimes, ReadOutcome, SafeInteger, SqlValue, StoreFailure,
 };
-use fleet_runtime_ports::Clock;
 use sqlx_core::column::Column;
 use sqlx_core::error::ErrorKind;
 use sqlx_core::migrate::Migrator;
@@ -19,6 +18,12 @@ use sqlx_core::sql_str::AssertSqlSafe;
 use sqlx_durable_object::{Do, DoArguments, DoConnection, DoRow, DoTransaction};
 use sqlx_durable_object_core::{AsValue, Value};
 use std::sync::Arc;
+
+#[path = "statement_store_alarm.rs"]
+mod alarm_publication;
+#[cfg(test)]
+use alarm_publication::alarm_time;
+use alarm_publication::apply_alarm;
 
 /// Whether a batch's `AlarmUpdate` reaches the object's alarm.
 pub(crate) enum AlarmPolicy {
@@ -69,7 +74,7 @@ fn constraint_kind(error: &sqlx_core::Error) -> Option<ConstraintKind> {
     }
 }
 
-fn bound(statement: &OwnedStatement) -> Query<'static, Do, DoArguments> {
+pub(crate) fn bound(statement: &OwnedStatement) -> Query<'static, Do, DoArguments> {
     statement.args.iter().fold(
         query(AssertSqlSafe(statement.sql.clone())),
         |query, argument| match argument {
@@ -104,7 +109,7 @@ fn sql_value(value: &Value, column: &str) -> Result<SqlValue, StoreFailure> {
     }
 }
 
-fn read_outcome(rows: &[DoRow]) -> Result<ReadOutcome, StoreFailure> {
+pub(crate) fn read_outcome(rows: &[DoRow]) -> Result<ReadOutcome, StoreFailure> {
     let columns: Vec<String> = rows
         .first()
         .map(|row| {
@@ -134,33 +139,160 @@ fn read_outcome(rows: &[DoRow]) -> Result<ReadOutcome, StoreFailure> {
     Ok(ReadOutcome { columns, rows })
 }
 
-/// The alarm `SetFromQuery` asks for: one INTEGER Unix-millisecond value, or NULL.
-fn alarm_time(outcome: &ReadOutcome) -> Result<Option<i64>, StoreFailure> {
-    let column = outcome.columns.first().cloned().unwrap_or_default();
-    let bad_value = || StoreFailure::Corrupt {
-        reason: CorruptReason::BadValue {
-            column: column.clone(),
-        },
-    };
-    match outcome.rows.as_slice() {
-        [row] => match row.as_slice() {
-            [SqlValue::Integer(at)] => Ok(Some(at.get())),
-            [SqlValue::Null] => Ok(None),
-            _ => Err(bad_value()),
-        },
-        _ => Err(bad_value()),
+#[cfg(feature = "test-support")]
+#[derive(Debug)]
+struct ReadCountingSqlExecutor<'a, StorageExecutor> {
+    storage_executor: StorageExecutor,
+    read_dispatches: &'a std::sync::atomic::AtomicUsize,
+}
+
+#[cfg(feature = "test-support")]
+impl<'c, StorageExecutor: sqlx_core::executor::Executor<'c, Database = Do>>
+    sqlx_core::executor::Executor<'c> for ReadCountingSqlExecutor<'c, StorageExecutor>
+{
+    type Database = Do;
+
+    // The Durable Object driver reports affected rows through its write methods.
+    fn execute<'e, 'q: 'e, Q>(
+        self,
+        query: Q,
+    ) -> futures_util::future::BoxFuture<
+        'e,
+        Result<sqlx_durable_object::DoQueryResult, sqlx_core::Error>,
+    >
+    where
+        'c: 'e,
+        Q: 'q + sqlx_core::executor::Execute<'q, Do>,
+    {
+        self.storage_executor.execute(query)
+    }
+
+    fn execute_many<'e, 'q: 'e, Q>(
+        self,
+        query: Q,
+    ) -> futures_util::stream::BoxStream<
+        'e,
+        Result<sqlx_durable_object::DoQueryResult, sqlx_core::Error>,
+    >
+    where
+        'c: 'e,
+        Q: 'q + sqlx_core::executor::Execute<'q, Do>,
+    {
+        self.storage_executor.execute_many(query)
+    }
+
+    fn fetch_many<'e, 'q: 'e, Q>(
+        self,
+        query: Q,
+    ) -> futures_util::stream::BoxStream<
+        'e,
+        Result<sqlx_core::Either<sqlx_durable_object::DoQueryResult, DoRow>, sqlx_core::Error>,
+    >
+    where
+        'c: 'e,
+        Q: 'q + sqlx_core::executor::Execute<'q, Do>,
+    {
+        self.read_dispatches
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.storage_executor.fetch_many(query)
+    }
+
+    fn fetch_optional<'e, 'q: 'e, Q>(
+        self,
+        query: Q,
+    ) -> futures_util::future::BoxFuture<'e, Result<Option<DoRow>, sqlx_core::Error>>
+    where
+        'c: 'e,
+        Q: 'q + sqlx_core::executor::Execute<'q, Do>,
+    {
+        self.read_dispatches
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.storage_executor.fetch_optional(query)
+    }
+
+    fn prepare_with<'e>(
+        self,
+        sql: sqlx_core::sql_str::SqlStr,
+        parameters: &'e [sqlx_durable_object::DoTypeInfo],
+    ) -> futures_util::future::BoxFuture<
+        'e,
+        Result<sqlx_durable_object::DoStatement, sqlx_core::Error>,
+    >
+    where
+        'c: 'e,
+    {
+        self.storage_executor.prepare_with(sql, parameters)
+    }
+
+    fn describe<'e>(
+        self,
+        sql: sqlx_core::sql_str::SqlStr,
+    ) -> futures_util::future::BoxFuture<
+        'e,
+        Result<sqlx_core::describe::Describe<Do>, sqlx_core::Error>,
+    >
+    where
+        'c: 'e,
+    {
+        self.storage_executor.describe(sql)
     }
 }
 
-fn alarm_out_of_range(rows: &[DoRow]) -> StoreFailure {
-    let column = rows
-        .first()
-        .and_then(|row| row.columns().first())
-        .map(|column| column.name().to_owned())
-        .unwrap_or_default();
-    StoreFailure::Corrupt {
-        reason: CorruptReason::BadValue { column },
+pub(super) struct WorkerExecutorLender<'a, StorageExecutor> {
+    storage_executor: &'a StorageExecutor,
+    #[cfg(feature = "test-support")]
+    read_dispatches: std::sync::atomic::AtomicUsize,
+}
+
+impl<'a, StorageExecutor> WorkerExecutorLender<'a, StorageExecutor> {
+    pub(super) fn from_storage_executor(storage_executor: &'a StorageExecutor) -> Self {
+        Self {
+            storage_executor,
+            #[cfg(feature = "test-support")]
+            read_dispatches: std::sync::atomic::AtomicUsize::new(0),
+        }
     }
+}
+
+impl<StorageExecutor> fleet_lent_transaction::CentralTransaction
+    for WorkerExecutorLender<'_, StorageExecutor>
+where
+    for<'executor> &'executor StorageExecutor:
+        sqlx_core::executor::Executor<'executor, Database = Do>,
+{
+    type Database = Do;
+
+    fn executor(&mut self) -> impl sqlx_core::executor::Executor<'_, Database = Do> {
+        #[cfg(feature = "test-support")]
+        return ReadCountingSqlExecutor {
+            storage_executor: self.storage_executor,
+            read_dispatches: &self.read_dispatches,
+        };
+        #[cfg(not(feature = "test-support"))]
+        self.storage_executor
+    }
+
+    fn rows_affected(result: <Do as sqlx_core::database::Database>::QueryResult) -> u64 {
+        result.rows_affected()
+    }
+}
+
+pub(crate) async fn read_timed_due_rows(
+    connection: &DoConnection,
+    query: fleet_runtime_ports::DueListQuery,
+) -> Result<Vec<fleet_runtime_ports::DueRow>, StoreFailure> {
+    fleet_engine::read_timed_due_rows(
+        &mut WorkerExecutorLender::from_storage_executor(connection),
+        query,
+    )
+    .await
+}
+
+pub(crate) async fn engine_alarm_inputs(
+    connection: &DoConnection,
+) -> Result<EngineAlarmTimes, StoreFailure> {
+    fleet_engine::read_alarm_inputs(&mut WorkerExecutorLender::from_storage_executor(connection))
+        .await
 }
 
 async fn run_in_transaction(
@@ -190,56 +322,7 @@ async fn run_in_transaction(
         }
         rows_affected.push(affected);
     }
-    let (storage, clock) = match policy {
-        #[cfg(feature = "test-support")]
-        AlarmPolicy::Apply(storage) => (Some(storage), None),
-        AlarmPolicy::Engine(storage, clock, decide) => (Some(storage), Some((clock, decide))),
-        AlarmPolicy::Ignore => (None, None),
-    };
-    let mut publication = AlarmPublication::Unchanged;
-    if let Some(storage) = storage {
-        let at = match &batch.alarm {
-            OwnedAlarmUpdate::Unchanged => return Ok((rows_affected, publication)),
-            OwnedAlarmUpdate::SetFromQuery(statement) => {
-                let rows = bound(statement).fetch_all(transaction).await?;
-                let at = alarm_time(&read_outcome(&rows).map_err(BatchStop::Failed)?)
-                    .map_err(BatchStop::Failed)?;
-                if at.is_some_and(|at| chrono::DateTime::from_timestamp_millis(at).is_none()) {
-                    return Err(BatchStop::Failed(alarm_out_of_range(&rows)));
-                }
-                at
-            }
-            OwnedAlarmUpdate::SetEngineFromQuery { query } => {
-                let rows = bound(query).fetch_all(transaction).await?;
-                let answer = read_outcome(&rows).map_err(BatchStop::Failed)?;
-                let (clock, decide) =
-                    clock.ok_or(BatchStop::Failed(StoreFailure::AlarmUnpublishable {
-                        reason: AlarmPublicationFailure::ClockUnavailable,
-                    }))?;
-                decided_engine_alarm(&answer, clock.now().unix_millis(), &decide)
-                    .map_err(BatchStop::Failed)?
-            }
-        };
-        // A storage write in the same transaction: it commits with the batch or not at all.
-        let written = match at {
-            Some(at) => match chrono::DateTime::from_timestamp_millis(at) {
-                Some(at) => storage.set_alarm(at).await,
-                None => {
-                    return Err(BatchStop::Failed(StoreFailure::AlarmUnpublishable {
-                        reason: AlarmPublicationFailure::EarliestDueOutOfRange,
-                    }));
-                }
-            },
-            None => storage.delete_alarm().await,
-        };
-        written.map_err(|error| {
-            worker::console_warn!("statement store alarm write failed: {error}");
-            BatchStop::Failed(StoreFailure::Unavailable)
-        })?;
-        publication = at.map_or(AlarmPublication::Cleared, |unix_millis| {
-            AlarmPublication::Set { unix_millis }
-        });
-    }
+    let publication = apply_alarm(transaction, &batch.alarm, policy).await?;
     Ok((rows_affected, publication))
 }
 
@@ -254,6 +337,12 @@ pub(crate) async fn run_batch(
             run_in_transaction(&transaction, batch, policy).await
         })
         .await;
+    batch_receipt(outcome)
+}
+
+fn batch_receipt(
+    outcome: Result<(Vec<u64>, AlarmPublication), BatchStop>,
+) -> Result<BatchOutcome, StoreFailure> {
     match outcome {
         Ok((rows_affected, publication)) => Ok(BatchOutcome::Applied {
             rows_affected,
@@ -274,6 +363,122 @@ pub(crate) async fn run_batch(
             Ok(BatchOutcome::StatementRejected { index })
         }
     }
+}
+
+/// A due unit and its later attempt charge each use an independent transaction.
+pub(super) async fn write_checked_due<Answer: 'static, Rejected: 'static>(
+    connection: &DoConnection,
+    apply: impl AsyncFnOnce(&DoTransaction) -> Result<Answer, Rejected> + 'static,
+) -> Result<std::ops::ControlFlow<Rejected, Answer>, fleet_engine::CheckedDueFailure> {
+    use std::ops::ControlFlow;
+
+    enum CheckedDueStop<Rejected> {
+        Callback(Rejected),
+        Commit,
+    }
+    impl<Rejected> From<sqlx_core::Error> for CheckedDueStop<Rejected> {
+        fn from(_: sqlx_core::Error) -> Self {
+            Self::Commit
+        }
+    }
+    match connection
+        .transaction(move |transaction| async move {
+            apply(&transaction).await.map_err(CheckedDueStop::Callback)
+        })
+        .await
+    {
+        Ok(answer) => Ok(ControlFlow::Continue(answer)),
+        Err(CheckedDueStop::Callback(rejection)) => Ok(ControlFlow::Break(rejection)),
+        Err(CheckedDueStop::Commit) => Err(fleet_engine::CheckedDueFailure::AnswerLost),
+    }
+}
+
+/// The same owning alarm step as a guarded batch, after the portable mail operation.
+pub(super) async fn write_direct_with_engine_alarm<Answer: 'static>(
+    connection: &DoConnection,
+    policy: AlarmPolicy,
+    apply: impl AsyncFnOnce(
+        &DoTransaction,
+    ) -> Result<
+        fleet_mail::direct_store_writes::DirectWriteOutcome<Answer>,
+        fleet_mail::direct_store_writes::DirectApplyFailure,
+    > + 'static,
+) -> Result<Answer, fleet_mail::DirectWriteFailure> {
+    use fleet_mail::direct_store_writes::DirectApplyFailure;
+
+    enum MailTransactionAbort {
+        Applying(DirectApplyFailure),
+        Commit,
+    }
+    impl From<sqlx_core::Error> for MailTransactionAbort {
+        fn from(_: sqlx_core::Error) -> Self {
+            Self::Commit
+        }
+    }
+    connection
+        .transaction(move |transaction| async move {
+            let applied = apply(&transaction)
+                .await
+                .map_err(MailTransactionAbort::Applying)?;
+            if let Some(plan) = applied.alarm {
+                apply_alarm(&transaction, &OwnedAlarmUpdate::Engine(plan), policy)
+                    .await
+                    .map_err(|stop| match stop {
+                        BatchStop::Failed(failure) => DirectApplyFailure::Store(failure),
+                        BatchStop::GuardFailed { .. }
+                        | BatchStop::ConstraintViolated { .. }
+                        | BatchStop::StatementRejected { .. } => DirectApplyFailure::Conflict,
+                    })
+                    .map_err(MailTransactionAbort::Applying)?;
+            }
+            Ok(applied.outcome)
+        })
+        .await
+        .map_err(|failure| match failure {
+            MailTransactionAbort::Applying(failure) => failure.into_write_failure(),
+            MailTransactionAbort::Commit => fleet_mail::DirectWriteFailure::AnswerLost,
+        })
+}
+
+pub(super) async fn read_lent_approval_statement(
+    transaction: &DoTransaction,
+    statement: central_storage::Statement,
+) -> Result<ReadOutcome, StoreFailure> {
+    let rows = bound(&statement.into())
+        .fetch_all(transaction)
+        .await
+        .map_err(|error| store_failure(&error))?;
+    read_outcome(&rows)
+}
+
+pub(super) async fn execute_lent_approval_statement(
+    transaction: &DoTransaction,
+    statement: central_storage::Statement,
+) -> Result<u64, StoreFailure> {
+    bound(&statement.into())
+        .execute(transaction)
+        .await
+        .map(|result| result.rows_affected())
+        .map_err(|error| store_failure(&error))
+}
+
+pub(super) async fn publish_approval_alarm(
+    transaction: &DoTransaction,
+    policy: AlarmPolicy,
+) -> Result<(), StoreFailure> {
+    apply_alarm(
+        transaction,
+        &OwnedAlarmUpdate::Engine(central_storage::EngineAlarmPlan::Recompute),
+        policy,
+    )
+    .await
+    .map(|_| ())
+    .map_err(|stop| match stop {
+        BatchStop::Failed(failure) => failure,
+        BatchStop::GuardFailed { .. }
+        | BatchStop::ConstraintViolated { .. }
+        | BatchStop::StatementRejected { .. } => StoreFailure::Unavailable,
+    })
 }
 
 /// Runs one read outside any write.
@@ -339,37 +544,41 @@ fn statement_is_rejected(error: &sqlx_core::Error) -> bool {
     )
 }
 
-fn decided_engine_alarm(
-    answer: &ReadOutcome,
-    now: i64,
-    decide: &EngineAlarmDecider,
-) -> Result<Option<i64>, StoreFailure> {
-    let bad = || StoreFailure::Corrupt {
-        reason: CorruptReason::BadValue {
-            column: "engine alarm input".into(),
-        },
-    };
-    let value = |value: &SqlValue| -> Result<Option<i64>, StoreFailure> {
-        match value {
-            SqlValue::Null => Ok(None),
-            SqlValue::Integer(time) => Ok(Some(time.get())),
-            SqlValue::Text(_) | SqlValue::Blob(_) => Err(bad()),
-        }
-    };
-    let (grid, legacy) = match answer.rows.as_slice() {
-        [row] => match row.as_slice() {
-            [grid, legacy] => (value(grid)?, value(legacy)?),
-            _ => return Err(bad()),
-        },
-        _ => return Err(bad()),
-    };
-    decide(
-        EngineAlarmTimes {
-            earliest_on_grid_due_unix_millis: grid,
-            earliest_legacy_due_unix_millis: legacy,
-        },
-        now,
-        &mut |_| {},
-    )
-    .map_err(|reason| StoreFailure::AlarmUnpublishable { reason })
+pub(crate) async fn write_stamp(
+    connection: &DoConnection,
+    stamp_write: fleet_signin::stamp_store::StampWrite,
+    policy: AlarmPolicy,
+) -> Result<BatchOutcome, StoreFailure> {
+    use fleet_signin::stamp_store::StampWriteStop;
+
+    let alarm_update = OwnedAlarmUpdate::Engine(central_storage::EngineAlarmPlan::Recompute);
+    let transaction_result = connection
+        .transaction(move |transaction| async move {
+            let affected_rows = stamp_write
+                .apply_stamp_and_audit(&mut WorkerExecutorLender::from_storage_executor(
+                    &transaction,
+                ))
+                .await
+                .map_err(|stop| match stop {
+                    StampWriteStop::Guard {
+                        index,
+                        rows_affected,
+                    } => BatchStop::GuardFailed {
+                        index,
+                        rows_affected,
+                    },
+                    StampWriteStop::Sql { index, source } => match constraint_kind(&source) {
+                        Some(kind) => BatchStop::ConstraintViolated { index, kind },
+                        None if statement_is_rejected(&source) => {
+                            BatchStop::StatementRejected { index }
+                        }
+                        None => BatchStop::Failed(store_failure(&source)),
+                    },
+                    StampWriteStop::Store(error) => BatchStop::Failed(error),
+                })?;
+            let alarm_publication = apply_alarm(&transaction, &alarm_update, policy).await?;
+            Ok((affected_rows.into(), alarm_publication))
+        })
+        .await;
+    batch_receipt(transaction_result)
 }

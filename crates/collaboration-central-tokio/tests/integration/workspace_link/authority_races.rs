@@ -1,13 +1,17 @@
 //! Force revocation between reads and the applying turn on the actual public socket.
-use super::fixture::{Fixture, INSTALLATION, receive, send};
-use central_link_protocol::{DataFrame, LinkFrame, LinkRequest, ReplyPayload, RequestPayload};
+use super::fixture::{INSTALLATION, receive, send, start_fixture};
+use central_link_protocol::{
+    DataFrame, LinkFrame, LinkRequest, MachineLinkCloseCode, ReplyPayload, RequestPayload,
+};
 use central_storage::{
     AlarmUpdate, BatchOutcome, GuardedStatement, RowExpectation, SqlValue, Statement,
     StatementBatch,
 };
+use collaboration_central_conformance::fixture_link_reader::read_fixture_frame;
 use collaboration_central_conformance::{ConformanceResult as Result, signin_fixtures as signed};
 use collaboration_central_core::{MachineLoginControl, machine_login_control};
 use fleet_runtime::PausePoint;
+use reqwest_websocket::{Message, WebSocket};
 use serde_json::json;
 use workspace_model::{Caller, RefusalReason, WorkspaceAnswer, WorkspaceReply, WorkspaceResult};
 
@@ -28,7 +32,7 @@ fn frame(correlation: &str, caller: &Caller, operation: serde_json::Value) -> Re
 #[tokio::test]
 async fn revocation_after_rule_reads_refuses_before_workspace_or_drain_effects() -> Result<()> {
     // Arrange: authenticate normally, then create one permitted empty workspace.
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let mut socket = fixture.connect().await?;
     assert!(matches!(
         receive(&mut socket).await?,
@@ -67,7 +71,7 @@ async fn revocation_after_rule_reads_refuses_before_workspace_or_drain_effects()
             .run_batch(StatementBatch {
                 statements: vec![GuardedStatement {
                     statement: Statement {
-                        sql: "UPDATE login_machines SET allowed_workspaces=? WHERE machine_id=?",
+                        sql: collaboration_central_conformance::REPLACE_FIXTURE_ALLOWANCES_SQL,
                         args: vec![SqlValue::Text(allowed), SqlValue::Text(INSTALLATION.into())]
                     },
                     expect: RowExpectation::Exactly(1)
@@ -150,9 +154,7 @@ async fn revocation_after_rule_reads_refuses_before_workspace_or_drain_effects()
         .await?;
     assert!(log.rows.is_empty());
     store.close().await;
-    socket
-        .close(reqwest_websocket::CloseCode::Normal, None)
-        .await?;
+    require_revoked_close(&mut socket).await?;
     fixture.close().await
 }
 
@@ -164,7 +166,7 @@ async fn revocation_after_rule_reads_refuses_before_workspace_or_drain_effects()
 async fn revocation_committing_while_request_waits_for_applying_turn_prevents_writes() -> Result<()>
 {
     // Arrange: authenticate the link and allow one empty workspace.
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let mut socket = fixture.connect().await?;
     assert!(matches!(
         receive(&mut socket).await?,
@@ -205,7 +207,7 @@ async fn revocation_committing_while_request_waits_for_applying_turn_prevents_wr
             .run_batch(StatementBatch {
                 statements: vec![GuardedStatement {
                     statement: Statement {
-                        sql: "UPDATE login_machines SET allowed_workspaces=? WHERE machine_id=?",
+                        sql: collaboration_central_conformance::REPLACE_FIXTURE_ALLOWANCES_SQL,
                         args: vec![
                             SqlValue::Text(serde_json::to_string(&[&workspace])?),
                             SqlValue::Text(INSTALLATION.into())
@@ -298,8 +300,16 @@ async fn revocation_committing_while_request_waits_for_applying_turn_prevents_wr
         assert!(rows.rows.is_empty(), "refused request wrote rows for {sql}");
     }
     store.close().await;
-    socket
-        .close(reqwest_websocket::CloseCode::Normal, None)
-        .await?;
+    require_revoked_close(&mut socket).await?;
     fixture.close().await
+}
+
+async fn require_revoked_close(socket: &mut WebSocket) -> Result<()> {
+    let close = read_fixture_frame(socket, "link close").await?;
+    if !matches!(close, Some(Ok(Message::Close { code, .. }))
+        if MachineLinkCloseCode::from_code(code.into()) == Some(MachineLinkCloseCode::Revoked))
+    {
+        return Err(format!("applying revocation must close with Revoked, got {close:?}").into());
+    }
+    Ok(())
 }

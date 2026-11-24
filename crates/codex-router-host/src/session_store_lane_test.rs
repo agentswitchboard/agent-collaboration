@@ -6,9 +6,9 @@ use collaboration_protocol::{
     ProviderRequestedPolicy, ProviderRuntimeIdentity, ProviderTransport, RouterAccess, SessionId,
     UuidIdentity,
 };
-use collaboration_runtime::ProviderSessionResumeInputs;
 use router_clock::ManualClock;
 use std::path::{Path, PathBuf};
+use switchboard_session_store::ProviderSessionResumeInputs;
 use uuid::Uuid;
 
 pub(crate) struct StoreFixture {

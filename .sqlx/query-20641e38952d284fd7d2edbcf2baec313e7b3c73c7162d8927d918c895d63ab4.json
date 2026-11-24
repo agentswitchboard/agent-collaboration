@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO mail_messages(message_id,sender,target_machine_id,target_session,message_kind,\n    body,state,created_at,updated_at,cancel_due_at,sender_request_id,delivery_window_ends_at)\nVALUES (?, ?, ?, ?, 'direct', ?, 'queued', ?, ?, ?, ?, ?)\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 10
+    },
+    "nullable": []
+  },
+  "hash": "20641e38952d284fd7d2edbcf2baec313e7b3c73c7162d8927d918c895d63ab4"
+}

@@ -1,32 +1,31 @@
 //! Private Worker entry and routing to the organization's modern central object.
 
 use collaboration_central_core::{
-    SignInTrustSettings,
-    identity_contract::{
-        AUTHORIZATION_REVISIONS_ROUTE, ORGANIZATION_STATEMENT_DIGEST_ROUTE,
-        PROVISION_ORGANIZATION_ROUTE,
-    },
+    SignInTrustSettings, identity_contract::AUTHORIZATION_REVISIONS_ROUTE,
     person_request::AdminRoute,
 };
+use fleet_contracts::{ORGANIZATION_STATEMENT_DIGEST_ROUTE, PROVISION_ORGANIZATION_ROUTE};
 use worker::Env;
 
 pub(crate) fn is_signin_path(path: &str) -> bool {
-    [
-        PROVISION_ORGANIZATION_ROUTE,
-        ORGANIZATION_STATEMENT_DIGEST_ROUTE,
-        AUTHORIZATION_REVISIONS_ROUTE,
-        "/internal/device-login-decisions",
-        "/internal/machine-token-decisions",
-        AdminRoute::CreateWorkspace.path(),
-        AdminRoute::WorkspaceLookup.path(),
-        AdminRoute::ReadChangeRecords.path(),
-        AdminRoute::EngineHealth.path(),
-        AdminRoute::EngineListRetired.path(),
-        AdminRoute::EngineRetry.path(),
-        AdminRoute::EngineDiscard.path(),
-        AdminRoute::RevokeMachineEnrollment.path(),
-    ]
-    .contains(&path)
+    fleet_signin::approval_person_wire::ApprovalPersonRoute::from_path(path).is_some()
+        || [
+            PROVISION_ORGANIZATION_ROUTE,
+            ORGANIZATION_STATEMENT_DIGEST_ROUTE,
+            AUTHORIZATION_REVISIONS_ROUTE,
+            "/internal/device-login-decisions",
+            "/internal/machine-token-decisions",
+            AdminRoute::CreateWorkspace.path(),
+            AdminRoute::WorkspaceLookup.path(),
+            AdminRoute::ListWorkspaces.path(),
+            AdminRoute::ReadChangeRecords.path(),
+            AdminRoute::EngineHealth.path(),
+            AdminRoute::EngineListRetired.path(),
+            AdminRoute::EngineRetry.path(),
+            AdminRoute::EngineDiscard.path(),
+            AdminRoute::RevokeMachineEnrollment.path(),
+        ]
+        .contains(&path)
 }
 
 /// A deployment with no sign-in configuration keeps ordinary central operation.
@@ -46,6 +45,7 @@ pub(crate) fn trust_settings(env: &Env) -> worker::Result<Option<SignInTrustSett
     let audience = variable("CENTRAL_SIGN_IN_AUDIENCE")?;
     let jwks_url = variable("CENTRAL_SIGN_IN_JWKS_URL")?;
     let admin_audience = variable("CENTRAL_ADMIN_AUDIENCE")?;
+    let person_link_audience = variable("CENTRAL_PERSON_LINK_AUDIENCE")?;
     let machine_audience = variable("CENTRAL_MACHINE_AUDIENCE")?;
     let public_origin = variable("CENTRAL_PUBLIC_ORIGIN")?;
     let service_id = variable("CENTRAL_SIGN_IN_SERVICE_ID")?;
@@ -54,6 +54,7 @@ pub(crate) fn trust_settings(env: &Env) -> worker::Result<Option<SignInTrustSett
         &audience,
         &jwks_url,
         &admin_audience,
+        &person_link_audience,
         &machine_audience,
         &public_origin,
         &service_id,
@@ -72,6 +73,9 @@ pub(crate) fn trust_settings(env: &Env) -> worker::Result<Option<SignInTrustSett
         issuer: required(issuer)?,
         audience: required(audience)?,
         admin_audience: required(admin_audience)?,
+        person_link_audience: person_link_audience
+            .map(|value| required(Some(value)))
+            .transpose()?,
         machine_audience: required(machine_audience)?,
         public_origin: required(public_origin)?,
         jwks_url: required(jwks_url)?,
@@ -111,7 +115,12 @@ fn invalid_configuration() -> worker::Error {
 mod private_entry {
     use super::is_signin_path;
     use crate::object_location::ObjectAddress;
-    use crate::{cloudflare_transport, http_body};
+    use crate::{
+        cloudflare_transport, http_body,
+        workspace_link_entry::{self, LinkRoute},
+    };
+    use axum::response::IntoResponse;
+    use collaboration_central_core::person_approval_preflight;
     use fleet_identity_protocol::OrganizationId;
     use serde::Deserialize;
     use worker::{Context, Env, Request, Response, Result, event};
@@ -128,7 +137,13 @@ mod private_entry {
 
     #[event(fetch)]
     pub async fn main(request: Request, env: Env, _context: Context) -> Result<Response> {
-        let response = forward(request, &env).await?;
+        let response = if let Some(route @ LinkRoute::Person(_)) =
+            workspace_link_entry::link_route(&request.path())
+        {
+            workspace_link_entry::forward(request, &env, route).await?
+        } else {
+            forward(request, &env).await?
+        };
         // A fetched response may carry an immutable header guard.
         let headers = response.headers().clone();
         headers.set(ENTRY_HEADER, LINK_ENTRY)?;
@@ -150,9 +165,20 @@ mod private_entry {
         let bytes = axum::body::to_bytes(body, usize::MAX)
             .await
             .map_err(|_| worker::Error::RustError("sign-in body unavailable".into()))?;
-        let Ok(Addressed { organization_id }) = serde_json::from_slice(&bytes) else {
-            return Response::empty().map(|response| response.with_status(400));
-        };
+        let organization_id =
+            if fleet_signin::approval_person_wire::ApprovalPersonRoute::from_path(parts.uri.path())
+                .is_some()
+            {
+                match person_approval_preflight(&parts.method, &parts.headers, &bytes) {
+                    Ok(preflight) => preflight.organization().clone(),
+                    Err(refusal) => return refusal.into_response().try_into(),
+                }
+            } else {
+                let Ok(Addressed { organization_id }) = serde_json::from_slice(&bytes) else {
+                    return Response::empty().map(|response| response.with_status(400));
+                };
+                organization_id
+            };
         let address = ObjectAddress::Central(organization_id);
         let stub = match cloudflare_transport::stub(env, &address) {
             Ok(stub) => stub,

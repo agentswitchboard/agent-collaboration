@@ -1,9 +1,9 @@
-use crate::{ClientId, MachineConnectionRefusal};
+use crate::{ClientId, mail_link::MachineLinkCloseCode};
 use central_storage::StoreFailure;
 use fleet_identity_protocol::{EnrollmentId, OrganizationId, UnixSeconds};
 use serde::{Deserialize, Serialize};
 use std::future::Future;
-use workspace_ids::MachineId;
+use workspace_ids::{MachineId, WorkspaceId};
 
 /// Hibernation provenance is untrusted until the runtime restores it against live rows.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -57,10 +57,24 @@ impl MachineConnectionAttachment {
     }
 }
 
+/// A committed ending identifies only the enrollment whose live sockets must end.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EnrollmentInvalidation {
+    pub machine_id: MachineId,
+    pub enrollment_id: EnrollmentId,
+    pub cause: MachineLinkCloseCode,
+}
+
 /// Restores the attachment against live login rows under the turn held by the caller.
 pub trait LiveMachineConnection: Send + Sync {
+    fn allows_workspace_held(
+        &self,
+        machine: &MachineId,
+        workspace: &WorkspaceId,
+    ) -> impl Future<Output = Result<bool, StoreFailure>> + Send;
+
     fn restore_held(
         &self,
         attachment: &MachineConnectionAttachment,
-    ) -> impl Future<Output = Result<Result<(), MachineConnectionRefusal>, StoreFailure>> + Send;
+    ) -> impl Future<Output = Result<Result<(), MachineLinkCloseCode>, StoreFailure>> + Send;
 }

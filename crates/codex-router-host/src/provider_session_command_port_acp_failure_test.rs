@@ -39,7 +39,7 @@ impl FailureRoute {
                 .await
                 .expect("fixture store"),
         ));
-        let hub = Arc::new(ProviderSessionEventHub::new(store.clone()));
+        let hub = Arc::new(ProviderSessionEventHub::new(store.clone(), clock.clone()));
         let target = protocol_target("saved-session");
         let binding = provider_binding(&target);
         let actor = ProviderIdentity::Session(target.clone())
@@ -67,7 +67,7 @@ impl FailureRoute {
             })
             .await
             .expect("saved session");
-        let launch = crate::external_provider_runtime::acp_scripted_fixture::launch_fixture_agent(
+        let launch = crate::provider_test_support::launch_fixture_agent(
             "permission-mode-agent.ts",
             vec![
                 receipt.display().to_string(),
@@ -98,6 +98,7 @@ impl FailureRoute {
                 store.clone(),
                 Some(hub.clone()),
                 None,
+                clock.clone(),
             )
             .expect("supervisor"),
         );
@@ -136,6 +137,7 @@ impl FailureRoute {
                 actor: Some(actor),
                 client_profile: None,
                 client_supports_elicitation_form: false,
+                frontend_close: Default::default(),
             },
         ));
         Self {
@@ -260,7 +262,6 @@ async fn closing_acp_during_queue_ack_leaves_a_custodian_until_the_real_write() 
     let acknowledgement = host
         .runtime_for(&target.endpoint)
         .expect("provider runtime")
-        .preparation_fixture
         .pause_delivery_ack(false);
     let before = host.live_operation_ids();
     let mut commits = fixture.store.lock().await.subscribe_commits();

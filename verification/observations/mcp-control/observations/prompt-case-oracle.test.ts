@@ -87,6 +87,7 @@ function read(spec: ReadSpec, isBaseline: boolean): ObservationRead {
             ? null
             : BigInt(spec.requestEpoch),
       afterSequence: spec.after === null ? null : BigInt(spec.after),
+      serviceEpoch: spec.after === null ? null : "e",
     },
     result,
     notifications: notified.map((event) =>
@@ -446,7 +447,7 @@ test("the invented camelCase outcome and a turn start without its input are refu
   const parseOne = (event: RawEvent): unknown =>
     boundedObservationResultSchema.parse({
       target: TARGET,
-      generation: {},
+      generation: { serviceEpoch: "e" },
       attached: true,
       events: [numbered(3, event)],
       endReason: "deadlineReached",

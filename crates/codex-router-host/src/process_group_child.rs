@@ -115,11 +115,21 @@ impl ChildCommandSpec {
     }
 }
 
+#[cfg(feature = "test-support")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChildProcessObservation {
+    SignalledPid { pid: u32, signal: Signal },
+    SignalledGroup { group: u32, signal: Signal },
+    Reaped { pid: u32 },
+}
+
 /// Retained child started in a process group isolated from the foreground host.
 pub struct ProcessGroupChild {
     child: Child,
     process_id: Pid,
     process_group_id: Pid,
+    #[cfg(feature = "test-support")]
+    observations: Option<tokio::sync::mpsc::UnboundedSender<ChildProcessObservation>>,
 }
 
 impl ProcessGroupChild {
@@ -154,6 +164,8 @@ impl ProcessGroupChild {
             child,
             process_id,
             process_group_id: process_id,
+            #[cfg(feature = "test-support")]
+            observations: None,
         })
     }
 
@@ -172,19 +184,37 @@ impl ProcessGroupChild {
     /// Sends SIGTERM to the exact retained child PID.
     pub fn send_terminate(&self) -> Result<(), ProcessGroupError> {
         rustix::process::kill_process(self.process_id, Signal::TERM)
-            .map_err(ProcessGroupError::Signal)
+            .map_err(ProcessGroupError::Signal)?;
+        #[cfg(feature = "test-support")]
+        self.observe(ChildProcessObservation::SignalledPid {
+            pid: self.process_id(),
+            signal: Signal::TERM,
+        });
+        Ok(())
     }
 
     /// Sends SIGTERM to the complete isolated child process group.
     pub fn send_group_terminate(&self) -> Result<(), ProcessGroupError> {
         rustix::process::kill_process_group(self.process_group_id, Signal::TERM)
-            .map_err(ProcessGroupError::Signal)
+            .map_err(ProcessGroupError::Signal)?;
+        #[cfg(feature = "test-support")]
+        self.observe(ChildProcessObservation::SignalledGroup {
+            group: self.process_group_id(),
+            signal: Signal::TERM,
+        });
+        Ok(())
     }
 
     /// Sends SIGKILL to the complete isolated child process group.
     pub fn send_group_kill(&self) -> Result<(), ProcessGroupError> {
         rustix::process::kill_process_group(self.process_group_id, Signal::KILL)
-            .map_err(ProcessGroupError::Signal)
+            .map_err(ProcessGroupError::Signal)?;
+        #[cfg(feature = "test-support")]
+        self.observe(ChildProcessObservation::SignalledGroup {
+            group: self.process_group_id(),
+            signal: Signal::KILL,
+        });
+        Ok(())
     }
 
     /// Observes and reaps an already-exited child without waiting.
@@ -194,7 +224,33 @@ impl ProcessGroupChild {
 
     /// Asynchronously waits for and reaps the retained child.
     pub async fn wait(&mut self) -> Result<ExitStatus, ProcessGroupError> {
-        self.child.wait().await.map_err(ProcessGroupError::Wait)
+        let exit = self.child.wait().await.map_err(ProcessGroupError::Wait)?;
+        #[cfg(feature = "test-support")]
+        self.observe(ChildProcessObservation::Reaped {
+            pid: self.process_id(),
+        });
+        Ok(exit)
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn observe_process_for_test(
+        &mut self,
+    ) -> tokio::sync::mpsc::UnboundedReceiver<ChildProcessObservation> {
+        let (send, receive) = tokio::sync::mpsc::unbounded_channel();
+        self.observations = Some(send);
+        receive
+    }
+
+    #[cfg(feature = "test-support")]
+    fn observe(&self, observation: ChildProcessObservation) {
+        if let Some(observations) = &self.observations {
+            let _observer_gone = observations.send(observation);
+        }
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn kill_fixture_for_test(&mut self) -> std::io::Result<()> {
+        self.child.start_kill()
     }
 }
 

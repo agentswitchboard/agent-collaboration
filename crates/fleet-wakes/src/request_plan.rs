@@ -1,4 +1,6 @@
+use crate::timing::FreshWakeCommand;
 use central_storage::{GuardedStatement, ReadOutcome, Statement, StoreFailure};
+use fleet_engine::{DueItemKey, DueKind, DueOwnerTiming, DueTableChange, plan_due_table_change};
 use fleet_runtime_ports::stored_values::string;
 use fleet_runtime_ports::stored_values::{encode_json, format_utc_millis};
 use fleet_runtime_ports::{
@@ -6,36 +8,46 @@ use fleet_runtime_ports::{
     workspace_decode_error::corrupt,
 };
 use mail::{CentralMailAnswer as Answer, CentralMailRefusal as Refusal};
-use workspace_ids::{SessionRef, WakeId};
-use workspace_model::{PostText, Timestamp, central_mail as mail};
+use workspace_ids::WakeId;
+use workspace_model::{Timestamp, central_mail as mail};
 /// Storage failures are outer errors and retained refusals are inner results.
-/// The caller owns admission and commit.
+/// The caller owns commit.
 type WakePlan = Result<
     Result<(Vec<GuardedStatement>, mail::CentralMailAnswer), mail::CentralMailRefusal>,
     StoreFailure,
 >;
 
 pub fn plan_set_wake(
-    target: &SessionRef,
-    due_at: Timestamp,
-    body: &PostText,
-    now: Timestamp,
+    command: FreshWakeCommand<'_>,
     mint: impl FnOnce() -> Result<WakeId, StoreFailure>,
 ) -> WakePlan {
-    let at = || text(format_utc_millis(now));
+    let due_at = command.due_at();
+    let admitted_at = command.admitted_at();
+    let at = || text(format_utc_millis(admitted_at));
     let id: WakeId = mint()?;
+    let mut statements = vec![exact(
+        "INSERT INTO automation_wakes(wake_id,target,due_at,text,state,created_at,updated_at) VALUES (?,?,?,?,'active',?,?)",
+        vec![
+            text(&id),
+            encode_json(command.target(), "mail JSON")?,
+            text(format_utc_millis(due_at)),
+            text(command.body().as_str()),
+            at(),
+            at(),
+        ],
+    )];
+    statements.extend(plan_due_table_change(
+        &DueTableChange::PublishItem(DueOwnerTiming::at(
+            DueItemKey {
+                kind: DueKind::WakeTimer,
+                subject: central_engine_model::InstanceKey(id.to_string()),
+            },
+            due_at,
+        )?),
+        admitted_at,
+    )?);
     Ok(Ok((
-        vec![exact(
-            "INSERT INTO automation_wakes(wake_id,target,due_at,text,state,created_at,updated_at) VALUES (?,?,?,?,'active',?,?)",
-            vec![
-                text(&id),
-                encode_json(target, "mail JSON")?,
-                text(format_utc_millis(due_at)),
-                text(body.as_str()),
-                at(),
-                at(),
-            ],
-        )],
+        statements,
         Answer::WakeSet {
             wake_id: id,
             due_at,
@@ -74,12 +86,19 @@ pub fn plan_cancel_wake(wake_id: &WakeId, now: Timestamp, rows: &ReadOutcome) ->
             vec![at(), text(wake_id)],
         )]
     };
-    statements.push(fleet_engine::delete_attempt(
+    statements.push(fleet_engine::plan_attempt_delete(
         &fleet_contracts::EngineSubject {
             kind: central_engine_model::MachineKind("wake_timer"),
             key: central_engine_model::InstanceKey(wake_id.to_string()),
         },
     ));
+    statements.extend(plan_due_table_change(
+        &DueTableChange::RemoveItem(DueItemKey {
+            kind: DueKind::WakeTimer,
+            subject: central_engine_model::InstanceKey(wake_id.to_string()),
+        }),
+        now,
+    )?);
     Ok(Ok((
         statements,
         Answer::WakeCancelled {

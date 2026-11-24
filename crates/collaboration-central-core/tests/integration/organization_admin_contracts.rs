@@ -1,11 +1,12 @@
 //! Literal T06 admin wire oracles and serializer-generated artifact freshness.
-use crate::contract_artifacts;
+use crate::{contract_artifacts, schema_validation};
 use collaboration_central_core::{
-    OrganizationAdminResult,
+    ListWorkspacesResult, OrganizationAdminResult,
     identity_contract::{AuthorizationRevision, AuthorizationRevisionAcknowledgement},
     person_request::{
-        AdminOperation, AdminRoute, CreateWorkspaceRequest, OrganizationAdminIntent,
-        ReadChangeRecordsRequest, WorkspaceLookupRequest,
+        AdminOperation, AdminRoute, CreateWorkspaceRequest, ListWorkspacesRequest,
+        OrganizationAdminIntent, PersonRequestRefusal, ReadChangeRecordsRequest,
+        WorkspaceLookupRequest,
     },
 };
 use serde_json::{Value, json};
@@ -58,7 +59,8 @@ fn organization_admin_result_wire_contract() {
                 {"id":"019a3dce-2000-7000-8000-000000000010","requestId":"019a3dce-2000-7000-8000-000000000014:machineEnrolled:019a3dce-2000-7000-8000-000000000007","kind":"machineEnrolled","origin":{"kind":"person","personId":"019a3dce-2000-7000-8000-000000000006","permissionChecked":"machine:enroll"},"targetId":"019a3dce-2000-7000-8000-000000000007","createdAtMillis":1900000003000_i64},
                 {"id":"019a3dce-2000-7000-8000-000000000011","requestId":"019a3dce-2000-7000-8000-000000000015:machineRevoked:019a3dce-2000-7000-8000-000000000007","kind":"machineRevoked","origin":{"kind":"person","personId":"019a3dce-2000-7000-8000-000000000006","permissionChecked":"machine:revoke"},"targetId":"019a3dce-2000-7000-8000-000000000007","createdAtMillis":1900000004000_i64},
                 {"id":"019a3dce-2000-7000-8000-000000000012","requestId":"019a3dce-2000-7000-8000-000000000007:machineExpired:019a3dce-2000-7000-8000-000000000007","kind":"machineExpired","origin":{"kind":"automatic"},"targetId":"019a3dce-2000-7000-8000-000000000007","createdAtMillis":1900000005000_i64},
-                {"id":"019a3dce-2000-7000-8000-000000000013","requestId":"019a3dce-2000-7000-8000-000000000007:allowanceChanged:019a3dce-2000-7000-8000-000000000002","kind":"allowanceChanged","origin":{"kind":"automatic"},"targetId":"019a3dce-2000-7000-8000-000000000002","createdAtMillis":1900000006000_i64}
+                {"id":"019a3dce-2000-7000-8000-000000000016","requestId":"allowance-granted","kind":"machineAllowanceChanged","origin":{"kind":"person","personId":"019a3dce-2000-7000-8000-000000000006","permissionChecked":"machine:enroll"},"machineId":"019a3dce-2000-7000-8000-000000000007","workspaceId":"019a3dce-2000-7000-8000-000000000002","state":"active","createdAtMillis":1900000007000_i64},
+                {"id":"019a3dce-2000-7000-8000-000000000017","requestId":"allowance-expired","kind":"machineAllowanceChanged","origin":{"kind":"automatic"},"machineId":"019a3dce-2000-7000-8000-000000000007","workspaceId":"019a3dce-2000-7000-8000-000000000002","state":"withdrawn","createdAtMillis":1900000008000_i64}
             ]}),
             json!({"result":"refused","reason":"nameInUse"}),
             json!({"result":"refused","reason":"conflict"}),
@@ -87,17 +89,43 @@ fn organization_admin_result_wire_contract() {
 }
 
 #[test]
+fn engine_retired_schema_requires_a_nullable_cursor() {
+    let schema = serde_json::to_value(schemars::schema_for!(OrganizationAdminResult)).unwrap();
+    let validator = schema_validation::contract_validator(&schema).unwrap();
+    assert!(!validator.is_valid(&json!({"result":"engineRetired","items":[]})));
+    assert!(validator.is_valid(&json!({"result":"engineRetired","items":[],"next":null})));
+    assert!(validator.is_valid(&json!({
+        "result":"engineRetired","items":[],"next":"019f0000-0000-7000-8000-000000000101"
+    })));
+}
+
+#[test]
 fn create_workspace_request_wire_contract() {
-    let boundaries = description_boundaries(
-        json!({"organizationId":"019a3dce-2000-7000-8000-000000000001","operationId":"019a3dce-2000-7000-8000-000000000003","name":"Fixture workspace","description":"Fixture description"}),
-        "/description",
-    );
+    let request = json!({
+        "organizationId":"019a3dce-2000-7000-8000-000000000001",
+        "operationId":"019a3dce-2000-7000-8000-000000000003",
+        "name":"Fixture workspace",
+        "description":"Fixture description"
+    });
+    let boundaries = description_boundaries(request.clone(), "/description");
     contract_artifacts::assert_contract::<CreateWorkspaceRequest>(
         "CreateWorkspaceRequest",
-        vec![
-            json!({"organizationId":"019a3dce-2000-7000-8000-000000000001","operationId":"019a3dce-2000-7000-8000-000000000003","name":"Fixture workspace","description":"Fixture description"}),
-        ].into_iter().chain(boundaries).collect(),
+        std::iter::once(request.clone()).chain(boundaries).collect(),
         false,
+    );
+
+    let mut oversized_name = request;
+    oversized_name["name"] = json!(format!("{}a", "é".repeat(128)));
+    assert!(
+        serde_json::from_value::<CreateWorkspaceRequest>(oversized_name.clone()).is_err(),
+        "Serde accepted a workspace name of 257 UTF-8 bytes"
+    );
+    let schema = serde_json::to_value(schemars::schema_for!(CreateWorkspaceRequest)).unwrap();
+    assert!(
+        !schema_validation::contract_validator(&schema)
+            .unwrap()
+            .is_valid(&oversized_name),
+        "schema accepted a workspace name of 257 UTF-8 bytes"
     );
 }
 
@@ -152,6 +180,12 @@ fn organization_admin_intent_wire_contract() {
             json!({"organizationId":"019a3dce-2000-7000-8000-000000000001","workspaceId":"019a3dce-2000-7000-8000-000000000002"}),
             json!({"v":1,"operation":"WorkspaceLookup","organization":"019a3dce-2000-7000-8000-000000000001","target":"019a3dce-2000-7000-8000-000000000002","operationId":null,"params":{}}),
             r#"{"operation":"WorkspaceLookup","operationId":null,"organization":"019a3dce-2000-7000-8000-000000000001","params":{},"target":"019a3dce-2000-7000-8000-000000000002","v":1}"#,
+        ),
+        (
+            AdminRoute::ListWorkspaces,
+            json!({"organizationId":"019a3dce-2000-7000-8000-000000000001","after":"019a3dce-2000-7000-8000-000000000002","limit":1}),
+            json!({"v":1,"operation":"ListWorkspaces","organization":"019a3dce-2000-7000-8000-000000000001","target":"019a3dce-2000-7000-8000-000000000001","operationId":null,"params":{"after":"019a3dce-2000-7000-8000-000000000002","limit":1}}),
+            r#"{"operation":"ListWorkspaces","operationId":null,"organization":"019a3dce-2000-7000-8000-000000000001","params":{"after":"019a3dce-2000-7000-8000-000000000002","limit":1},"target":"019a3dce-2000-7000-8000-000000000001","v":1}"#,
         ),
         (
             AdminRoute::ReadChangeRecords,
@@ -225,5 +259,61 @@ fn authorization_revision_acknowledgement_wire_contract() {
         "AuthorizationRevisionAcknowledgement",
         vec![json!({"acknowledgedRevision":4})],
         false,
+    );
+}
+
+#[test]
+fn list_workspaces_wire_contract_only_accepts_its_request_and_reply_shapes() {
+    let organization = "019a3dce-2000-7000-8000-000000000001";
+    let workspace = "019a3dce-2000-7000-8000-000000000002";
+    let defaults = json!({"organizationId":organization});
+    let explicit_defaults = json!({"organizationId":organization,"after":null,"limit":100});
+    let default_intent = json!({"v":1,"operation":"ListWorkspaces","organization":organization,
+        "target":organization,"operationId":null,"params":{"after":null,"limit":100}});
+    for body in [&defaults, &explicit_defaults] {
+        let operation = AdminOperation::parse(
+            AdminRoute::ListWorkspaces,
+            &serde_json::to_vec(body).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(operation.intent()).unwrap(),
+            default_intent
+        );
+    }
+    for invalid in [
+        json!({"organizationId":organization,"limit":0}),
+        json!({"organizationId":organization,"limit":101}),
+        json!({"organizationId":organization,"limit":null}),
+        json!({"organizationId":organization,"after":"invalid"}),
+        json!({"organizationId":organization,"extra":true}),
+    ] {
+        assert_eq!(
+            AdminOperation::parse(
+                AdminRoute::ListWorkspaces,
+                &serde_json::to_vec(&invalid).unwrap()
+            ),
+            Err(PersonRequestRefusal::OperationBody)
+        );
+    }
+    contract_artifacts::assert_request_contract::<ListWorkspacesRequest>(
+        "ListWorkspacesRequest",
+        vec![
+            explicit_defaults,
+            json!({"organizationId":organization,"after":workspace,"limit":1}),
+        ],
+    );
+    contract_artifacts::assert_contract::<ListWorkspacesResult>(
+        "ListWorkspacesResult",
+        vec![
+            json!({"result":"workspaces","workspaces":[{"workspaceId":workspace,"name":"Example","description":"","state":"archived"}],"next":workspace}),
+            json!({"result":"workspaces","workspaces":[],"next":null}),
+            json!({"result":"refused","reason":"notPermitted"}),
+        ],
+        false,
+    );
+    assert!(
+        serde_json::from_value::<ListWorkspacesResult>(json!({"result":"records","records":[]}))
+            .is_err()
     );
 }

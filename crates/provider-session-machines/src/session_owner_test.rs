@@ -7,6 +7,8 @@ mod owner_contract;
 mod owner_followup;
 #[path = "session_owner/owner_history_test.rs"]
 mod owner_history;
+#[path = "session_owner/owner_notice_test.rs"]
+mod owner_notice;
 #[path = "session_owner/owner_property_test.rs"]
 mod owner_property;
 

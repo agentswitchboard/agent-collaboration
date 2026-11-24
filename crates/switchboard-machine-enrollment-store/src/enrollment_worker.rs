@@ -1,0 +1,516 @@
+use std::{path::PathBuf, sync::Arc};
+
+use codex_router_secret_store::{
+    enrollment_row_sealer::{EnrollmentRowCredential, EnrollmentRowSealer},
+    model::SecretStoreError,
+};
+use router_clock::RuntimeClock;
+use switchboard_machine_core_store::{
+    EnrollmentRowChange, EnrollmentRowCorruption, EnrollmentRowStoreError, EnrollmentRowWrite,
+    MachineLocalStore, MachineLocalStoreError, StoredEnrollmentRow,
+};
+use switchboard_machine_enrollment::{
+    BindingGeneration, ConditionalWrite, CredentialStoreError, EnrollmentBinding,
+    EnrollmentContext, EnrollmentEnd, EnrollmentKey, EnrollmentMetadata, KeyedEnrollment,
+    MachineId, RefreshCredential, SecretValue, StoredEnrollment,
+};
+use tokio::{
+    sync::{mpsc, watch},
+    task::JoinHandle,
+};
+
+use crate::{
+    EnrollmentMutation, EnrollmentRequest, MutationStage, WriteResult,
+    enrollment_row_mapping::{EnrollmentSnapshot, enrollment_metadata, seal_context, stored_end},
+};
+
+pub(crate) struct EnrollmentWorker {
+    store: MachineLocalStore,
+    secret_root: PathBuf,
+    machine_id: MachineId,
+    clock: Arc<dyn RuntimeClock + Send + Sync>,
+    pending_key: Option<JoinHandle<Result<EnrollmentRowSealer, SecretStoreError>>>,
+    #[cfg(any(test, all(feature = "test-support", debug_assertions)))]
+    keychain: Option<Arc<dyn codex_router_secret_store::keychain_data_key::KeychainAccess>>,
+    #[cfg(test)]
+    test_dependencies: Option<TestDependencies>,
+}
+
+/// The cause of termination observed by the enrollment store for its worker task.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EnrollmentWorkerExit {
+    /// The worker stopped its request loop in response to `request_close`.
+    Requested,
+    /// The worker ended without completing a requested stop, including on unwind.
+    Autonomous,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ReadFailure {
+    #[error(transparent)]
+    Corrupt(#[from] EnrollmentRowCorruption),
+    #[error("enrollment row storage is unavailable")]
+    StorageUnavailable,
+    #[error("enrollment row key is unavailable")]
+    KeyUnavailable,
+    #[error("enrollment row credential could not be opened")]
+    SealedBytesUnreadable,
+}
+
+impl From<EnrollmentRowStoreError> for ReadFailure {
+    fn from(error: EnrollmentRowStoreError) -> Self {
+        match error {
+            EnrollmentRowStoreError::Corrupt(reason) => Self::Corrupt(reason),
+            _ => Self::StorageUnavailable,
+        }
+    }
+}
+
+impl EnrollmentWorker {
+    pub(crate) fn new(
+        store: MachineLocalStore,
+        secret_root: PathBuf,
+        machine_id: MachineId,
+        clock: Arc<dyn RuntimeClock + Send + Sync>,
+    ) -> Self {
+        Self {
+            store,
+            secret_root,
+            machine_id,
+            clock,
+            pending_key: None,
+            #[cfg(any(test, all(feature = "test-support", debug_assertions)))]
+            keychain: None,
+            #[cfg(test)]
+            test_dependencies: None,
+        }
+    }
+
+    #[cfg(all(feature = "test-support", debug_assertions))]
+    pub(crate) fn with_keychain(
+        mut self,
+        keychain: Arc<dyn codex_router_secret_store::keychain_data_key::KeychainAccess>,
+    ) -> Self {
+        self.keychain = Some(keychain);
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_test_dependencies(
+        &mut self,
+        keychain: Arc<dyn codex_router_secret_store::keychain_data_key::KeychainAccess>,
+        faults: Arc<TestWriteFaults>,
+    ) {
+        self.keychain = Some(keychain);
+        self.test_dependencies = Some(TestDependencies { faults });
+    }
+
+    pub(crate) async fn run(
+        &mut self,
+        mut requests: mpsc::UnboundedReceiver<EnrollmentRequest>,
+        mut shutdown: watch::Receiver<bool>,
+        enrollment_changes: watch::Sender<u64>,
+    ) -> EnrollmentWorkerExit {
+        while !*shutdown.borrow_and_update() {
+            let request = tokio::select! {
+                biased;
+                _ = shutdown.changed() => break,
+                request = requests.recv() => request,
+            };
+            let Some(request) = request else {
+                break;
+            };
+            if *shutdown.borrow() {
+                break;
+            }
+            self.handle(request, &enrollment_changes).await;
+        }
+        if *shutdown.borrow() {
+            EnrollmentWorkerExit::Requested
+        } else {
+            EnrollmentWorkerExit::Autonomous
+        }
+    }
+
+    pub(crate) async fn close_resources(mut self) -> Result<(), MachineLocalStoreError> {
+        #[cfg(test)]
+        if let Some(test) = &self.test_dependencies {
+            test.faults.at_resource_cleanup().await;
+        }
+        // After a worker task ends unexpectedly, its blocking Keychain call may
+        // still own resources. It cannot be cancelled by dropping its waiter.
+        if let Some(pending_key) = self.pending_key.take() {
+            #[cfg(test)]
+            let pending_key =
+                test_faults::observe_pending_key_reap(pending_key, self.test_dependencies.as_ref());
+            let _ = pending_key.await;
+        }
+        let result = self.store.close().await;
+        #[cfg(test)]
+        if let Some(test) = &self.test_dependencies {
+            return test.faults.connection_close_result(result);
+        }
+        result
+    }
+
+    async fn handle(
+        &mut self,
+        request: EnrollmentRequest,
+        enrollment_changes: &watch::Sender<u64>,
+    ) {
+        match request {
+            EnrollmentRequest::Read { key, reply } if !reply.is_closed() => {
+                let _ = reply.send(self.read(key.as_ref()).await);
+            }
+            EnrollmentRequest::ReadMetadata(reply) if !reply.is_closed() => {
+                let _ = reply.send(self.read_metadata().await);
+            }
+            EnrollmentRequest::Mutate {
+                expected,
+                mutation,
+                reply,
+                stage,
+            } if !reply.is_closed() => {
+                let result = self.mutate(expected, mutation, &stage).await;
+                if matches!(
+                    result,
+                    Ok(ConditionalWrite::Applied) | Err(CredentialStoreError::OutcomeNotKnown)
+                ) {
+                    enrollment_changes.send_modify(|revision| *revision = revision.wrapping_add(1));
+                }
+                let _ = reply.send(result);
+            }
+            _ => {}
+        }
+    }
+
+    async fn read_metadata(&mut self) -> Result<EnrollmentMetadata, ReadFailure> {
+        let row = self
+            .store
+            .read_enrollment_metadata(&self.machine_id)
+            .await?;
+        Ok(enrollment_metadata(row, &self.machine_id)?)
+    }
+
+    async fn read(
+        &mut self,
+        requested: Option<&EnrollmentKey>,
+    ) -> Result<KeyedEnrollment, ReadFailure> {
+        let snapshot = self.snapshot().await?;
+        if let Some(requested) = requested
+            && snapshot.key().is_some_and(|key| key != requested)
+        {
+            return Ok(KeyedEnrollment::DifferentEnrollment);
+        }
+        let stored = match snapshot {
+            EnrollmentSnapshot::Empty => StoredEnrollment::Empty,
+            EnrollmentSnapshot::Ended {
+                generation,
+                why,
+                key,
+                deployment,
+            } => StoredEnrollment::Ended {
+                generation,
+                why,
+                key,
+                deployment,
+            },
+            EnrollmentSnapshot::Active {
+                key,
+                deployment,
+                generation,
+                sealed,
+            } => {
+                let row_context = seal_context(&key, &deployment, generation)
+                    .map_err(|_| ReadFailure::Corrupt(EnrollmentRowCorruption::Deployment))?;
+                let sealer = self
+                    .acquire_key(true)
+                    .await
+                    .map_err(|_| ReadFailure::KeyUnavailable)?;
+                let credential = sealer
+                    .open(&row_context, &sealed)
+                    .map_err(|_| ReadFailure::SealedBytesUnreadable)?;
+                let refresh_token = SecretValue::copy_from_utf8(credential.expose_bytes())
+                    .ok_or(ReadFailure::SealedBytesUnreadable)?;
+                StoredEnrollment::Active(EnrollmentBinding {
+                    generation,
+                    context: EnrollmentContext {
+                        machine_id: key.machine_id,
+                        organization_id: key.organization_id,
+                        deployment,
+                    },
+                    credential: RefreshCredential {
+                        enrollment_id: key.enrollment_id,
+                        refresh_token,
+                    },
+                })
+            }
+        };
+        Ok(KeyedEnrollment::Snapshot(stored))
+    }
+
+    async fn mutate(
+        &mut self,
+        expected: BindingGeneration,
+        mutation: EnrollmentMutation,
+        stage: &MutationStage,
+    ) -> WriteResult {
+        let (decision, definite_error) = match mutation {
+            EnrollmentMutation::Replace(binding) => {
+                let prepared = self.prepare_replacement(expected, &binding).await;
+                #[cfg(test)]
+                if prepared.is_some()
+                    && let Some(test) = &self.test_dependencies
+                {
+                    test.faults.at_prepared_replacement().await;
+                }
+                (
+                    MutationDecision::Replace {
+                        context: binding.context,
+                        prepared,
+                    },
+                    CredentialStoreError::Replace,
+                )
+            }
+            EnrollmentMutation::End(why) => {
+                (MutationDecision::End(why), CredentialStoreError::Remove)
+            }
+        };
+
+        let expected_sql = i64::try_from(expected.get()).map_err(|_| definite_error)?;
+        let timestamp = self.clock.now().unix_millis();
+        let machine_id = &self.machine_id;
+        let write = async {
+            // The caller can distinguish reply loss before the first poll of
+            // this transaction from loss during a possible durable write.
+            stage.begin_transaction();
+            match decision {
+                MutationDecision::Replace { context, prepared } => {
+                    self.store
+                        .write_enrollment_row(machine_id, expected_sql, timestamp, |row| {
+                            let snapshot = match EnrollmentSnapshot::from_row(row, machine_id) {
+                                Ok(snapshot) => snapshot,
+                                Err(corrupt) => return EnrollmentRowChange::Corrupt(corrupt),
+                            };
+                            if !snapshot.matches_scope(&context) {
+                                return EnrollmentRowChange::Abort(
+                                    CredentialStoreError::EnrollmentScopeMismatch,
+                                );
+                            }
+                            match prepared {
+                                Some(replacement) if snapshot == replacement.witness => {
+                                    EnrollmentRowChange::Write(replacement.row)
+                                }
+                                _ => EnrollmentRowChange::Abort(definite_error),
+                            }
+                        })
+                        .await
+                }
+                MutationDecision::End(why) => {
+                    self.store
+                        .write_enrollment_ending(machine_id, expected_sql, timestamp, |row| {
+                            match enrollment_metadata(row, machine_id) {
+                                Ok(metadata) => end_row(metadata, why),
+                                Err(corrupt) => EnrollmentRowChange::Corrupt(corrupt),
+                            }
+                        })
+                        .await
+                }
+            }
+        };
+        #[cfg(not(test))]
+        let outcome = write.await;
+        #[cfg(test)]
+        let outcome = if let Some(test) = &self.test_dependencies {
+            test.faults.apply(write).await
+        } else {
+            write.await
+        };
+        self.finish_mutation(expected, outcome, definite_error)
+            .await
+    }
+
+    async fn finish_mutation(
+        &mut self,
+        expected: BindingGeneration,
+        outcome: Result<EnrollmentRowWrite<CredentialStoreError>, EnrollmentRowStoreError>,
+        definite_error: CredentialStoreError,
+    ) -> WriteResult {
+        match outcome {
+            Ok(EnrollmentRowWrite::Applied) => Ok(ConditionalWrite::Applied),
+            Ok(EnrollmentRowWrite::Superseded) => Ok(ConditionalWrite::Superseded),
+            Ok(EnrollmentRowWrite::Aborted(error)) => Err(error),
+            Err(EnrollmentRowStoreError::Commit(_)) => {
+                #[cfg(test)]
+                if let Some(test) = &self.test_dependencies {
+                    test.faults
+                        .probes
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+                let observed = if definite_error == CredentialStoreError::Remove {
+                    self.store
+                        .probe_enrollment_ending(&self.machine_id)
+                        .await
+                        .ok()
+                        .and_then(|row| enrollment_metadata(row, &self.machine_id).ok())
+                        .map(|metadata| match metadata {
+                            EnrollmentMetadata::Empty => BindingGeneration::EMPTY,
+                            EnrollmentMetadata::Active { generation, .. }
+                            | EnrollmentMetadata::Ended { generation, .. } => generation,
+                        })
+                } else {
+                    self.store
+                        .probe_enrollment_commit(&self.machine_id)
+                        .await
+                        .ok()
+                        .and_then(|row| EnrollmentSnapshot::from_row(row, &self.machine_id).ok())
+                        .map(|snapshot| snapshot.generation())
+                };
+                if observed == Some(expected) {
+                    Err(definite_error)
+                } else {
+                    Err(CredentialStoreError::OutcomeNotKnown)
+                }
+            }
+            Err(_) => Err(definite_error),
+        }
+    }
+
+    async fn prepare_replacement(
+        &mut self,
+        expected: BindingGeneration,
+        binding: &EnrollmentBinding,
+    ) -> Option<Box<PreparedReplacement>> {
+        let current = self.snapshot().await.ok()?;
+        if current.generation() != expected
+            || expected.binding_successor() != Some(binding.generation)
+            || self.machine_id != binding.context.machine_id
+            || !current.matches_scope(&binding.context)
+        {
+            return None;
+        }
+        #[cfg(test)]
+        if let Some(test) = &self.test_dependencies {
+            test.faults.at_replacement_witness().await;
+        }
+        let sealed_bytes_present = matches!(current, EnrollmentSnapshot::Active { .. });
+        let sealer = match self.acquire_key(true).await {
+            Ok(sealer) => sealer,
+            Err(SecretStoreError::KeyMissing) if !sealed_bytes_present => {
+                let fresh = self.snapshot().await.ok()?;
+                if fresh.generation() != expected
+                    || matches!(fresh, EnrollmentSnapshot::Active { .. })
+                {
+                    return None;
+                }
+                self.acquire_key(false).await.ok()?
+            }
+            Err(_) => return None,
+        };
+        if let EnrollmentSnapshot::Active {
+            key,
+            deployment,
+            generation,
+            sealed,
+        } = &current
+        {
+            let predecessor = seal_context(key, deployment, *generation).ok()?;
+            sealer.open(&predecessor, sealed).ok()?;
+        }
+        let context = seal_context(
+            &binding.key(),
+            &binding.context.deployment,
+            binding.generation,
+        )
+        .ok()?;
+        let credential =
+            EnrollmentRowCredential::copy_from(binding.credential.refresh_token.expose_secret())?;
+        let sealed = sealer.seal(&context, &credential).ok()?;
+        let row = StoredEnrollmentRow::Active {
+            generation: i64::try_from(binding.generation.get()).ok()?,
+            organization_id: binding.context.organization_id.to_string(),
+            deployment: binding.context.deployment.origin().as_str().to_owned(),
+            enrollment_id: binding.credential.enrollment_id.to_string(),
+            sealed,
+        };
+        Some(Box::new(PreparedReplacement {
+            witness: current,
+            row,
+        }))
+    }
+
+    async fn snapshot(&mut self) -> Result<EnrollmentSnapshot, ReadFailure> {
+        let row = self.store.read_enrollment_row(&self.machine_id).await?;
+        Ok(EnrollmentSnapshot::from_row(row, &self.machine_id)?)
+    }
+
+    async fn acquire_key(
+        &mut self,
+        sealed_bytes_present: bool,
+    ) -> Result<EnrollmentRowSealer, SecretStoreError> {
+        let root = self.secret_root.clone();
+        #[cfg(any(test, all(feature = "test-support", debug_assertions)))]
+        let keychain = self.keychain.clone();
+        let task = tokio::task::spawn_blocking(move || {
+            #[cfg(any(test, all(feature = "test-support", debug_assertions)))]
+            if let Some(keychain) = keychain {
+                return EnrollmentRowSealer::acquire_with_keychain(
+                    &root,
+                    sealed_bytes_present,
+                    keychain.as_ref(),
+                );
+            }
+            EnrollmentRowSealer::acquire(&root, sealed_bytes_present)
+        });
+        let result = self.pending_key.insert(task).await;
+        self.pending_key = None;
+        result.map_err(|_| SecretStoreError::KeyUnavailable)?
+    }
+}
+
+struct PreparedReplacement {
+    witness: EnrollmentSnapshot,
+    row: StoredEnrollmentRow,
+}
+
+enum MutationDecision {
+    Replace {
+        context: EnrollmentContext,
+        prepared: Option<Box<PreparedReplacement>>,
+    },
+    End(EnrollmentEnd),
+}
+
+fn end_row(
+    metadata: EnrollmentMetadata,
+    why: EnrollmentEnd,
+) -> EnrollmentRowChange<CredentialStoreError> {
+    let EnrollmentMetadata::Active {
+        key,
+        deployment,
+        generation,
+    } = metadata
+    else {
+        return EnrollmentRowChange::Abort(CredentialStoreError::Remove);
+    };
+    let Some(generation) = generation
+        .successor()
+        .and_then(|next| i64::try_from(next.get()).ok())
+    else {
+        return EnrollmentRowChange::Abort(CredentialStoreError::Remove);
+    };
+    EnrollmentRowChange::Write(StoredEnrollmentRow::Ended {
+        generation,
+        organization_id: key.organization_id.to_string(),
+        deployment: deployment.origin().as_str().to_owned(),
+        enrollment_id: key.enrollment_id.to_string(),
+        why: stored_end(why),
+    })
+}
+
+#[cfg(test)]
+#[path = "enrollment_worker_test_faults.rs"]
+mod test_faults;
+
+#[cfg(test)]
+pub(crate) use test_faults::{TestDependencies, TestWriteFault, TestWriteFaults};

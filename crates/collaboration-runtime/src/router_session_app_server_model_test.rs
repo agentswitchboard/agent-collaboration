@@ -456,3 +456,145 @@ async fn unmapped_native_plan_has_zero_effect_while_default_metadata_keeps_ordin
     }
     Ok(())
 }
+
+struct RefusingModelCatalog(crate::SessionModelCatalogError);
+
+impl crate::SessionModelCatalog for RefusingModelCatalog {
+    fn read_models(
+        &self,
+        _target: SessionRef,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<Vec<ProviderModelEntry>, crate::SessionModelCatalogError>,
+                > + Send
+                + '_,
+        >,
+    > {
+        Box::pin(std::future::ready(Err(self.0)))
+    }
+}
+
+#[tokio::test]
+async fn native_model_list_distinguishes_missing_from_unavailable() {
+    for (failure, expected) in [
+        (
+            crate::SessionModelCatalogError::SessionNotFound,
+            json!({"id": 2, "error": {"code": -32002, "message": "session model catalogue not found"}}),
+        ),
+        (
+            crate::SessionModelCatalogError::Unavailable,
+            json!({"id": 2, "error": {"code": -32000, "message": "session model catalogue unavailable"}}),
+        ),
+    ] {
+        let root = tempfile::tempdir().expect("fixture root");
+        let path = root.path().join("catalog.sock");
+        let listener = UnixListener::bind(&path).expect("native socket");
+        let backend = ScriptedSessionBackend::new().expect("scripted session backend");
+        let catalog = Arc::new(RefusingModelCatalog(failure));
+        let (sender, mut replies) = mpsc::channel(1);
+        let response = super::send_model_list_response(
+            json!(2),
+            Some(backend.session.clone()),
+            catalog.clone(),
+            sender,
+        );
+        assert!(
+            futures_util::FutureExt::now_or_never(response).is_some(),
+            "the literal catalogue and an empty response lane must settle in one poll"
+        );
+        let response = replies
+            .try_recv()
+            .expect("model/list must send its correlated response before completing")
+            .expect("handled request");
+        assert_eq!(response.response, expected);
+
+        let context = Arc::new(RouterSessionAppServerContext::new(
+            backend.endpoint.clone(),
+            ScriptedSessionBackend::actor().expect("actor"),
+            backend.clone(),
+            backend,
+            catalog,
+        ));
+        let (dispatched, mut dispatches) = mpsc::unbounded_channel();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("native peer");
+            super::serve_app_server_connection(stream, context, Some(dispatched)).await
+        });
+        let (mut client, _) = client_async(
+            "ws://localhost/rpc",
+            UnixStream::connect(&path).await.expect("native connection"),
+        )
+        .await
+        .expect("native channel");
+        let start = json!({"id":1,"method":"thread/start","params":{"cwd":root.path()}});
+        client
+            .send(Message::Text(start.to_string().into()))
+            .await
+            .expect("thread/start sent");
+        loop {
+            let frame = client
+                .next()
+                .await
+                .expect("thread/start reply")
+                .expect("frame");
+            let value: Value =
+                serde_json::from_str(frame.to_text().expect("text frame")).expect("RPC");
+            if value["id"] == 1 {
+                assert!(value["result"]["thread"]["id"].is_string(), "{value}");
+                break;
+            }
+        }
+
+        for request in [
+            json!({"id":2,"method":"model/list","params":{}}),
+            json!({"id":3,"method":"skills/list","params":{}}),
+        ] {
+            client
+                .send(Message::Text(request.to_string().into()))
+                .await
+                .expect("RPC sent");
+        }
+        let mut catalogue_reply = None;
+        loop {
+            let frame = client
+                .next()
+                .await
+                .expect("skills/list fence")
+                .expect("frame");
+            let value: Value =
+                serde_json::from_str(frame.to_text().expect("text frame")).expect("RPC");
+            match value["id"].as_u64() {
+                Some(2) => catalogue_reply = Some(value),
+                Some(3) => break,
+                _ => {}
+            }
+        }
+        let dispatched = dispatches.try_recv().ok();
+        if dispatched != Some(json!(2)) {
+            client.close(None).await.expect("close native fixture");
+            server.await.expect("server task").expect("server stopped");
+            panic!(
+                "model/list id 2 must dispatch before the real request loop reaches skills/list"
+            );
+        }
+        let catalogue_reply = match catalogue_reply {
+            Some(reply) => reply,
+            None => loop {
+                let frame = client
+                    .next()
+                    .await
+                    .expect("dispatched native reply")
+                    .expect("frame");
+                let value: Value =
+                    serde_json::from_str(frame.to_text().expect("text frame")).expect("RPC");
+                if value["id"] == 2 {
+                    break value;
+                }
+            },
+        };
+        assert_eq!(catalogue_reply, expected);
+        client.close(None).await.expect("native close");
+        server.await.expect("server task").expect("server stopped");
+    }
+}

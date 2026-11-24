@@ -3,6 +3,7 @@ use super::*;
 #[cfg(unix)]
 #[tokio::test]
 async fn provider_create_projects_effective_partial_and_invalid_settings() -> TestResult {
+    let fixture_clock = crate::provider_test_clock();
     for mode in [
         "success",
         "partial",
@@ -16,11 +17,13 @@ async fn provider_create_projects_effective_partial_and_invalid_settings() -> Te
         let runtime = ExternalProviderRuntime::initialize(
             launch("supervisor-settings-create-agent.ts", vec![mode.to_owned()]),
             std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+            fixture_clock.clone(),
         )
         .await?;
         let backend = supervisor(
             &root,
             vec![(binding(provider_endpoint.clone(), "cursor")?, runtime)],
+            fixture_clock.clone(),
         )
         .await?;
         let operation_id = OperationId::generate();
@@ -81,12 +84,12 @@ async fn provider_create_projects_effective_partial_and_invalid_settings() -> Te
                 ensure_eq!(
                     advertised_models.as_slice(),
                     &[
-                        collaboration_runtime::ProviderModelEntry::try_new(
+                        collaboration_contracts::ProviderModelEntry::try_new(
                             "a".into(),
                             "a".into(),
                             "Advertised by the provider".into()
                         )?,
-                        collaboration_runtime::ProviderModelEntry::try_new(
+                        collaboration_contracts::ProviderModelEntry::try_new(
                             "b".into(),
                             "b".into(),
                             "Advertised by the provider".into()

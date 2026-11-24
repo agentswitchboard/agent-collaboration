@@ -14,6 +14,8 @@ mod http_body;
 mod object_location;
 mod object_migrations;
 mod organization_signin_link;
+#[cfg(feature = "test-support")]
+mod receipt_witness;
 mod sign_in_crypto;
 mod sign_in_trust;
 mod signin_observation;
@@ -22,14 +24,19 @@ mod statement_store;
 mod storage_cases;
 mod store_wire;
 mod worker_clock;
+mod workspace_approval_transactions;
 mod workspace_central_object;
 mod workspace_link_entry;
+#[cfg(feature = "test-support")]
+mod workspace_rpc_fixture;
+mod workspace_session_transactions;
 mod workspace_store_object;
 #[cfg(feature = "test-support")]
 pub use driver_scenarios::DriverScenarioObject;
 #[cfg(feature = "test-support")]
 pub use storage_cases::StorageCaseObject;
 pub use workspace_central_object::CentralObject;
+pub use workspace_central_object::workspace_typed_link::call_machine;
 pub use workspace_store_object::WorkspaceStoreObject;
 
 /// Carrier-facing ingress for the machine link.
@@ -45,8 +52,9 @@ pub async fn main(
         Ok(response) => return Ok(response),
         Err(request) => request,
     };
-    if workspace_link_entry::organization(&request.path()).is_some() {
-        return workspace_link_entry::forward(request, &env).await;
+    use workspace_link_entry::{LinkRoute, link_route};
+    if let Some(route @ LinkRoute::Machine(_)) = link_route(&request.path()) {
+        return workspace_link_entry::forward(request, &env, route).await;
     }
     worker::Response::error("no such route", 404)
 }

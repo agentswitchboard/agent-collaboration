@@ -73,6 +73,9 @@ collaboration-central-tokio = { path = "../collaboration-central-tokio", version
 fs2.workspace = true
 jsonc-parser = { workspace = true, features = ["serde"] }
 router-clock.workspace = true
+switchboard-machine-core-store.workspace = true
+switchboard-machine-enrollment = { path = "../switchboard-machine-enrollment", version = "0.1.158" }
+switchboard-machine-enrollment-store = { path = "../switchboard-machine-enrollment-store", version = "0.1.158" }
 
 [dev-dependencies]
 nix = { workspace = true, features = ["process", "signal"] }
@@ -92,6 +95,10 @@ tokio-tungstenite.workspace = true
 toml = "1.1.2"
 tungstenite = "0.28.0"
 tokio = { workspace = true, features = ["test-util"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+router-clock = { workspace = true, features = ["test-support"] }
+switchboard-machine-enrollment = { path = "../switchboard-machine-enrollment", version = "0.1.158", features = ["test-support"] }
 
 [[test]]
 name = "integration"

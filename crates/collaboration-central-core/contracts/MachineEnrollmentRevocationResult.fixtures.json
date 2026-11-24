@@ -1,0 +1,7 @@
+[
+{"result":"revoked"},
+{"result":"notFound"},
+{"result":"alreadyEnded"},
+{"reason":"notPermitted","result":"refused"},
+{"reason":"factorNotRecent","result":"refused"}
+]

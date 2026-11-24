@@ -4,8 +4,8 @@ use collaboration_protocol::{
     ProviderOperationEffect, ProviderOperationKind, ProviderOperationStage,
     ProviderReconciliationState,
 };
-use collaboration_runtime::StoredUncertainOperation;
 use provider_session_machines::session_owner::{CloseOutcome, RemoteEffect};
+use switchboard_session_store::StoredUncertainOperation;
 
 pub const INCOMPLETE_CLOSE_NOTE: &str =
     "an earlier close may have reached the harness; restoring anyway";

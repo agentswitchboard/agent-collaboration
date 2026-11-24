@@ -1,6 +1,7 @@
 // External witnesses for the real compiled CentralObject. No domain effects or tokens.
 import assert from "node:assert/strict";
 import { randomUUIDv7 } from "node:crypto";
+import { EventEmitter, once } from "node:events";
 import { Response, type V4FetchHandler } from "miniflare";
 import { z } from "zod";
 
@@ -74,10 +75,132 @@ export const c2RecordSchema = z
   .strict();
 export type C2WitnessRecord = z.infer<typeof c2RecordSchema>;
 
+type WitnessPhase = z.infer<typeof c2PhaseSchema>;
+export const c2HeldDiagnosticSchema = z
+  .object({
+    ordinal: z.number().int().positive(),
+    kind: z.enum(["alarmSnapshot", "restoreResult"]),
+    disposition: z.enum(["record", "refuse"]),
+  })
+  .strict();
+type HeldDiagnostic = z.infer<typeof c2HeldDiagnosticSchema>;
+
 export class C2WitnessRecorder {
-  phase: z.infer<typeof c2PhaseSchema> = "connecting";
+  phase: WitnessPhase = "connecting";
   private readonly records: C2WitnessRecord[] = [];
   private readonly instances = new Map<string, string>();
+
+  private readonly changes = new EventEmitter();
+  private readonly deliveryByObject = new Map<string, AbortController>();
+  private readonly deliverySignal = new WeakMap<Parameters<V4FetchHandler>[0], AbortSignal>();
+
+  // Eviction cancels this object's observer acknowledgements before Workerd
+  // waits for references. Queued deliveries receive a refusal until eviction
+  // settles. Fencing never makes a request to the object.
+  cancelDeliveriesForEviction(objectId: string): () => void {
+    this.deliveryFor(objectId).abort();
+    return () => {
+      this.deliveryByObject.delete(objectId);
+    };
+  }
+
+  private deliveryFor(objectId: string): AbortController {
+    let delivery = this.deliveryByObject.get(objectId);
+    if (delivery === undefined) {
+      delivery = new AbortController();
+      this.deliveryByObject.set(objectId, delivery);
+    }
+    return delivery;
+  }
+
+  readonly deliver: V4FetchHandler = async (request, runtime): Promise<Response> => {
+    if (request.url !== "https://c2-witness.test/record") return this.observe(request, runtime);
+    const target = common.safeParse(
+      await request
+        .clone()
+        .json()
+        .catch(() => undefined),
+    );
+    if (!target.success) return new Response(null, { status: 400 });
+    const signal = this.deliveryFor(target.data.objectId).signal;
+    if (signal.aborted) return new Response(null, { status: 503 });
+
+    this.deliverySignal.set(request, signal);
+    const cancel = Promise.withResolvers<Response>();
+    const refuse = (): void => cancel.resolve(new Response(null, { status: 503 }));
+    signal.addEventListener("abort", refuse, { once: true });
+    try {
+      return await Promise.race([this.observe(request, runtime), cancel.promise]);
+    } finally {
+      signal.removeEventListener("abort", refuse);
+    }
+  };
+  private heldDiagnostic:
+    | (HeldDiagnostic & {
+        remaining: number;
+        correlationId?: string;
+        refused?: true;
+        release: () => void;
+        wait: Promise<void>;
+      })
+    | undefined;
+
+  holdDecidingDiagnostic(control: HeldDiagnostic): void {
+    assert.equal(this.phase, "deciding");
+    assert.equal(this.heldDiagnostic, undefined, "a diagnostic callback is already armed");
+    const { promise, resolve } = Promise.withResolvers<void>();
+    this.heldDiagnostic = {
+      ...control,
+      remaining: control.ordinal,
+      release: resolve,
+      wait: promise,
+    };
+  }
+
+  async settledAlarms(
+    phase: WitnessPhase,
+    correlationIds: readonly string[],
+    expectRefused?: string,
+  ): Promise<readonly C2WitnessRecord[]> {
+    assert.equal(this.phase, phase, "settle before changing the recorder phase");
+    // Watchdog only. Recorder progress is driven by observed events and the
+    // causal hold is released by this read, never by waiting a fixed interval.
+    const signal = AbortSignal.timeout(10_000);
+    const gate = this.heldDiagnostic;
+    assert.equal(gate?.disposition === "refuse", expectRefused !== undefined);
+    while (true) {
+      const records = this.snapshot();
+      if (gate?.correlationId !== undefined) {
+        assert.ok(
+          correlationIds.includes(gate.correlationId) || gate.correlationId === expectRefused,
+          "unexpected held callback correlation",
+        );
+        gate.release();
+      }
+      const alarms = new Set(
+        records.flatMap(({ phase: recordedPhase, event }) =>
+          recordedPhase === phase && event.kind === "alarmSnapshot" ? [event.correlationId] : [],
+        ),
+      );
+      const observerSettled =
+        gate === undefined ||
+        (gate.disposition === "refuse"
+          ? gate.refused === true && gate.correlationId === expectRefused
+          : gate.correlationId !== undefined && alarms.has(gate.correlationId));
+      if (observerSettled && correlationIds.every((id) => alarms.has(id))) return records;
+      await once(this.changes, "changed", { signal });
+    }
+  }
+
+  async settledLifecycle(
+    kind: "upgrade" | "handler",
+    count: number,
+  ): Promise<readonly C2WitnessRecord[]> {
+    const signal = AbortSignal.timeout(10_000);
+    while (this.records.filter(({ event }) => event.kind === kind).length < count)
+      await once(this.changes, "changed", { signal });
+    return this.snapshot();
+  }
 
   snapshot(): readonly C2WitnessRecord[] {
     return structuredClone(this.records);
@@ -93,6 +216,8 @@ export class C2WitnessRecorder {
     } catch {
       return new Response(null, { status: 400 });
     }
+    const signal = this.deliverySignal.get(request);
+    if (signal?.aborted) return new Response(null, { status: 503 });
     const parsed = c2EventSchema.safeParse(input);
     if (!parsed.success) return new Response(null, { status: 400 });
     const event = parsed.data;
@@ -102,49 +227,110 @@ export class C2WitnessRecorder {
     if ("instanceId" in event && event.instanceId !== instanceId)
       return new Response(null, { status: 409 });
     this.instances.set(event.objectId, instanceId);
+    const gate = this.heldDiagnostic;
+    if (gate !== undefined && this.phase === "deciding" && event.kind === gate.kind) {
+      gate.remaining--;
+      if (gate.remaining === 0) {
+        gate.correlationId = event.correlationId;
+        this.changes.emit("changed");
+        signal?.addEventListener("abort", gate.release, { once: true });
+        await gate.wait;
+        signal?.removeEventListener("abort", gate.release);
+        this.heldDiagnostic = undefined;
+        if (signal?.aborted) return new Response(null, { status: 503 });
+        if (gate.disposition === "refuse") {
+          gate.refused = true;
+          this.changes.emit("changed");
+          return new Response(null, { status: 503 });
+        }
+      }
+    }
     this.records.push({ sequence: this.records.length + 1, phase: this.phase, instanceId, event });
+    this.changes.emit("changed");
     return event.kind === "constructor"
       ? Response.json({ instanceId })
       : new Response(null, { status: 204 });
   };
 }
 
-// The wrapper delegates the compiled class; finite witness callbacks finish before
-// replies. Its own hibernation is a runtime obligation, never inferred from this text.
+// The wrapper captures entry to the compiled class. Ordered Rust diagnostics
+// settle separately from its WebSocket replies.
 export const c2WitnessWrapperSource = `
 import * as original from './index.js';
 export * from './index.js';
 export default original.default;
+function observedAuthority(socket) {
+  const attachment = socket.deserializeAttachment();
+  // The qualification stand-in writes the flat authority snapshot directly.
+  return attachment?.authority ?? attachment;
+}
 export class CentralObject extends original.CentralObject {
   constructor(state, env) {
-    super(state, env);
-    this.witnessState = state;
-    this.witnessEnv = env;
-    this.witnessReady = state.blockConcurrencyWhile(async () => {
-      const response = await env.TEST_C2_WITNESS.fetch('https://c2-witness.test/record', {
+    // Queue wrapper events before delegating, and route Rust callbacks through
+    // the same ordered delivery pipe. No acknowledgement gates the delegate.
+    let tail = Promise.resolve();
+    const enqueue = task => {
+      const delivery = tail.then(task);
+      tail = delivery.catch(error => console.warn("C2 wrapper diagnostic failed", String(error)));
+      return delivery;
+    };
+    const binding = env.TEST_C2_WITNESS;
+    const witnessBinding = new Proxy(binding, { get(target, property) {
+      if (property === 'fetch') return (...args) => enqueue(() => target.fetch(...args));
+      return Reflect.get(target, property, target);
+    }});
+    const witnessEnv = new Proxy(env, { get(target, property, receiver) {
+      return property === 'TEST_C2_WITNESS' ? witnessBinding : Reflect.get(target, property, receiver);
+    }});
+    const witnessWork = new Set();
+    const trackWitnessWork = owner => new Proxy(owner, { get(target, property) {
+      if (property === 'waitUntil') return promise => {
+        witnessWork.add(promise);
+        const settled = () => witnessWork.delete(promise);
+        void promise.then(settled, settled);
+        target.waitUntil(promise);
+      };
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    }});
+    const trackingState = trackWitnessWork(state);
+    super(trackingState, witnessEnv);
+    this.witnessState = trackingState;
+    this.witnessWork = witnessWork;
+    this.witnessBinding = binding;
+    this.enqueueWitness = enqueue;
+    this.waitForWitness(async () => {
+      const response = await binding.fetch('https://c2-witness.test/record', {
         method: 'POST', body: JSON.stringify({kind:'constructor', objectId:state.id.toString()})
       });
       if (!response.ok) throw new Error('constructor witness refused');
       this.witnessInstance = (await response.json()).instanceId;
     });
   }
-  async recordWitness(event) {
-    await this.witnessReady;
-    const response = await this.witnessEnv.TEST_C2_WITNESS.fetch('https://c2-witness.test/record', {
-      method: 'POST', body: JSON.stringify({...event,
-        objectId:this.witnessState.id.toString(), instanceId:this.witnessInstance})
+  waitForWitness(task) {
+    this.witnessState.waitUntil(this.enqueueWitness(task).catch(() => {}));
+  }
+  recordWitness(event) {
+    this.waitForWitness(async () => {
+      const response = await this.witnessBinding.fetch('https://c2-witness.test/record', {
+        method: 'POST', body: JSON.stringify({...event,
+          objectId:this.witnessState.id.toString(), instanceId:this.witnessInstance})
+      });
+      if (response.status !== 204) throw new Error('object witness refused');
     });
-    if (response.status !== 204) throw new Error('object witness refused');
   }
   async fetch(request) {
-    await this.witnessReady;
+    if (request.method === 'POST' && request.url === 'https://c2-witness-control.test/before-eviction') {
+      while (this.witnessWork.size !== 0) await Promise.allSettled(this.witnessWork);
+      return new Response(null, {status:204});
+    }
     const response = await super.fetch(request);
-    if (response.status === 101) await this.recordWitness({kind:'upgrade',
-      attachments:this.witnessState.getWebSockets().map(socket => socket.deserializeAttachment())});
+    if (response.status === 101) this.recordWitness({kind:'upgrade',
+      attachments:this.witnessState.getWebSockets().map(observedAuthority)});
     return response;
   }
   async webSocketMessage(socket, message) {
-    await this.recordWitness({kind:'handler', attachment:socket.deserializeAttachment()});
+    this.recordWitness({kind:'handler', attachment:observedAuthority(socket)});
     return super.webSocketMessage(socket, message);
   }
 }

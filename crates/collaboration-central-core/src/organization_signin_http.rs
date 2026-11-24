@@ -1,9 +1,6 @@
 //! HTTP policy shared by both hosts' private sign-in links.
 use crate::{
-    identity_contract::{
-        AUTHORIZATION_REVISIONS_ROUTE, AuthorizationRevision, ORGANIZATION_STATEMENT_DIGEST_ROUTE,
-        PROVISION_ORGANIZATION_ROUTE, ProvisionOrganization, ReadOrganizationStatementDigest,
-    },
+    identity_contract::{AUTHORIZATION_REVISIONS_ROUTE, AuthorizationRevision},
     organization_admin_contract::OrganizationAdminAnswer,
     organization_signin_port::OrganizationSignInPort,
     person_request::{AdminRoute, PersonRequestInput},
@@ -12,12 +9,17 @@ use axum::{
     Json, Router,
     body::Bytes,
     extract::{State, rejection::JsonRejection},
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, Method, StatusCode},
     response::{IntoResponse, Response},
-    routing::post,
+    routing::{any, post},
 };
-use fleet_contracts::OrganizationProvisioningFailure;
+use fleet_contracts::AuthorizationRevisionFailure;
+use fleet_contracts::{
+    ORGANIZATION_STATEMENT_DIGEST_ROUTE, PROVISION_ORGANIZATION_ROUTE, ProvisionOrganization,
+    ReadOrganizationStatementDigest,
+};
 use fleet_identity_protocol::OrganizationId;
+use fleet_signin::approval_person_wire::ApprovalPersonRoute;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -45,6 +47,7 @@ pub fn organization_signin_router<Port: OrganizationSignInPort>(port: Arc<Port>)
     for route in [
         AdminRoute::CreateWorkspace,
         AdminRoute::WorkspaceLookup,
+        AdminRoute::ListWorkspaces,
         AdminRoute::ReadChangeRecords,
         AdminRoute::EngineHealth,
         AdminRoute::EngineListRetired,
@@ -60,12 +63,31 @@ pub fn organization_signin_router<Port: OrganizationSignInPort>(port: Arc<Port>)
             }),
         );
     }
+    for route in ApprovalPersonRoute::ALL {
+        let port = port.clone();
+        router = router.route(
+            route.path(),
+            any(move |method: Method, headers: HeaderMap, body: Bytes| {
+                let port = port.clone();
+                async move {
+                    crate::person_approval_http::forward(
+                        port.as_ref(),
+                        route,
+                        method,
+                        headers,
+                        body,
+                    )
+                    .await
+                }
+            }),
+        );
+    }
     router
 }
 
 async fn device_login<Port: OrganizationSignInPort>(
     State(port): State<Arc<Port>>,
-    request: Result<Json<crate::identity_contract::DecideDeviceLogin>, JsonRejection>,
+    request: Result<Json<fleet_contracts::DecideDeviceLogin>, JsonRejection>,
 ) -> Response {
     let Ok(Json(request)) = request else {
         return wrong_operation();
@@ -77,7 +99,7 @@ async fn device_login<Port: OrganizationSignInPort>(
 }
 async fn machine_token<Port: OrganizationSignInPort>(
     State(port): State<Arc<Port>>,
-    request: Result<Json<crate::identity_contract::DecideMachineToken>, JsonRejection>,
+    request: Result<Json<fleet_contracts::DecideMachineToken>, JsonRejection>,
 ) -> Response {
     let Ok(Json(request)) = request else {
         return wrong_operation();
@@ -97,7 +119,18 @@ async fn provision<Port: OrganizationSignInPort>(
     };
     match port.provision(&request).await {
         Ok(answer) => (StatusCode::OK, Json(answer)).into_response(),
-        Err(failure) => failure_status(failure).into_response(),
+        Err(failure) => {
+            use fleet_contracts::ProvisionFailure;
+            match failure {
+                ProvisionFailure::OrganizationMismatch => StatusCode::FORBIDDEN,
+                ProvisionFailure::InvalidStatement => StatusCode::UNPROCESSABLE_ENTITY,
+                ProvisionFailure::StaleStatement => StatusCode::CONFLICT,
+                ProvisionFailure::Unavailable | ProvisionFailure::OutcomeUnknown => {
+                    StatusCode::SERVICE_UNAVAILABLE
+                }
+            }
+            .into_response()
+        }
     }
 }
 
@@ -110,7 +143,15 @@ async fn statement_digest<Port: OrganizationSignInPort>(
     };
     match port.digest(&request).await {
         Ok(answer) => (StatusCode::OK, Json(answer)).into_response(),
-        Err(failure) => failure_status(failure).into_response(),
+        Err(failure) => {
+            use fleet_contracts::DigestFailure;
+            match failure {
+                DigestFailure::OrganizationMismatch => StatusCode::FORBIDDEN,
+                DigestFailure::Unprovisioned => StatusCode::NOT_FOUND,
+                DigestFailure::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+            }
+            .into_response()
+        }
     }
 }
 
@@ -167,6 +208,9 @@ async fn forward_admin<Port: OrganizationSignInPort>(
         Ok(OrganizationAdminAnswer::Answered(result)) => {
             (StatusCode::OK, Json(result)).into_response()
         }
+        Ok(OrganizationAdminAnswer::WorkspaceList(result)) => {
+            (StatusCode::OK, Json(result)).into_response()
+        }
         Ok(OrganizationAdminAnswer::MachineEnrollmentRevocation(result)) => {
             (StatusCode::OK, Json(result)).into_response()
         }
@@ -181,17 +225,13 @@ async fn forward_admin<Port: OrganizationSignInPort>(
 }
 
 /// Failure bodies are empty; only a 200 publishes a closed result.
-fn failure_status(failure: OrganizationProvisioningFailure) -> StatusCode {
+fn failure_status(failure: AuthorizationRevisionFailure) -> StatusCode {
     match failure {
-        OrganizationProvisioningFailure::OrganizationMismatch => StatusCode::FORBIDDEN,
-        OrganizationProvisioningFailure::InvalidStatement => StatusCode::UNPROCESSABLE_ENTITY,
-        OrganizationProvisioningFailure::StaleStatement => StatusCode::CONFLICT,
-        OrganizationProvisioningFailure::OrganizationFloorMissing => {
-            StatusCode::PRECONDITION_FAILED
-        }
-        OrganizationProvisioningFailure::Unprovisioned => StatusCode::NOT_FOUND,
-        OrganizationProvisioningFailure::Unavailable
-        | OrganizationProvisioningFailure::OutcomeUnknown => StatusCode::SERVICE_UNAVAILABLE,
+        AuthorizationRevisionFailure::OrganizationMismatch => StatusCode::FORBIDDEN,
+        AuthorizationRevisionFailure::Conflict => StatusCode::CONFLICT,
+        AuthorizationRevisionFailure::OrganizationFloorMissing => StatusCode::PRECONDITION_FAILED,
+        AuthorizationRevisionFailure::Unavailable
+        | AuthorizationRevisionFailure::OutcomeUnknown => StatusCode::SERVICE_UNAVAILABLE,
     }
 }
 

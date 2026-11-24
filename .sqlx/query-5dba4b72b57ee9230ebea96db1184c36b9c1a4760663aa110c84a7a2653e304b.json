@@ -1,0 +1,146 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT attempt_id, state, failure_count, next_try_at, last_failure, last_failure_detail,\n       first_failed_at, last_failed_at, retired_at, created_at, updated_at\nFROM engine_work_attempts WHERE machine_kind=? AND subject_key=?\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "attempt_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "engine_work_attempts",
+            "name": "attempt_id"
+          }
+        }
+      },
+      {
+        "name": "state",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "engine_work_attempts",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "name": "failure_count",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "engine_work_attempts",
+            "name": "failure_count"
+          }
+        }
+      },
+      {
+        "name": "next_try_at",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "engine_work_attempts",
+            "name": "next_try_at"
+          }
+        }
+      },
+      {
+        "name": "last_failure",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "engine_work_attempts",
+            "name": "last_failure"
+          }
+        }
+      },
+      {
+        "name": "last_failure_detail",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "engine_work_attempts",
+            "name": "last_failure_detail"
+          }
+        }
+      },
+      {
+        "name": "first_failed_at",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "engine_work_attempts",
+            "name": "first_failed_at"
+          }
+        }
+      },
+      {
+        "name": "last_failed_at",
+        "ordinal": 7,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "engine_work_attempts",
+            "name": "last_failed_at"
+          }
+        }
+      },
+      {
+        "name": "retired_at",
+        "ordinal": 8,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "engine_work_attempts",
+            "name": "retired_at"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 9,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "engine_work_attempts",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 10,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "engine_work_attempts",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "5dba4b72b57ee9230ebea96db1184c36b9c1a4760663aa110c84a7a2653e304b"
+}

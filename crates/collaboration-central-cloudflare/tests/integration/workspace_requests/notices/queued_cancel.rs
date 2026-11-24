@@ -11,6 +11,8 @@ async fn leave_cancels_the_fired_collated_message_but_not_direct_mail() {
     let thread = f.thread(7401, area).await;
     let (observer, recipient) = joined_observer(&f, &thread).await;
     created(f.call(7402, post(&thread, vec![])).await);
+    // Put the direct cutoff after this notice's 15-minute mark.
+    f.clock.0.fetch_add(1_000, Ordering::SeqCst);
     let direct = f
         .host
         .request_central(
@@ -35,7 +37,7 @@ async fn leave_cancels_the_fired_collated_message_but_not_direct_mail() {
         panic!("direct send refused: {direct:?}")
     };
     let runtime = f.host.central(&f.caller.organization_id).await;
-    f.clock.0.fetch_add(900_000, Ordering::SeqCst);
+    f.clock.0.fetch_add(899_000, Ordering::SeqCst);
     // The observer's join also opened a window for the thread creator.
     assert_eq!(runtime.after_event().await.unwrap().windows_fired, 2);
     let query = || Statement {
@@ -58,6 +60,17 @@ async fn leave_cancels_the_fired_collated_message_but_not_direct_mail() {
         matches!(serde_json::from_str::<MessageBody>(body).unwrap(), MessageBody::Notice { items } if items.len() == 1)
     );
     assert_eq!(before.rows[0][3], text("queued"));
+    let projected_mail = || Statement {
+        sql: "SELECT work_kind, subject_key FROM engine_due_entries WHERE subject_key IN (?, ?) ORDER BY work_kind",
+        args: vec![text(&notice_id), text(&direct_id)],
+    };
+    assert_eq!(
+        runtime.read(projected_mail()).await.unwrap().rows,
+        [
+            [text("direct_message"), text(&direct_id)],
+            [text("system_message_expiry"), text(&notice_id)]
+        ],
+    );
     let observer = fresh_auth(&f.host, &observer);
     let left = call(
         &f.host,
@@ -92,5 +105,9 @@ async fn leave_cancels_the_fired_collated_message_but_not_direct_mail() {
         .await
         .unwrap();
     assert_eq!(direct.rows, vec![vec![text("queued")]]);
+    assert_eq!(
+        runtime.read(projected_mail()).await.unwrap().rows,
+        [[text("direct_message"), text(&direct_id)]],
+    );
     f.host.close().await;
 }

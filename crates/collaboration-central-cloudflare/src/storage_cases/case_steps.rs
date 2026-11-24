@@ -15,6 +15,7 @@ use sqlx_core::migrate::Migrator;
 pub(crate) enum CaseMigrator {
     Widgets,
     FailingSecondStatement,
+    Sessions,
 }
 
 impl CaseMigrator {
@@ -22,6 +23,7 @@ impl CaseMigrator {
         match self {
             Self::Widgets => conformance::widgets_migrator(),
             Self::FailingSecondStatement => conformance::failing_second_statement_migrator(),
+            Self::Sessions => fleet_storage_schema::workspace_migrations::central_migrator(),
         }
     }
 }
@@ -121,12 +123,43 @@ pub(crate) enum CaseStoreCall {
 pub(crate) enum CasePausePoint {
     AfterReads,
     AfterStoreApplied,
+    BeforeWorkspaceRequestApplying,
     AfterWorkspaceExecute,
     EngineCompletionEntered,
     AfterNoticesCommitted,
     BeforeDrainCommit,
     AfterDrainCommit,
     BeforeTimerCommit,
+    BeforeWakeRequestCommit,
+    BeforeReceiptTransaction,
+    BeforeMachineLinkWelcome,
+    AfterMachineLinkWelcome,
+    BeforeSessionTransaction,
+    BeforeApprovalCommit,
+    ApprovalEndingNeverReached,
+    ApprovalEndingAnswerApplied,
+    BeforeApprovalEndingWrite,
+    BeforeApprovalEndingEnqueue,
+    BeforeApprovalCarrierTurn,
+    BeforeParentApprovalTransaction,
+    BeforeParentApprovalReply,
+    BeforeApprovalNoticeWrite,
+    AfterApprovalNoticeAttempt,
+    AfterApprovalNoticeRecovery,
+    BeforeMacEndingOffer,
+    AfterMacEndingOffer,
+    BeforeMacNoticeOffer,
+    AfterMacNoticeOffer,
+    MacEndingRecoveryStarted,
+    MacEndingRecoveryFinished,
+    MacEndingRegistrationRecoveryScheduled,
+    BeforePersonApprovalTurn,
+    AfterPersonApprovalCommit,
+    AfterIdleExpiryCommit,
+    AfterIdleRenewalPlatformSendError,
+    BeforePrivateEnrollmentInvalidation,
+    BeforeIdleEnrollmentCleanup,
+    AfterIdleEnrollmentCleanup,
     AfterTimerCommit,
     AfterEngineAttemptGate,
     AfterEngineLoad,
@@ -135,6 +168,10 @@ pub(crate) enum CasePausePoint {
     AfterEngineAbsentLookup,
     BeforeControlClear,
     BeforeDriveGuard,
+    BeforeRenewalApplyingSample,
+    BeforeMachineAuthorityCloseWrite,
+    AfterMachineFrameHandled,
+    AfterMachineMailOffer,
     BeforeSignInSample,
     AfterSignInSample,
 }
@@ -144,12 +181,51 @@ impl From<CasePausePoint> for PausePoint {
         match point {
             CasePausePoint::AfterReads => Self::AfterReads,
             CasePausePoint::AfterStoreApplied => Self::AfterStoreApplied,
+            CasePausePoint::BeforeWorkspaceRequestApplying => Self::BeforeWorkspaceRequestApplying,
             CasePausePoint::AfterWorkspaceExecute => Self::AfterWorkspaceExecute,
             CasePausePoint::EngineCompletionEntered => Self::EngineCompletionEntered,
             CasePausePoint::AfterNoticesCommitted => Self::AfterNoticesCommitted,
             CasePausePoint::BeforeDrainCommit => Self::BeforeDrainCommit,
             CasePausePoint::AfterDrainCommit => Self::AfterDrainCommit,
             CasePausePoint::BeforeTimerCommit => Self::BeforeTimerCommit,
+            CasePausePoint::BeforeWakeRequestCommit => Self::BeforeWakeRequestCommit,
+            CasePausePoint::BeforeReceiptTransaction => Self::BeforeReceiptTransaction,
+            CasePausePoint::BeforeMachineLinkWelcome => Self::BeforeMachineLinkWelcome,
+            CasePausePoint::AfterMachineLinkWelcome => Self::AfterMachineLinkWelcome,
+            CasePausePoint::BeforeSessionTransaction => Self::BeforeSessionTransaction,
+            CasePausePoint::BeforeApprovalCommit => Self::BeforeApprovalCommit,
+            CasePausePoint::ApprovalEndingNeverReached => Self::ApprovalEndingNeverReached,
+            CasePausePoint::ApprovalEndingAnswerApplied => Self::ApprovalEndingAnswerApplied,
+            CasePausePoint::BeforeApprovalEndingWrite => Self::BeforeApprovalEndingWrite,
+            CasePausePoint::BeforeApprovalEndingEnqueue => Self::BeforeApprovalEndingEnqueue,
+            CasePausePoint::BeforeApprovalCarrierTurn => Self::BeforeApprovalCarrierTurn,
+            CasePausePoint::BeforeParentApprovalTransaction => {
+                Self::BeforeParentApprovalTransaction
+            }
+            CasePausePoint::AfterApprovalNoticeRecovery => Self::AfterApprovalNoticeRecovery,
+            CasePausePoint::BeforeMacEndingOffer => Self::BeforeMacEndingOffer,
+            CasePausePoint::AfterMacEndingOffer => Self::AfterMacEndingOffer,
+            CasePausePoint::BeforeMacNoticeOffer => Self::BeforeMacNoticeOffer,
+            CasePausePoint::AfterMacNoticeOffer => Self::AfterMacNoticeOffer,
+            CasePausePoint::MacEndingRecoveryStarted => Self::MacEndingRecoveryStarted,
+            CasePausePoint::MacEndingRecoveryFinished => Self::MacEndingRecoveryFinished,
+            CasePausePoint::MacEndingRegistrationRecoveryScheduled => {
+                Self::MacEndingRegistrationRecoveryScheduled
+            }
+            CasePausePoint::BeforeParentApprovalReply => Self::BeforeParentApprovalReply,
+            CasePausePoint::BeforeApprovalNoticeWrite => Self::BeforeApprovalNoticeWrite,
+            CasePausePoint::AfterApprovalNoticeAttempt => Self::AfterApprovalNoticeAttempt,
+            CasePausePoint::BeforePersonApprovalTurn => Self::BeforePersonApprovalTurn,
+            CasePausePoint::AfterPersonApprovalCommit => Self::AfterPersonApprovalCommit,
+            CasePausePoint::AfterIdleExpiryCommit => Self::AfterIdleExpiryCommit,
+            CasePausePoint::AfterIdleRenewalPlatformSendError => {
+                Self::AfterIdleRenewalPlatformSendError
+            }
+            CasePausePoint::BeforePrivateEnrollmentInvalidation => {
+                Self::BeforePrivateEnrollmentInvalidation
+            }
+            CasePausePoint::BeforeIdleEnrollmentCleanup => Self::BeforeIdleEnrollmentCleanup,
+            CasePausePoint::AfterIdleEnrollmentCleanup => Self::AfterIdleEnrollmentCleanup,
             CasePausePoint::AfterTimerCommit => Self::AfterTimerCommit,
             CasePausePoint::AfterEngineAttemptGate => Self::AfterEngineAttemptGate,
             CasePausePoint::AfterEngineLoad => Self::AfterEngineLoad,
@@ -158,6 +234,12 @@ impl From<CasePausePoint> for PausePoint {
             CasePausePoint::AfterEngineAbsentLookup => Self::AfterEngineAbsentLookup,
             CasePausePoint::BeforeControlClear => Self::BeforeControlClear,
             CasePausePoint::BeforeDriveGuard => Self::BeforeDriveGuard,
+            CasePausePoint::BeforeRenewalApplyingSample => Self::BeforeRenewalApplyingSample,
+            CasePausePoint::BeforeMachineAuthorityCloseWrite => {
+                Self::BeforeMachineAuthorityCloseWrite
+            }
+            CasePausePoint::AfterMachineFrameHandled => Self::AfterMachineFrameHandled,
+            CasePausePoint::AfterMachineMailOffer => Self::AfterMachineMailOffer,
             CasePausePoint::BeforeSignInSample => Self::BeforeSignInSample,
             CasePausePoint::AfterSignInSample => Self::AfterSignInSample,
         }
@@ -168,12 +250,49 @@ impl From<PausePoint> for CasePausePoint {
         match point {
             PausePoint::AfterReads => Self::AfterReads,
             PausePoint::AfterStoreApplied => Self::AfterStoreApplied,
+            PausePoint::BeforeWorkspaceRequestApplying => Self::BeforeWorkspaceRequestApplying,
             PausePoint::AfterWorkspaceExecute => Self::AfterWorkspaceExecute,
             PausePoint::EngineCompletionEntered => Self::EngineCompletionEntered,
             PausePoint::AfterNoticesCommitted => Self::AfterNoticesCommitted,
             PausePoint::BeforeDrainCommit => Self::BeforeDrainCommit,
             PausePoint::AfterDrainCommit => Self::AfterDrainCommit,
             PausePoint::BeforeTimerCommit => Self::BeforeTimerCommit,
+            PausePoint::BeforeWakeRequestCommit => Self::BeforeWakeRequestCommit,
+            PausePoint::BeforeReceiptTransaction => Self::BeforeReceiptTransaction,
+            PausePoint::BeforeMachineLinkWelcome => Self::BeforeMachineLinkWelcome,
+            PausePoint::AfterMachineLinkWelcome => Self::AfterMachineLinkWelcome,
+            PausePoint::BeforeSessionTransaction => Self::BeforeSessionTransaction,
+            PausePoint::BeforeApprovalCommit => Self::BeforeApprovalCommit,
+            PausePoint::ApprovalEndingNeverReached => Self::ApprovalEndingNeverReached,
+            PausePoint::ApprovalEndingAnswerApplied => Self::ApprovalEndingAnswerApplied,
+            PausePoint::BeforeApprovalEndingWrite => Self::BeforeApprovalEndingWrite,
+            PausePoint::BeforeApprovalEndingEnqueue => Self::BeforeApprovalEndingEnqueue,
+            PausePoint::BeforeApprovalCarrierTurn => Self::BeforeApprovalCarrierTurn,
+            PausePoint::BeforeParentApprovalTransaction => Self::BeforeParentApprovalTransaction,
+            PausePoint::BeforeParentApprovalReply => Self::BeforeParentApprovalReply,
+            PausePoint::BeforeApprovalNoticeWrite => Self::BeforeApprovalNoticeWrite,
+            PausePoint::AfterApprovalNoticeAttempt => Self::AfterApprovalNoticeAttempt,
+            PausePoint::AfterApprovalNoticeRecovery => Self::AfterApprovalNoticeRecovery,
+            PausePoint::BeforeMacEndingOffer => Self::BeforeMacEndingOffer,
+            PausePoint::AfterMacEndingOffer => Self::AfterMacEndingOffer,
+            PausePoint::BeforeMacNoticeOffer => Self::BeforeMacNoticeOffer,
+            PausePoint::AfterMacNoticeOffer => Self::AfterMacNoticeOffer,
+            PausePoint::MacEndingRecoveryStarted => Self::MacEndingRecoveryStarted,
+            PausePoint::MacEndingRecoveryFinished => Self::MacEndingRecoveryFinished,
+            PausePoint::MacEndingRegistrationRecoveryScheduled => {
+                Self::MacEndingRegistrationRecoveryScheduled
+            }
+            PausePoint::BeforePersonApprovalTurn => Self::BeforePersonApprovalTurn,
+            PausePoint::AfterPersonApprovalCommit => Self::AfterPersonApprovalCommit,
+            PausePoint::AfterIdleExpiryCommit => Self::AfterIdleExpiryCommit,
+            PausePoint::AfterIdleRenewalPlatformSendError => {
+                Self::AfterIdleRenewalPlatformSendError
+            }
+            PausePoint::BeforePrivateEnrollmentInvalidation => {
+                Self::BeforePrivateEnrollmentInvalidation
+            }
+            PausePoint::BeforeIdleEnrollmentCleanup => Self::BeforeIdleEnrollmentCleanup,
+            PausePoint::AfterIdleEnrollmentCleanup => Self::AfterIdleEnrollmentCleanup,
             PausePoint::AfterTimerCommit => Self::AfterTimerCommit,
             PausePoint::AfterEngineAttemptGate => Self::AfterEngineAttemptGate,
             PausePoint::AfterEngineLoad => Self::AfterEngineLoad,
@@ -182,6 +301,10 @@ impl From<PausePoint> for CasePausePoint {
             PausePoint::AfterEngineAbsentLookup => Self::AfterEngineAbsentLookup,
             PausePoint::BeforeControlClear => Self::BeforeControlClear,
             PausePoint::BeforeDriveGuard => Self::BeforeDriveGuard,
+            PausePoint::BeforeRenewalApplyingSample => Self::BeforeRenewalApplyingSample,
+            PausePoint::BeforeMachineAuthorityCloseWrite => Self::BeforeMachineAuthorityCloseWrite,
+            PausePoint::AfterMachineFrameHandled => Self::AfterMachineFrameHandled,
+            PausePoint::AfterMachineMailOffer => Self::AfterMachineMailOffer,
             PausePoint::BeforeSignInSample => Self::BeforeSignInSample,
             PausePoint::AfterSignInSample => Self::AfterSignInSample,
         }

@@ -17,7 +17,20 @@ impl DoConnection {
         Self {
             storage: worker::send::SendWrapper::new(storage),
             sql,
+            #[cfg(feature = "test-support")]
+            fetch_observer: None,
         }
+    }
+
+    /// Observes the platform's rows-read count after a SQLx fetch drains its cursor.
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn with_fetch_observer(
+        mut self,
+        observer: impl Fn(&str, u64) + Send + Sync + 'static,
+    ) -> Self {
+        self.fetch_observer = Some(std::sync::Arc::new(observer));
+        self
     }
 
     /// The storage this connection wraps, for anything this crate does not
@@ -31,13 +44,6 @@ impl DoConnection {
     #[must_use]
     pub fn sql(&self) -> &worker::SqlStorage {
         &self.sql
-    }
-
-    /// The storage this connection wraps, giving up the connection. See
-    /// [`storage`](Self::storage) to borrow it instead.
-    #[must_use]
-    pub fn into_storage(self) -> worker::Storage {
-        self.storage.0
     }
 }
 

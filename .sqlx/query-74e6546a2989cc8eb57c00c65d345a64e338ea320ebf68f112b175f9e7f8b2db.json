@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT marker.approval_row_id\nFROM approval_router_runs AS run\nJOIN approval_erased_requests AS marker ON marker.router_run_id = run.router_run_id\nWHERE run.organization_id = ?1 AND run.enrollment_id = ?2 AND run.machine_id = ?3\nLIMIT 1\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "approval_row_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_erased_requests",
+            "name": "approval_row_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "74e6546a2989cc8eb57c00c65d345a64e338ea320ebf68f112b175f9e7f8b2db"
+}

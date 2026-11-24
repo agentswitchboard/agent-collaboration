@@ -10,20 +10,25 @@ fn at(millis: i64) -> DateTime<Utc> {
 const MINUTE: i64 = 60_000;
 
 #[test]
-fn the_cancel_lands_on_the_first_mark_at_least_17_minutes_after_sending() {
+fn an_aligned_delivery_cutoff_is_the_deadline_occurrence_without_extra_margin() {
+    assert_eq!(direct_receipt_mark(at(0), at(0)).unwrap(), at(15 * MINUTE));
+}
+
+#[test]
+fn the_deadline_occurrence_is_the_first_grid_mark_at_or_after_cutoff() {
     let cases = [
-        // (sent, accepted, expected cancel), in ms from BASE.
-        (0, 0, 20 * MINUTE),                   // 17 min -> the 20-min mark
-        (3 * MINUTE, 3 * MINUTE, 20 * MINUTE), // exactly 20 min: already on a mark
-        (3 * MINUTE + 1, 3 * MINUTE + 1, 25 * MINUTE), // 1 ms past a mark rounds up
-        (0, 4 * MINUTE, 20 * MINUTE),          // accepted later: counted from sending
-        (0, 15 * MINUTE, 20 * MINUTE),         // accepted exactly 15 min after sending
-        (0, 20 * MINUTE, 25 * MINUTE), // older than 15 min: clamped to accepted − 15 (5) -> 22 -> 25
-        (10 * MINUTE, 0, 20 * MINUTE), // a fast Mac clock is clamped to accepted
+        // (sent, accepted, deadline occurrence), in ms from BASE.
+        (0, 0, 15 * MINUTE),
+        (3 * MINUTE, 3 * MINUTE, 20 * MINUTE),
+        (5 * MINUTE + 1, 5 * MINUTE + 1, 25 * MINUTE),
+        (0, 4 * MINUTE, 15 * MINUTE),
+        (0, 15 * MINUTE, 15 * MINUTE),
+        (0, 20 * MINUTE, 20 * MINUTE),
+        (10 * MINUTE, 0, 15 * MINUTE),
     ];
     for (sent, accepted, expected) in cases {
         assert_eq!(
-            cancel_due_at(at(sent), at(accepted)),
+            direct_receipt_mark(at(sent), at(accepted)).unwrap(),
             at(expected),
             "sent {sent} accepted {accepted}"
         );
@@ -54,7 +59,7 @@ fn system_expiry_uses_the_first_grid_mark_at_or_after_24_hours() {
 }
 
 #[hegel::test]
-fn the_cancel_is_on_the_grid_after_the_window_and_margin_and_within_one_step(tc: TestCase) {
+fn the_deadline_occurrence_is_on_grid_within_one_step_of_the_cutoff(tc: TestCase) {
     let accepted = tc.draw(
         gs::integers::<i64>()
             .min_value(0)
@@ -67,21 +72,21 @@ fn the_cancel_is_on_the_grid_after_the_window_and_margin_and_within_one_step(tc:
     );
     let sent = accepted + skew;
 
-    let due = cancel_due_at(at(sent), at(accepted));
+    let due = direct_receipt_mark(at(sent), at(accepted)).unwrap();
 
     let clamped = sent.clamp(accepted - 15 * MINUTE, accepted);
     let due_ms = due.timestamp_millis() - BASE;
     assert_eq!(due_ms.rem_euclid(5 * MINUTE), 0, "on the 5-minute grid");
     assert!(
-        due_ms >= clamped + 17 * MINUTE,
-        "never before the window and margin"
+        due_ms >= clamped + 15 * MINUTE,
+        "never before the delivery cutoff"
     );
     assert!(
-        due_ms < clamped + 22 * MINUTE,
-        "within one grid step after them"
+        due_ms < clamped + 20 * MINUTE,
+        "within one grid step of cutoff"
     );
     assert!(
         !delivery_window_open(at(sent), at(accepted), due),
-        "the window is closed at the cancel"
+        "the window is closed at the deadline occurrence"
     );
 }

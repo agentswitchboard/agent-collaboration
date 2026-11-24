@@ -12,12 +12,11 @@ use collaboration_protocol::{
     MessageContent, MessageDelivery, MessageText, OperationId, PositiveSeconds,
     ProviderRequestedPolicy, ProviderWorkingDirectory, RouterAccess, SessionId,
 };
-use collaboration_runtime::{
-    HistoricalTurn, ProviderOperationStore, ProviderSessionEventHub, ProviderSessionRecord,
-    render_historical_turn,
-};
+use collaboration_runtime::{HistoricalTurn, render_historical_turn};
 use serde_json::{Value, json};
 use session_event_model::{SessionEvent, SessionItemKind, StopReason, TurnOutcome};
+use switchboard_session_events::ProviderSessionEventHub;
+use switchboard_session_store::{ProviderOperationStore, ProviderSessionRecord};
 use tokio::sync::Mutex;
 
 const METADATA_PROVIDER: &str = concat!(
@@ -55,7 +54,8 @@ async fn check_metadata_projection(replay: bool) {
         })
         .await
         .expect("fixture setup");
-    let hub = Arc::new(ProviderSessionEventHub::new(store.clone()));
+    let clock = Arc::new(router_clock::ManualClock::new(chrono::DateTime::UNIX_EPOCH));
+    let hub = Arc::new(ProviderSessionEventHub::new(store.clone(), clock.clone()));
     let board: message_board::SessionRef =
         collaboration_protocol::ProviderIdentity::session_to_board(&target).expect("board target");
     let mut attached = hub
@@ -70,6 +70,7 @@ async fn check_metadata_projection(replay: bool) {
             persistence_target: ProviderPersistenceTarget::Unspecified,
         },
         Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        clock.clone(),
     )
     .await
     .expect("ACP initializes");
@@ -80,6 +81,7 @@ async fn check_metadata_projection(replay: bool) {
         }],
         store,
         hub.clone(),
+        clock,
     )
     .expect("real Host owner");
     let operation_id = OperationId::generate();

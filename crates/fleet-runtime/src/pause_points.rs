@@ -18,6 +18,7 @@ pub enum PausePoint {
     /// After the store applied the batch, before the drain.
     AfterStoreApplied,
     /// The workspace request has returned from execute.
+    BeforeWorkspaceRequestApplying,
     AfterWorkspaceExecute,
     /// The engine has entered completion and has yet to drive work.
     EngineCompletionEntered,
@@ -26,6 +27,36 @@ pub enum PausePoint {
     BeforeDrainCommit,
     AfterDrainCommit,
     BeforeTimerCommit,
+    BeforeWakeRequestCommit,
+    BeforeReceiptTransaction,
+    BeforeMachineLinkWelcome,
+    AfterMachineLinkWelcome,
+    BeforeSessionTransaction,
+    BeforeApprovalCommit,
+    ApprovalEndingNeverReached,
+    ApprovalEndingAnswerApplied,
+    BeforeApprovalEndingWrite,
+    BeforeApprovalEndingEnqueue,
+    BeforeApprovalCarrierTurn,
+    BeforeParentApprovalTransaction,
+    BeforeParentApprovalReply,
+    BeforeApprovalNoticeWrite,
+    AfterApprovalNoticeAttempt,
+    AfterApprovalNoticeRecovery,
+    BeforeMacEndingOffer,
+    AfterMacEndingOffer,
+    BeforeMacNoticeOffer,
+    AfterMacNoticeOffer,
+    MacEndingRecoveryStarted,
+    MacEndingRecoveryFinished,
+    MacEndingRegistrationRecoveryScheduled,
+    BeforePersonApprovalTurn,
+    AfterPersonApprovalCommit,
+    AfterIdleExpiryCommit,
+    AfterIdleRenewalPlatformSendError,
+    BeforePrivateEnrollmentInvalidation,
+    BeforeIdleEnrollmentCleanup,
+    AfterIdleEnrollmentCleanup,
     AfterTimerCommit,
     /// Engine points are keyed by instance (`hold_engine`): after a due event
     /// passed the attempt check, before it loads the instance; after `handle`
@@ -42,6 +73,11 @@ pub enum PausePoint {
     /// Keyed "driver": the host's alarm driver woke for a due alarm, before it
     /// takes its drive guard from a gated test clock.
     BeforeDriveGuard,
+    /// The renewal token is verified and the organization turn is held.
+    BeforeRenewalApplyingSample,
+    BeforeMachineAuthorityCloseWrite,
+    AfterMachineFrameHandled,
+    AfterMachineMailOffer,
     BeforeSignInSample,
     AfterSignInSample,
 }
@@ -54,6 +90,7 @@ pub struct PausePoints {
     armed: Arc<Mutex<BTreeMap<PauseKey, ArmedPause>>>,
     held: Arc<Mutex<BTreeMap<WorkspaceId, Vec<PausePoint>>>>,
     central: Arc<Mutex<BTreeMap<PausePoint, ArmedPause>>>,
+    central_counts: Arc<Mutex<BTreeMap<PausePoint, watch::Sender<u64>>>>,
     /// Several holds may be armed on one key; arrivals take them in arming order,
     /// so two callers on one instance or request can each be held.
     engine: Arc<Mutex<BTreeMap<EngineKey, VecDeque<ArmedPause>>>>,
@@ -106,7 +143,43 @@ impl PausePoints {
         HeldPause { arrived, release }
     }
 
+    pub fn central_count(&self, point: PausePoint) -> u64 {
+        self.central_counts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&point)
+            .map_or(0, |count| *count.borrow())
+    }
+
+    pub async fn until_central_count(&self, point: PausePoint, minimum: u64) {
+        let mut count = self
+            .central_counts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(point)
+            .or_insert_with(|| watch::channel(0).0)
+            .subscribe();
+        let _ = count.wait_for(|count| *count >= minimum).await;
+    }
+
     pub async fn reached_central(&self, point: PausePoint) {
+        if matches!(
+            point,
+            PausePoint::BeforeMacEndingOffer
+                | PausePoint::AfterMacEndingOffer
+                | PausePoint::BeforeMacNoticeOffer
+                | PausePoint::AfterMacNoticeOffer
+                | PausePoint::MacEndingRecoveryStarted
+                | PausePoint::MacEndingRecoveryFinished
+                | PausePoint::MacEndingRegistrationRecoveryScheduled
+        ) {
+            self.central_counts
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .entry(point)
+                .or_insert_with(|| watch::channel(0).0)
+                .send_modify(|count| *count += 1);
+        }
         let armed = self
             .central
             .lock()

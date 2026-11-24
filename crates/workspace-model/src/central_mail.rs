@@ -217,8 +217,7 @@ pub enum MessageBody {
         automation_id: AutomationId,
         text: PostText,
     },
-    /// Central's update to the sender after a refusal, cancellation or late
-    /// acceptance. It has a 24-hour delivery window and produces no outcome.
+    /// The sender's first outcome, offered for 24 hours.
     DeliveryOutcome {
         message_id: MessageId,
         /// The sender Router's outbox request that created the message.
@@ -236,20 +235,23 @@ pub enum MessageBody {
     rename_all_fields = "camelCase",
     deny_unknown_fields
 )]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum MessageOutcome {
-    /// Accepted by the recipient after central had cancelled it (a late Ack).
-    DeliveredAfterAll,
-    /// The recipient's Router refused it for good.
     Refused { reason: MessageRefusal },
-    /// Not delivered within 15 minutes of when the agent sent it (owner,
-    /// record:218: "15 minutes you can't send in central or machine then tell
-    /// the sender and cancel send").
-    Cancelled { reason: MessageCancellation },
+    DeliveryNotConfirmed,
+    DeliveredSeenNotConfirmed { arrived_at: Timestamp },
 }
 
 /// Why the recipient refused a message.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum MessageRefusal {
     /// The receiving Router has no harness that owns this session.
     UnknownSession,
@@ -257,9 +259,37 @@ pub enum MessageRefusal {
     AmbiguousSession,
 }
 
-/// The recipient Router's answer to a delivered message: into its inbox, or
-/// refused for good. A valid message always goes into the inbox (owner,
-/// record:297), so there is no "send it again later".
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
+pub enum ReceiptKind {
+    Delivered { arrived_at: Timestamp },
+    Seen { completed_at: Timestamp },
+    Refused { reason: MessageRefusal },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
+pub enum ReceiptResult {
+    Recorded,
+    AlreadySettled,
+    NotApplicable,
+    NoSuchMessage,
+}
+
+/// The sender's view of a direct message's delivery.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(
     tag = "kind",
@@ -267,43 +297,24 @@ pub enum MessageRefusal {
     rename_all_fields = "camelCase",
     deny_unknown_fields
 )]
-pub enum DeliveryAnswer {
-    Accepted,
-    Refused { reason: MessageRefusal },
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub enum MessageCancellation {
-    NotDeliveredWithin15Minutes,
-}
-
-/// The terminal failure stored by central for a direct message.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub enum MessageFailureReason {
-    UnknownSession,
-    AmbiguousSession,
-    SenderUnresolved,
-}
-
-impl From<MessageRefusal> for MessageFailureReason {
-    fn from(refusal: MessageRefusal) -> Self {
-        match refusal {
-            MessageRefusal::UnknownSession => Self::UnknownSession,
-            MessageRefusal::AmbiguousSession => Self::AmbiguousSession,
-        }
-    }
-}
-
-/// The sender's view of a direct message's delivery.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum MessageStatus {
-    Queued {},
-    Delivered {},
-    Failed { reason: MessageFailureReason },
-    Cancelled { reason: MessageCancellation },
+    Sent {
+        deadline_passed: bool,
+    },
+    Delivered {
+        arrived_at: Timestamp,
+        deadline_passed: bool,
+    },
+    Seen {
+        completed_at: Timestamp,
+    },
+    Refused {
+        reason: MessageRefusal,
+    },
     NotFound {},
 }
 
@@ -329,16 +340,6 @@ pub struct NoticeItem {
     pub item: ItemRef,
     pub actor: ActorIdentityId,
     pub event: ChangeEvent,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub enum MessageKind {
-    Direct,
-    Notice,
-    Wake,
-    Automation,
-    DeliveryOutcome,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]

@@ -12,9 +12,7 @@ use collaboration_protocol::{
     ProviderCapabilityStatus, ProviderKind, ProviderOperationEffect, ProviderOperationKind,
     ProviderReconciliationState, ProviderRuntimeIdentity, ProviderTransport, UuidIdentity,
 };
-use collaboration_runtime::{
-    LoopSnapshot, ProviderOperationAdmission, ProviderOperationStore, WorkerObservation,
-};
+use collaboration_runtime::{LoopSnapshot, WorkerObservation};
 use router_clock::{ManualClock, RuntimeClock};
 use runtime_primitives::{Clock, SyncTime};
 use sqlx::Connection;
@@ -23,6 +21,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex as StdMutex},
 };
+use switchboard_session_store::{ProviderOperationAdmission, ProviderOperationStore};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{Layer, layer::SubscriberExt};
@@ -67,6 +66,7 @@ fn binding() -> ProviderBindingIdentity {
 }
 
 struct Operations {
+    clock: Arc<ManualClock>,
     _directory: tempfile::TempDir,
     path: PathBuf,
     store: Arc<Mutex<ProviderOperationStore>>,
@@ -80,9 +80,12 @@ impl Operations {
         let store = Arc::new(Mutex::new(
             ProviderOperationStore::open(&path).await.unwrap(),
         ));
-        let supervisor =
-            Arc::new(ExternalProviderSupervisor::new(Vec::new(), Arc::clone(&store)).unwrap());
+        let clock = crate::external_provider_runtime::acp_scripted_fixture::manual_clock();
+        let supervisor = Arc::new(
+            ExternalProviderSupervisor::new(Vec::new(), Arc::clone(&store), clock.clone()).unwrap(),
+        );
         Self {
+            clock,
             _directory: directory,
             path,
             store,
@@ -158,9 +161,8 @@ impl RunningRetention {
         retention_days: Option<NonZeroU32>,
         wall: DateTime<Utc>,
     ) -> Self {
-        let clock = Arc::new(
-            ManualClock::starting_at(SyncTime::from_unix_millis(wall.timestamp_millis())).unwrap(),
-        );
+        let clock = operations.clock.clone();
+        clock.set_utc(wall);
         let (worker_loop, mut pass) = provider_retention_loop(
             Arc::clone(&operations.store),
             Some(Arc::clone(&operations.supervisor)),
@@ -514,3 +516,6 @@ async fn a_published_result_a_reader_holds_still_arms_its_expiry() {
     assert!(!operations.holds(&operation).await);
     worker.stop().await;
 }
+
+#[path = "provider_retention_startup_test.rs"]
+mod startup;

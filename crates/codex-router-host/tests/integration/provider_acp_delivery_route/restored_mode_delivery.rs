@@ -10,12 +10,13 @@ use collaboration_contracts::{ProviderConversationBackend, SessionDeliveryRoute}
 use collaboration_protocol::{
     DeliveryOutcome, OperationId, ProviderRequestedPolicy, ProviderWorkingDirectory, RouterAccess,
 };
-use collaboration_runtime::{ProviderOperationStore, ProviderSessionRecord};
 use serde_json::Value;
 use std::sync::Arc;
+use switchboard_session_store::{ProviderOperationStore, ProviderSessionRecord};
 
 #[tokio::test]
 async fn an_already_loaded_session_accepts_delivery_despite_a_mode_difference() {
+    let fixture_clock = crate::provider_test_clock();
     let root = tempfile::tempdir().expect("provider root");
     let wire_receipt = root.path().join("agent.json");
     let runtime = ExternalProviderRuntime::initialize(
@@ -34,6 +35,7 @@ async fn an_already_loaded_session_accepts_delivery_despite_a_mode_difference() 
         Arc::new(acp_provider_adapters::ClaudeAcpBehavior::new(
             acp_provider_adapters::ClaudeSkillSource::Annotated,
         )),
+        fixture_clock.clone(),
     )
     .await
     .expect("fixture provider");
@@ -55,6 +57,7 @@ async fn an_already_loaded_session_accepts_delivery_despite_a_mode_difference() 
                 runtime,
             }],
             Arc::clone(&store),
+            fixture_clock.clone(),
         )
         .expect("supervisor"),
     );
@@ -79,7 +82,7 @@ async fn an_already_loaded_session_accepts_delivery_despite_a_mode_difference() 
             created_by: target.clone().into(),
             approver: target.clone().into(),
             updated_at_ms: 1,
-            resume: collaboration_runtime::ProviderSessionResumeInputs {
+            resume: switchboard_session_store::ProviderSessionResumeInputs {
                 requested_mode: Some("acceptEdits".into()),
                 ..Default::default()
             },
@@ -139,7 +142,7 @@ async fn an_already_loaded_session_accepts_delivery_despite_a_mode_difference() 
         Arc::clone(&supervisor),
         Arc::clone(&store),
         Arc::new(NoLivePeer),
-        Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     );
 
     let evidence = RecordedEvidence(tokio::sync::Mutex::new(Vec::new()));

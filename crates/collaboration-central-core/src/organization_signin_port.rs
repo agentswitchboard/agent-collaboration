@@ -1,16 +1,23 @@
 //! The private sign-in link delegates organization work to a scoped runtime.
+#[cfg(feature = "test-support")]
+use crate::person_approval_application::decide_operation_id;
 use crate::{
-    identity_contract::{
-        AuthorizationRevision, AuthorizationRevisionAcknowledgement,
-        OrganizationStatementDigestReply, ProvisionOrganization, ProvisionOrganizationResult,
-        ReadOrganizationStatementDigest,
-    },
+    PersonApprovalAnswer,
+    identity_contract::{AuthorizationRevision, AuthorizationRevisionAcknowledgement},
     organization_admin_contract::OrganizationAdminAnswer,
+    organization_authority_cache::StampStanding,
+    person_approval_application::PersonApprovalApplication,
     person_request::PersonRequestInput,
 };
 use central_storage::StoreFailure;
-use fleet_contracts::OrganizationProvisioningFailure;
+use fleet_contracts::AuthorizationRevisionFailure;
+use fleet_contracts::{
+    OrganizationStatementDigestReply, ProvisionOrganization, ProvisionOrganizationResult,
+    ReadOrganizationStatementDigest,
+};
 use fleet_identity_protocol::OrganizationId;
+use fleet_runtime_ports::{CentralStore, SyncTime, WorkspaceStores};
+use fleet_signin::{ApprovalPersonVerificationInput, person_proof::PersonRequestRefusal};
 use std::future::Future;
 
 /// Hosts supply routing to the named organization's runtime; this port does
@@ -19,20 +26,21 @@ pub trait OrganizationSignInPort: Send + Sync + 'static {
     fn provision(
         &self,
         request: &ProvisionOrganization,
-    ) -> impl Future<Output = Result<ProvisionOrganizationResult, OrganizationProvisioningFailure>> + Send;
+    ) -> impl Future<Output = Result<ProvisionOrganizationResult, fleet_contracts::ProvisionFailure>>
+    + Send;
 
     fn digest(
         &self,
         request: &ReadOrganizationStatementDigest,
     ) -> impl Future<
-        Output = Result<OrganizationStatementDigestReply, OrganizationProvisioningFailure>,
+        Output = Result<OrganizationStatementDigestReply, fleet_contracts::DigestFailure>,
     > + Send;
 
     fn revision(
         &self,
         request: &AuthorizationRevision,
     ) -> impl Future<
-        Output = Result<AuthorizationRevisionAcknowledgement, OrganizationProvisioningFailure>,
+        Output = Result<AuthorizationRevisionAcknowledgement, AuthorizationRevisionFailure>,
     > + Send;
 
     fn admin(
@@ -40,14 +48,20 @@ pub trait OrganizationSignInPort: Send + Sync + 'static {
         organization: OrganizationId,
         input: PersonRequestInput,
     ) -> impl Future<Output = Result<OrganizationAdminAnswer, StoreFailure>> + Send;
+    fn person_approval(
+        &self,
+        organization: OrganizationId,
+        input: ApprovalPersonVerificationInput<'_>,
+    ) -> impl Future<Output = Result<PersonApprovalAnswer, StoreFailure>> + Send;
+
     fn device_login(
         &self,
-        request: &crate::identity_contract::DecideDeviceLogin,
-    ) -> impl Future<Output = Result<crate::identity_contract::DeviceLoginDecision, StoreFailure>> + Send;
+        request: &fleet_contracts::DecideDeviceLogin,
+    ) -> impl Future<Output = Result<fleet_contracts::DeviceLoginDecision, StoreFailure>> + Send;
     fn machine_token(
         &self,
-        request: &crate::identity_contract::DecideMachineToken,
-    ) -> impl Future<Output = Result<crate::identity_contract::MachineTokenDecision, StoreFailure>> + Send;
+        request: &fleet_contracts::DecideMachineToken,
+    ) -> impl Future<Output = Result<fleet_contracts::MachineTokenDecision, StoreFailure>> + Send;
 }
 impl<H: fleet_runtime_ports::CentralStore, S: fleet_runtime_ports::WorkspaceStores>
     OrganizationSignInPort for crate::WorkspaceRuntime<H, S>
@@ -55,7 +69,7 @@ impl<H: fleet_runtime_ports::CentralStore, S: fleet_runtime_ports::WorkspaceStor
     async fn provision(
         &self,
         request: &ProvisionOrganization,
-    ) -> Result<ProvisionOrganizationResult, OrganizationProvisioningFailure> {
+    ) -> Result<ProvisionOrganizationResult, fleet_contracts::ProvisionFailure> {
         let answer = self.provision_organization(request).await;
         self.after_signin_event().await;
         answer
@@ -63,7 +77,7 @@ impl<H: fleet_runtime_ports::CentralStore, S: fleet_runtime_ports::WorkspaceStor
     async fn digest(
         &self,
         request: &ReadOrganizationStatementDigest,
-    ) -> Result<OrganizationStatementDigestReply, OrganizationProvisioningFailure> {
+    ) -> Result<OrganizationStatementDigestReply, fleet_contracts::DigestFailure> {
         let answer = self.read_statement_digest(request).await;
         self.after_signin_event().await;
         answer
@@ -71,7 +85,7 @@ impl<H: fleet_runtime_ports::CentralStore, S: fleet_runtime_ports::WorkspaceStor
     async fn revision(
         &self,
         request: &AuthorizationRevision,
-    ) -> Result<AuthorizationRevisionAcknowledgement, OrganizationProvisioningFailure> {
+    ) -> Result<AuthorizationRevisionAcknowledgement, AuthorizationRevisionFailure> {
         let answer = self.deliver_authorization_revision(request).await;
         self.after_signin_event().await;
         answer
@@ -88,18 +102,30 @@ impl<H: fleet_runtime_ports::CentralStore, S: fleet_runtime_ports::WorkspaceStor
         self.after_signin_event().await;
         answer
     }
+    async fn person_approval(
+        &self,
+        organization: OrganizationId,
+        input: ApprovalPersonVerificationInput<'_>,
+    ) -> Result<PersonApprovalAnswer, StoreFailure> {
+        let answer = self
+            .apply_person_approval_request(&organization, input)
+            .await;
+        self.after_signin_event().await;
+        answer
+    }
+
     async fn device_login(
         &self,
-        request: &crate::identity_contract::DecideDeviceLogin,
-    ) -> Result<crate::identity_contract::DeviceLoginDecision, StoreFailure> {
+        request: &fleet_contracts::DecideDeviceLogin,
+    ) -> Result<fleet_contracts::DeviceLoginDecision, StoreFailure> {
         let answer = self.decide_device_login(request).await;
         self.after_signin_event().await;
         answer
     }
     async fn machine_token(
         &self,
-        request: &crate::identity_contract::DecideMachineToken,
-    ) -> Result<crate::identity_contract::MachineTokenDecision, StoreFailure> {
+        request: &fleet_contracts::DecideMachineToken,
+    ) -> Result<fleet_contracts::MachineTokenDecision, StoreFailure> {
         let answer = self.decide_machine_token(request).await;
         self.after_signin_event().await;
         answer
@@ -114,5 +140,120 @@ impl<H: fleet_runtime_ports::CentralStore, S: fleet_runtime_ports::WorkspaceStor
     /// problem never replaces the entry's answer; it is observed.
     async fn after_signin_event(&self) {
         let _ = self.after_event().await;
+    }
+}
+
+impl<H: CentralStore, S: WorkspaceStores> crate::WorkspaceRuntime<H, S> {
+    pub(crate) async fn apply_person_approval_request(
+        &self,
+        organization: &OrganizationId,
+        input: ApprovalPersonVerificationInput<'_>,
+    ) -> Result<PersonApprovalAnswer, StoreFailure> {
+        if organization != self.execution.organization() {
+            return Ok(PersonApprovalAnswer::Unauthenticated);
+        }
+        {
+            let _turn = self.execution.take_central_turn().await;
+            self.prepare_signin_authority().await?;
+            if self.signin_authority.standing(self.execution.clock().now()) != StampStanding::Valid
+            {
+                return Err(StoreFailure::Unavailable);
+            }
+        }
+        let check = self
+            .signin_authority
+            .check()
+            .ok_or(StoreFailure::Unavailable)?;
+        if check.sign_in_service().is_none() {
+            return Err(StoreFailure::Unavailable);
+        }
+        let verified = match check.verify_person_approval(input).await {
+            Ok(verified) => verified,
+            Err(PersonRequestRefusal::VerificationUnavailable | PersonRequestRefusal::Policy) => {
+                return Err(StoreFailure::Unavailable);
+            }
+            Err(
+                PersonRequestRefusal::DpopRequired
+                | PersonRequestRefusal::MalformedJwt
+                | PersonRequestRefusal::UnsupportedHeader
+                | PersonRequestRefusal::IssuerKey
+                | PersonRequestRefusal::TokenSignature
+                | PersonRequestRefusal::ProofSignature
+                | PersonRequestRefusal::PersonClaims
+                | PersonRequestRefusal::Issuer
+                | PersonRequestRefusal::Audience
+                | PersonRequestRefusal::Profile
+                | PersonRequestRefusal::ExpiryBounds
+                | PersonRequestRefusal::Expired
+                | PersonRequestRefusal::ProofKey
+                | PersonRequestRefusal::KeyBinding
+                | PersonRequestRefusal::Method
+                | PersonRequestRefusal::Target
+                | PersonRequestRefusal::ProofTime
+                | PersonRequestRefusal::RequestTime
+                | PersonRequestRefusal::RequestId
+                | PersonRequestRefusal::TokenHash
+                | PersonRequestRefusal::OperationBody
+                | PersonRequestRefusal::Intent
+                | PersonRequestRefusal::OrganizationMismatch,
+            ) => return Ok(PersonApprovalAnswer::Unauthenticated),
+        };
+        if verified.organization() != organization {
+            return Ok(PersonApprovalAnswer::Unauthenticated);
+        }
+
+        #[cfg(feature = "test-support")]
+        self.execution
+            .pause_points()
+            .reached_central(fleet_runtime::PausePoint::BeforePersonApprovalTurn)
+            .await;
+        let turn = self.execution.take_central_turn().await;
+        self.prepare_signin_authority().await?;
+        let time = SyncTime::from_unix_millis(self.execution.now()?.timestamp_millis());
+        if self.signin_authority.standing(time) != StampStanding::Valid {
+            return Err(StoreFailure::Unavailable);
+        }
+        #[cfg(feature = "test-support")]
+        let operation_id = decide_operation_id(verified.operation()).cloned();
+        let transactions = self
+            .person_approval_transactions
+            .as_deref()
+            .ok_or(StoreFailure::Unavailable)?;
+        let schedule = self
+            .approval_delivery_completion
+            .as_ref()
+            .ok_or(StoreFailure::Unavailable)?;
+        #[cfg(feature = "test-support")]
+        self.execution
+            .pause_points()
+            .reached_central(fleet_runtime::PausePoint::BeforeSignInSample)
+            .await;
+        let application = PersonApprovalApplication::new(organization, verified);
+        let (proof, applied) = application.commit(transactions).await?;
+        #[cfg(feature = "test-support")]
+        let reply_was_admitted = applied.is_admitted();
+        let publication_failure = applied.publication_failure();
+        let (answer, offers) = applied.publish(&proof)?;
+        drop(turn);
+        if let Some(completion) = transactions.delivery_after_commit(offers) {
+            schedule(completion);
+        }
+        if let Some(reason) = publication_failure {
+            return Err(StoreFailure::AlarmUnpublishable { reason });
+        }
+        #[cfg(feature = "test-support")]
+        self.execution
+            .pause_points()
+            .reached_central(fleet_runtime::PausePoint::AfterPersonApprovalCommit)
+            .await;
+        #[cfg(feature = "test-support")]
+        if reply_was_admitted
+            && operation_id
+                .as_ref()
+                .is_some_and(|id| self.execution.take_lost_reply(id))
+        {
+            return Err(StoreFailure::AnswerLost);
+        }
+        Ok(answer)
     }
 }

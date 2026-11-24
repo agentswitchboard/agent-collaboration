@@ -45,6 +45,8 @@ tokio = { workspace = true, features = ["io-std", "fs"] }
 unicode-width.workspace = true
 
 [dev-dependencies]
+switchboard-session-store.workspace = true
+session-event-model = { path = "../session-event-model", version = "0.1.39" }
 router-clock = { workspace = true, features = ["test-support"] }
 owned-process-test-support = { path = "../owned-process-test-support", version = "0.1.126" }
 agent-session-inventory = { version = "0.1.105", path = "../agent-session-inventory", features = ["test-support"] }

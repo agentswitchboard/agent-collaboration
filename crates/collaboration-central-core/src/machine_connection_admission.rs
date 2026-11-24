@@ -1,23 +1,35 @@
 //! The organization turn owns read-only connection admission and restoration.
-use crate::ValidatedMachineConnection;
-use crate::{
-    WorkspaceRuntime,
-    machine_connection::{Admission, validate_live, validate_shape},
-    organization_authority::machine_login::{EnrollmentFacts, EnrollmentQuery},
-};
+use crate::WorkspaceRuntime;
+use central_link_protocol::{MachineLinkCloseCode, TokenRenewalRefusal};
 use central_storage::StoreFailure;
 use fleet_contracts::{
-    LiveMachineConnection, MachineConnectionAttachment, MachineConnectionRefusal,
+    EnrollmentInvalidation, LiveMachineConnection, MachineConnectionAttachment,
+    MachineConnectionRefusal,
 };
-use fleet_identity_protocol::EnrollmentId;
+use fleet_machine_login::{
+    MachineLoginPlan,
+    link_authority::{
+        Admission, LiveAdmission, ValidatedMachineConnection, refuse_authority, validate_shape,
+    },
+    link_transitions::{
+        MachineTokenRenewalRefusal, PreparedLinkAdmission, PreparedLinkRenewal,
+        RenewedMachineConnection,
+    },
+};
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
-use workspace_ids::MachineId;
+use workspace_ids::{MachineId, WorkspaceId};
 
 /// Live authority for one ordinary link request or one member of a write batch.
 pub enum MachineLinkRequestAuthority {
     Admitted(ValidatedMachineConnection),
-    Refused,
+    Refused(MachineLinkCloseCode),
     TemporarilyUnavailable,
+}
+
+pub enum MachineLinkAdmission {
+    Admitted(ValidatedMachineConnection),
+    Refused(MachineConnectionRefusal),
+    Ended(EnrollmentInvalidation),
 }
 
 impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
@@ -25,9 +37,9 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
         &self,
         attachment: &MachineConnectionAttachment,
     ) -> Result<MachineLinkRequestAuthority, StoreFailure> {
-        match self.restore_machine_connection(attachment).await {
+        match self.restore_live_authority(attachment).await {
             Ok(Ok(connection)) => Ok(MachineLinkRequestAuthority::Admitted(connection)),
-            Ok(Err(_)) => Ok(MachineLinkRequestAuthority::Refused),
+            Ok(Err(refused)) => Ok(MachineLinkRequestAuthority::Refused(refused.close)),
             Err(StoreFailure::Unavailable | StoreFailure::AnswerLost) => {
                 Ok(MachineLinkRequestAuthority::TemporarilyUnavailable)
             }
@@ -37,67 +49,77 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
         }
     }
 
+    /// Restore the current attachment while the caller retains the organization's turn.
+    pub async fn restore_machine_in_held_turn(
+        &self,
+        attachment: &MachineConnectionAttachment,
+    ) -> Result<Result<ValidatedMachineConnection, MachineLinkCloseCode>, StoreFailure> {
+        Ok(self
+            .restore_live_authority_held(attachment)
+            .await?
+            .map_err(|refusal| refusal.close))
+    }
+
     pub async fn admit_machine_connection(&self, token: &str) -> Admission {
+        Ok(match self.admit_machine_link(token).await? {
+            MachineLinkAdmission::Admitted(connection) => Ok(connection),
+            MachineLinkAdmission::Refused(reason) => Err(reason),
+            MachineLinkAdmission::Ended(_) => Err(MachineConnectionRefusal::EnrollmentNotActive {}),
+        })
+    }
+
+    pub async fn admit_machine_link(
+        &self,
+        token: &str,
+    ) -> Result<MachineLinkAdmission, StoreFailure> {
         let check = self
             .signin_authority
             .check()
             .ok_or(StoreFailure::Unavailable)?;
         let verified = match check.verify_machine_token(token).await {
             Ok(verified) => verified,
-            Err(crate::machine_token::MachineTokenRefusal::Rejected) => {
-                return Ok(Err(MachineConnectionRefusal::EnrollmentNotActive {}));
+            Err(fleet_signin::machine_token::MachineTokenRefusal::Rejected) => {
+                return Ok(MachineLinkAdmission::Refused(
+                    MachineConnectionRefusal::EnrollmentNotActive {},
+                ));
             }
-            Err(crate::machine_token::MachineTokenRefusal::Unavailable) => {
+            Err(fleet_signin::machine_token::MachineTokenRefusal::Unavailable) => {
                 return Err(StoreFailure::Unavailable);
             }
         };
         let _turn = self.execution.take_central_turn_for_admission().await;
         if verified.organization_id() != self.execution.organization() {
-            return Ok(Err(
+            return Ok(MachineLinkAdmission::Refused(
                 MachineConnectionRefusal::MachineInAnotherOrganization {},
             ));
         }
         let time = self.machine_login_time(verified.organization_id()).await?;
-        let facts = self
-            .connection_facts(verified.machine_id(), verified.enrollment_id())
-            .await?;
-        let attachment = attachment_from_verified(&verified);
-        validate_live(
-            &attachment,
-            self.execution.organization(),
-            &facts,
-            time.now_ms,
-        )
+        match self
+            .machine_login_service()
+            .prepare_link_admission(&verified, time)
+            .await?
+        {
+            PreparedLinkAdmission::Admitted(connection) => {
+                Ok(MachineLinkAdmission::Admitted(connection))
+            }
+            PreparedLinkAdmission::Refused(reason) => Ok(MachineLinkAdmission::Refused(reason)),
+            PreparedLinkAdmission::Ended(ending) => Ok(MachineLinkAdmission::Ended(ending)),
+            PreparedLinkAdmission::EndIdle(plan) => self
+                .commit_idle_expiry(plan)
+                .await
+                .map(MachineLinkAdmission::Ended),
+        }
     }
 
-    /// Renews an open connection's machine token (fleet-access R40/V32, B3):
-    /// "On the open connection, the Router sends the fresh token
-    /// (`RenewMachineToken`), and central answers `renewed` or
-    /// `refused { reason }`." The token is verified exactly as at connect, then
-    /// the enrollment is read live under the central turn. It must name the
-    /// connection's own organization, machine_id, enrollment and client. The
-    /// renewed connection counts until the new token's
-    /// min(exp + 60 s, grant_expires_at), which may extend it; on refusal the
-    /// caller keeps the current connection and its expiry.
-    ///
-    /// A renewal is a frame on the current connection, so it is refused like any
-    /// frame once that connection's effective deadline has passed (no leeway,
-    /// refused at equality) or its enrollment is no longer live, with the same
-    /// EnrollmentNotActive answer on both hosts; the Router reconnects with a
-    /// fresh token. The deadline is checked before the token and again under the
-    /// turn, since verification may wait across it.
+    /// Rechecks both the attached authority and the verified candidate under the organization turn.
     pub async fn renew_machine_connection(
         &self,
-        current: &ValidatedMachineConnection,
+        current: &MachineConnectionAttachment,
         token: &str,
     ) -> Renewal {
         use MachineTokenRenewalRefusal as Refusal;
-        match self
-            .restore_machine_connection(&current.attachment())
-            .await?
-        {
-            Ok(_) => {}
-            Err(_) => return Ok(Err(Refusal::EnrollmentNotActive)),
+        if let Err(refused) = self.restore_live_authority(current).await? {
+            return Ok(Err(Refusal::CurrentAuthorityEnded(refused.close)));
         }
         let check = self
             .signin_authority
@@ -105,59 +127,67 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
             .ok_or(StoreFailure::Unavailable)?;
         let verified = match check.verify_machine_token(token).await {
             Ok(verified) => verified,
-            Err(crate::machine_token::MachineTokenRefusal::Rejected) => {
+            Err(fleet_signin::machine_token::MachineTokenRefusal::Rejected) => {
                 return Ok(Err(Refusal::TokenRejected));
             }
-            Err(crate::machine_token::MachineTokenRefusal::Unavailable) => {
+            Err(fleet_signin::machine_token::MachineTokenRefusal::Unavailable) => {
                 return Err(StoreFailure::Unavailable);
             }
         };
         let _turn = self.execution.take_central_turn_for_admission().await;
-        if verified.organization_id() != current.organization_id()
-            || verified.machine_id() != current.machine_id()
-        {
-            return Ok(Err(Refusal::DifferentMachine));
-        }
-        if verified.enrollment_id() != current.enrollment_id()
-            || verified.client_id() != current.client_id()
-        {
-            return Ok(Err(Refusal::DifferentEnrollment));
-        }
-        let time = self.machine_login_time(verified.organization_id()).await?;
-        if time.now_ms.div_euclid(1000) >= current.effective_expires_at().0 {
-            return Ok(Err(Refusal::EnrollmentNotActive));
-        }
-        let facts = self
-            .connection_facts(verified.machine_id(), verified.enrollment_id())
-            .await?;
-        if facts.machine.is_none() {
-            return Ok(Err(Refusal::EnrollmentNotActive));
-        }
-        let renewed = attachment_from_verified(&verified);
+        #[cfg(feature = "test-support")]
+        self.execution
+            .pause_points()
+            .reached_central(fleet_runtime::PausePoint::BeforeRenewalApplyingSample)
+            .await;
+        let time = self.machine_login_time(current.organization_id()).await?;
         Ok(
-            match validate_live(&renewed, self.execution.organization(), &facts, time.now_ms)? {
-                Ok(connection) => Ok(connection),
-                Err(MachineConnectionRefusal::WrongClient {}) => Err(Refusal::DifferentEnrollment),
-                Err(
-                    MachineConnectionRefusal::UnknownMachine {}
-                    | MachineConnectionRefusal::EnrollmentNotActive {}
-                    | MachineConnectionRefusal::Superseded {}
-                    | MachineConnectionRefusal::MachineInAnotherOrganization {},
-                ) => Err(Refusal::EnrollmentNotActive),
+            match self
+                .machine_login_service()
+                .prepare_link_renewal(current, &verified, time)
+                .await?
+            {
+                PreparedLinkRenewal::Renewed(renewed) => Ok(renewed),
+                PreparedLinkRenewal::Refused(refusal) => Err(refusal),
+                PreparedLinkRenewal::EndIdle(plan) => {
+                    Err(Refusal::IdleEnded(self.commit_idle_expiry(plan).await?))
+                }
             },
         )
+    }
+
+    async fn commit_idle_expiry(
+        &self,
+        plan: MachineLoginPlan<()>,
+    ) -> Result<EnrollmentInvalidation, StoreFailure> {
+        let (_, invalidation) = self.apply_machine_login(plan).await?;
+        #[cfg(feature = "test-support")]
+        self.execution
+            .pause_points()
+            .reached_central(fleet_runtime::PausePoint::AfterIdleExpiryCommit)
+            .await;
+        invalidation.ok_or(StoreFailure::Unavailable)
     }
 
     pub async fn restore_machine_connection(
         &self,
         attachment: &MachineConnectionAttachment,
     ) -> Admission {
+        self.restore_live_authority(attachment)
+            .await
+            .map(|decision| decision.map_err(|refusal| refusal.reason))
+    }
+
+    async fn restore_live_authority(
+        &self,
+        attachment: &MachineConnectionAttachment,
+    ) -> LiveAdmission {
         let _turn = self.execution.take_central_turn_for_admission().await;
         #[cfg(feature = "test-support")]
         if let Some(failure) = self.take_machine_restore_failure() {
             return Err(failure);
         }
-        self.restore_machine_connection_held(attachment).await
+        self.restore_live_authority_held(attachment).await
     }
 
     /// Fail one restore after the specified number of successful fixture restores.
@@ -191,93 +221,99 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
         &self,
         attachment: &MachineConnectionAttachment,
         register: impl FnOnce() -> Value,
-    ) -> Result<Result<Value, MachineConnectionRefusal>, StoreFailure> {
+    ) -> Result<Result<Value, MachineLinkCloseCode>, StoreFailure> {
         let _turn = self.execution.take_central_turn_for_admission().await;
         Ok(self
-            .restore_machine_connection_held(attachment)
+            .restore_live_authority_held(attachment)
             .await?
-            .map(|_| register()))
+            .map(|_| register())
+            .map_err(|refusal| refusal.close))
     }
 
-    /// Caller holds the existing central turn through the decision or effect it admits.
-    pub(crate) async fn restore_machine_connection_held(
+    pub(crate) async fn restore_live_authority_held(
         &self,
         attachment: &MachineConnectionAttachment,
-    ) -> Admission {
+    ) -> LiveAdmission {
         if attachment.organization_id() != self.execution.organization() {
-            return Ok(Err(
+            return refuse_authority(
                 MachineConnectionRefusal::MachineInAnotherOrganization {},
-            ));
+                MachineLinkCloseCode::Inactive,
+            );
         }
         validate_shape(attachment)?;
         let time = self
             .machine_login_time(attachment.organization_id())
             .await?;
-        let facts = self
-            .connection_facts(attachment.machine_id(), attachment.enrollment_id())
-            .await?;
-        validate_live(
-            attachment,
-            self.execution.organization(),
-            &facts,
-            time.now_ms,
-        )
-    }
-
-    async fn connection_facts(
-        &self,
-        machine_id: &MachineId,
-        enrollment: &EnrollmentId,
-    ) -> Result<EnrollmentFacts, StoreFailure> {
-        crate::machine_login_reads::facts(
-            self.execution.statement_host(),
-            self.execution.organization().clone(),
-            &EnrollmentQuery {
-                machine_id: Some(machine_id.clone()),
-                enrollment: Some(enrollment.clone()),
-                ..EnrollmentQuery::default()
-            },
-        )
-        .await
+        self.machine_login_service()
+            .restore_link(attachment, time)
+            .await
     }
 }
 
-/// Why central refused to renew an open connection's machine token.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MachineTokenRenewalRefusal {
-    /// The token failed sign-in verification.
-    TokenRejected,
-    /// Its enrollment is not the machine's active one, or its grant has run out.
-    EnrollmentNotActive,
-    /// It names another organization or machine_id than the connection.
-    DifferentMachine,
-    /// It names another enrollment or client than the connection.
-    DifferentEnrollment,
-}
-
-type Renewal = Result<Result<ValidatedMachineConnection, MachineTokenRenewalRefusal>, StoreFailure>;
+type Renewal = Result<Result<RenewedMachineConnection, MachineTokenRenewalRefusal>, StoreFailure>;
 
 impl<Host: CentralStore, Stores: WorkspaceStores> LiveMachineConnection
     for WorkspaceRuntime<Host, Stores>
 {
+    async fn allows_workspace_held(
+        &self,
+        machine: &MachineId,
+        workspace: &WorkspaceId,
+    ) -> Result<bool, StoreFailure> {
+        self.machine_login_service()
+            .allows_workspace(machine, workspace)
+            .await
+    }
+
     async fn restore_held(
         &self,
         attachment: &MachineConnectionAttachment,
-    ) -> Result<Result<(), MachineConnectionRefusal>, StoreFailure> {
-        self.restore_machine_connection_held(attachment)
+    ) -> Result<Result<(), MachineLinkCloseCode>, StoreFailure> {
+        self.restore_live_authority_held(attachment)
             .await
-            .map(|admission| admission.map(|_| ()))
+            .map(|admission| admission.map(|_| ()).map_err(|refusal| refusal.close))
     }
 }
 
-fn attachment_from_verified(
-    verified: &crate::machine_token::VerifiedMachineToken,
-) -> MachineConnectionAttachment {
-    MachineConnectionAttachment::from_token_claims(
-        verified.organization_id().clone(),
-        verified.machine_id().clone(),
-        verified.enrollment_id().clone(),
-        verified.client_id().clone(),
-        verified.effective_expires_at(),
-    )
+pub enum RenewalTermination {
+    CurrentAuthority(MachineLinkCloseCode),
+    EndEnrollment(EnrollmentInvalidation),
 }
+
+impl RenewalTermination {
+    pub fn cause(&self) -> MachineLinkCloseCode {
+        match self {
+            Self::CurrentAuthority(cause) => *cause,
+            Self::EndEnrollment(invalidation) => invalidation.cause,
+        }
+    }
+}
+
+pub fn project_renewal_refusal(
+    refusal: MachineTokenRenewalRefusal,
+) -> (TokenRenewalRefusal, Option<RenewalTermination>) {
+    use MachineTokenRenewalRefusal as Reason;
+    match refusal {
+        Reason::TokenRejected => (TokenRenewalRefusal::TokenRejected, None),
+        Reason::DifferentMachine => (TokenRenewalRefusal::DifferentMachine, None),
+        Reason::DifferentEnrollment => (TokenRenewalRefusal::DifferentEnrollment, None),
+        Reason::PresentedTokenExpired => (TokenRenewalRefusal::PresentedTokenExpired, None),
+        Reason::CurrentAuthorityEnded(cause) => (
+            match cause {
+                MachineLinkCloseCode::Expired => TokenRenewalRefusal::CentralUnavailable,
+                MachineLinkCloseCode::Inactive | MachineLinkCloseCode::Revoked => {
+                    TokenRenewalRefusal::ConnectionEnrollmentEnded
+                }
+            },
+            Some(RenewalTermination::CurrentAuthority(cause)),
+        ),
+        Reason::IdleEnded(invalidation) => (
+            TokenRenewalRefusal::ConnectionEnrollmentEnded,
+            Some(RenewalTermination::EndEnrollment(invalidation)),
+        ),
+    }
+}
+
+#[cfg(test)]
+#[path = "machine_connection_admission_test.rs"]
+mod tests;

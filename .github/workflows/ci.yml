@@ -384,6 +384,21 @@ jobs:
       - uses: pnpm/action-setup@v4
         with:
           package_json_file: verification/package.json
+      - name: Build the pinned SQLite scan-status shell
+        shell: bash
+        run: |
+          scan_dir="$RUNNER_TEMP/session-sqlite-scan"
+          mkdir -p "$scan_dir"
+          curl --fail --silent --show-error --location --proto '=https' \
+            https://www.sqlite.org/2026/sqlite-amalgamation-3510300.zip \
+            --output "$scan_dir/sqlite.zip"
+          echo "acb1e6f5d832484bf6d32b681e858c38add8b2acdfd42ac5df24b8afb46552b4  $scan_dir/sqlite.zip" | sha256sum --check
+          unzip -q "$scan_dir/sqlite.zip" -d "$scan_dir"
+          cc -O2 -DSQLITE_ENABLE_STMT_SCANSTATUS -DSQLITE_ENABLE_STAT4 \
+            "$scan_dir/sqlite-amalgamation-3510300/shell.c" \
+            "$scan_dir/sqlite-amalgamation-3510300/sqlite3.c" \
+            -lpthread -ldl -lm -o "$scan_dir/sqlite3"
+          echo "SESSION_SQLITE_SCAN_CLI=$scan_dir/sqlite3" >> "$GITHUB_ENV"
       - name: Install TypeScript fixture dependencies
         run: |
           pnpm --dir verification install --frozen-lockfile
@@ -412,6 +427,22 @@ jobs:
       # targets, so fetch target-specific packages even on this Linux runner.
       - name: Fetch dependencies for all targets
         run: cargo fetch --locked
+      - name: Keep Specta out of production dependency graphs
+        if: matrix.shard == 1
+        shell: bash
+        run: |
+          set -eu
+          check_graph() {
+            graph=$(cargo tree --locked --offline --prefix none -e normal,build "$@")
+            if printf '%s\n' "$graph" | grep -E '^specta(-[^ ]+)? v'; then
+              echo "Specta is present in the production graph for $*" >&2
+              return 1
+            fi
+          }
+          check_graph --target aarch64-apple-darwin -p codex-router-cli -p agent-collaboration
+          check_graph -p collaboration-central-tokio --no-default-features
+          check_graph --target wasm32-unknown-unknown -p collaboration-central-cloudflare --no-default-features
+          check_graph --target wasm32-unknown-unknown -p collaboration-central-cloudflare --no-default-features --features link
       - name: Check the central engine native property-test dependency offline
         if: matrix.shard == 1
         run: cargo check --locked --offline -p central-engine-model --tests
@@ -442,6 +473,39 @@ jobs:
           cache-hit: ${{ steps.rust_tools.outputs.cache-hit }}
       - name: Wait for runner disk cleanup
         wait-all:
+      - name: Check Central Sign-in TypeScript wire contracts
+        if: matrix.shard == 1
+        shell: bash
+        run: |
+          set -eu
+          cargo check --locked --offline -p fleet-contracts --features wire-export
+          for wire_test in \
+            signin_wire_export_test::central_signin_types_match_generated_serde_wire \
+            signin_wire_export_test::canonical_signin_fixtures_typecheck_in_typescript \
+            signin_wire_export_test::invalid_signin_fixtures_fail_at_marked_specimens \
+            signin_wire_export_test::signin_wire_numbers_accept_only_safe_integers \
+            signin_wire_export_test::signin_description_codecs_preserve_wire_strings \
+            signin_wire_export_test::canonical_signin_intent_hash_matches_shared_vector \
+            signin_wire_export_test::signin_schema_parity_test::provisioning_and_revocation_wire_contracts \
+            person_request::signed_claims::tests::signed_claims_decode_only_exact_nonnegative_timestamps_and_positive_revisions; do
+            cargo nextest run --locked --offline -p collaboration-central-core --features wire-export \
+              --lib --no-tests fail -E "test(=$wire_test)"
+          done
+      - name: Check approval request TypeScript wire contracts
+        if: matrix.shard == 1
+        run: cargo nextest run --locked --offline -p approval-request-protocol --features wire-export --test integration --no-tests fail -E "test(=typescript_export::approval_typescript_contains_expected_roots_and_matches_generation)"
+      - name: Check Mac call capabilities TypeScript wire contract
+        if: matrix.shard == 1
+        run: cargo nextest run --locked --offline -p central-link-protocol --features wire-export --lib --no-tests fail -E "test(=mac_call_capabilities::typescript_tests::mac_capabilities_typescript_matches_the_serde_wire)"
+      - name: Check Direct Message TypeScript wire contracts
+        if: matrix.shard == 1
+        run: cargo nextest run --locked --offline -p central-link-protocol --features wire-export --lib --no-tests fail -E "test(=link_delivery::message_settlement_typescript_test::message_settlement_typescript_matches_the_serde_wire)"
+      - name: Check session, receipt and approval command authority types
+        if: matrix.shard == 1
+        run: |
+          cargo test --locked -p fleet-actor-identity --doc
+          cargo test --locked -p fleet-mail --doc AdmittedReceipt
+          cargo test --locked -p fleet-signin --doc
       # Compile every test binary once and pack it as a nextest archive, so both
       # shards run the same binaries without contending for Cargo's build lock.
       # Keep each build selection and feature set identical to its run.
@@ -697,6 +761,10 @@ jobs:
           node verification/tooling/check-central-worker-bundle.ts production
           worker-build crates/collaboration-central-cloudflare --profile worker-release --no-opt --out-dir build-link -- --locked --no-default-features --features link
           node verification/tooling/check-central-worker-bundle.ts production --bundle-directory crates/collaboration-central-cloudflare/build-link
+      - name: Reject fixture SQL from the native Central production graph
+        if: matrix.partition == 1
+        run: |
+          node verification/tooling/check-central-native-artifacts.ts "$RUNNER_TEMP"
       # Verification O1 on the Cloudflare host: the storage cases run inside real
       # SQLite-backed Durable Objects under the pinned Miniflare and workerd.
       - name: Install pinned native integration runner

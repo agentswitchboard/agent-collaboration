@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO signin_change_records\n    (id, request_id, kind, origin, actor_person_id, permission_checked, target_id,\n     created_at, updated_at, workspace_id, allowance_state)\nVALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 11
+    },
+    "nullable": []
+  },
+  "hash": "8043f851025c6b5e3c84d3f77cfdbfbaff3b8b2e010233678c3bf4143e8c7cde"
+}

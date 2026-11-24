@@ -79,7 +79,9 @@ impl<Host: fleet_runtime_ports::CentralStore, Stores: fleet_runtime_ports::Works
             )
             .await?
         {
-            return Ok(EngineRequestOutcome::NotPermitted { reason });
+            return Ok(EngineRequestOutcome::NotPermitted {
+                reason: crate::applying_request_failure::probe_refusal(reason)?,
+            });
         }
         let identity = match caller.caller() {
             workspace_model::Caller::Session(session) => workspace_model::Identity::AgentSession {
@@ -92,8 +94,8 @@ impl<Host: fleet_runtime_ports::CentralStore, Stores: fleet_runtime_ports::Works
             }
         };
         let actor = self.access().resolve_identity(&identity).await?;
-        fleet_engine::Engine::new(self)
-            .request_engine::<EngineProbe, _>(
+        fleet_engine::FleetEngine::new(self)
+            .run_machine_request::<EngineProbe, _>(
                 &crate::engine::probe_store::ProbeStore(self),
                 actor,
                 request.request_id,

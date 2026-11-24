@@ -8,20 +8,19 @@ use workspace_model::{
     central_mail::{NoticeItem, NoticeSource},
 };
 
-/// Validate queued notices or plan mailbox writes. The caller owns applying
-/// those writes. The readiness hint from a sourced notice belongs to its
-/// planned INSERT.
-pub trait NoticeMailbox: Sync {
-    /// The caller holds the central turn for the notice planning batch.
-    fn validate_queued_notices_held(&self)
-    -> impl Future<Output = Result<(), StoreFailure>> + Send;
+/// A cancellation in the order the workspace recorded it.
+pub struct NoticeCancellation {
+    pub thread: ThreadId,
+    pub recipient: Option<ActorIdentityId>,
+}
 
-    /// The caller holds the central turn for validation, planning and application.
+/// The caller applies Mail plans under its Central turn.
+pub trait NoticeMailbox: Sync {
+    /// The caller holds the Central turn through the applying batch.
     fn plan_cancel_queued_notices_held<'a>(
         &'a self,
         workspace: &'a WorkspaceId,
-        thread: &'a ThreadId,
-        recipient: Option<&'a ActorIdentityId>,
+        cancellations: &'a [NoticeCancellation],
         now: Timestamp,
     ) -> impl Future<Output = Result<Vec<GuardedStatement>, StoreFailure>> + Send + 'a;
 
@@ -32,5 +31,5 @@ pub trait NoticeMailbox: Sync {
         items: Vec<NoticeItem>,
         source: NoticeSource,
         now: Timestamp,
-    ) -> Result<(GuardedStatement, MailDeliveryReady), StoreFailure>;
+    ) -> Result<(Vec<GuardedStatement>, MailDeliveryReady), StoreFailure>;
 }

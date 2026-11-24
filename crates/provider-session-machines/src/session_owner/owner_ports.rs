@@ -16,17 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub struct OwnerIncarnation(pub Uuid);
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub struct ConnectionEpoch(pub Uuid);
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct OwnerAddress {
-    pub incarnation: OwnerIncarnation,
-    pub connection_epoch: ConnectionEpoch,
-}
+pub use switchboard_harness_contracts::{ConnectionEpoch, OwnerAddress, OwnerIncarnation};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnerMailboxEvent {
@@ -93,12 +83,7 @@ pub struct DispatchAuthorization {
     pub target: AuthorizationTarget,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub enum AuthorizationTarget {
-    NewTurn,
-    ExistingTurn { turn: TurnId },
-    Session,
-}
+pub use switchboard_harness_contracts::AuthorizationTarget;
 
 impl DispatchAuthorization {
     /// Check the route under the same transport lock as identity comparison
@@ -247,11 +232,7 @@ pub enum DispatchResult {
     },
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct PendingTurnResponse {
-    pub method: &'static str,
-    pub request_id: String,
-}
+pub use switchboard_harness_contracts::PendingTurnResponse;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CancelDrainReport {
@@ -264,26 +245,7 @@ impl CancelDrainReport {
         "cancel sent; some pending approval replies may reach the harness after it";
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TurnMembership {
-    Provisional {
-        run: SessionGeneration,
-        turn: TurnId,
-    },
-    ObservedEligible {
-        run: SessionGeneration,
-        turn: TurnId,
-    },
-    RemoveOnRevoke {
-        run: SessionGeneration,
-        turn: TurnId,
-    },
-    End {
-        run: SessionGeneration,
-        turn: TurnId,
-    },
-    Retire(SessionGeneration),
-}
+pub use switchboard_harness_contracts::TurnMembership;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RoutedTool {
@@ -344,15 +306,7 @@ pub struct InitialSettingFailure {
     pub confirmed_current: bool,
 }
 
-/// Explains how the provider's confirmed mode relates to requested Auto.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PermissionModeReason {
-    AutoNotOffered,
-    AgentFellBack,
-    AutoNotRealized,
-    EscalationUnproven,
-    AutoNotApplied,
-}
+pub use switchboard_harness_contracts::PermissionModeReason;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SettingReadback {
@@ -516,28 +470,7 @@ impl ProviderWireFailure {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ObservedSetting {
-    Confirmed(SettingValueId),
-    LastConfirmed(SettingValueId),
-    Unknown,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ObservationCause {
-    NotOffered,
-    Refused,
-    NoAnswer,
-    Unconfirmed,
-    ReportedOther,
-    FellBack,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SettingEvidence {
-    pub value: ObservedSetting,
-    pub cause: Option<ObservationCause>,
-}
+pub use switchboard_harness_contracts::{ObservationCause, ObservedSetting, SettingEvidence};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RestoreDisposition {

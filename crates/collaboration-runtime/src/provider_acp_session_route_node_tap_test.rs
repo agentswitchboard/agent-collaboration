@@ -28,7 +28,8 @@ use tokio::{
 };
 
 use super::ProviderAcpSessionRoute;
-use crate::{ProviderOperationStore, ProviderSessionEventHub};
+use switchboard_session_events::ProviderSessionEventHub;
+use switchboard_session_store::ProviderOperationStore;
 
 const N9: ProtocolNode = ProtocolNode::N9ProviderAcpRoute;
 const ACP_CLIENT: EdgeParty = EdgeParty::McpCaller;
@@ -154,7 +155,7 @@ impl RouteHarness {
         let owner: collaboration_protocol::ProviderIdentity =
             serde_json::from_value(json!({"humanId":"owner"})).expect("owner");
         store
-            .record_session(&crate::ProviderSessionRecord {
+            .record_session(&switchboard_session_store::ProviderSessionRecord {
                 target: serde_json::from_value(serde_json::to_value(&session).expect("target"))
                     .expect("target"),
                 working_directory: root.path().display().to_string().try_into().expect("cwd"),
@@ -168,9 +169,11 @@ impl RouteHarness {
             })
             .await
             .expect("inventory");
-        let hub = Arc::new(ProviderSessionEventHub::new(Arc::new(AsyncMutex::new(
-            store,
-        ))));
+        let clock = Arc::new(router_clock::ManualClock::new(chrono::DateTime::UNIX_EPOCH));
+        let hub = Arc::new(ProviderSessionEventHub::new(
+            Arc::new(AsyncMutex::new(store)),
+            clock.clone(),
+        ));
         for event in [
             SessionEvent::CapabilitiesChanged {
                 capabilities: CapabilityReport::default(),
@@ -194,7 +197,7 @@ impl RouteHarness {
             session.endpoint.clone(),
             Arc::clone(&commands) as Arc<dyn SessionCommandPort>,
             Arc::clone(&hub) as Arc<dyn SessionEventHub>,
-            Arc::new(router_clock::ManualClock::new(chrono::DateTime::UNIX_EPOCH)),
+            clock,
         );
         tokio::spawn(Box::new(route).run(
             router,
@@ -202,6 +205,7 @@ impl RouteHarness {
                 actor: Some(actor),
                 client_profile: None,
                 client_supports_elicitation_form: false,
+                frontend_close: Default::default(),
             },
         ));
         let (read, write) = tokio::io::split(client);

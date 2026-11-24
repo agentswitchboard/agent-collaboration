@@ -38,12 +38,12 @@ use collaboration_protocol::{
     ProviderOperationEffect, SessionReachability, SessionRef, UuidIdentity,
 };
 use collaboration_runtime::EndpointDirectory;
-use collaboration_runtime::ProviderOperationStore;
 use provider_session_machines::{
     session_lifecycle_answers::state_answer, session_owner::RevokeReason,
     session_refusal_answers::settings_hold_answer, session_setting_machine::UnresolvedCause,
 };
 use std::{collections::HashSet, sync::Arc};
+use switchboard_session_store::ProviderOperationStore;
 use tokio::sync::Mutex;
 
 pub struct ProviderAcpDeliveryRoute {

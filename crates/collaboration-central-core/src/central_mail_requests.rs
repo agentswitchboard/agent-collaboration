@@ -1,6 +1,7 @@
 //! Central-only admitted request ledger; cached answers precede mutable decisions.
-use crate::WorkspaceCaller;
+use crate::{ApplyingRequestFailure, WorkspaceCaller, applying_request_failure::applying_refusal};
 use crate::{WorkspaceRuntime, central_statement_values, engine::query_registry::alarm_update};
+use central_link_protocol::ReplyPayload;
 use central_storage::{BatchOutcome, StatementBatch, StoreFailure};
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
 use fleet_runtime_ports::{
@@ -15,15 +16,29 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         caller: &WorkspaceCaller,
         request: mail::CentralMailRequest,
     ) -> Result<mail::CentralMailResult, StoreFailure> {
+        match self.request_central_with_authority(caller, request).await {
+            Ok(reply) => Ok(reply),
+            Err(ApplyingRequestFailure::Authority(cause)) => {
+                Ok(ReplyPayload::mail_authority_refused(cause))
+            }
+            Err(ApplyingRequestFailure::Store(error)) => Err(error),
+        }
+    }
+
+    pub async fn request_central_with_authority(
+        &self,
+        caller: &WorkspaceCaller,
+        request: mail::CentralMailRequest,
+    ) -> Result<mail::CentralMailResult, ApplyingRequestFailure> {
         // The request path answers as on main; the due batch that follows checks
         // the organization stamp once for this event before any unit (P3).
         let result = self.execute_central(caller, request).await;
         // Due work and publication cannot replace this event's durable answer.
         let _ = self.after_event().await;
         match result {
-            Err(StoreFailure::Unavailable | StoreFailure::AnswerLost) => {
-                Ok(mail::CentralMailResult::CentralUnavailable)
-            }
+            Err(ApplyingRequestFailure::Store(
+                StoreFailure::Unavailable | StoreFailure::AnswerLost,
+            )) => Ok(mail::CentralMailResult::CentralUnavailable),
             result => result,
         }
     }
@@ -31,7 +46,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         &self,
         caller: &WorkspaceCaller,
         request: mail::CentralMailRequest,
-    ) -> Result<mail::CentralMailResult, StoreFailure> {
+    ) -> Result<mail::CentralMailResult, ApplyingRequestFailure> {
         use mail::{CentralMailRefusal as Refusal, CentralMailResult as Result};
         let _turn = self.execution.take_central_turn().await;
         if let Err(reason) = self
@@ -44,7 +59,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             )
             .await?
         {
-            return Ok(Result::Refused(Refusal::Workspace(reason)));
+            return applying_refusal(reason, |reason| Result::Refused(Refusal::Workspace(reason)));
         }
         let identity = match caller.caller() {
             m::Caller::Session(session) => m::Identity::AgentSession {
@@ -57,11 +72,18 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         let digest = fleet_runtime::workspace_request_log::digest(&request.operation)?;
         let now = self.execution.now()?;
         let cutoff = (now - chrono::Duration::hours(24)).to_rfc3339();
+        if matches!(
+            &request.operation,
+            mail::CentralMailOperation::SendMessage { .. }
+        ) {
+            return Ok(self
+                .execute_direct_send(identity, request, now, digest)
+                .await?);
+        }
         let rows = self
             .execution
             .statement_host()
-            .read(fleet_runtime::workspace_request_log::lookup(
-                fleet_runtime::workspace_request_log::RequestLogStore::Organization,
+            .read(fleet_request_log::lookup_organization_request(
                 &request.request_id,
                 &cutoff,
             ))
@@ -80,7 +102,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
                 answer,
                 Result::Conflict | Result::OutcomeUnknown | Result::CentralUnavailable
             ) {
-                return Err(corrupt("runtime_request_log.answer"));
+                return Err(corrupt("runtime_request_log.answer").into());
             }
             // A committed request may have lost its alarm publication before its reply.
             let repair = async {
@@ -103,69 +125,44 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
                 Err(
                     error
                     @ (StoreFailure::Corrupt { .. } | StoreFailure::AlarmUnpublishable { .. }),
-                ) => return Err(error),
+                ) => return Err(error.into()),
             }
             return Ok(answer);
         }
-        if let Some(reason) = crate::central_mail_time::refusal(&request.operation, now) {
-            return Ok(Result::Refused(reason));
-        }
-        let actor = self.access().resolve_identity(&identity).await?;
-        let mut delivery_ready = None;
-        let decision =
-            if let mail::CentralMailOperation::SetNoticeCadence { cadence } = &request.operation {
-                if !matches!(caller.caller(), m::Caller::Session(_)) {
-                    Err(Refusal::NotSession)
-                } else {
-                    let statements = fleet_notices::plan_notice_cadence_held(
-                        self.execution.statement_host(),
-                        &actor,
-                        *cadence,
-                        now,
-                    )
-                    .await?;
-                    Ok((
-                        statements,
-                        mail::CentralMailAnswer::NoticeCadenceSet { cadence: *cadence },
-                    ))
-                }
-            } else if let mail::CentralMailOperation::SendMessage {
-                to,
-                body,
-                delivery,
-                reply_to,
-                sent_at,
-            } = &request.operation
-            {
-                if !self.known_session(to).await? {
-                    Err(Refusal::UnknownSession { target: to.clone() })
-                } else {
-                    let plan = fleet_mail::plan_direct_send(
-                        &request.request_id,
-                        actor.clone(),
-                        mail::SendMessageRequest {
-                            to: to.clone(),
-                            body: body.clone(),
-                            delivery: *delivery,
-                            reply_to: reply_to.clone(),
-                        },
-                        *sent_at,
-                        now,
-                        || self.execution.mint(),
-                    )?;
-                    delivery_ready = Some(plan.delivery_ready);
-                    Ok((vec![plan.insert], plan.answer))
-                }
-            } else {
-                self.plan_timer_request(&request.operation, now).await?
+        let fresh_wake =
+            match crate::central_mail_time::decode_fresh_request(&request.operation, now) {
+                Ok(command) => command,
+                Err(reason) => return Ok(Result::Refused(reason)),
             };
+        let actor = self.access().resolve_identity(&identity).await?;
+        let decision = if let Some(command) = fresh_wake {
+            self.plan_fresh_wake(command).await?
+        } else if let mail::CentralMailOperation::SetNoticeCadence { cadence } = &request.operation
+        {
+            if !matches!(caller.caller(), m::Caller::Session(_)) {
+                Err(Refusal::NotSession)
+            } else {
+                let statements = fleet_notices::plan_notice_cadence_held(
+                    self.execution.statement_host(),
+                    &actor,
+                    *cadence,
+                    now,
+                )
+                .await?;
+                Ok((
+                    statements,
+                    mail::CentralMailAnswer::NoticeCadenceSet { cadence: *cadence },
+                ))
+            }
+        } else {
+            self.plan_timer_request(&request.operation, now).await?
+        };
         let (mut statements, answer) = match decision {
             Ok((statements, answer)) => (statements, Result::Done(answer)),
             Err(reason) => (vec![], Result::Refused(reason)),
         };
 
-        statements.extend(fleet_runtime::workspace_request_log::retain(
-            fleet_runtime::workspace_request_log::RequestLogStore::Organization,
+        statements.extend(fleet_request_log::retain_organization_request(
             &request.request_id,
             &actor,
             &digest,
@@ -173,6 +170,16 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             &now.to_rfc3339(),
             &cutoff,
         )?);
+        #[cfg(feature = "test-support")]
+        if matches!(
+            &answer,
+            Result::Done(mail::CentralMailAnswer::WakeSet { .. })
+        ) {
+            self.execution
+                .pause_points()
+                .reached_central(fleet_runtime::PausePoint::BeforeWakeRequestCommit)
+                .await;
+        }
         match self
             .execution
             .statement_host()
@@ -188,10 +195,12 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             Ok(_) => return Ok(Result::Conflict),
             Err(StoreFailure::AnswerLost) => return Ok(Result::OutcomeUnknown),
             Err(StoreFailure::Unavailable) => return Ok(Result::CentralUnavailable),
-            Err(error) => return Err(error),
+            Err(error) => return Err(error.into()),
         }
-        if let Some(delivery) = delivery_ready {
-            (self.mail_delivery_ready)(delivery);
+        drop(_turn);
+        if let Result::Done(mail::CentralMailAnswer::WakeSet { wake_id, due_at }) = &answer {
+            // The committed receipt stands even if the guarded due transition needs recovery.
+            let _ = self.fire_committed_overdue_wake(wake_id, *due_at).await;
         }
         #[cfg(feature = "test-support")]
         if self.execution.take_lost_reply(&request.request_id) {

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM engine_due_entries\nWHERE work_kind = ?1 AND entry_role = 'item' AND subject_key = ?2\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "ad37e8ed9718c2651733f891f3b92505e21997814808eaadf5cf47ffa45709ed"
+}

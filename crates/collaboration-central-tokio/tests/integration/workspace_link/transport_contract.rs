@@ -1,15 +1,20 @@
 //! Real links retain each connection's grant, correlate concurrent calls and replay writes.
-use super::fixture::{Fixture, INSTALLATION, send};
+use super::fixture::{Fixture, INSTALLATION, receive, send, start_fixture};
 use super::link_support::{
     caller, connect_client, correlation, create_workspace, created_workspace, workspace_reply,
 };
-use central_link_protocol::RequestPayload;
+use central_link_protocol::{
+    CorrelationId, DataFrame, LinkFrame, ReplyPayload, RequestPayload, RequestScope,
+    RequestStatusAnswer, RequestStatusQuery,
+};
 use central_storage::{
     AlarmUpdate, BatchOutcome, GuardedStatement, RowExpectation, SqlValue, Statement,
     StatementBatch,
 };
+use collaboration_central_conformance::fixture_link_reader::read_fixture_frame;
 use collaboration_central_conformance::{ConformanceResult as Result, signin_fixtures as signed};
 use collaboration_central_tokio::ObjectStorage;
+use reqwest_websocket::{CloseCode, Message};
 use serde_json::json;
 use std::{collections::BTreeMap, sync::Arc};
 use workspace_model::{ItemRef, WorkspaceAnswer, WorkspaceId, WorkspaceResult};
@@ -30,8 +35,8 @@ fn workspace_store(fixture: &Fixture, workspace: &WorkspaceId) -> ObjectStorage 
 )]
 #[tokio::test]
 async fn two_in_flight_requests_keep_distinct_correlations_and_payloads() -> Result<()> {
-    let fixture = Fixture::new().await?;
-    let (mut client, attempt, mut socket) = connect_client(&fixture, &fixture.token).await?;
+    let fixture = start_fixture().await?;
+    let (mut client, attempt, mut socket, _) = connect_client(&fixture, &fixture.token).await?;
     let first = client.begin_request(
         caller()?,
         create_workspace("019f0000-0000-7000-8000-00000000d201", "First outstanding")?,
@@ -95,8 +100,8 @@ async fn two_in_flight_requests_keep_distinct_correlations_and_payloads() -> Res
 #[tokio::test]
 async fn lost_reply_after_commit_replays_one_durable_write_on_a_new_correlation() -> Result<()> {
     // Arrange: create a real workspace and establish its explicit allowance precondition.
-    let fixture = Fixture::new().await?;
-    let (mut client, attempt, mut socket) = connect_client(&fixture, &fixture.token).await?;
+    let fixture = start_fixture().await?;
+    let (mut client, attempt, mut socket, _) = connect_client(&fixture, &fixture.token).await?;
     let create = client.begin_request(
         caller()?,
         create_workspace(
@@ -117,7 +122,7 @@ async fn lost_reply_after_commit_replays_one_durable_write_on_a_new_correlation(
         .run_batch(StatementBatch {
             statements: vec![GuardedStatement {
                 statement: Statement {
-                    sql: "UPDATE login_machines SET allowed_workspaces=? WHERE machine_id=?",
+                    sql: collaboration_central_conformance::REPLACE_FIXTURE_ALLOWANCES_SQL,
                     args: vec![
                         SqlValue::Text(serde_json::to_string(&vec![
                             workspace.workspace_id.clone(),
@@ -210,9 +215,107 @@ async fn lost_reply_after_commit_replays_one_durable_write_on_a_new_correlation(
             .await?,
         committed
     );
-    store.close().await;
-    socket
-        .close(reqwest_websocket::CloseCode::Normal, None)
+    let status_correlation: CorrelationId = "019f0000-0000-7000-8000-00000000d303".parse()?;
+    let query = RequestStatusQuery {
+        request_id: write_id.parse()?,
+        scope: RequestScope::Workspace(workspace.workspace_id.clone()),
+    };
+    send(
+        &mut socket,
+        &LinkFrame::Data(DataFrame::RequestStatus {
+            correlation_id: status_correlation.clone(),
+            caller: caller()?,
+            query: query.clone(),
+        }),
+    )
+    .await?;
+    assert_eq!(
+        receive(&mut socket).await?,
+        LinkFrame::Data(DataFrame::RequestStatusReply {
+            correlation_id: status_correlation,
+            result: Box::new(RequestStatusAnswer::Answered(ReplyPayload::Workspace(
+                replay
+            ))),
+        })
+    );
+    use collaboration_central_conformance::machine_link_boundary::{
+        expect_pong, oversized_retained_refusal, retained_answer_read,
+    };
+    let (refusal, seed) = oversized_retained_refusal(&query.request_id)?;
+    assert!(matches!(
+        store.run_batch(seed).await?,
+        BatchOutcome::Applied { .. }
+    ));
+    for ordinal in [0xd306_u32, 0xd307] {
+        let correlation_id: CorrelationId =
+            format!("019f0000-0000-7000-8000-{ordinal:012x}").parse()?;
+        if ordinal == 0xd306 {
+            fixture
+                .host
+                .central(&fixture.organization_id)
+                .await?
+                .fail_machine_restore_after(0, central_storage::StoreFailure::Unavailable);
+        }
+        send(
+            &mut socket,
+            &LinkFrame::Data(DataFrame::RequestStatus {
+                correlation_id: correlation_id.clone(),
+                caller: caller()?,
+                query: query.clone(),
+            }),
+        )
         .await?;
+        assert_eq!(
+            receive(&mut socket).await?,
+            LinkFrame::Data(DataFrame::RequestStatusReply {
+                correlation_id,
+                result: Box::new(RequestStatusAnswer::CentralUnavailable {}),
+            })
+        );
+    }
+    expect_pong(&mut socket).await?;
+    assert_eq!(
+        store
+            .read(retained_answer_read(&query.request_id))
+            .await?
+            .rows,
+        vec![vec![SqlValue::Text(refusal)]],
+    );
+    let altered = store
+        .run_batch(StatementBatch {
+            statements: vec![GuardedStatement {
+                statement: Statement {
+                    sql: "UPDATE workspace_request_log SET caller=?, answer=? WHERE request_id=?",
+                    args: vec![
+                        SqlValue::Text("019f0000-0000-7000-8000-00000000d305".into()),
+                        SqlValue::Blob(vec![255]),
+                        SqlValue::Text(write_id.into()),
+                    ],
+                },
+                expect: RowExpectation::Exactly(1),
+            }],
+            alarm: AlarmUpdate::Unchanged,
+        })
+        .await?;
+    assert!(matches!(altered, BatchOutcome::Applied { .. }));
+    send(
+        &mut socket,
+        &LinkFrame::Data(DataFrame::RequestStatus {
+            correlation_id: "019f0000-0000-7000-8000-00000000d304".parse()?,
+            caller: caller()?,
+            query,
+        }),
+    )
+    .await?;
+    let closed = read_fixture_frame(&mut socket, "link close").await?;
+    assert!(
+        matches!(
+            &closed,
+            Some(Ok(Message::Close { code: CloseCode::Error, reason }))
+                if reason == "central unavailable"
+        ),
+        "the damaged receipt must close the native link: {closed:?}"
+    );
+    store.close().await;
     fixture.close().await
 }

@@ -6,10 +6,6 @@ use collaboration_protocol::{
     ConversationBindingIdentity, OperationId, ProviderOperationEffect, ProviderOperationKind,
     ProviderOperationStage, ProviderPromptStopReason, ProviderReconciliationState, SessionRef,
 };
-use collaboration_runtime::{
-    ProviderOperationAdmission, ProviderOperationRecord, ProviderOperationStore,
-    ProviderOperationStoreError, ProviderSessionRecord,
-};
 use provider_session_machines::session_owner::{OwnerIncarnation, OwnerInput};
 use router_clock::{ClockInstant, RuntimeClock};
 use session_event_model::InputId;
@@ -17,6 +13,10 @@ use std::{
     collections::{BTreeMap, VecDeque},
     sync::{Arc, Mutex, MutexGuard},
     time::Duration,
+};
+use switchboard_session_store::{
+    ProviderOperationAdmission, ProviderOperationRecord, ProviderOperationStore,
+    ProviderOperationStoreError, ProviderSessionRecord,
 };
 use tokio::sync::{Mutex as AsyncMutex, Notify, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -147,7 +147,7 @@ struct LaneQueue {
     target: SessionRef,
     binding: Arc<std::sync::OnceLock<Arc<BindingUncertainty>>>,
     ready: Notify,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     mark_accepted: Notify,
     clock: Arc<dyn RuntimeClock>,
 }
@@ -256,7 +256,7 @@ impl SessionStoreLane {
                 target: target.clone(),
                 binding,
                 ready: Notify::new(),
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(test)]
                 mark_accepted: Notify::new(),
                 clock,
             }),
@@ -386,7 +386,7 @@ impl SessionStoreLane {
                     attempt: entry.dispatch.as_ref().map(LaneDispatchWrite::attempt),
                 },
             );
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(test)]
             self.inner.mark_accepted.notify_waiters();
             if let Some(QueuedAdmission {
                 owner: waiting_owner,
@@ -470,7 +470,7 @@ impl SessionStoreLane {
         }
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub(crate) async fn wait_for_accepted_mark(&self, operation: &OperationId) {
         loop {
             let accepted = self.inner.mark_accepted.notified();

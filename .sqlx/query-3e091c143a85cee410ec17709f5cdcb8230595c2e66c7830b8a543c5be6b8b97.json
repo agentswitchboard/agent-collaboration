@@ -1,0 +1,182 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT message_id AS \"message_id!: String\", sender, message_kind, state, failure_reason, cancel_due_at,\n       sender_request_id, created_at, updated_at, target_machine_id, delivery_window_ends_at,\n       delivered_arrived_at, seen_completed_at, deadline_settled_at\nFROM mail_messages WHERE message_id=?\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "message_id!: String",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mail_messages",
+            "name": "message_id"
+          }
+        }
+      },
+      {
+        "name": "sender",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mail_messages",
+            "name": "sender"
+          }
+        }
+      },
+      {
+        "name": "message_kind",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mail_messages",
+            "name": "message_kind"
+          }
+        }
+      },
+      {
+        "name": "state",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mail_messages",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "name": "failure_reason",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mail_messages",
+            "name": "failure_reason"
+          }
+        }
+      },
+      {
+        "name": "cancel_due_at",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mail_messages",
+            "name": "cancel_due_at"
+          }
+        }
+      },
+      {
+        "name": "sender_request_id",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mail_messages",
+            "name": "sender_request_id"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 7,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mail_messages",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 8,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mail_messages",
+            "name": "updated_at"
+          }
+        }
+      },
+      {
+        "name": "target_machine_id",
+        "ordinal": 9,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mail_messages",
+            "name": "target_machine_id"
+          }
+        }
+      },
+      {
+        "name": "delivery_window_ends_at",
+        "ordinal": 10,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mail_messages",
+            "name": "delivery_window_ends_at"
+          }
+        }
+      },
+      {
+        "name": "delivered_arrived_at",
+        "ordinal": 11,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mail_messages",
+            "name": "delivered_arrived_at"
+          }
+        }
+      },
+      {
+        "name": "seen_completed_at",
+        "ordinal": 12,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mail_messages",
+            "name": "seen_completed_at"
+          }
+        }
+      },
+      {
+        "name": "deadline_settled_at",
+        "ordinal": 13,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mail_messages",
+            "name": "deadline_settled_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "3e091c143a85cee410ec17709f5cdcb8230595c2e66c7830b8a543c5be6b8b97"
+}

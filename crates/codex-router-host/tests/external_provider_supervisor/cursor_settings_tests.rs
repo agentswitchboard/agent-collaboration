@@ -5,6 +5,7 @@ use super::*;
 #[tokio::test]
 async fn cursor_effort_setting_reports_adjusted_catalog_without_public_api_expansion() -> TestResult
 {
+    let fixture_clock = crate::provider_test_clock();
     let root = tempfile::tempdir()?;
     let receipt = root.path().join("wire.json");
     let provider_endpoint = endpoint("cursor-local")?;
@@ -30,11 +31,13 @@ async fn cursor_effort_setting_reports_adjusted_catalog_without_public_api_expan
         "fixture",
         "http://127.0.0.1:1/mcp",
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        fixture_clock.clone(),
     )
     .await?;
     let backend = supervisor(
         &root,
         vec![(binding(provider_endpoint.clone(), "cursor")?, runtime)],
+        fixture_clock.clone(),
     )
     .await?;
     let operation_id = OperationId::generate();
@@ -153,6 +156,7 @@ impl ReactiveCursor {
 
     /// A Host over an existing root, as after a restart.
     async fn start_in(root: tempfile::TempDir, behaviours: &[&str]) -> TestResult<Self> {
+        let fixture_clock = crate::provider_test_clock();
         // Each Host start gets its own receipt, so a restart doesn't overwrite it.
         static STARTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let start = STARTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -164,11 +168,16 @@ impl ReactiveCursor {
         let runtime = ExternalProviderRuntime::initialize(
             launch("cursor-settings-agent.ts", arguments),
             std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+            fixture_clock.clone(),
         )
         .await?;
         let endpoint = endpoint("cursor-local")?;
-        let backend =
-            supervisor(&root, vec![(binding(endpoint.clone(), "cursor")?, runtime)]).await?;
+        let backend = supervisor(
+            &root,
+            vec![(binding(endpoint.clone(), "cursor")?, runtime)],
+            fixture_clock.clone(),
+        )
+        .await?;
         Ok(Self {
             creator: actor(endpoint.clone(), "creator")?,
             root,

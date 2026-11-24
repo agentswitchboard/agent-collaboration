@@ -1,17 +1,11 @@
-//! When central cancels a direct message nobody delivered (owner, 2026-11-17,
-//! record:358 and the delivery design): one 15 minutes, counted from when the
-//! agent sent it. The cancel is a due item on the 5-minute grid, run at the
-//! first mark at least 2 minutes after the 15 minutes end, so an Ack riding
-//! the recipient's minute flush (up to ~63 s) and a due batch running up to
-//! 50 s early can never report a delivered message as cancelled.
+//! A direct send keeps a 15-minute delivery window, clamped at Central admission.
+//! Deadline settlement is due on the first grid mark at or after cutoff.
 use chrono::{DateTime, Duration, Utc};
 
 /// The one delivery window, from when the agent sent the message.
 pub(crate) const DELIVERY_WINDOW: Duration = Duration::minutes(15);
 const SYSTEM_MESSAGE_DELIVERY_WINDOW: Duration = Duration::hours(24);
 pub(crate) const EXPIRED_24_HOURS: &str = "expired24Hours";
-/// Room for the recipient's Ack before the cancel runs.
-pub(crate) const ACK_MARGIN: Duration = Duration::minutes(2);
 /// Due items run on this grid, like wakes.
 const DUE_GRID_SECONDS: u32 = 5 * 60;
 
@@ -21,22 +15,33 @@ pub(crate) fn system_message_deadline(created_at: DateTime<Utc>) -> Option<DateT
     central_engine_model::aligned_at_or_after(earliest, DUE_GRID_SECONDS)
 }
 
-/// The cancel's 5-minute mark for a direct message the agent sent at
-/// `sent_at` (the Mac's clock) and central accepted at `accepted_at`.
-/// `sent_at` is clamped into [accepted − 15 min, accepted]: a fast Mac clock
-/// cannot stretch the window, and anything older the Mac has already
-/// cancelled. Add 15 minutes and the 2-minute margin, then round up to the
-/// next 5-minute mark (a time already on a mark stays).
-#[must_use]
-pub fn cancel_due_at(sent_at: DateTime<Utc>, accepted_at: DateTime<Utc>) -> DateTime<Utc> {
-    round_up_to_grid(delivery_window_ends_at(sent_at, accepted_at) + ACK_MARGIN)
+/// Return the stored receipt mark for a direct send.
+/// A sender clock ahead of Central cannot extend the delivery window. A send
+/// already at its cutoff is admitted with zero time left. The mark is the first
+/// grid point at or after cutoff.
+pub fn direct_receipt_mark(
+    sent_at: DateTime<Utc>,
+    accepted_at: DateTime<Utc>,
+) -> Option<DateTime<Utc>> {
+    direct_deadline_occurrence(delivery_window_ends_at(sent_at, accepted_at)?)
+}
+
+pub(crate) fn direct_deadline_occurrence(cutoff: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    central_engine_model::aligned_at_or_after(cutoff, DUE_GRID_SECONDS)
 }
 
 pub(crate) fn delivery_window_ends_at(
     sent_at: DateTime<Utc>,
     accepted_at: DateTime<Utc>,
-) -> DateTime<Utc> {
-    sent_at.clamp(accepted_at - DELIVERY_WINDOW, accepted_at) + DELIVERY_WINDOW
+) -> Option<DateTime<Utc>> {
+    let earliest_send = accepted_at.checked_sub_signed(DELIVERY_WINDOW)?;
+    let cutoff = sent_at
+        .clamp(earliest_send, accepted_at)
+        .checked_add_signed(DELIVERY_WINDOW)?;
+    // Central stores millisecond timestamps. Round up once so fractional
+    // wire timestamps cannot bring the deadline forward or skip a mark.
+    let round_up = i64::from(cutoff.timestamp_subsec_nanos() % 1_000_000 != 0);
+    DateTime::from_timestamp_millis(cutoff.timestamp_millis().checked_add(round_up)?)
 }
 
 /// Whether the message's delivery window has run out at `now`: central never
@@ -48,19 +53,7 @@ fn delivery_window_open(
     accepted_at: DateTime<Utc>,
     now: DateTime<Utc>,
 ) -> bool {
-    now < delivery_window_ends_at(sent_at, accepted_at)
-}
-
-fn round_up_to_grid(at: DateTime<Utc>) -> DateTime<Utc> {
-    let millis = at.timestamp_millis();
-    let grid = i64::from(DUE_GRID_SECONDS) * 1000;
-    let rounded = millis.div_euclid(grid) * grid
-        + if millis.rem_euclid(grid) == 0 {
-            0
-        } else {
-            grid
-        };
-    DateTime::from_timestamp_millis(rounded).unwrap_or(at)
+    delivery_window_ends_at(sent_at, accepted_at).is_some_and(|cutoff| now < cutoff)
 }
 
 #[cfg(test)]

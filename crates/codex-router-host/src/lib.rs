@@ -25,10 +25,15 @@ mod explicit_app_server_restart;
 mod explicit_router_restart;
 mod external_provider_runtime;
 mod provider_acp_delivery_route;
+#[cfg(test)]
+#[path = "provider_acp_restore_seam_test.rs"]
+mod provider_acp_restore_seam_tests;
 mod provider_acp_route_claim;
 mod provider_queue_operation_registry;
 mod provider_session_command_port;
 mod provider_session_setup;
+#[cfg(any(test, feature = "test-support"))]
+pub mod provider_test_support;
 mod provider_work_roots;
 pub mod session_close_evidence;
 pub mod session_owner_calls;
@@ -36,7 +41,8 @@ mod session_owner_delivery_evidence;
 pub mod session_owner_door;
 pub mod session_owner_execution;
 mod session_owner_ingress;
-#[cfg(test)]
+mod session_owner_notice;
+#[cfg(any(test, feature = "test-support"))]
 mod session_owner_preparation_fixture;
 pub mod session_owner_publication;
 pub mod session_owner_registry;
@@ -46,6 +52,7 @@ pub use provider_queue_operation_registry::{ProviderQueueCancellationError, Prov
 pub use provider_session_command_port::HostSessionCommandPort;
 mod provider_cache_warm;
 mod provider_model_catalog;
+mod provider_model_catalog_adapter;
 pub use provider_acp_delivery_route::{
     ProviderAcpDeliveryRoute, ProviderCancelActiveTurnError, ProviderPromptContentsError,
     ProviderQueueAdmissionError, ProviderSteerContentsError,
@@ -59,7 +66,8 @@ pub use external_provider_runtime::{
 };
 mod external_provider_supervisor;
 pub use external_provider_supervisor::{
-    ExternalProviderBinding, ExternalProviderSupervisor, ProviderPromptContentsRequest,
+    ExternalProviderBinding, ExternalProviderSupervisor, ManagedClaudeNoticeAdapter,
+    ProviderPromptContentsRequest,
 };
 mod global_claude_executable;
 mod host_configuration;
@@ -100,6 +108,9 @@ pub type ProviderSteeringOutcome = acp_client_runtime::ProviderSteeringOutcome<
     collaboration_protocol::OperationId,
     external_provider_approval_context::ExternalProviderApprovalContext,
 >;
+mod recipient_codex_inventory;
+pub mod recipient_session_inventory;
+mod recipient_terminal_inventory;
 mod router_compatibility;
 mod router_executable_observation;
 mod session_message_route_composition;
@@ -177,6 +188,8 @@ pub use owned_router::RouterShutdownError;
 pub use owned_router::RouterShutdownOutcome;
 pub use process_group_child::ChildCommandSpec;
 pub use process_group_child::ChildOutput;
+#[cfg(feature = "test-support")]
+pub use process_group_child::ChildProcessObservation;
 pub use process_group_child::ProcessGroupChild;
 pub use process_group_child::ProcessGroupError;
 pub use router_compatibility::RouterProbeError;
@@ -185,6 +198,7 @@ pub use router_compatibility::probe_router;
 pub use router_executable_observation::{
     RouterExecutableObserver, RouterExecutableRelation, SharedRouterExecutableCheck,
 };
+pub use switchboard_message_system::MessageSystemStatus;
 mod backend_publication;
 pub use backend_publication::BackendPublication;
 mod collaboration_runtime;

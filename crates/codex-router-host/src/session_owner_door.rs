@@ -13,7 +13,6 @@ use acp_client_runtime::{
     ProviderPromptContent, owner_wire::OwnerAcpWire, session_owner_task::OwnerMailboxUnavailable,
 };
 use collaboration_protocol::SessionRef;
-use collaboration_runtime::{ProviderOperationStore, ProviderSessionEventHub};
 use provider_session_machines::{
     session_lifecycle_machine::{LoadAttempt, RestoreVia},
     session_owner::{
@@ -27,6 +26,8 @@ use std::{
     num::NonZeroUsize,
     sync::{Arc, Mutex},
 };
+use switchboard_session_events::ProviderSessionEventHub;
+use switchboard_session_store::ProviderOperationStore;
 use tokio::sync::oneshot;
 use tokio::sync::{Mutex as AsyncMutex, watch};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
@@ -60,7 +61,7 @@ pub struct SessionOwnerDoor {
     tasks: TaskTracker,
     sessions: Mutex<BTreeMap<SessionRef, Arc<SessionOwnerAddress>>>,
     snapshot_observer: Arc<Mutex<Option<Arc<dyn SessionOwnerSnapshotObserver>>>>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     preparation_fixture: Arc<crate::session_owner_preparation_fixture::PreparationFixture>,
 }
 
@@ -73,7 +74,7 @@ pub struct SessionOwnerAddress {
     calls: Arc<SessionOwnerCalls>,
     storage: SessionOwnerStorage,
     wire: Arc<OwnerAcpWire>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     preparation_fixture: Arc<crate::session_owner_preparation_fixture::PreparationFixture>,
 }
 
@@ -92,7 +93,7 @@ impl SessionOwnerDoor {
         store: Arc<AsyncMutex<ProviderOperationStore>>,
         hub: Arc<ProviderSessionEventHub>,
         retired: CancellationToken,
-        #[cfg(test)] preparation_fixture: Arc<
+        #[cfg(any(test, feature = "test-support"))] preparation_fixture: Arc<
             crate::session_owner_preparation_fixture::PreparationFixture,
         >,
     ) -> Self {
@@ -114,7 +115,7 @@ impl SessionOwnerDoor {
             tasks: TaskTracker::new(),
             sessions: Mutex::default(),
             snapshot_observer: Arc::default(),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             preparation_fixture,
         }
     }
@@ -126,7 +127,7 @@ impl SessionOwnerDoor {
         self.registry.install_binding_permit(binding);
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub(crate) async fn wait_for_accepted_mark_fixture(
         &self,
         target: &SessionRef,
@@ -215,9 +216,9 @@ impl SessionOwnerDoor {
             SessionOwnerPublisher::new(inbox, self.clock.clone(), self.tasks.clone()),
             calls.clone(),
             work_roots,
-            #[cfg(test)]
-            self.preparation_fixture.clone(),
         );
+        #[cfg(any(test, feature = "test-support"))]
+        let ports = ports.with_preparation_fixture(self.preparation_fixture.clone());
         let retired = self.retired.clone();
         let stop = self.shutdown.clone();
         let completion = registered_owner.handle.completion_port();
@@ -265,7 +266,7 @@ impl SessionOwnerDoor {
             calls,
             storage,
             wire: self.wire.clone(),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             preparation_fixture: self.preparation_fixture.clone(),
         });
         Ok((session, ports))
@@ -452,7 +453,7 @@ impl SessionOwnerAddress {
         &self,
         operation: Uuid,
         via: RestoreVia,
-        record: Box<collaboration_runtime::ProviderSessionRecord>,
+        record: Box<switchboard_session_store::ProviderSessionRecord>,
     ) -> Result<OwnedSettlement, OwnerDoorError> {
         let attempt = LoadAttempt(operation);
         self.storage.expect_explicit_restore(attempt, record);
@@ -515,6 +516,14 @@ impl SessionOwnerAddress {
         context: crate::ExternalProviderApprovalContext,
     ) {
         self.calls.remember_approval(input, context);
+    }
+
+    pub(crate) fn remember_notice(
+        &self,
+        input: session_event_model::InputId,
+        notice: crate::session_owner_notice::NoticeWriterTake,
+    ) {
+        self.calls.remember_notice(input, notice);
     }
 
     pub(crate) async fn start_delivery(
@@ -597,7 +606,7 @@ impl SessionOwnerAddress {
         let terminal = self.calls.expect_settlement(input.operation);
         let accepted = self.calls.expect_acceptance(input.operation);
         let admission = self.admit(command).await;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let (admission, ack_finished) = match self.preparation_fixture.take_delivery_ack_pause() {
             Some(pause) => pause.resolve(admission).await,
             None => (admission, None),
@@ -618,7 +627,7 @@ impl SessionOwnerAddress {
                 Err(error)
             }
         };
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if let Some(finished) = ack_finished {
             let _test_withdrew_probe = finished.send(());
         }
@@ -627,7 +636,7 @@ impl SessionOwnerAddress {
 
     pub(crate) fn defer_queued_admission(
         &self,
-        admission: collaboration_runtime::ProviderOperationAdmission,
+        admission: switchboard_session_store::ProviderOperationAdmission,
     ) -> Result<(), crate::session_store_lane::SessionStoreOfferError> {
         self.storage
             .defer_queued_admission(self.owner.address.incarnation, admission)
@@ -684,8 +693,8 @@ impl SessionOwnerAddress {
         self.calls.wait_for_replies().await;
     }
 
-    #[cfg(test)]
-    pub(crate) fn hold_provider_writer_capacity(&self) -> impl Sized + use<> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn hold_provider_writer_capacity(&self) -> impl Sized + use<> {
         self.wire.hold_writer_capacity_for_test()
     }
 }

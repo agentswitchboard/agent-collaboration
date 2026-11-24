@@ -1,19 +1,16 @@
 //! Core's concrete timed jobs and whole-unit execution.
 use crate::WorkspaceRuntime;
-#[cfg(feature = "test-support")]
-use crate::engine::query_registry;
 use central_engine_model::{DueRow, EngineTime, InstanceKey, MachineKind, RetirementThreshold};
 use fleet_contracts::{AlarmResult, EngineSubject, LegacyUnitOutcome, ObservedControl};
 use fleet_engine::{
-    DueCutoff, Engine, TimedRowOutcome, TimedRows, TimedSource, WholeUnit, WholeUnitOutcome,
+    DueCutoff, DueDiscoveryError, FleetEngine, TimedDueDispatch, TimedRowOutcome,
+    TimedSourceSchedule, WholeDueUnitControl, WholeUnitOutcome,
 };
 use fleet_mail::{
-    DirectMessage, DirectMessageEvent, DirectMessageStore, ExpireAt, SystemMessageExpiry,
-    SystemMessageExpiryStore, insert_message,
+    DirectMark, ExpireAt, SystemMessageExpiry, SystemMessageExpiryStore, insert_message,
 };
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
 use fleet_schedules::{self as automation_timer, AutomationStore};
-use fleet_wakes::{self as wake_timer, WakeStore};
 
 #[derive(Clone, Copy)]
 pub enum DueKind {
@@ -21,6 +18,7 @@ pub enum DueKind {
     Automation,
     DirectMessage,
     SystemMessageExpiry,
+    ApprovalRequestExpiry,
     #[cfg(feature = "test-support")]
     Probe,
 }
@@ -30,6 +28,7 @@ impl DueKind {
             Self::Wake => MachineKind("wake_timer"),
             Self::Automation => MachineKind("automation_timer"),
             Self::DirectMessage => MachineKind("direct_message"),
+            Self::ApprovalRequestExpiry => MachineKind("approval_request"),
             Self::SystemMessageExpiry => {
                 <SystemMessageExpiry as central_engine_model::Machine>::KIND
             }
@@ -37,45 +36,82 @@ impl DueKind {
             Self::Probe => MachineKind("engine_probe"),
         }
     }
-    fn sql(self) -> &'static str {
-        match self {
-            Self::Wake => fleet_wakes::WAKE_LIST,
-            Self::Automation => fleet_schedules::AUTOMATION_LIST,
-            Self::DirectMessage => fleet_mail::DIRECT_MESSAGE_LIST,
-            Self::SystemMessageExpiry => fleet_mail::SYSTEM_MESSAGE_EXPIRY_LIST,
-            #[cfg(feature = "test-support")]
-            Self::Probe => query_registry::PROBE_LIST,
-        }
-    }
 }
 
 pub struct CoreTimedRows;
-impl<H: CentralStore, S: WorkspaceStores> TimedRows<WorkspaceRuntime<H, S>> for CoreTimedRows {
-    type Kind = DueKind;
-    fn ordered_kinds(&self) -> &'static [DueKind] {
+impl<H: CentralStore, S: WorkspaceStores> TimedDueDispatch<WorkspaceRuntime<H, S>>
+    for CoreTimedRows
+{
+    type TimedSourceKind = DueKind;
+    fn ordered_timed_source_kinds(&self) -> &'static [DueKind] {
         &[
             DueKind::Wake,
             DueKind::Automation,
             DueKind::DirectMessage,
             DueKind::SystemMessageExpiry,
+            DueKind::ApprovalRequestExpiry,
             #[cfg(feature = "test-support")]
             DueKind::Probe,
         ]
     }
-    fn source(&self, kind: DueKind) -> TimedSource {
-        TimedSource {
+    fn timed_source_schedule(&self, kind: DueKind) -> TimedSourceSchedule {
+        TimedSourceSchedule {
             machine_kind: kind.kind(),
-            list_sql: kind.sql(),
-            cutoff: if matches!(kind, DueKind::SystemMessageExpiry) {
+            due_cutoff_policy: if matches!(
+                kind,
+                DueKind::DirectMessage
+                    | DueKind::SystemMessageExpiry
+                    | DueKind::ApprovalRequestExpiry
+            ) {
                 DueCutoff::BatchStart
             } else {
-                DueCutoff::LookAhead
+                DueCutoff::LookAheadHorizon
             },
         }
     }
-    async fn run_row(
+    async fn discover_due_rows(
         &self,
-        engine: &Engine<'_, WorkspaceRuntime<H, S>>,
+        runtime: &WorkspaceRuntime<H, S>,
+        kind: DueKind,
+        cutoff: EngineTime,
+        limit: usize,
+    ) -> Result<Vec<DueRow>, DueDiscoveryError> {
+        let store = runtime.execution.statement_host();
+        match kind {
+            DueKind::ApprovalRequestExpiry => {
+                let cutoff = approval_due_cutoff(store, runtime.execution.organization(), cutoff)
+                    .await
+                    .map_err(DueDiscoveryError::ReadFailed)?;
+                fleet_engine::read_due_rows(
+                    store,
+                    central_engine_model::DueListKind::ApprovalExpiries,
+                    cutoff,
+                    limit,
+                )
+                .await
+            }
+            DueKind::Wake => fleet_wakes::due_wakes(store, cutoff, limit).await,
+            DueKind::Automation => fleet_schedules::due_schedules(store, cutoff, limit).await,
+            DueKind::DirectMessage => fleet_mail::due_direct_messages(store, cutoff, limit).await,
+            DueKind::SystemMessageExpiry => {
+                fleet_mail::due_system_message_expiries(store, cutoff, limit).await
+            }
+            #[cfg(feature = "test-support")]
+            DueKind::Probe => {
+                fleet_engine::read_due_rows(
+                    store,
+                    central_engine_model::DueListKind::Probes,
+                    cutoff,
+                    limit,
+                )
+                .await
+            }
+        }
+    }
+
+    async fn dispatch_timed_due_row(
+        &self,
+        engine: &FleetEngine<'_, WorkspaceRuntime<H, S>>,
         runtime: &WorkspaceRuntime<H, S>,
         kind: DueKind,
         row: DueRow,
@@ -85,7 +121,7 @@ impl<H: CentralStore, S: WorkspaceStores> TimedRows<WorkspaceRuntime<H, S>> for 
             #[cfg(feature = "test-support")]
             DueKind::Probe => {
                 engine
-                    .run_machine_unit::<crate::engine_probe::EngineProbe, _>(
+                    .run_due_machine_instance::<crate::engine_probe::EngineProbe, _>(
                         &crate::engine::probe_store::ProbeStore(runtime),
                         row,
                         "engine_probe_items.due_at",
@@ -93,19 +129,10 @@ impl<H: CentralStore, S: WorkspaceStores> TimedRows<WorkspaceRuntime<H, S>> for 
                     )
                     .await
             }
-            DueKind::Wake => {
-                engine
-                    .run_machine_unit::<wake_timer::WakeTimer, _>(
-                        &WakeStore::new(runtime, insert_message),
-                        row,
-                        "automation_wakes.due_at",
-                        |occurrence| wake_timer::Event::Due { occurrence },
-                    )
-                    .await
-            }
+            DueKind::Wake => runtime.dispatch_due_wake(engine, row).await,
             DueKind::Automation => {
                 engine
-                    .run_machine_unit::<automation_timer::AutomationTimer, _>(
+                    .run_due_machine_instance::<automation_timer::AutomationTimer, _>(
                         &AutomationStore::new(runtime, insert_message),
                         row,
                         "automation_schedules.next_due_at",
@@ -114,18 +141,61 @@ impl<H: CentralStore, S: WorkspaceStores> TimedRows<WorkspaceRuntime<H, S>> for 
                     .await
             }
             DueKind::DirectMessage => {
+                let subject = fleet_contracts::EngineSubject {
+                    kind: central_engine_model::MachineKind("direct_message"),
+                    key: row.key,
+                };
+                let (Ok(message_id), Some(occurrence), Ok(now)) = (
+                    subject.key.0.parse(),
+                    EngineTime::from_timestamp_millis(row.occurrence_ms),
+                    runtime.execution.now(),
+                ) else {
+                    return TimedRowOutcome::CentralStoreFailed;
+                };
+                let store = &runtime.direct_messages;
                 engine
-                    .run_machine_unit::<DirectMessage, _>(
-                        &DirectMessageStore::new(runtime),
-                        row,
-                        "mail_messages.cancel_due_at",
-                        |occurrence| DirectMessageEvent::Due { occurrence },
+                    .run_checked_due_machine_instance(
+                        &subject,
+                        store.apply_mark(DirectMark {
+                            message_id,
+                            occurrence,
+                            now,
+                            ids: runtime.execution.shared_ids(),
+                        }),
+                        |rejection, now| store.charge_rejected_mark(rejection, now),
+                    )
+                    .await
+            }
+            DueKind::ApprovalRequestExpiry => {
+                let Some(dispatcher) = &runtime.link_call_dispatcher else {
+                    return TimedRowOutcome::CentralStoreFailed;
+                };
+                let subject = fleet_contracts::EngineSubject {
+                    kind: kind.kind(),
+                    key: row.key.clone(),
+                };
+                let organization = runtime.execution.organization().clone();
+                engine
+                    .run_checked_due_machine_instance(
+                        &subject,
+                        async {
+                            let applied = dispatcher
+                                .apply_approval_deadline(organization, row)
+                                .await?;
+                            if let Some(completion) = applied.completion
+                                && let Some(schedule) = &runtime.approval_delivery_completion
+                            {
+                                schedule(completion);
+                            }
+                            Ok(applied.outcome)
+                        },
+                        |impossible, _| async move { match impossible {} },
                     )
                     .await
             }
             DueKind::SystemMessageExpiry => {
                 engine
-                    .run_machine_unit::<SystemMessageExpiry, _>(
+                    .run_due_machine_instance::<SystemMessageExpiry, _>(
                         &SystemMessageExpiryStore::new(runtime),
                         row,
                         "mail_messages.delivery_window_ends_at",
@@ -138,15 +208,17 @@ impl<H: CentralStore, S: WorkspaceStores> TimedRows<WorkspaceRuntime<H, S>> for 
             DueKind::Wake => work.wakes_fired = usize::from(done),
             DueKind::Automation => work.automations_fired = usize::from(done),
             // Cancels are observed through the messages they change.
-            DueKind::DirectMessage | DueKind::SystemMessageExpiry => {}
+            DueKind::DirectMessage
+            | DueKind::SystemMessageExpiry
+            | DueKind::ApprovalRequestExpiry => {}
             #[cfg(feature = "test-support")]
             DueKind::Probe => {}
         }
 
         if down {
-            TimedRowOutcome::CentralDown
+            TimedRowOutcome::CentralStoreFailed
         } else {
-            TimedRowOutcome::Finished(work)
+            TimedRowOutcome::Handled(work)
         }
     }
 }
@@ -157,15 +229,15 @@ pub enum WholeKind {
     Drains,
 }
 impl WholeKind {
-    pub(crate) fn description(self) -> WholeUnit {
+    pub(crate) fn description(self) -> WholeDueUnitControl {
         match self {
             Self::Windows => fleet_notices::window_unit(),
-            Self::Drains => WholeUnit {
-                subject: EngineSubject {
+            Self::Drains => WholeDueUnitControl {
+                attempt_subject: EngineSubject {
                     kind: MachineKind("legacy_workspace_drains"),
                     key: InstanceKey("all".into()),
                 },
-                threshold: RetirementThreshold::NOTICE_UNITS,
+                retirement_threshold: RetirementThreshold::NOTICE_UNITS,
             },
         }
     }
@@ -237,4 +309,18 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
         }
         Ok(count)
     }
+}
+
+async fn approval_due_cutoff(
+    store: &impl CentralStore,
+    organization: &fleet_identity_protocol::OrganizationId,
+    batch_start: EngineTime,
+) -> Result<EngineTime, central_storage::StoreFailure> {
+    let result = store
+        .read(fleet_engine::approval_time_floor_statement(
+            organization.as_str(),
+        ))
+        .await?;
+    Ok(fleet_engine::decode_approval_time_floor(&result)?
+        .map_or(batch_start, |observed| batch_start.max(observed)))
 }

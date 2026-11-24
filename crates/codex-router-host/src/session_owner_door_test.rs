@@ -5,13 +5,13 @@ use crate::{
 };
 use collaboration_contracts::SessionEventHub;
 use collaboration_protocol::{ConversationBindingIdentity, OperationId, ProviderOperationKind};
-use collaboration_runtime::ProviderOperationAdmission;
 use provider_session_machines::{
     session_lifecycle_machine::{CloseAttempt, SessionLifecycle},
     session_owner::{CloseOutcome, RestoreDisposition, SessionOwnerReply},
     session_turn_machine::TurnId,
 };
 use session_event_model::{InputId, PromptContent, SessionState};
+use switchboard_session_store::ProviderOperationAdmission;
 
 async fn operation(
     fixture: &StoreFixture,
@@ -46,7 +46,10 @@ async fn owner_door_uses_the_real_acp_connection_for_restore_prompt_and_close() 
     let board: message_board::SessionRef =
         collaboration_protocol::ProviderIdentity::session_to_board(&target)
             .expect("board identity");
-    let hub = Arc::new(ProviderSessionEventHub::new(fixture.store.clone()));
+    let hub = Arc::new(ProviderSessionEventHub::new(
+        fixture.store.clone(),
+        fixture.clock.clone(),
+    ));
     let wire_receipt = fixture.path.with_file_name("owner-wire.json");
     let runtime = ExternalProviderRuntime::initialize_with_mcp_http_and_hub(
         launch_fixture_agent(

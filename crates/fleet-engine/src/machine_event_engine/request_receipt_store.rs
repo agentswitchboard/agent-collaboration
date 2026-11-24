@@ -1,0 +1,105 @@
+use central_engine_model::{EngineTime, TransitionError};
+use central_storage::{GuardedStatement, ReadOutcome, Statement, StoreFailure};
+use fleet_runtime_ports::stored_values::format_utc_millis;
+use fleet_runtime_ports::{
+    guarded_statements::{any, exact, text},
+    stored_values::{json, string},
+    workspace_decode_error::corrupt,
+};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use workspace_model::{ActorIdentityId, RequestId};
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum EngineRefusal<Error> {
+    Domain { error: Error },
+    NotAllowed { state: String, event: String },
+    Stale,
+}
+impl<Error> From<TransitionError<Error>> for EngineRefusal<Error> {
+    fn from(error: TransitionError<Error>) -> Self {
+        match error {
+            TransitionError::Domain(error) => Self::Domain { error },
+            TransitionError::NotAllowed { state, event } => Self::NotAllowed {
+                state: state.into(),
+                event: event.into(),
+            },
+            TransitionError::Stale => Self::Stale,
+        }
+    }
+}
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "camelCase", deny_unknown_fields)]
+pub enum EngineReceipt<State, Error> {
+    Applied { state: State },
+    Refused { error: EngineRefusal<Error> },
+    NotFound,
+    RequestIdReused,
+}
+
+/// One request freezes this cutoff for its lookup, expired-row delete and loser
+/// reread. Millisecond formatting is shared with stored receipt timestamps.
+pub(crate) struct ReceiptClaim {
+    pub request_id: RequestId,
+    pub caller_actor_id: ActorIdentityId,
+    pub request_content_digest: String,
+    pub request_started_at: EngineTime,
+    pub receipt_retention_cutoff: EngineTime,
+}
+impl ReceiptClaim {
+    pub fn build_live_receipt_lookup(&self) -> Statement {
+        Statement {
+            sql: "SELECT caller,content_digest,answer FROM runtime_request_log WHERE request_id=? AND created_at>=?",
+            args: vec![
+                text(&self.request_id),
+                text(format_utc_millis(self.receipt_retention_cutoff)),
+            ],
+        }
+    }
+    pub fn decode_retained_receipt<State: DeserializeOwned, Error: DeserializeOwned>(
+        &self,
+        rows: &ReadOutcome,
+    ) -> Result<Option<EngineReceipt<State, Error>>, StoreFailure> {
+        let row = match rows.rows.as_slice() {
+            [] => return Ok(None),
+            [row] => row,
+            _ => return Err(corrupt("runtime_request_log.request_id")),
+        };
+        if string(rows, row, "caller")? != self.caller_actor_id.as_str()
+            || string(rows, row, "content_digest")? != self.request_content_digest
+        {
+            return Ok(Some(EngineReceipt::RequestIdReused));
+        }
+        json(string(rows, row, "answer")?, "runtime_request_log.answer").map(Some)
+    }
+    pub fn plan_receipt_claim_writes(
+        &self,
+        answer: &impl Serialize,
+    ) -> Result<Vec<GuardedStatement>, StoreFailure> {
+        let encoded =
+            serde_json::to_string(answer).map_err(|_| corrupt("runtime_request_log.answer"))?;
+        Ok(vec![
+            any(
+                "DELETE FROM runtime_request_log WHERE request_id=? AND created_at<?",
+                vec![
+                    text(&self.request_id),
+                    text(format_utc_millis(self.receipt_retention_cutoff)),
+                ],
+            ),
+            exact(
+                "INSERT INTO runtime_request_log(request_id,caller,content_digest,answer,created_at,updated_at) VALUES (?,?,?,?,?,?)",
+                vec![
+                    text(&self.request_id),
+                    text(&self.caller_actor_id),
+                    text(&self.request_content_digest),
+                    text(encoded),
+                    text(format_utc_millis(self.request_started_at)),
+                    text(format_utc_millis(self.request_started_at)),
+                ],
+            ),
+        ])
+    }
+}
+#[cfg(test)]
+#[path = "request_receipt_store_test.rs"]
+mod tests;

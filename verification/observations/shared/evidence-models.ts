@@ -1,6 +1,11 @@
 import { z } from "zod";
 import { objectSchema } from "../../exact-json.ts";
 import { decodeEvidenceJson } from "../../evidence-json.ts";
+import {
+  bareResyncMarkerSchema,
+  eventTooLargeSchema,
+  snapshotEndSchema,
+} from "./observation-control-records.ts";
 
 export const exactIntegerSchema = z.bigint();
 export const jsonObjectSchema = objectSchema;
@@ -123,6 +128,16 @@ export const interactionListingSchema = z.looseObject({
 });
 export const publicObservationSchema = z.looseObject({
   events: z.array(z.looseObject({ sequence: exactIntegerSchema, event: jsonObjectSchema })),
+});
+export const providerObservationSchema = publicObservationSchema.extend({
+  events: z.array(
+    z.union([
+      publicObservationSchema.shape.events.element,
+      snapshotEndSchema,
+      bareResyncMarkerSchema,
+      eventTooLargeSchema,
+    ]),
+  ),
 });
 export const settingsChoiceSchema = z.looseObject({ value: z.string() });
 export const settingsValueSchema = z.looseObject({

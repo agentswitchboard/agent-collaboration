@@ -7,9 +7,9 @@ use collaboration_protocol::{
     ProviderRuntimeIdentity, ProviderTransport, ProviderWorkingDirectory, RouterAccess, SessionId,
     UuidIdentity,
 };
-use collaboration_runtime::ProviderOperationStore;
-use collaboration_runtime::ProviderSessionRecord;
 use std::sync::Arc;
+use switchboard_session_store::ProviderOperationStore;
+use switchboard_session_store::ProviderSessionRecord;
 
 struct FixtureOwnership(LiveSessionOwnership);
 
@@ -103,6 +103,7 @@ async fn recorded_session_loads_without_creating_a_replacement() {
     let runtime = ExternalProviderRuntime::initialize(
         fixture_launch(&event_path, false),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("runtime");
@@ -112,6 +113,7 @@ async fn recorded_session_loads_without_creating_a_replacement() {
             runtime,
         }],
         Arc::clone(&store),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .expect("supervisor");
 
@@ -167,6 +169,7 @@ async fn live_peer_prevents_provider_load() {
     let runtime = ExternalProviderRuntime::initialize(
         fixture_launch(&event_path, false),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("runtime");
@@ -176,6 +179,7 @@ async fn live_peer_prevents_provider_load() {
             runtime,
         }],
         Arc::clone(&store),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .expect("supervisor");
 
@@ -225,6 +229,7 @@ async fn rejected_load_preserves_provider_code_without_creating_replacement() {
     let runtime = ExternalProviderRuntime::initialize(
         fixture_launch(&event_path, true),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("runtime");
@@ -234,6 +239,7 @@ async fn rejected_load_preserves_provider_code_without_creating_replacement() {
             runtime,
         }],
         Arc::clone(&store),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .expect("supervisor");
 

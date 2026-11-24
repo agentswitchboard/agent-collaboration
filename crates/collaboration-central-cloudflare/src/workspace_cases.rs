@@ -1,21 +1,32 @@
 //! Controls the actual modern CentralObject only in test-support bundles.
-use super::{
-    AlarmFailure, AlarmPolicy, CentralObject, ObjectAddress, OrganizationId, statement_store,
-};
-use crate::store_wire::{OwnedBatch, OwnedStatement, OwnedStoreCall};
+use super::{CentralObject, ObjectAddress, OrganizationId, statement_store};
+use crate::store_wire::{OwnedStatement, OwnedStoreCall};
 use fleet_runtime::{HeldPause, PausePoint};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::{cell::RefCell, collections::BTreeMap};
 use worker::{Env, Request, Response, Result};
 use worker::{Headers, Method, RequestInit, js_sys};
+#[path = "engine_due_migration_fixture.rs"]
+mod engine_due_migration_fixture;
 #[path = "workspace_fixture_admission.rs"]
 mod fixture_admission;
+#[path = "workspace_store_cases.rs"]
+mod workspace_store_cases;
+#[path = "workspace_turn_cases.rs"]
+mod workspace_turn_cases;
 
 #[derive(Default)]
 pub(crate) struct Controls {
+    pub(super) fail_approval_after_write: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub(super) fail_reserved_session_reply: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub(super) fail_typed_refusal_send: std::cell::Cell<bool>,
     pub(super) faults: std::sync::Arc<fleet_runtime::TestFaults>,
     pub(super) zero_next_write_alarm: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub(super) lose_read: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub(super) legacy_workspace_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    pub(super) workspace_page_reads: std::sync::Arc<std::sync::Mutex<Option<Vec<u64>>>>,
+    pub(super) retired_page_reads: std::sync::Arc<std::sync::Mutex<Option<Vec<u64>>>>,
+    pub(super) direct_mark_guard_reads: std::sync::Arc<std::sync::Mutex<Option<Vec<u64>>>>,
     observations: RefCell<BTreeMap<workspace_ids::WorkspaceId, HeldPause>>,
     holds: RefCell<BTreeMap<(workspace_ids::WorkspaceId, Point), HeldPause>>,
     central_holds: RefCell<BTreeMap<Point, HeldPause>>,
@@ -31,11 +42,42 @@ pub(crate) struct Controls {
 enum Point {
     AfterReads,
     AfterStoreApplied,
+    BeforeWorkspaceRequestApplying,
     AfterWorkspaceExecute,
     EngineCompletionEntered,
     BeforeDrainCommit,
     AfterDrainCommit,
     BeforeTimerCommit,
+    BeforeWakeRequestCommit,
+    BeforeReceiptTransaction,
+    BeforeMachineLinkWelcome,
+    AfterMachineLinkWelcome,
+    BeforeSessionTransaction,
+    BeforeApprovalCommit,
+    ApprovalEndingNeverReached,
+    ApprovalEndingAnswerApplied,
+    BeforeApprovalEndingWrite,
+    BeforeApprovalEndingEnqueue,
+    BeforeApprovalCarrierTurn,
+    BeforeParentApprovalTransaction,
+    BeforeParentApprovalReply,
+    BeforeApprovalNoticeWrite,
+    AfterApprovalNoticeAttempt,
+    AfterApprovalNoticeRecovery,
+    BeforeMacEndingOffer,
+    AfterMacEndingOffer,
+    BeforeMacNoticeOffer,
+    AfterMacNoticeOffer,
+    MacEndingRecoveryStarted,
+    MacEndingRecoveryFinished,
+    MacEndingRegistrationRecoveryScheduled,
+    BeforePersonApprovalTurn,
+    AfterPersonApprovalCommit,
+    AfterIdleExpiryCommit,
+    AfterIdleRenewalPlatformSendError,
+    BeforePrivateEnrollmentInvalidation,
+    BeforeIdleEnrollmentCleanup,
+    AfterIdleEnrollmentCleanup,
     AfterTimerCommit,
     AfterEngineAttemptGate,
     AfterEngineLoad,
@@ -43,6 +85,10 @@ enum Point {
     BeforeEngineFailureWrite,
     AfterEngineAbsentLookup,
     BeforeControlClear,
+    BeforeRenewalApplyingSample,
+    BeforeMachineAuthorityCloseWrite,
+    AfterMachineFrameHandled,
+    AfterMachineMailOffer,
     BeforeSignInSample,
     AfterSignInSample,
 }
@@ -51,11 +97,44 @@ impl From<Point> for PausePoint {
         match point {
             Point::AfterReads => Self::AfterReads,
             Point::AfterStoreApplied => Self::AfterStoreApplied,
+            Point::BeforeWorkspaceRequestApplying => Self::BeforeWorkspaceRequestApplying,
             Point::AfterWorkspaceExecute => Self::AfterWorkspaceExecute,
             Point::EngineCompletionEntered => Self::EngineCompletionEntered,
             Point::BeforeDrainCommit => Self::BeforeDrainCommit,
             Point::AfterDrainCommit => Self::AfterDrainCommit,
             Point::BeforeTimerCommit => Self::BeforeTimerCommit,
+            Point::BeforeWakeRequestCommit => Self::BeforeWakeRequestCommit,
+            Point::BeforeReceiptTransaction => Self::BeforeReceiptTransaction,
+            Point::BeforeMachineLinkWelcome => Self::BeforeMachineLinkWelcome,
+            Point::AfterMachineLinkWelcome => Self::AfterMachineLinkWelcome,
+            Point::BeforeSessionTransaction => Self::BeforeSessionTransaction,
+            Point::BeforeApprovalCommit => Self::BeforeApprovalCommit,
+            Point::ApprovalEndingNeverReached => Self::ApprovalEndingNeverReached,
+            Point::ApprovalEndingAnswerApplied => Self::ApprovalEndingAnswerApplied,
+            Point::BeforeApprovalEndingWrite => Self::BeforeApprovalEndingWrite,
+            Point::BeforeApprovalEndingEnqueue => Self::BeforeApprovalEndingEnqueue,
+            Point::BeforeApprovalCarrierTurn => Self::BeforeApprovalCarrierTurn,
+            Point::BeforeParentApprovalTransaction => Self::BeforeParentApprovalTransaction,
+            Point::BeforeParentApprovalReply => Self::BeforeParentApprovalReply,
+            Point::BeforeApprovalNoticeWrite => Self::BeforeApprovalNoticeWrite,
+            Point::AfterApprovalNoticeAttempt => Self::AfterApprovalNoticeAttempt,
+            Point::AfterApprovalNoticeRecovery => Self::AfterApprovalNoticeRecovery,
+            Point::BeforeMacEndingOffer => Self::BeforeMacEndingOffer,
+            Point::AfterMacEndingOffer => Self::AfterMacEndingOffer,
+            Point::BeforeMacNoticeOffer => Self::BeforeMacNoticeOffer,
+            Point::AfterMacNoticeOffer => Self::AfterMacNoticeOffer,
+            Point::MacEndingRecoveryStarted => Self::MacEndingRecoveryStarted,
+            Point::MacEndingRecoveryFinished => Self::MacEndingRecoveryFinished,
+            Point::MacEndingRegistrationRecoveryScheduled => {
+                Self::MacEndingRegistrationRecoveryScheduled
+            }
+            Point::BeforePersonApprovalTurn => Self::BeforePersonApprovalTurn,
+            Point::AfterPersonApprovalCommit => Self::AfterPersonApprovalCommit,
+            Point::AfterIdleExpiryCommit => Self::AfterIdleExpiryCommit,
+            Point::AfterIdleRenewalPlatformSendError => Self::AfterIdleRenewalPlatformSendError,
+            Point::BeforePrivateEnrollmentInvalidation => Self::BeforePrivateEnrollmentInvalidation,
+            Point::BeforeIdleEnrollmentCleanup => Self::BeforeIdleEnrollmentCleanup,
+            Point::AfterIdleEnrollmentCleanup => Self::AfterIdleEnrollmentCleanup,
             Point::AfterTimerCommit => Self::AfterTimerCommit,
             Point::AfterEngineAttemptGate => Self::AfterEngineAttemptGate,
             Point::AfterEngineLoad => Self::AfterEngineLoad,
@@ -63,6 +142,10 @@ impl From<Point> for PausePoint {
             Point::BeforeEngineFailureWrite => Self::BeforeEngineFailureWrite,
             Point::AfterEngineAbsentLookup => Self::AfterEngineAbsentLookup,
             Point::BeforeControlClear => Self::BeforeControlClear,
+            Point::BeforeRenewalApplyingSample => Self::BeforeRenewalApplyingSample,
+            Point::BeforeMachineAuthorityCloseWrite => Self::BeforeMachineAuthorityCloseWrite,
+            Point::AfterMachineFrameHandled => Self::AfterMachineFrameHandled,
+            Point::AfterMachineMailOffer => Self::AfterMachineMailOffer,
             Point::BeforeSignInSample => Self::BeforeSignInSample,
             Point::AfterSignInSample => Self::AfterSignInSample,
         }
@@ -109,7 +192,30 @@ pub(crate) async fn route(
     };
     let organization: OrganizationId =
         serde_json::from_value(serde_json::Value::String(organization.to_owned()))?;
+    if operation == "typed-mac-call" {
+        return Ok(Ok(super::workspace_typed_link::probe(
+            env,
+            organization,
+            request,
+        )
+        .await?));
+    }
+    let ending_path = match operation {
+        "typed-ending-call" => Some(super::workspace_typed_link::FIXTURE_ENDING_CALL_PATH),
+        "typed-ending-production-ingress" => Some(super::workspace_typed_link::MACHINE_CALL_PATH),
+        _ => None,
+    };
+    if let Some(path) = ending_path {
+        return Ok(Ok(super::workspace_typed_link::probe_ending(
+            env,
+            organization,
+            request,
+            path,
+        )
+        .await?));
+    }
     let address = ObjectAddress::Central(organization);
+
     let headers = Headers::new();
     crate::cloudflare_transport::address_header(&headers, &address)?;
     let body = request.bytes().await?;
@@ -129,6 +235,47 @@ pub(super) async fn control(
     mut request: Request,
 ) -> Result<Response> {
     let path = request.path();
+    if path == "/test/typed-mac-waiting" {
+        let correlation = request
+            .json::<central_link_protocol::CorrelationId>()
+            .await?;
+        return Response::from_json(&object.pending_mac_calls.is_waiting(&correlation));
+    }
+    if path == "/test/drop-approval-before-write" {
+        return Response::from_json(&object.pending_mac_calls.drop_approval_before_write());
+    }
+    if path == "/test/approval-fixture-decide" {
+        let runtime = object.runtime(organization).await?;
+        let completion = runtime
+            .fixture_decide_approval(request.json().await?)
+            .await
+            .map_err(|error| worker::Error::RustError(error.to_string()))?;
+        if let Some(completion) = completion {
+            object.state.wait_until(completion);
+        }
+        return Response::from_json(&true);
+    }
+    if path == "/test/fail-approval-after-write" {
+        object.controls.fail_approval_after_write.store(
+            request.json::<bool>().await?,
+            std::sync::atomic::Ordering::Release,
+        );
+        return Response::from_json(&true);
+    }
+    if path == "/test/fail-reserved-session-reply" {
+        object.controls.fail_reserved_session_reply.store(
+            request.json::<bool>().await?,
+            std::sync::atomic::Ordering::Release,
+        );
+        return Response::from_json(&true);
+    }
+    if path == "/test/fail-typed-refusal-send" {
+        object
+            .controls
+            .fail_typed_refusal_send
+            .set(request.json::<bool>().await?);
+        return Response::from_json(&true);
+    }
     if path == "/test/machine-login-revoke" {
         let control: collaboration_central_core::MachineLoginControl = request.json().await?;
         let runtime = object.runtime(organization).await?;
@@ -139,6 +286,12 @@ pub(super) async fn control(
     if matches!(path.as_str(), "/test/request" | "/test/mail") {
         return fixture_admission::dispatch(object, organization, request).await;
     }
+    if path == "/test/receipt-clock-after-enrollment-read" {
+        object
+            .clock
+            .move_after_receipt_enrollment_read(request.json::<i64>().await?);
+        return Response::from_json(&true);
+    }
     // Holding time before initialization also pins the first minted identity.
     if path == "/test/clock" {
         object.clock.hold(request.json::<i64>().await?);
@@ -146,8 +299,66 @@ pub(super) async fn control(
     }
     let runtime = object.runtime(organization.clone()).await?;
     match path.as_str() {
+        "/test/direct-receipt-fixture" => {
+            let (authority, message, receipt): (
+                fleet_contracts::MachineConnectionAttachment,
+                workspace_ids::MessageId,
+                workspace_model::central_mail::ReceiptKind,
+            ) = request.json().await?;
+            Response::from_json(
+                &runtime
+                    .apply_delivery_receipt(&authority, &message, receipt)
+                    .await,
+            )
+        }
+        "/test/workspace-page-read-observations" => {
+            let arm = request.json::<bool>().await?;
+            let mut observations = object
+                .controls
+                .workspace_page_reads
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let observed = observations.take();
+            if arm {
+                *observations = Some(Vec::new());
+            }
+            Response::from_json(&observed)
+        }
+        "/test/retired-page-read-observations" => {
+            let arm = request.json::<bool>().await?;
+            let mut observations = object
+                .controls
+                .retired_page_reads
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            Response::from_json(&std::mem::replace(&mut *observations, arm.then(Vec::new)))
+        }
+        "/test/direct-mark-guard-read-observations" => {
+            let arm = request.json::<bool>().await?;
+            let mut observations = object
+                .controls
+                .direct_mark_guard_reads
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            Response::from_json(&std::mem::replace(&mut *observations, arm.then(Vec::new)))
+        }
         "/test/completion-attempts" => {
             Response::from_json(&runtime.runtime().completion_attempts())
+        }
+        "/test/engine-alarm-inputs" => {
+            use fleet_runtime_ports::CentralStore as _;
+
+            let inputs = runtime
+                .runtime()
+                .statement_host()
+                .engine_alarm_inputs()
+                .await;
+            Response::from_json(&inputs.map(|times| {
+                [
+                    times.earliest_on_grid_due_unix_millis,
+                    times.earliest_legacy_due_unix_millis,
+                ]
+            }))
         }
         "/test/engine-completion-entries" => {
             Response::from_json(&runtime.runtime().engine_completion_entries())
@@ -189,6 +400,14 @@ pub(super) async fn control(
         "/test/machine-restore-failure" => {
             let (skip, failure) = request.json().await?;
             runtime.fail_machine_restore_after(skip, failure);
+            Response::from_json(&true)
+        }
+        "/test/fail-mail-offer" => {
+            runtime.fail_next_mail_offer(request.json().await?);
+            Response::from_json(&true)
+        }
+        "/test/fail-idle-renewal-send" => {
+            runtime.fail_next_idle_renewal_send();
             Response::from_json(&true)
         }
         "/test/engine-probe-seed" => {
@@ -233,6 +452,26 @@ pub(super) async fn control(
             runtime.lose_next_provisioning_reply();
             Response::from_json(&true)
         }
+        "/test/alarm-batch-fault-pending" => {
+            Response::from_json(&object.controls.faults.alarm_batch_pending())
+        }
+        "/test/fail-issuer-cache" => {
+            Response::from_json(&runtime.fail_next_issuer_cache(request.json().await?))
+        }
+        "/test/mac-delivery-count" => {
+            let point: Point = request.json().await?;
+            Response::from_json(&runtime.runtime().pause_points().central_count(point.into()))
+        }
+        "/test/until-mac-delivery-count" => {
+            let (point, minimum): (Point, u64) = request.json().await?;
+            runtime
+                .runtime()
+                .pause_points()
+                .until_central_count(point.into(), minimum)
+                .await;
+            Response::from_json(&true)
+        }
+        "/test/mac-call-waits" => Response::from_json(&object.clock.mac_call_waits()),
         "/test/fail-alarm-batch" => {
             let failure = request.json().await?;
             object.controls.faults.arm_alarm_batch(failure);
@@ -247,518 +486,40 @@ pub(super) async fn control(
             Response::from_json(&runtime.queued_for_session(&session).await)
         }
         "/test/alarm" => Response::from_json(&object.state.storage().get_alarm().await?),
-        "/test/hold-central" => {
-            let point: Point = request.json().await?;
-            if !matches!(
-                point,
-                Point::BeforeTimerCommit
-                    | Point::AfterTimerCommit
-                    | Point::AfterEngineLoad
-                    | Point::BeforeSignInSample
-                    | Point::AfterSignInSample
-                    | Point::AfterWorkspaceExecute
-                    | Point::EngineCompletionEntered
-            ) {
-                return Err(error("not a timer point"));
-            }
-            object.controls.central_holds.borrow_mut().insert(
-                point,
-                runtime.runtime().pause_points().hold_central(point.into()),
-            );
-            Response::from_json(&true)
+        "/test/hold-central"
+        | "/test/hold-engine"
+        | "/test/until-held-engine"
+        | "/test/release-engine"
+        | "/test/until-central-waiting"
+        | "/test/until-admission-waiting"
+        | "/test/admission-waiting"
+        | "/test/engine-probe-admit"
+        | "/test/engine-probe-request-admitted"
+        | "/test/until-held-central"
+        | "/test/release-central" => {
+            workspace_turn_cases::control(object, &runtime, &path, request).await
         }
-        "/test/hold-engine" => {
-            let pause: EnginePause = request.json().await?;
-            let id = object.controls.next_engine_hold.get();
-            object.controls.next_engine_hold.set(id + 1);
-            let held = runtime
-                .runtime()
-                .pause_points()
-                .hold_engine(pause.point.into(), &pause.key);
-            object.controls.engine_holds.borrow_mut().insert(id, held);
-            Response::from_json(&id)
-        }
-        "/test/until-held-engine" => {
-            let id: u64 = request.json().await?;
-            let mut held = object
-                .controls
-                .engine_holds
-                .borrow_mut()
-                .remove(&id)
-                .ok_or_else(|| error("engine hold not armed"))?;
-            held.until_held().await;
-            object.controls.engine_holds.borrow_mut().insert(id, held);
-            Response::from_json(&true)
-        }
-        "/test/release-engine" => {
-            let id: u64 = request.json().await?;
-            if let Some(held) = object.controls.engine_holds.borrow_mut().remove(&id) {
-                held.release();
-            }
-            Response::from_json(&true)
-        }
-        "/test/until-central-waiting" => {
-            let count: usize = request.json().await?;
-            runtime.runtime().until_central_waiting(count).await;
-            Response::from_json(&true)
-        }
-        "/test/until-admission-waiting" => {
-            let count: usize = request.json().await?;
-            runtime.runtime().until_admission_waiting(count).await;
-            Response::from_json(&true)
-        }
-        "/test/admission-waiting" => {
-            Response::from_json(&runtime.runtime().admission_waiting_now())
-        }
-        "/test/engine-probe-admit" => {
-            #[derive(Deserialize)]
-            #[serde(rename_all = "camelCase", deny_unknown_fields)]
-            struct AdmitCall {
-                caller: workspace_model::Caller,
-                token: String,
-            }
-            let call: AdmitCall = request.json().await?;
-            let admitted =
-                fixture_admission::admitted_caller(&runtime, &call.token, call.caller).await?;
-            let accepted = admitted.is_some();
-            *object.controls.admitted_probe_caller.borrow_mut() = admitted;
-            Response::from_json(&accepted)
-        }
-        "/test/engine-probe-request-admitted" => {
-            let probe: collaboration_central_core::engine_probe::ProbeRequest =
-                request.json().await?;
-            let admitted = object.controls.admitted_probe_caller.borrow().clone();
-            let Some(caller) = admitted else {
-                return Response::error("no admitted probe caller", 409);
-            };
-            Response::from_json(&runtime.request_probe(&caller, probe).await)
-        }
-        "/test/until-held-central" => {
-            let point: Point = request.json().await?;
-            let mut held = object
-                .controls
-                .central_holds
-                .borrow_mut()
-                .remove(&point)
-                .ok_or_else(|| error("point not armed"))?;
-            held.until_held().await;
-            object
-                .controls
-                .central_holds
-                .borrow_mut()
-                .insert(point, held);
-            Response::from_json(&true)
-        }
-        "/test/release-central" => {
-            let point: Point = request.json().await?;
-            if let Some(held) = object.controls.central_holds.borrow_mut().remove(&point) {
-                held.release();
-            }
-            Response::from_json(&true)
-        }
-        "/test/central-batch" => {
-            let batch = request.json::<OwnedBatch>().await?;
-            let policy = match &batch.alarm {
-                crate::store_wire::OwnedAlarmUpdate::SetEngineFromQuery { .. } => {
-                    AlarmPolicy::Engine(
-                        object.state.storage(),
-                        object.clock.clone(),
-                        fleet_runtime::engine_alarm_decider(object.due_batches.clone()),
-                    )
-                }
-                crate::store_wire::OwnedAlarmUpdate::Unchanged
-                | crate::store_wire::OwnedAlarmUpdate::SetFromQuery(_) => AlarmPolicy::Ignore,
-            };
-            Response::from_json(
-                &statement_store::run_batch(&object.connection, batch, policy).await,
-            )
-        }
-        "/test/central-read" => Response::from_json(
-            &statement_store::read(&object.connection, request.json::<OwnedStatement>().await?)
-                .await,
-        ),
-        "/test/store" => {
-            let store: Store = request.json().await?;
-            Response::from_json(
-                &crate::cloudflare_transport::call_store(&object.env, store.workspace, store.call)
-                    .await,
-            )
-        }
-        "/test/store-failing-upgrade" => {
-            let store: Store = request.json().await?;
-            Response::from_json(
-                &crate::cloudflare_transport::call_failing_workspace_store(
-                    &object.env,
-                    store.workspace,
-                    store.call,
-                )
-                .await,
-            )
-        }
-        "/test/reset-store" => {
-            let workspace: workspace_ids::WorkspaceId = request.json().await?;
-            let address = ObjectAddress::WorkspaceStore(workspace);
-            let headers = Headers::new();
-            crate::cloudflare_transport::address_header(&headers, &address)?;
-            let mut init = RequestInit::new();
-            init.with_method(Method::Post).with_headers(headers);
-            let response = crate::cloudflare_transport::stub(&object.env, &address)?
-                .fetch_with_request(Request::new_with_init(
-                    "https://central.internal/test/crash",
-                    &init,
-                )?)
-                .await;
-            Response::from_json(
-                &response
-                    .map(|response| response.status_code() != 200)
-                    .unwrap_or(true),
-            )
-        }
-        "/test/central-failing-upgrade" => Response::from_json(
-            &statement_store::migrate(
-                &object.connection,
-                std::sync::Arc::new(fleet_storage_schema::workspace_migrations::failing_upgrade(
-                    fleet_storage_schema::workspace_migrations::central_migrator(),
-                )),
-            )
-            .await
-            .map_err(|error| error.to_string()),
-        ),
-        "/test/lose-read" => {
-            object
-                .controls
-                .lose_read
-                .store(true, std::sync::atomic::Ordering::SeqCst);
-            Response::from_json(&true)
-        }
-        "/test/lose-reply" => {
-            runtime
-                .runtime()
-                .lose_reply_after_apply(request.json().await?);
-            Response::from_json(&true)
-        }
-        "/test/hold" => {
-            let target: Pause = request.json().await?;
-            let held = runtime
-                .runtime()
-                .pause_points()
-                .hold(&target.workspace, target.point.into());
-            object
-                .controls
-                .holds
-                .borrow_mut()
-                .insert((target.workspace, target.point), held);
-            Response::from_json(&true)
-        }
-        "/test/until-held" => {
-            let target: Pause = request.json().await?;
-            let key = (target.workspace, target.point);
-            let mut held = object
-                .controls
-                .holds
-                .borrow_mut()
-                .remove(&key)
-                .ok_or_else(|| error("point not armed"))?;
-            held.until_held().await;
-            object.controls.holds.borrow_mut().insert(key, held);
-            Response::from_json(&true)
-        }
-        "/test/guard-next-read" => {
-            let wait: Wait = request.json().await?;
-            object.controls.observations.borrow_mut().insert(
-                wait.workspace.clone(),
-                runtime
-                    .runtime()
-                    .pause_points()
-                    .hold(&wait.workspace, PausePoint::AfterReads),
-            );
-            Response::from_json(&true)
-        }
-        "/test/waiting-before-read" => {
-            let wait: Wait = request.json().await?;
-            let mut held = object
-                .controls
-                .observations
-                .borrow_mut()
-                .remove(&wait.workspace)
-                .ok_or_else(|| error("read observation not armed"))?;
-            let before_read = {
-                let read = held.until_held();
-                let waiting = runtime
-                    .runtime()
-                    .workspace_turns()
-                    .until_waiting(&wait.workspace, wait.count);
-                futures_util::pin_mut!(read, waiting);
-                matches!(
-                    futures_util::future::select(read, waiting).await,
-                    futures_util::future::Either::Right(_)
-                )
-            };
-            Response::from_json(&before_read)
-        }
-        "/test/crash" => {
-            object
-                .state
-                .block_concurrency_while(async {
-                    Err::<(), worker::Error>(error("workspace fixture crash"))
-                })
-                .await?;
-            Response::error("object did not reset", 500)
-        }
-        "/test/until-waiting" => {
-            let wait: Wait = request.json().await?;
-            runtime
-                .runtime()
-                .workspace_turns()
-                .until_waiting(&wait.workspace, wait.count)
-                .await;
-            Response::from_json(&true)
-        }
-        "/test/release" => {
-            let target: Pause = request.json().await?;
-            let held = object
-                .controls
-                .holds
-                .borrow_mut()
-                .remove(&(target.workspace, target.point));
-            if let Some(held) = held {
-                held.release();
-            }
-            Response::from_json(&true)
-        }
+        "/test/central-batch"
+        | "/test/central-read"
+        | "/test/engine-due-schedules"
+        | "/test/engine-due-system-expiries"
+        | "/test/store"
+        | "/test/store-failing-upgrade"
+        | "/test/reset-store"
+        | "/test/central-failing-upgrade"
+        | "/test/lose-read"
+        | "/test/lose-reply"
+        | "/test/hold"
+        | "/test/until-held"
+        | "/test/guard-next-read"
+        | "/test/waiting-before-read"
+        | "/test/crash"
+        | "/test/until-waiting"
+        | "/test/release" => workspace_store_cases::control(object, &runtime, &path, request).await,
         _ => Response::error("unknown workspace control", 404),
     }
 }
 
-const CLOCK_KEY: &str = "_workspace_test_clock_ms";
-const RECEIPT_KEY: &str = "_workspace_test_alarm_receipt";
-const ALARM_COUNT_KEY: &str = "_workspace_test_alarm_count";
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct AlarmReceipt {
-    organization: Option<OrganizationId>,
-    initialized_cold: bool,
-    alarm_before: Option<i64>,
-    alarm_after: Option<i64>,
-    result: AlarmReceiptResult,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-enum AlarmReceiptResult {
-    Applied {
-        wakes_fired: usize,
-        automations_fired: usize,
-        windows_fired: usize,
-        workspaces_drained: usize,
-    },
-    Error {
-        message: String,
-        failure: Option<central_storage::StoreFailure>,
-    },
-    Unprovisioned,
-}
-
-pub(super) async fn raw_control(object: &CentralObject, mut request: Request) -> Result<Response> {
-    let storage = object.state.storage();
-    match request.path().as_str() {
-        "/test/raw-alarm-count" => {
-            Response::from_json(&storage.get::<u64>(ALARM_COUNT_KEY).await?.unwrap_or(0))
-        }
-        "/test/raw-dispatch-due" => {
-            let now: i64 = request.json().await?;
-            // The platform scheduler uses its own time. Advance the test's one
-            // injected clock and dispatch only its actually retained deadline.
-            // A missing, later or cleared alarm must never fabricate a callback.
-            let due = storage.get_alarm().await?;
-            if due.is_none_or(|due| due > now) {
-                return Response::from_json(&false);
-            }
-            storage.put(CLOCK_KEY, &now).await?;
-            storage.delete(RECEIPT_KEY).await?;
-            object.clock.hold(now);
-            storage.set_alarm(0_i64).await?;
-            Response::from_json(&true)
-        }
-        "/test/raw-alarm-status" => {
-            Response::from_json(&storage.get::<AlarmReceipt>(RECEIPT_KEY).await?)
-        }
-        "/test/raw-until-alarm" => {
-            let (sender, receiver) = futures_channel::oneshot::channel();
-            object.controls.alarm_waiters.borrow_mut().push(sender);
-            if let Some(receipt) = storage.get::<AlarmReceipt>(RECEIPT_KEY).await? {
-                return Response::from_json(&receipt);
-            }
-            receiver
-                .await
-                .map_err(|_| error("alarm receipt wait interrupted"))?;
-            let receipt = storage
-                .get::<AlarmReceipt>(RECEIPT_KEY)
-                .await?
-                .ok_or_else(|| error("alarm receipt missing after notification"))?;
-            Response::from_json(&receipt)
-        }
-        "/test/raw-alarm-time" => Response::from_json(&storage.get_alarm().await?),
-        "/test/raw-drop-alarm" => {
-            storage.delete_alarm().await?;
-            Response::from_json(&true)
-        }
-        "/test/raw-probe-alarm" => {
-            let milliseconds: i64 = request.json().await?;
-            let prior = storage.get_alarm().await?;
-            let result: std::result::Result<Option<i64>, String> =
-                match chrono::DateTime::from_timestamp_millis(milliseconds) {
-                    Some(at) => match storage.set_alarm(at).await {
-                        Ok(()) => storage
-                            .get_alarm()
-                            .await
-                            .map_err(|failure| failure.to_string()),
-                        Err(failure) => Err(failure.to_string()),
-                    },
-                    None => Err("timestamp cannot be represented".to_owned()),
-                };
-            match prior {
-                Some(previous) => {
-                    let at = chrono::DateTime::from_timestamp_millis(previous)
-                        .ok_or_else(|| error("previous alarm timestamp cannot be represented"))?;
-                    storage.set_alarm(at).await?;
-                }
-                None => storage.delete_alarm().await?,
-            }
-            Response::from_json(&result)
-        }
-        "/test/raw-read" => {
-            let statement: OwnedStatement = request.json().await?;
-            if ![
-                "SELECT (SELECT COUNT(*) FROM automation_wakes WHERE state='active'), (SELECT COUNT(*) FROM automation_wakes WHERE state='done'), (SELECT COUNT(*) FROM mail_messages WHERE message_kind='wake')",
-                "SELECT id,organization_statement,created_at,updated_at FROM signin_organization_identity ORDER BY id",
-                "SELECT * FROM signin_change_records ORDER BY id",
-            ].contains(&statement.sql.as_str())
-                || !statement.args.is_empty()
-            {
-                return Err(error(
-                    "raw read only permits named corruption snapshots",
-                ));
-            }
-            Response::from_json(&statement_store::read(&object.connection, statement).await)
-        }
-        "/test/raw-clear-alarm-receipt" => Response::from_json(&storage.delete(RECEIPT_KEY).await?),
-        "/test/raw-set-stamps" => {
-            let rows: Vec<(String, String)> = request.json().await?;
-            if rows.len() > 2 {
-                return Err(error("at most two fixture stamps"));
-            }
-            let mut statements = vec![central_storage::GuardedStatement {
-                statement: central_storage::Statement {
-                    sql: "DELETE FROM signin_organization_identity",
-                    args: vec![],
-                },
-                expect: central_storage::RowExpectation::Any,
-            }];
-            for (id, statement) in rows {
-                statements.push(central_storage::GuardedStatement {
-                    statement: central_storage::Statement { sql: "INSERT INTO signin_organization_identity(id,organization_statement,created_at,updated_at) VALUES (?,?,0,0)", args: vec![central_storage::SqlValue::Text(id), central_storage::SqlValue::Text(statement)] },
-                    expect: central_storage::RowExpectation::Exactly(1),
-                });
-            }
-            let batch = central_storage::StatementBatch {
-                statements,
-                alarm: central_storage::AlarmUpdate::Unchanged,
-            };
-            let result =
-                statement_store::run_batch(&object.connection, batch.into(), AlarmPolicy::Ignore)
-                    .await;
-            Response::from_json(&result)
-        }
-        "/test/raw-arm-alarm" | "/test/raw-arm-cold-alarm" => {
-            let cold = request.path() == "/test/raw-arm-cold-alarm";
-            let now: i64 = request.json().await?;
-            storage.put(CLOCK_KEY, &now).await?;
-            storage.delete(RECEIPT_KEY).await?;
-            object.clock.hold(now);
-            storage.set_alarm(0_i64).await?;
-            if cold {
-                object
-                    .state
-                    .block_concurrency_while(async {
-                        Err::<(), worker::Error>(error("cold alarm fixture reset"))
-                    })
-                    .await?;
-                return Response::error("object did not reset", 500);
-            }
-            Response::from_json(&true)
-        }
-        _ => Response::error("unknown raw control", 404),
-    }
-}
-
-pub(super) async fn alarm_with_receipt(object: &CentralObject) -> Result<Response> {
-    let storage = object.state.storage();
-    let count = storage.get::<u64>(ALARM_COUNT_KEY).await?.unwrap_or(0);
-    storage
-        .put(ALARM_COUNT_KEY, &count.saturating_add(1))
-        .await?;
-    let alarm_before = storage.get_alarm().await?;
-    if let Some(now) = storage.get::<i64>(CLOCK_KEY).await? {
-        object.clock.hold(now);
-    }
-    let initialized_cold = object.runtime.lock().await.is_none();
-    let mut organization = None;
-    let outcome = async {
-        let Some((org, runtime)) = object.alarm_runtime().await? else {
-            return Ok(None);
-        };
-        organization = Some(org);
-        let result = runtime.after_event().await;
-        object.flush_ready_mail(&runtime).await;
-        result
-            .map(Some)
-            .map_err(|error| AlarmFailure::Store(error.failure))
-    }
-    .await;
-    let alarm_after = storage.get_alarm().await?;
-    let result = match &outcome {
-        Ok(Some(result)) => AlarmReceiptResult::Applied {
-            wakes_fired: result.work.wakes_fired,
-            automations_fired: result.work.automations_fired,
-            windows_fired: result.work.windows_fired,
-            workspaces_drained: result.work.workspaces_drained,
-        },
-        Ok(None) => AlarmReceiptResult::Unprovisioned,
-        Err(AlarmFailure::Store(failure)) => AlarmReceiptResult::Error {
-            message: failure.to_string(),
-            failure: Some(failure.clone()),
-        },
-        Err(AlarmFailure::Platform(failure)) => AlarmReceiptResult::Error {
-            message: failure.to_string(),
-            failure: None,
-        },
-    };
-    storage
-        .put(
-            RECEIPT_KEY,
-            &AlarmReceipt {
-                organization,
-                initialized_cold,
-                alarm_before,
-                alarm_after,
-                result,
-            },
-        )
-        .await?;
-    for waiter in std::mem::take(&mut *object.controls.alarm_waiters.borrow_mut()) {
-        let _ = waiter.send(());
-    }
-    match outcome {
-        Ok(_) => {}
-        Err(AlarmFailure::Store(failure)) => return Err(error(failure)),
-        Err(AlarmFailure::Platform(failure)) => return Err(failure),
-    }
-    Response::ok("alarm applied")
-}
+#[path = "workspace_raw_controls.rs"]
+mod raw_controls;
+pub(super) use raw_controls::{alarm_with_receipt, raw_control};

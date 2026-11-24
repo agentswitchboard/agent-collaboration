@@ -26,12 +26,12 @@ use collaboration_protocol::{
     ProviderOperationStage, ProviderReconciliationState, ProviderRequestedPolicy,
     ProviderWorkingDirectory, PushId, RouterAccess,
 };
-use collaboration_runtime::{
-    EndpointDirectory, ProviderOperationAdmission, ProviderOperationStore, ProviderSessionRecord,
-    SessionDeliveryRouter,
-};
+use collaboration_runtime::{EndpointDirectory, SessionDeliveryRouter};
 use serde_json::Value;
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{path::PathBuf, sync::Arc};
+use switchboard_session_store::{
+    ProviderOperationAdmission, ProviderOperationStore, ProviderSessionRecord,
+};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 #[path = "../support/provider_delivery_fixture.rs"]
@@ -45,6 +45,7 @@ use provider_delivery_fixture::{
 
 #[tokio::test]
 async fn cursor_steer_rejects_before_evidence_or_client_io() {
+    let fixture_clock = crate::provider_test_clock();
     let root = tempfile::tempdir().expect("provider root");
     let event_socket = root.path().join("busy-events.sock");
     let listener = tokio::net::UnixListener::bind(&event_socket).expect("fixture events");
@@ -54,6 +55,7 @@ async fn cursor_steer_rejects_before_evidence_or_client_io() {
     let runtime = ExternalProviderRuntime::initialize(
         cursor_prompt_fixture(&event_socket, &captured),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        fixture_clock.clone(),
     )
     .await
     .expect("fixture provider");
@@ -85,6 +87,7 @@ async fn cursor_steer_rejects_before_evidence_or_client_io() {
                 runtime,
             }],
             Arc::clone(&store),
+            fixture_clock.clone(),
         )
         .expect("supervisor"),
     );
@@ -100,7 +103,7 @@ async fn cursor_steer_rejects_before_evidence_or_client_io() {
         Arc::clone(&supervisor),
         store,
         Arc::new(NoLivePeer),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     );
 
     let first_evidence = RecordedEvidence(tokio::sync::Mutex::new(Vec::new()));
@@ -146,6 +149,7 @@ async fn cursor_steer_rejects_before_evidence_or_client_io() {
 
 #[tokio::test]
 async fn cursor_auto_queues_a_prepared_push_with_exact_line_and_push_id() {
+    let fixture_clock = crate::provider_test_clock();
     let root = tempfile::tempdir().expect("provider root");
     let event_socket = root.path().join("prompt-events.sock");
     let captured_prepared_prompt = root.path().join("prepared-prompt.json");
@@ -155,6 +159,7 @@ async fn cursor_auto_queues_a_prepared_push_with_exact_line_and_push_id() {
     let runtime = ExternalProviderRuntime::initialize(
         cursor_prompt_fixture(&event_socket, &captured_prepared_prompt),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        fixture_clock.clone(),
     )
     .await
     .expect("fixture provider");
@@ -179,6 +184,7 @@ async fn cursor_auto_queues_a_prepared_push_with_exact_line_and_push_id() {
         })
         .await
         .expect("session record");
+    let fixture_retirement = runtime.retirement();
     let supervisor = Arc::new(
         ExternalProviderSupervisor::new(
             vec![ExternalProviderBinding {
@@ -186,6 +192,7 @@ async fn cursor_auto_queues_a_prepared_push_with_exact_line_and_push_id() {
                 runtime,
             }],
             Arc::clone(&store),
+            fixture_clock.clone(),
         )
         .expect("supervisor"),
     );
@@ -202,7 +209,7 @@ async fn cursor_auto_queues_a_prepared_push_with_exact_line_and_push_id() {
         Arc::clone(&supervisor),
         store,
         Arc::new(NoLivePeer),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     ));
     let router = SessionDeliveryRouter::new(vec![route.clone()]);
     let first_evidence = RecordedEvidence(tokio::sync::Mutex::new(Vec::new()));
@@ -230,9 +237,8 @@ async fn cursor_auto_queues_a_prepared_push_with_exact_line_and_push_id() {
         .await
         .expect("first delivery")
         .into_receipt();
-    let (mut first_event, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
+    let (mut first_event, _) = crate::provider_socket_event(&listener, &fixture_retirement)
         .await
-        .expect("first event deadline")
         .expect("first event");
     let mut first_bytes = [0_u8; 5];
     first_event
@@ -292,9 +298,8 @@ async fn cursor_auto_queues_a_prepared_push_with_exact_line_and_push_id() {
         .write_all(b"x")
         .await
         .expect("release first prompt");
-    let (mut second_event, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
+    let (mut second_event, _) = crate::provider_socket_event(&listener, &fixture_retirement)
         .await
-        .expect("second event deadline")
         .expect("second event");
     let mut second_bytes = Vec::new();
     second_event
@@ -322,6 +327,7 @@ async fn cursor_auto_queues_a_prepared_push_with_exact_line_and_push_id() {
 
 #[tokio::test]
 async fn router_queued_reconciliation_uses_only_the_operation_store() {
+    let fixture_clock = crate::provider_test_clock();
     let root = tempfile::tempdir().expect("provider root");
     let target = target();
     let binding = provider_binding(&target);
@@ -331,7 +337,8 @@ async fn router_queued_reconciliation_uses_only_the_operation_store() {
             .expect("store"),
     ));
     let supervisor = Arc::new(
-        ExternalProviderSupervisor::new(Vec::new(), Arc::clone(&store)).expect("supervisor"),
+        ExternalProviderSupervisor::new(Vec::new(), Arc::clone(&store), fixture_clock.clone())
+            .expect("supervisor"),
     );
     let route = ProviderAcpDeliveryRoute::new(
         target.endpoint.service_id.clone(),
@@ -340,7 +347,7 @@ async fn router_queued_reconciliation_uses_only_the_operation_store() {
         supervisor,
         Arc::clone(&store),
         Arc::new(NoLivePeer),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     );
     let attempt = AttemptId::generate();
     let operation_id =
@@ -415,6 +422,7 @@ async fn router_queued_reconciliation_uses_only_the_operation_store() {
 
 #[tokio::test]
 async fn provider_load_auth_rejection_is_typed_without_session_new() {
+    let fixture_clock = crate::provider_test_clock();
     let root = tempfile::tempdir().expect("provider root");
     let load_marker = root.path().join("load-method.txt");
     let target = target();
@@ -422,6 +430,7 @@ async fn provider_load_auth_rejection_is_typed_without_session_new() {
     let runtime = ExternalProviderRuntime::initialize(
         refusing_load_fixture(&load_marker, -32000),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        fixture_clock.clone(),
     )
     .await
     .expect("fixture provider");
@@ -453,6 +462,7 @@ async fn provider_load_auth_rejection_is_typed_without_session_new() {
                 runtime,
             }],
             Arc::clone(&store),
+            fixture_clock.clone(),
         )
         .expect("supervisor"),
     );
@@ -463,7 +473,7 @@ async fn provider_load_auth_rejection_is_typed_without_session_new() {
         Arc::clone(&supervisor),
         store,
         Arc::new(NoLivePeer),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     ));
     assert_eq!(
         route.presence(&target).await.expect("provider presence"),
@@ -544,6 +554,7 @@ async fn provider_load_auth_rejection_is_typed_without_session_new() {
 
 #[tokio::test]
 async fn unadvertised_load_settles_not_submitted_without_sending_load() {
+    let fixture_clock = crate::provider_test_clock();
     // ACP v1 initialization.mdx:245 requires an advertisement for session/load.
     // R9 settles a cold delivery as unsupported: load without sending it.
     let root = tempfile::tempdir().expect("provider root");
@@ -552,6 +563,7 @@ async fn unadvertised_load_settles_not_submitted_without_sending_load() {
     let runtime = ExternalProviderRuntime::initialize(
         no_load_fixture(),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        fixture_clock.clone(),
     )
     .await
     .expect("fixture provider");
@@ -583,6 +595,7 @@ async fn unadvertised_load_settles_not_submitted_without_sending_load() {
                 runtime,
             }],
             Arc::clone(&store),
+            fixture_clock.clone(),
         )
         .expect("supervisor"),
     );
@@ -593,20 +606,17 @@ async fn unadvertised_load_settles_not_submitted_without_sending_load() {
         Arc::clone(&supervisor),
         store,
         Arc::new(NoLivePeer),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     );
     assert!(matches!(
         route.presence(&target).await.expect("provider presence"),
         RoutePresence::Unreachable { .. }
     ));
     let evidence = RecordedEvidence(tokio::sync::Mutex::new(Vec::new()));
-    let receipt = tokio::time::timeout(
-        Duration::from_secs(2),
-        route.deliver(request(target, "hello"), &evidence),
-    )
-    .await
-    .expect("delivery cannot wait on unsupported load")
-    .expect("delivery receipt");
+    let receipt = route
+        .deliver(request(target, "hello"), &evidence)
+        .await
+        .expect("delivery receipt");
     assert_eq!(
         receipt.unsent_cause(),
         Some(collaboration_contracts::UnsentCause::Refused(
@@ -630,6 +640,7 @@ async fn unadvertised_load_settles_not_submitted_without_sending_load() {
 
 #[tokio::test]
 async fn coded_provider_load_errors_keep_correlations_and_do_not_expose_acp_text() {
+    let fixture_clock = crate::provider_test_clock();
     for (error_code, expected_kind, expected_reason, expected_explanation, code_label) in [
         (
             -32002,
@@ -681,6 +692,7 @@ async fn coded_provider_load_errors_keep_correlations_and_do_not_expose_acp_text
         let runtime = ExternalProviderRuntime::initialize(
             refusing_load_fixture(&load_marker, error_code),
             std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+            fixture_clock.clone(),
         )
         .await
         .expect("fixture provider");
@@ -713,6 +725,7 @@ async fn coded_provider_load_errors_keep_correlations_and_do_not_expose_acp_text
                     runtime,
                 }],
                 Arc::clone(&store),
+                fixture_clock.clone(),
             )
             .expect("supervisor"),
         );
@@ -723,7 +736,7 @@ async fn coded_provider_load_errors_keep_correlations_and_do_not_expose_acp_text
             Arc::clone(&supervisor),
             Arc::clone(&store),
             Arc::new(NoLivePeer),
-            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+            fixture_clock.clone(),
         );
         let evidence = RecordedEvidence(tokio::sync::Mutex::new(Vec::new()));
 

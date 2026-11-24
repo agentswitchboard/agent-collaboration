@@ -1,12 +1,21 @@
 //! Bind listeners, prepare service owners and start the Host runtime.
+use super::message_startup::HostCustodyEvents;
 use super::{
     BackendPublication, BoundCollaborationApi, CancellationToken, CollaborationRuntime,
-    CollaborationRuntimeInputs, EndpointAvailability, EndpointId, EndpointRef,
-    HostCollaborationInputs, JoinSet, NativeRelayListener, NonEmptyText, RemoteControlServerName,
-    RouterExecutableRelation, SchemaDigest, SocketAddr, create_private_socket_directory,
-    current_observation_timestamp, io, load_installation_peer, load_service_identity,
-    new_service_uuid, unix_seconds,
+    CollaborationRuntimeInputs, EndpointId, EndpointRef, HostCollaborationInputs, JoinSet,
+    NativeRelayListener, NonEmptyText, RemoteControlServerName, RouterExecutableRelation,
+    SchemaDigest, SocketAddr, create_private_socket_directory, io, load_installation_peer,
+    load_service_identity, new_service_uuid,
 };
+use collaboration_service::collaboration_application::message_operations::MessageOperations;
+use std::sync::Arc;
+use switchboard_message_custody::recipient_sessions::{
+    CombinedRecipientSessionDirectory, RecipientSessionSources,
+};
+use switchboard_message_system::{MessageRoots, MessageSystem, MessageSystemEvents};
+
+#[cfg(test)]
+pub(crate) type BeforeProviderRetention = Box<dyn FnOnce(&CollaborationRuntime) + Send>;
 
 impl CollaborationRuntime {
     /// Binds both private listeners before spawning tasks. No native process is started.
@@ -27,6 +36,7 @@ impl CollaborationRuntime {
             None,
             None,
             std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+            None,
         ))
         .await
     }
@@ -35,20 +45,55 @@ impl CollaborationRuntime {
         host_inputs: HostCollaborationInputs,
         provider_launches: Vec<crate::ExternalProviderStartup>,
         router_executable_check: std::sync::Arc<dyn collaboration_mcp::RouterExecutableCheck>,
+        worker_clock: std::sync::Arc<dyn router_clock::RuntimeClock>,
+        #[cfg(test)] before_retention: Option<BeforeProviderRetention>,
     ) -> io::Result<Self> {
+        let composition_started_at = worker_clock.monotonic_now();
+        crate::debug_readiness_timing::record_with_clock(
+            "collaborationRuntimeBegin",
+            composition_started_at,
+            worker_clock.as_ref(),
+        );
         let prepared_exposure = crate::tailscale_exposure::PreparedTailscaleExposure::prepare(
             host_inputs.remote_access,
         )
         .await?;
-        Box::pin(Self::start_with_optional_router_proxy_endpoint(
+        let mut runtime = Box::pin(Self::start_with_optional_router_proxy_endpoint(
             host_inputs.collaboration_runtime,
             provider_launches,
             router_executable_check,
             Some(host_inputs.router_proxy_endpoint),
             prepared_exposure,
-            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+            worker_clock.clone(),
+            host_inputs.message_roots,
         ))
-        .await
+        .await?;
+        crate::debug_readiness_timing::record_with_clock(
+            "collaborationRuntimeReady",
+            composition_started_at,
+            worker_clock.as_ref(),
+        );
+        #[cfg(test)]
+        if let Some(before_retention) = before_retention {
+            before_retention(&runtime);
+        }
+        let retention_started_at = worker_clock.monotonic_now();
+        if let Err(error) = runtime
+            .configure_provider_operation_retention(host_inputs.provider_operation_retention_days)
+            .await
+        {
+            let cleanup = runtime.shutdown().await;
+            return Err(match cleanup {
+                Ok(()) => error,
+                Err(cleanup) => io::Error::other(format!("{error}; startup cleanup: {cleanup}")),
+            });
+        }
+        crate::debug_readiness_timing::record_with_clock(
+            "providerRetentionConfigured",
+            retention_started_at,
+            worker_clock.as_ref(),
+        );
+        Ok(runtime)
     }
 
     #[cfg(feature = "runtime-test-support")]
@@ -74,6 +119,7 @@ impl CollaborationRuntime {
             None,
             None,
             worker_clock,
+            None,
         ))
         .await
     }
@@ -85,6 +131,7 @@ impl CollaborationRuntime {
         router_proxy_endpoint: Option<SocketAddr>,
         prepared_exposure: Option<crate::tailscale_exposure::PreparedTailscaleExposure>,
         worker_clock: std::sync::Arc<dyn router_clock::RuntimeClock>,
+        message_roots: Option<MessageRoots>,
     ) -> io::Result<Self> {
         let mut owner_human_id = inputs.owner_human_id.clone();
         let service_id = load_service_identity(&inputs.directory)?;
@@ -128,7 +175,7 @@ impl CollaborationRuntime {
             .map_err(io::Error::other)?;
             let journal = std::sync::Arc::new(lifecycle_observation::LifecycleStore::new(database));
             journal
-                .prepare(unix_seconds()?)
+                .prepare(worker_clock.utc_now().timestamp())
                 .await
                 .map_err(io::Error::other)?;
             Ok::<_, io::Error>(journal)
@@ -149,7 +196,7 @@ impl CollaborationRuntime {
         )
         .map_err(io::Error::other)?;
         let endpoint_directory = collaboration_runtime::EndpointDirectory::new(service_id.clone());
-        let provider_store = match collaboration_runtime::ProviderOperationStore::open(
+        let provider_store = match switchboard_session_store::ProviderOperationStore::open(
             &inputs.directory.join("provider-operations.sqlite"),
         )
         .await
@@ -187,6 +234,19 @@ impl CollaborationRuntime {
         )
         .await?;
         let provider_face_endpoints = startup.endpoints.clone();
+        let claude_endpoint_id =
+            EndpointId::try_from("claude-local".to_owned()).map_err(io::Error::other)?;
+        let managed_claude_endpoint = startup
+            .endpoints
+            .iter()
+            .find(|description| {
+                description.endpoint.endpoint_id == claude_endpoint_id
+                    && matches!(
+                        description.availability,
+                        collaboration_protocol::EndpointAvailability::Available { .. }
+                    )
+            })
+            .map(|description| description.endpoint.clone());
         let provider_retirements = startup.retirements;
         let external_provider_supervisor = startup.supervisor;
         let provider_session_hub = startup.hub;
@@ -312,6 +372,7 @@ impl CollaborationRuntime {
                         hub as std::sync::Arc<dyn collaboration_contracts::SessionEventHub>
                     }),
                     endpoint_directory.clone(),
+                    worker_clock.clone(),
                 );
             collaboration_service::CollaborationApplication::new(
                 identity.clone(),
@@ -336,7 +397,7 @@ impl CollaborationRuntime {
             service_id.clone(),
             publication.admission_gate(),
             stored,
-            unmaterialized_threads,
+            unmaterialized_threads.clone(),
             crate::codex_conversation_recording_composition::adapter_recorder(codex_recorder),
             std::sync::Arc::clone(&open_scratch_scopes)
                 as std::sync::Arc<dyn codex_acp_adapter::ScratchScopeRegister>,
@@ -398,7 +459,7 @@ impl CollaborationRuntime {
                     std::sync::Arc::clone(&commands),
                     std::sync::Arc::clone(&events),
                     std::sync::Arc::new(
-                        crate::provider_model_catalog::SupervisorModelCatalog::new(
+                        crate::provider_model_catalog_adapter::SupervisorModelCatalog::new(
                             std::sync::Arc::clone(supervisor),
                         ),
                     ),
@@ -443,6 +504,71 @@ impl CollaborationRuntime {
                 router_proxy_endpoint,
             },
         )?;
+        let (message_system, message_tools) = match message_roots {
+            Some(roots) => {
+                let custody_events = Arc::new(HostCustodyEvents);
+                let recipient_directory = Arc::new(CombinedRecipientSessionDirectory::new(
+                    RecipientSessionSources {
+                        codex: Arc::new(
+                            crate::recipient_session_inventory::CodexSessionInventory::new(
+                                inputs.codex_home.clone(),
+                                unmaterialized_threads.clone(),
+                                publication.admission_gate(),
+                            ),
+                        ),
+                        managed_providers: Arc::new(
+                            crate::recipient_session_inventory::ManagedProviderSessionInventory::new(
+                                service_id.clone(),
+                                provider_store.clone(),
+                                external_provider_supervisor.clone(),
+                            )
+                            .map_err(io::Error::other)?,
+                        ),
+                        claude_terminal: Arc::new(
+                            crate::recipient_session_inventory::ClaudeTerminalSessionInventory::new(
+                                claude_code_sessions,
+                                worker_clock.clone(),
+                                custody_events.clone(),
+                            ),
+                        ),
+                    },
+                ));
+                let events = MessageSystemEvents::new(custody_events);
+                let events = match (
+                    external_provider_supervisor.clone(),
+                    managed_claude_endpoint,
+                ) {
+                    (Some(supervisor), Some(endpoint)) => {
+                        events.with_managed_notice(move |machine| {
+                            Arc::new(crate::ManagedClaudeNoticeAdapter::new(
+                                supervisor.clone(),
+                                machine.clone(),
+                                endpoint.clone(),
+                            ))
+                        })
+                    }
+                    _ => events,
+                };
+                let system = MessageSystem::start(
+                    roots,
+                    worker_clock.clone(),
+                    recipient_directory.clone(),
+                    events,
+                );
+                let front = system.front();
+                let admission = super::message_startup::v0_message_admission(
+                    front.clone(),
+                    recipient_directory,
+                    worker_clock.clone(),
+                );
+                (
+                    Some(system),
+                    MessageOperations::new(admission, Arc::new(front), worker_clock.clone()),
+                )
+            }
+            None => (None, MessageOperations::default()),
+        };
+        let application = application.with_messages(message_tools);
         let shutdown = CancellationToken::new();
         let collaboration_api =
             collaboration_api.serve(&collaboration_mcp::CollaborationApiConfig {
@@ -460,23 +586,15 @@ impl CollaborationRuntime {
         for app_server in provider_app_servers {
             tasks.spawn(app_server.run(shutdown.clone()));
         }
-        for (retirement, mut description) in provider_retirements {
-            let directory = endpoint_directory.clone();
-            provider_retirement_tasks.spawn(async move {
-                retirement.cancelled().await;
-                description.availability = EndpointAvailability::Unavailable {
-                    observed_at: current_observation_timestamp()?,
-                    reason: NonEmptyText::try_from("provider process retired".to_owned())
-                        .map_err(io::Error::other)?,
-                    fix: Some(
-                        NonEmptyText::try_from(
-                            "restart the Host to relaunch the provider".to_owned(),
-                        )
-                        .map_err(io::Error::other)?,
-                    ),
-                };
-                directory.publish(description)
-            });
+        for (retirement, description) in provider_retirements {
+            provider_retirement_tasks.spawn(
+                crate::provider_startup_composition::publish_provider_retirement(
+                    retirement,
+                    description,
+                    endpoint_directory.clone(),
+                    worker_clock.clone(),
+                ),
+            );
         }
         let maintenance = journal.as_ref().map(|journal| {
             let maintenance_store = std::sync::Arc::clone(journal);
@@ -490,6 +608,7 @@ impl CollaborationRuntime {
         });
         let mut runtime = Self {
             clock: worker_clock,
+            message_system,
             installation_peer,
             owner_human_id,
             provider_store,
@@ -500,6 +619,8 @@ impl CollaborationRuntime {
             provider_delivery_route,
             session_delivery_router,
             provider_retention: None,
+            #[cfg(test)]
+            provider_retention_observation: None,
             open_scratch_scopes,
             scratch_sweep: None,
             directory: inputs.directory,
@@ -546,3 +667,7 @@ impl CollaborationRuntime {
         Ok(runtime)
     }
 }
+
+#[cfg(test)]
+#[path = "startup_composition_test.rs"]
+mod tests;

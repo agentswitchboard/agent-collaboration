@@ -7,16 +7,17 @@ use central_storage::{
     AlarmUpdate, BatchOutcome, GuardedStatement, RowExpectation, SqlValue, Statement,
     StatementBatch,
 };
+use collaboration_central_conformance::fixture_link_reader::read_fixture_frame;
 use collaboration_central_conformance::{ConformanceResult as Result, signin_fixtures as signed};
-use collaboration_central_core::identity_contract::{
+use fleet_contracts::{
     DecideDeviceLogin, DecideMachineToken, DeviceLoginDecision, MachineTokenDecision,
-    ProvisionOrganization, ProvisionOrganizationResult,
 };
+use fleet_contracts::{ProvisionOrganization, ProvisionOrganizationResult};
 use fleet_identity_protocol::{EnrollmentId, OrganizationId};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::SinkExt;
 use reqwest_websocket::{CloseCode, Message, RequestBuilderExt, WebSocket};
 use router_clock::ManualClock;
-use runtime_primitives::{Clock, SyncTime};
+use runtime_primitives::SyncTime;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;
 use std::sync::Arc;
@@ -49,6 +50,14 @@ pub(super) struct Fixture {
 
 impl Fixture {
     pub async fn new() -> Result<Self> {
+        Self::open(true).await
+    }
+
+    pub async fn with_production_dispatcher() -> Result<Self> {
+        Self::open(false).await
+    }
+
+    async fn open(fixture_link_calls: bool) -> Result<Self> {
         let keys = signed::SignInKeys::start().await?;
         let root = tempfile::Builder::new()
             .prefix("c2-machine-link-")
@@ -60,8 +69,9 @@ impl Fixture {
             "CENTRAL_SIGN_IN_ISSUER":signed::ISSUER,"CENTRAL_SIGN_IN_AUDIENCE":signed::AUDIENCE,
             "CENTRAL_MACHINE_AUDIENCE":signed::MACHINE_AUDIENCE,
             "CENTRAL_SIGN_IN_JWKS_URL":"https://signin.test/.well-known/jwks.json",
-            "CENTRAL_ADMIN_AUDIENCE":signed::ADMIN_AUDIENCE,"CENTRAL_PUBLIC_ORIGIN":signed::PUBLIC_ORIGIN,
-            "CENTRAL_SIGN_IN_SERVICE_ID":"019f0000-0000-7000-8000-00000000cf04"
+            "CENTRAL_ADMIN_AUDIENCE":signed::ADMIN_AUDIENCE,"CENTRAL_PERSON_LINK_AUDIENCE":format!("{}/audiences/central-person-link", signed::ISSUER),"CENTRAL_PUBLIC_ORIGIN":signed::PUBLIC_ORIGIN,
+            "CENTRAL_SIGN_IN_SERVICE_ID":"019f0000-0000-7000-8000-00000000cf04",
+            "TEST_SUPPORT_LINK_CALLS":if fixture_link_calls { "legacy" } else { "production" }
         },"jwksFixtureUrl":keys.url}))?,
         )?;
         let clock = Arc::new(ManualClock::starting_at(SyncTime::from_unix_millis(
@@ -143,38 +153,26 @@ impl Fixture {
 
     pub async fn allow_workspace(&self, workspace: &WorkspaceId) -> Result<()> {
         // This is an allowance precondition, not proof of an admin authorization journey.
-        let timestamp = chrono::DateTime::from_timestamp_millis(self.clock.now().unix_millis())
-            .ok_or("fixture UTC")?;
-        let result = self.runtime().run_batch(StatementBatch {
-            statements: vec![GuardedStatement {
-                statement: Statement {
-                    sql:"UPDATE login_machines SET allowed_workspaces=?,updated_at=? WHERE machine_id=?",
-                    args:vec![SqlValue::Text(serde_json::to_string(&vec![workspace])?),SqlValue::Text(timestamp.to_rfc3339()),SqlValue::Text(MACHINE_ID.into())],
-                }, expect:RowExpectation::Exactly(1),
-            }], alarm:AlarmUpdate::Unchanged,
-        }).await?;
+        let result = self
+            .runtime()
+            .run_batch(StatementBatch {
+                statements: vec![GuardedStatement {
+                    statement: Statement {
+                        sql: collaboration_central_conformance::REPLACE_FIXTURE_ALLOWANCES_SQL,
+                        args: vec![
+                            SqlValue::Text(serde_json::to_string(&vec![workspace])?),
+                            SqlValue::Text(MACHINE_ID.into()),
+                        ],
+                    },
+                    expect: RowExpectation::Exactly(1),
+                }],
+                alarm: AlarmUpdate::Unchanged,
+            })
+            .await?;
         if !matches!(result, BatchOutcome::Applied { .. }) {
             return Err("fixture allowance precondition failed".into());
         }
         Ok(())
-    }
-
-    pub async fn supersede(&self) -> Result<()> {
-        let next = approve(
-            &self.host,
-            &self.client,
-            "019f0000-0000-7000-8000-00000000cf06",
-            self.host.now_seconds(),
-        )
-        .await?;
-        match grant(&self.host, &self.client, &next).await? {
-            MachineTokenDecision::Grant {
-                enrollment_id,
-                superseded: Some(ended),
-                ..
-            } if enrollment_id == next && ended.enrollment_id == self.enrollment => Ok(()),
-            _ => Err("real second grant did not supersede the original enrollment".into()),
-        }
     }
 
     pub async fn close(self) -> Result<()> {
@@ -205,15 +203,25 @@ async fn post<Answer: DeserializeOwned>(
     Ok(response.json().await?)
 }
 
-async fn approve(
+pub(super) async fn approve(
     host: &WorkerdHost,
     client: &reqwest::Client,
     request_id: &str,
     now: i64,
 ) -> Result<EnrollmentId> {
+    approve_machine(host, client, MACHINE_ID, request_id, now).await
+}
+
+pub(super) async fn approve_machine(
+    host: &WorkerdHost,
+    client: &reqwest::Client,
+    machine_id: &str,
+    request_id: &str,
+    now: i64,
+) -> Result<EnrollmentId> {
     let request: DecideDeviceLogin = serde_json::from_value(json!({
         "organizationId":ORGANIZATION,"approver":signed::OWNER,"permissionChecked":"machine:enroll",
-        "requestId":request_id,"machineId":MACHINE_ID,"label":"Hibernating machine",
+        "requestId":request_id,"machineId":machine_id,"label":"Hibernating machine",
         "allowedWorkspaces":[],"approverSecondFactorAt":now-60,"codeExpiresAt":now+600,
     }))?;
     match post(host, client, "/internal/device-login-decisions", &request).await? {
@@ -222,7 +230,7 @@ async fn approve(
     }
 }
 
-async fn grant(
+pub(super) async fn grant(
     host: &WorkerdHost,
     client: &reqwest::Client,
     enrollment: &EnrollmentId,
@@ -251,6 +259,7 @@ impl ConnectedLink {
         let Some(ClientAction::Connect { attempt }) = client.poll_time() else {
             return Err("ordinary client did not start a connection".into());
         };
+        client.dial_started(&attempt)?;
         let mut socket = fixture
             .client
             .get(fixture.link_url(ORGANIZATION))
@@ -261,9 +270,13 @@ impl ConnectedLink {
             .into_websocket()
             .await?;
         let welcome = receive(&mut socket).await?;
-        if client.receive(&attempt, LinkFrame::Data(welcome.clone()))? != ClientEvent::Welcomed {
+        if !matches!(
+            client.receive(&attempt, LinkFrame::Data(welcome.clone()))?,
+            ClientEvent::Welcomed { .. }
+        ) {
             return Err("ordinary client did not accept Welcome".into());
         }
+        client.ready(&attempt)?;
         Ok(Self {
             socket,
             welcome,
@@ -365,9 +378,8 @@ pub(super) async fn send(socket: &mut WebSocket, frame: &DataFrame) -> Result<()
 }
 
 pub(super) async fn receive(socket: &mut WebSocket) -> Result<DataFrame> {
-    let message = socket
-        .next()
-        .await
+    let message = read_fixture_frame(socket, "fixture link frame")
+        .await?
         .ok_or("machine link ended before Reply")??;
     let Message::Text(text) = message else {
         return Err("machine link returned a non-text frame".into());

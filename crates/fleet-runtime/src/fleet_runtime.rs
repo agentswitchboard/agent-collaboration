@@ -45,6 +45,8 @@ pub struct FleetRuntime<Host: CentralStore, Stores: WorkspaceStores> {
     #[cfg(feature = "test-support")]
     pauses: crate::PausePoints,
     #[cfg(feature = "test-support")]
+    test_faults: crate::TestFaults,
+    #[cfg(feature = "test-support")]
     legacy_invocations: std::sync::Mutex<LegacyUnitInvocations>,
     #[cfg(feature = "test-support")]
     lost_answers: std::sync::Mutex<std::collections::BTreeSet<workspace_model::RequestId>>,
@@ -86,9 +88,17 @@ impl<Host: CentralStore, Stores: WorkspaceStores> FleetRuntime<Host, Stores> {
             #[cfg(feature = "test-support")]
             pauses: crate::PausePoints::default(),
             #[cfg(feature = "test-support")]
+            test_faults: crate::TestFaults::default(),
+            #[cfg(feature = "test-support")]
             lost_answers: Default::default(),
         }
     }
+    /// Runtime-owned fault state for reached operations, separate from host storage faults.
+    #[cfg(feature = "test-support")]
+    pub fn test_faults(&self) -> &crate::TestFaults {
+        &self.test_faults
+    }
+
     pub fn organization(&self) -> &OrganizationId {
         &self.organization
     }
@@ -145,6 +155,14 @@ impl<Host: CentralStore, Stores: WorkspaceStores> FleetRuntime<Host, Stores> {
 
     pub fn alarm_schedule<Deadline: Copy>(&self) -> AlarmSchedule<Deadline> {
         AlarmSchedule::new()
+    }
+
+    pub fn shared_clock(&self) -> Arc<dyn Clock> {
+        self.clock.clone()
+    }
+
+    pub fn shared_ids(&self) -> Arc<dyn IdSource> {
+        self.ids.clone()
     }
 
     pub fn statement_host(&self) -> &Host {
@@ -297,6 +315,11 @@ impl<Host: CentralStore, Stores: WorkspaceStores> FleetRuntime<Host, Stores> {
             )),
         }
     }
+    /// Borrow the transport to the owning workspace objects.
+    pub fn workspace_stores(&self) -> &Stores {
+        &self.stores
+    }
+
     pub async fn batch_workspace(
         &self,
         workspace: &WorkspaceId,

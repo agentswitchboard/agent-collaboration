@@ -17,12 +17,14 @@ fn authentication_fixture(receipt: &std::path::Path) -> ExternalProviderLaunch {
 /// connection model discovery also requires the authenticated connection.
 #[tokio::test]
 async fn initialization_authentication_precedes_models_and_is_once_per_connection() -> TestResult {
+    let fixture_clock = crate::provider_test_clock();
     // Arrange: an existing scripted peer requires the real Cursor handshake.
     let root = tempfile::tempdir()?;
     let receipt = root.path().join("requests.log");
     let initialized = ExternalProviderRuntime::initialize(
         authentication_fixture(&receipt),
         Arc::new(acp_provider_adapters::CursorAcpBehavior),
+        fixture_clock.clone(),
     )
     .await;
     let runtime = match initialized {
@@ -46,6 +48,7 @@ async fn initialization_authentication_precedes_models_and_is_once_per_connectio
             runtime,
         }],
         store.clone(),
+        fixture_clock.clone(),
     )?;
     // Act: two sessions share this one initialized connection.
     let first = backend
@@ -69,7 +72,7 @@ async fn initialization_authentication_precedes_models_and_is_once_per_connectio
         store
             .lock()
             .await
-            .record_session(&collaboration_runtime::ProviderSessionRecord {
+            .record_session(&switchboard_session_store::ProviderSessionRecord {
                 target: target.clone(),
                 working_directory: ProviderWorkingDirectory::try_from(
                     root.path().display().to_string(),

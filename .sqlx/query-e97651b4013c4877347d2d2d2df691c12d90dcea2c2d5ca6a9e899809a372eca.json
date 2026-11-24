@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE signin_organization_identity SET organization_statement=?,updated_at=? WHERE id=? AND organization_statement=? AND ?>=? AND ?<?\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 8
+    },
+    "nullable": []
+  },
+  "hash": "e97651b4013c4877347d2d2d2df691c12d90dcea2c2d5ca6a9e899809a372eca"
+}

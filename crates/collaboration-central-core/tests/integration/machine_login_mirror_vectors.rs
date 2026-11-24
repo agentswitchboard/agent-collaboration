@@ -1,10 +1,10 @@
 //! Exact issuer-owned vectors from switchboard b1c9f6f6, with no local verdict changes.
 //! The pinned source bytes stay intact. Contract 1 changes only the machine identity fields.
-use collaboration_central_core::identity_contract::{
+use collaboration_central_core::OrganizationChangeRecord;
+use fleet_contracts::{
     DecideDeviceLogin, DecideMachineToken, DeviceLoginDecision, DeviceLoginRefusal,
     MachineTokenDecision, MachineTokenRefusal,
 };
-use collaboration_central_core::organization_authority::OrganizationChangeRecord;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -109,6 +109,16 @@ fn check(vector: &Vector) -> Result<(), String> {
         "DecideMachineToken" => judge::<DecideMachineToken>(vector),
         "MachineTokenDecision" => judge::<MachineTokenDecision>(vector),
         "MachineTokenRefusal" => judge::<MachineTokenRefusal>(vector),
+        "OrganizationChangeRecord"
+            if matches!(vector, Vector::Accept { .. })
+                && vector.input()["kind"] == "allowanceChanged" =>
+        {
+            if serde_json::from_value::<OrganizationChangeRecord>(vector.input().clone()).is_err() {
+                Ok(())
+            } else {
+                Err("D7 retired the historical allowanceChanged variant".to_owned())
+            }
+        }
         "OrganizationChangeRecord" => judge::<OrganizationChangeRecord>(vector),
         other => Err(format!("unmapped central contract: {other}")),
     }

@@ -1,0 +1,40 @@
+[package]
+name = "switchboard-message-system"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+autotests = false
+
+[lints]
+workspace = true
+
+[features]
+test-support = []
+
+[dependencies]
+central-link-protocol.workspace = true
+collaboration-protocol = { path = "../collaboration-protocol", version = "0.1.158" }
+futures-util.workspace = true
+router-clock.workspace = true
+serde.workspace = true
+state-machine-core.workspace = true
+switchboard-central-link.workspace = true
+switchboard-link-lease.workspace = true
+switchboard-machine-core-store.workspace = true
+switchboard-machine-enrollment = { path = "../switchboard-machine-enrollment", version = "0.1.158" }
+switchboard-machine-enrollment-store = { path = "../switchboard-machine-enrollment-store", version = "0.1.158" }
+switchboard-message-custody.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+url.workspace = true
+uuid = { version = "1.26.0", default-features = false }
+workspace-model.workspace = true
+
+[dev-dependencies]
+hegel = { package = "hegeltest", version = "=0.52.6", features = ["static-engine"] }
+
+[[test]]
+name = "integration"
+path = "tests/integration/main.rs"

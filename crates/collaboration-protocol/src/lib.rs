@@ -1,5 +1,6 @@
 //! Public communication contracts without process, storage or transport ownership.
 mod cli_output_contract;
+pub mod message_tools;
 pub use cli_output_contract::{
     ConversationRecord, ConversationTerminalReason, EffortChange, FiniteCommandRecord,
     NativeObservationRecord, ObservationCloseReason,
@@ -72,7 +73,7 @@ pub use native_claude_inventory::{
 pub use session_observation_contract::{
     BoundedObservationRequest, BoundedObservationResult, OBSERVATION_EVENT_NOTIFICATION,
     ObservationCursor, ObservationEndReason, ObservationEventNotification,
-    ProviderObservationEventTooLarge, ProviderObservationEventTooLargeKind,
+    ProviderObservationEventTooLarge, ProviderObservationEventTooLargeKind, ProviderSnapshotMarker,
 };
 mod backend_generation;
 mod delivery_rejection;

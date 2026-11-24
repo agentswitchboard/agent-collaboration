@@ -9,20 +9,41 @@ mod negative_literals;
 #[path = "read_literals.rs"]
 mod read_literals;
 #[cfg(test)]
-use crate::schema_validation;
+use super::schema_validation;
 
 pub fn assert_contract<T: JsonSchema + Serialize + DeserializeOwned>(
     name: &str,
     literals: Vec<Value>,
     open_root: bool,
 ) {
-    let schema = serde_json::to_value(
-        SchemaSettings::draft2020_12()
-            .for_serialize()
-            .into_generator()
-            .into_root_schema_for::<T>(),
-    )
-    .unwrap();
+    assert_contract_for::<T>(
+        name,
+        literals,
+        open_root,
+        SchemaSettings::draft2020_12().for_serialize(),
+    );
+}
+
+pub fn assert_request_contract<T: JsonSchema + Serialize + DeserializeOwned>(
+    name: &str,
+    literals: Vec<Value>,
+) {
+    assert_contract_for::<T>(
+        name,
+        literals,
+        false,
+        SchemaSettings::draft2020_12().for_deserialize(),
+    );
+}
+
+fn assert_contract_for<T: JsonSchema + Serialize + DeserializeOwned>(
+    name: &str,
+    literals: Vec<Value>,
+    open_root: bool,
+    settings: SchemaSettings,
+) {
+    let schema =
+        serde_json::to_value(settings.into_generator().into_root_schema_for::<T>()).unwrap();
     let validator = schema_validation::contract_validator(&schema).unwrap();
     assert_eq!(
         T::schema_name(),

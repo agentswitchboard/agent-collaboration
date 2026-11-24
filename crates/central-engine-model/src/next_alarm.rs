@@ -3,6 +3,10 @@ use crate::{DueBatchPolicy, EngineTime};
 pub const MAX_ALARM_UNIX_MILLIS: i64 = 9_223_372_036_854;
 const FIVE_MINUTE_MILLIS: i64 = 300_000;
 
+/// The last five-minute mark supported by the portable Central clock.
+pub const LAST_ALARM_GRID_UNIX_MILLIS: i64 =
+    MAX_ALARM_UNIX_MILLIS - MAX_ALARM_UNIX_MILLIS % FIVE_MINUTE_MILLIS;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AlarmInputs {
     pub now: EngineTime,
@@ -46,10 +50,7 @@ pub fn next_five_minute_mark(now: EngineTime) -> Result<EngineTime, AlarmDecisio
 
 /// Combine pending times after an event; an idle object has no alarm.
 pub fn next_alarm(inputs: &AlarmInputs, policy: &DueBatchPolicy) -> AlarmDecision {
-    if inputs.earliest_on_grid_due.is_none()
-        && inputs.earliest_legacy_due.is_none()
-        && !inputs.leftovers_beyond_cap
-    {
+    if inputs.earliest_on_grid_due.is_none() && inputs.earliest_legacy_due.is_none() {
         return AlarmDecision::Clear;
     }
     if !supported_time(inputs.now)

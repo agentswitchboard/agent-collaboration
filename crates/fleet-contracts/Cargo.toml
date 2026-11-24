@@ -10,9 +10,15 @@ description = "Shared vocabulary and interfaces for FleetRuntime features"
 [lints]
 workspace = true
 
+[features]
+wire-export = ["dep:specta","fleet-identity-protocol/wire-export","message-board/wire-export","workspace-ids/wire-export"]
+
 [dependencies]
+approval-request-protocol.workspace = true
 central-engine-model.workspace = true
+central-link-protocol.workspace = true
 central-storage.workspace = true
+fleet-rpc.workspace = true
 fleet-identity-protocol = { path = "../fleet-identity-protocol", version = "0.1.156" }
 fleet-runtime-ports.workspace = true
 message-board = { version = "0.1.93", path = "../message-board" }
@@ -21,3 +27,9 @@ serde.workspace = true
 thiserror.workspace = true
 workspace-ids.workspace = true
 workspace-model.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+specta = { workspace = true, features = ["derive"], optional = true }

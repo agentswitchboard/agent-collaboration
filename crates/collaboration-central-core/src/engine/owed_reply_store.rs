@@ -5,8 +5,9 @@ use super::machines::owed_reply::{Effect, Finish, OwedReply, State};
 use central_engine_model::{EngineTime, InstanceKey};
 use central_storage::{GuardedStatement, ReadOutcome, SqlValue, Statement, StoreFailure};
 use fleet_engine::{
-    EngineHost, LoadFailure, StoreAdapter, Versioned, decode_load_failure, guarded_attempt_sql,
-    load_store_failure, raw_version,
+    EngineHost, MachineStoreAdapter, SubjectLoadFailure, VersionedSubjectState,
+    classify_subject_decode_failure, classify_subject_read_failure, guarded_attempt_upsert_sql,
+    read_observed_subject_version,
 };
 use fleet_runtime_ports::CentralStore as _;
 use fleet_runtime_ports::stored_values::format_utc_millis;
@@ -17,7 +18,7 @@ use fleet_runtime_ports::{
 };
 
 pub(crate) struct OwedReplyStore<'a, R: EngineHost>(pub &'a R);
-const FAILURE: &str = guarded_attempt_sql!(
+const FAILURE: &str = guarded_attempt_upsert_sql!(
     "EXISTS(SELECT 1 FROM engine_probe_items WHERE item_id IS ?20 AND group_id IS ?21 AND claim IS ?22 AND state IS ?23 AND completed_claim IS ?24 AND send_id IS ?25 AND connection_id IS ?26 AND created_at IS ?27 AND updated_at IS ?28 AND machine_kind='owed_reply' AND state IN ('waiting','in_flight'))"
 );
 const COLUMNS: &str = "SELECT item_id,group_id,claim,state,completed_claim,send_id,connection_id,created_at,updated_at FROM engine_probe_items WHERE item_id=? AND machine_kind='owed_reply'";
@@ -82,28 +83,39 @@ fn decode(rows: &ReadOutcome) -> Result<State, StoreFailure> {
     }
 }
 
-impl<R: EngineHost> StoreAdapter<OwedReply> for OwedReplyStore<'_, R> {
-    async fn load(&self, key: &InstanceKey) -> Result<Option<Versioned<State>>, LoadFailure> {
+impl<R: EngineHost> MachineStoreAdapter<OwedReply> for OwedReplyStore<'_, R> {
+    type Version = fleet_contracts::SubjectVersion;
+
+    async fn load_subject_state(
+        &self,
+        key: &InstanceKey,
+    ) -> Result<
+        Option<VersionedSubjectState<State, Self::Version>>,
+        SubjectLoadFailure<Self::Version>,
+    > {
         let rows = self
             .0
-            .host()
+            .central_store()
             .read(Statement {
                 sql: COLUMNS,
                 args: vec![text(&key.0)],
             })
             .await
-            .map_err(load_store_failure)?;
-        let Some(version) = raw_version(&rows)? else {
+            .map_err(classify_subject_read_failure)?;
+        let Some(version) = read_observed_subject_version(&rows)? else {
             return Ok(None);
         };
-        let state =
-            decode(&rows).map_err(|failure| decode_load_failure(failure, version.clone()))?;
-        Ok(Some(Versioned { state, version }))
+        let state = decode(&rows)
+            .map_err(|failure| classify_subject_decode_failure(failure, version.clone()))?;
+        Ok(Some(VersionedSubjectState {
+            decoded_state: state,
+            observed_subject_version: version,
+        }))
     }
-    fn save(
+    fn plan_subject_state_write(
         &self,
         _key: &InstanceKey,
-        prior: &Versioned<State>,
+        prior: &VersionedSubjectState<State, Self::Version>,
         next: &State,
     ) -> Result<GuardedStatement, StoreFailure> {
         let (send, connection) = match next {
@@ -119,20 +131,20 @@ impl<R: EngineHost> StoreAdapter<OwedReply> for OwedReplyStore<'_, R> {
             text(stored_state(next)),
             send,
             connection,
-            text(format_utc_millis(self.0.now()?)),
+            text(format_utc_millis(self.0.current_engine_time()?)),
         ];
-        args.extend(prior.version.0.clone());
+        args.extend(prior.observed_subject_version.0.clone());
         Ok(exact(
             "UPDATE engine_probe_items SET state=?1,send_id=?2,connection_id=?3,updated_at=?4 WHERE item_id IS ?5 AND group_id IS ?6 AND claim IS ?7 AND state IS ?8 AND completed_claim IS ?9 AND send_id IS ?10 AND connection_id IS ?11 AND created_at IS ?12 AND updated_at IS ?13 AND machine_kind='owed_reply'",
             args,
         ))
     }
-    fn effect_statements(
+    fn plan_machine_effect_writes(
         &self,
         key: &InstanceKey,
         effect: &Effect,
     ) -> Result<Vec<GuardedStatement>, StoreFailure> {
-        let now = format_utc_millis(self.0.now()?);
+        let now = format_utc_millis(self.0.current_engine_time()?);
         Ok(match effect {
             // One send is counted on the item's group.
             Effect::SendItem { .. } => vec![exact(
@@ -146,7 +158,15 @@ impl<R: EngineHost> StoreAdapter<OwedReply> for OwedReplyStore<'_, R> {
             )],
         })
     }
-    fn failure_sql(&self) -> &'static str {
-        FAILURE
+    fn attempt_failure_writer(&self) -> fleet_engine::SubjectAttemptWriter<Self::Version> {
+        |subject, record, prior, version| {
+            fleet_engine::owner_sql::plan_guarded_attempt_upsert(
+                FAILURE,
+                subject,
+                record,
+                prior,
+                version.0.clone(),
+            )
+        }
     }
 }

@@ -55,8 +55,11 @@ impl std::fmt::Debug for MachineTokenText {
 pub enum TokenRenewalResult {
     /// The connection now counts until this instant: the new token's
     /// min(exp + 60 s, grant_expires_at). It may be later than before.
-    Renewed { effective_expires_at: Timestamp },
-    /// The old expiry stands; the socket stays open until it refuses a frame.
+    Renewed {
+        effective_expires_at: Timestamp,
+        central_time: Timestamp,
+    },
+    /// A refusal leaves the attachment unchanged. A typed close can end the transport.
     Refused { reason: TokenRenewalRefusal },
 }
 
@@ -65,13 +68,16 @@ pub enum TokenRenewalResult {
 pub enum TokenRenewalRefusal {
     /// The token failed sign-in verification.
     TokenRejected,
-    /// The enrollment it names is no longer the machine's active one.
-    EnrollmentNotActive,
+    /// The verified token reached its deadline before renewal applied. The open connection
+    /// retains its attachment, and the Router can fetch a fresh token and send another renewal.
+    PresentedTokenExpired,
+    /// The connection's own enrollment ended. Central attempts a final close.
+    ConnectionEnrollmentEnded,
     /// The token names another machine than this connection's.
     DifferentMachine,
     /// The token names another enrollment or client than this connection's.
     DifferentEnrollment,
-    /// Central could not decide now; the old expiry stands.
+    /// Retryable refusal. A lapsed link on a still-enrolled machine also sends an Expired close.
     CentralUnavailable,
 }
 

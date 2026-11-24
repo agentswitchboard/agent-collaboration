@@ -32,6 +32,7 @@ pub(super) fn settings(url: &str) -> collaboration_central_core::SignInTrustSett
         issuer: signed::ISSUER.into(),
         audience: signed::AUDIENCE.into(),
         admin_audience: signed::ADMIN_AUDIENCE.into(),
+        person_link_audience: None,
         machine_audience: signed::MACHINE_AUDIENCE.into(),
         public_origin: signed::PUBLIC_ORIGIN.into(),
         jwks_url: url.into(),
@@ -58,7 +59,7 @@ pub(super) async fn seed_machine_for(
         .unwrap()
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let statements = [
-        ("INSERT INTO login_machines(machine_id,label,state,allowed_workspaces,enrollment_generation,created_at,updated_at) VALUES (?,'Machine','enrolled','[]',1,?,?)", vec![text(machine_id), text(&at), text(&at)]),
+        ("INSERT INTO login_machines(machine_id,label,state,enrollment_generation,created_at,updated_at) VALUES (?,'Machine','enrolled',1,?,?)", vec![text(machine_id), text(&at), text(&at)]),
         ("INSERT INTO login_machine_approvals(approval_id,request_id,machine_id,label,allowed_workspaces,state,approved_by_person_id,permission_checked,base_generation,code_expires_at,machine_client_id,last_grant_at,created_at,updated_at) VALUES (?,?,?,'Machine','[]','enrolled',?,'machine:enroll',0,?,?,?,?,?)", vec![text(id::<m::WorkspaceId>(enrollment)),text(id::<m::WorkspaceId>(enrollment+1)),text(machine_id),text(signed::OWNER),text(&at),text(id::<m::WorkspaceId>(enrollment)),text(&at),text(&at),text(&at)]),
     ].into_iter().map(|(sql,args)| GuardedStatement { statement: Statement { sql,args }, expect: RowExpectation::Exactly(1) }).collect();
     assert!(matches!(
@@ -136,7 +137,7 @@ pub(super) async fn create_workspace(
     let batch = StatementBatch {
         statements: vec![GuardedStatement {
             statement: Statement {
-                sql: "UPDATE login_machines SET allowed_workspaces=? WHERE machine_id=?",
+                sql: collaboration_central_conformance::REPLACE_FIXTURE_ALLOWANCES_SQL,
                 args: vec![
                     text(serde_json::to_string(&vec![workspace.workspace_id.clone()]).unwrap()),
                     text(caller.caller().machine_id()),
@@ -200,15 +201,13 @@ impl Fixture {
         let runtime = host.central(&organization()).await.unwrap();
         assert!(runtime.runtime().statement_host().read(Statement { sql: "SELECT name FROM sqlite_schema WHERE type='table' AND name='machine_credentials'", args: vec![] }).await.unwrap().rows.is_empty());
         runtime
-            .provision_organization(
-                &collaboration_central_core::identity_contract::ProvisionOrganization {
-                    organization_id: organization(),
-                    organization_statement: signed::stamp(organization().as_str(), now - 3600)
-                        .unwrap()
-                        .try_into()
-                        .unwrap(),
-                },
-            )
+            .provision_organization(&fleet_contracts::ProvisionOrganization {
+                organization_id: organization(),
+                organization_statement: signed::stamp(organization().as_str(), now - 3600)
+                    .unwrap()
+                    .try_into()
+                    .unwrap(),
+            })
             .await
             .unwrap();
         seed_machine(&host, &id(2), 4, now).await;
@@ -271,12 +270,10 @@ impl Fixture {
         let statement =
             signed::renewal(organization().as_str(), previous, at.timestamp(), 0).unwrap();
         runtime
-            .provision_organization(
-                &collaboration_central_core::identity_contract::ProvisionOrganization {
-                    organization_id: organization(),
-                    organization_statement: statement.try_into().unwrap(),
-                },
-            )
+            .provision_organization(&fleet_contracts::ProvisionOrganization {
+                organization_id: organization(),
+                organization_statement: statement.try_into().unwrap(),
+            })
             .await
             .unwrap();
         let at = chrono::DateTime::from_timestamp(at.timestamp(), 0)
@@ -466,13 +463,10 @@ pub async fn admitted_organization<C: runtime_primitives::Clock + ?Sized>(
     let now = clock.now().unix_millis().div_euclid(1000);
     let runtime = host.central(organization).await?;
     runtime
-        .provision_organization(
-            &collaboration_central_core::identity_contract::ProvisionOrganization {
-                organization_id: organization.clone(),
-                organization_statement: signed::stamp(organization.as_str(), now - 3600)?
-                    .try_into()?,
-            },
-        )
+        .provision_organization(&fleet_contracts::ProvisionOrganization {
+            organization_id: organization.clone(),
+            organization_statement: signed::stamp(organization.as_str(), now - 3600)?.try_into()?,
+        })
         .await?;
     seed_machine_for(host, organization, &id(2), 4, now).await;
     let token = signed::machine_token(

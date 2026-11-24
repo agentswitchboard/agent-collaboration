@@ -1,12 +1,10 @@
-use crate::stored_rows::AUTOMATION_FAILURE;
-use central_engine_model::{EngineTime, ItemFailureClass, MachineKind};
-use central_storage::ReadOutcome;
-use fleet_engine::{DiscardStore, LoadFailure, Versioned, raw_version};
-use fleet_runtime_ports::stored_values::format_utc_millis;
-use fleet_runtime_ports::{
-    guarded_statements::{exact, text},
-    stored_values::string,
+use crate::{
+    stored_rows::{ScheduleVersion, StoredSchedule, plan_schedule_read},
+    timed_store::{plan_schedule_attempt, plan_schedule_finish},
 };
+use central_engine_model::{EngineTime, ItemFailureClass, MachineKind, StateTag};
+use central_storage::ReadOutcome;
+use fleet_engine::{DiscardSubjectStatements, SubjectLoadFailure, VersionedSubjectState};
 use fleet_timer_policy::{FinishKind, Lifecycle, LifecycleFinish};
 
 pub struct AutomationKind;
@@ -17,45 +15,38 @@ pub type AutomationFinish = LifecycleFinish<AutomationKind>;
 
 /// Only the lifecycle column is decoded; an unknown value is the one case the
 /// finishing view cannot act on, and it is never coerced.
-fn lifecycle(rows: &ReadOutcome, column: &'static str) -> Result<Lifecycle, ItemFailureClass> {
-    let corrupt = || ItemFailureClass::CorruptRow {
-        column: column.to_owned(),
-        raw_value: None,
-    };
-    let row = rows.rows.first().ok_or_else(corrupt)?;
-    Lifecycle::from_stored_tag(string(rows, row, "state").map_err(|_| corrupt())?)
-        .ok_or_else(corrupt)
-}
-
 fn decode_lifecycle(
     rows: &ReadOutcome,
-    state_column: &'static str,
-) -> Result<Option<Versioned<Lifecycle>>, LoadFailure> {
-    let Some(version) = raw_version(rows)? else {
+) -> Result<
+    Option<VersionedSubjectState<Lifecycle, ScheduleVersion>>,
+    SubjectLoadFailure<ScheduleVersion>,
+> {
+    let Some((stored, version)) = StoredSchedule::observe(rows)? else {
         return Ok(None);
     };
-    match lifecycle(rows, state_column) {
-        Ok(state) => Ok(Some(Versioned { state, version })),
-        Err(class) => Err(LoadFailure::Corrupt { class, version }),
-    }
+    let state = stored
+        .lifecycle()
+        .map_err(|_| SubjectLoadFailure::CorruptSubjectRow {
+            failure_class: ItemFailureClass::CorruptRow {
+                column: "automation_schedules.state".into(),
+                raw_value: None,
+            },
+            observed_subject_version: Box::new(version.clone()),
+        })?;
+    Ok(Some(VersionedSubjectState {
+        decoded_state: state,
+        observed_subject_version: version,
+    }))
 }
 
-pub fn automation_finish_store() -> DiscardStore<AutomationFinish> {
-    DiscardStore {
-        read_sql: "SELECT automation_id,target,timing_rule,anchor_at,expires_at,evaluated_through_at,text,next_due_at,state,created_at,updated_at FROM automation_schedules WHERE automation_id=?",
-        decode: |rows| decode_lifecycle(rows, "automation_schedules.state"),
-        save: |prior, next, now: EngineTime| {
-            let mut args = vec![
-                text(central_engine_model::StateTag::state_tag(next)),
-                text(format_utc_millis(now)),
-            ];
-            args.extend(prior.version.0.clone());
-            Ok(exact(
-                "UPDATE automation_schedules SET state=?1,updated_at=?2 WHERE automation_id IS ?3 AND target IS ?4 AND timing_rule IS ?5 AND anchor_at IS ?6 AND expires_at IS ?7 AND evaluated_through_at IS ?8 AND text IS ?9 AND next_due_at IS ?10 AND state IS ?11 AND created_at IS ?12 AND updated_at IS ?13",
-                args,
-            ))
+pub fn automation_finish_store() -> DiscardSubjectStatements<AutomationFinish, ScheduleVersion> {
+    DiscardSubjectStatements {
+        plan_discard_subject_read: plan_schedule_read,
+        decode_discard_subject: decode_lifecycle,
+        plan_discard_subject_write: |prior, next, now: EngineTime| {
+            plan_schedule_finish(&prior.observed_subject_version, next.state_tag(), now)
         },
-        effect_statements: |effect| match *effect {},
-        failure_sql: AUTOMATION_FAILURE,
+        plan_discard_effect_writes: |effect| match *effect {},
+        discard_attempt_failure_writer: plan_schedule_attempt,
     }
 }

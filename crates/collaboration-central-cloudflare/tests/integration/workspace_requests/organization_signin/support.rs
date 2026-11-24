@@ -24,11 +24,24 @@ pub struct Fixture {
     pub _plan_root: tempfile::TempDir,
     client: reqwest::Client,
 }
+
+#[derive(Clone, Copy)]
+enum SignInStoreStart {
+    Fresh,
+    BeforeAllowanceAudit,
+}
+
 impl Fixture {
     pub async fn new() -> Self {
         Self::new_with_issuer(fixture::ISSUER).await
     }
     pub async fn new_with_issuer(issuer: &str) -> Self {
+        Self::open_signin_store(issuer, SignInStoreStart::Fresh).await
+    }
+    pub async fn new_before_allowance_audit() -> Self {
+        Self::open_signin_store(fixture::ISSUER, SignInStoreStart::BeforeAllowanceAudit).await
+    }
+    async fn open_signin_store(issuer: &str, start: SignInStoreStart) -> Self {
         let keys = SignInKeys::start().await.unwrap();
         let root = tempfile::tempdir().unwrap();
         let plan = root.path().join("signin-plan.json");
@@ -49,6 +62,18 @@ impl Fixture {
             .await
             .unwrap();
         let org = ORG.to_owned().try_into().unwrap();
+        if let SignInStoreStart::BeforeAllowanceAudit = start {
+            let seeded = host
+                .cold_runtime(&org)
+                .control::<Result<Value, String>>(
+                    "raw-engine-due-migration",
+                    &"seedBeforeAllowanceAudit",
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(seeded["ledger"]["rows"].as_array().unwrap().len(), 7);
+        }
         host.central(&org).await;
         Self {
             host,
@@ -85,9 +110,19 @@ impl Fixture {
         body: &Value,
         headers: &[(&str, String)],
     ) -> (u16, Vec<u8>) {
+        self.request_bytes(reqwest::Method::POST, path, body, headers)
+            .await
+    }
+    pub async fn request_bytes(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: &Value,
+        headers: &[(&str, String)],
+    ) -> (u16, Vec<u8>) {
         let mut request = self
             .client
-            .post(format!("{}{path}", self.host.signin_origin()))
+            .request(method, format!("{}{path}", self.host.signin_origin()))
             .header("content-type", "application/json")
             .body(serde_json::to_vec(body).unwrap());
         for (name, value) in headers {
@@ -181,15 +216,19 @@ pub fn person_revision(revision: i64, state: &str) -> Value {
 pub const FIXTURE_MACHINE: &str = "019f0000-0000-7000-8000-00000000b303";
 pub const FIXTURE_ENROLLMENT: &str = "019f0000-0000-7000-8000-00000000b304";
 impl Fixture {
-    /// Enrolls the fixture machine through its rows and returns a session caller
-    /// whose sign-in token is admitted by the real Worker link admission.
+    /// Seed an enrolled machine and the current approval in the owning store.
+    pub async fn seed_machine(&self, label: &str) {
+        self.execute("INSERT INTO login_machines(machine_id,label,state,enrollment_generation,created_at,updated_at) VALUES (?,?,'enrolled',1,'2030-03-17T17:46:40Z','2030-03-17T17:46:40Z')",vec![super::super::support::text(FIXTURE_MACHINE),super::super::support::text(label)]).await;
+        self.execute("INSERT INTO login_machine_approvals(approval_id,request_id,machine_id,label,allowed_workspaces,state,approved_by_person_id,permission_checked,base_generation,code_expires_at,machine_client_id,last_grant_at,created_at,updated_at) VALUES (?,?,?,?,'[]','enrolled',?,'machine:enroll',0,'2030-03-17T17:56:40Z',?,'2030-03-17T17:46:40Z','2030-03-17T17:46:40Z','2030-03-17T17:46:40Z')",vec![super::super::support::text(FIXTURE_ENROLLMENT),super::super::support::text(FIXTURE_ENROLLMENT),super::super::support::text(FIXTURE_MACHINE),super::super::support::text(label),super::super::support::text(fixture::OWNER),super::super::support::text(FIXTURE_ENROLLMENT)]).await;
+    }
+
+    /// Returns a fixture session caller whose token uses the seeded enrollment.
     pub async fn enrolled_session_caller(
         &self,
         label: &'static str,
         session: &str,
     ) -> super::super::support::FixtureCaller {
-        self.execute("INSERT INTO login_machines(machine_id,label,state,allowed_workspaces,enrollment_generation,created_at,updated_at) VALUES (?,?,'enrolled','[]',1,'2030-03-17T17:46:40Z','2030-03-17T17:46:40Z')",vec![super::super::support::text(FIXTURE_MACHINE),super::super::support::text(label)]).await;
-        self.execute("INSERT INTO login_machine_approvals(approval_id,request_id,machine_id,label,allowed_workspaces,state,approved_by_person_id,permission_checked,base_generation,code_expires_at,machine_client_id,last_grant_at,created_at,updated_at) VALUES (?,?,?,?,'[]','enrolled',?,'machine:enroll',0,'2030-03-17T17:56:40Z',?,'2030-03-17T17:46:40Z','2030-03-17T17:46:40Z','2030-03-17T17:46:40Z')",vec![super::super::support::text(FIXTURE_ENROLLMENT),super::super::support::text(FIXTURE_ENROLLMENT),super::super::support::text(FIXTURE_MACHINE),super::super::support::text(label),super::super::support::text(fixture::OWNER),super::super::support::text(FIXTURE_ENROLLMENT)]).await;
+        self.seed_machine(label).await;
         let now = runtime_primitives::Clock::now(self.clock.as_ref()).unix_millis() / 1000;
         super::super::support::machine_caller(
             self.org.clone(),

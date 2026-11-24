@@ -1,14 +1,27 @@
 //! BD1's closed workspace dependencies and BD4's transitive proxy boundary.
-use super::{DependencyKind, NonDevDependencyGraph};
+use super::{CargoMetadata, DependencyKind, NonDevDependencyGraph};
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(test)]
 use std::path::Path;
-use std::process::Command;
+
+#[path = "workspace_package_tree_policy.rs"]
+mod workspace_package_tree_policy;
+pub(super) use workspace_package_tree_policy::check_workspace_package_trees;
+#[cfg(test)]
+use workspace_package_tree_policy::{
+    SERVICE_SUPPORT_PACKAGES, check_package_targets, check_package_tree, check_package_tree_output,
+};
+
+#[path = "link_reachability.rs"]
+mod link_reachability;
 
 #[cfg(test)]
 #[path = "job_layer_tests.rs"]
 mod job_layer_tests;
 
-pub(super) const FLEET_PURE_CRATES: [(&str, &[&str]); 2] = [
+pub(super) const FLEET_PURE_CRATES: [(&str, &[&str]); 4] = [
+    (FLEET_RPC, &[]),
+    (APPROVAL_REQUEST_PROTOCOL, &["workspace-ids"]),
     (
         "fleet-runtime-ports",
         &["central-engine-model", "central-storage", "workspace-ids"],
@@ -16,9 +29,12 @@ pub(super) const FLEET_PURE_CRATES: [(&str, &[&str]); 2] = [
     (
         "fleet-contracts",
         &[
+            APPROVAL_REQUEST_PROTOCOL,
             "central-engine-model",
+            "central-link-protocol",
             "central-storage",
             "fleet-identity-protocol",
+            FLEET_RPC,
             "fleet-runtime-ports",
             "message-board",
             "workspace-ids",
@@ -26,14 +42,59 @@ pub(super) const FLEET_PURE_CRATES: [(&str, &[&str]); 2] = [
         ],
     ),
 ];
+pub(super) const APPROVALS_LAYER: (&str, &[&str]) = (
+    "fleet-approvals",
+    &[
+        APPROVAL_REQUEST_PROTOCOL,
+        "central-engine-model",
+        "central-storage",
+        "fleet-actor-identity",
+        FLEET_ENGINE,
+        "fleet-identity-protocol",
+        "fleet-machine-login",
+        "fleet-signin",
+        REQUEST_LOG,
+        "fleet-runtime-ports",
+        LENT_TRANSACTION,
+        "workspace-ids",
+    ],
+);
+pub(super) const LENT_TRANSACTION: &str = "fleet-lent-transaction";
+const FLEET_RPC: &str = "fleet-rpc";
+pub(super) const APPROVAL_REQUEST_PROTOCOL: &str = "approval-request-protocol";
+const WORKSPACE_SERVICE: &str = "fleet-workspace-service";
+const CENTRAL_CORE: &str = "collaboration-central-core";
+const CENTRAL_WORKER: &str = "collaboration-central-cloudflare";
 const FLEET_ACCESS: &str = "fleet-workspace-access";
 const FLEET_DIRECTORY: &str = "fleet-workspace-directory";
 const FLEET_ENGINE: &str = "fleet-engine";
+pub(super) const REQUEST_LOG: &str = "fleet-request-log";
 const FLEET_MAIL: &str = "fleet-mail";
 const FLEET_NOTICES: &str = "fleet-notices";
 const FLEET_WAKES: &str = "fleet-wakes";
 const FLEET_SCHEDULES: &str = "fleet-schedules";
 const FLEET_TIMER_POLICY: &str = "fleet-timer-policy";
+pub(super) const HARNESS_CONTRACTS: (&str, &[&str]) = ("switchboard-harness-contracts", &[]);
+pub(super) const HARNESS_SHARED_MECHANICS: (&str, &[&str]) = (
+    "switchboard-harness-shared-mechanics",
+    &[HARNESS_CONTRACTS.0],
+);
+const HARNESS_LAYERS: [(&str, &[&str]); 2] = [HARNESS_CONTRACTS, HARNESS_SHARED_MECHANICS];
+pub(super) const SESSION_STORE: (&str, &[&str]) = (
+    "switchboard-session-store",
+    &["collaboration-protocol", "sqlite-storage-maintenance"],
+);
+pub(super) const SESSION_EVENTS: (&str, &[&str]) = (
+    "switchboard-session-events",
+    &[
+        "collaboration-contracts",
+        "collaboration-protocol",
+        "message-board",
+        "router-clock",
+        "session-event-model",
+        "switchboard-session-store",
+    ],
+);
 pub(super) const TIMER_CRATES: [(&str, &[&str]); 3] = [
     (
         FLEET_WAKES,
@@ -70,7 +131,10 @@ pub(super) const MAIL_LAYER: (&str, &[&str]) = (
         "central-engine-model",
         "central-storage",
         "fleet-contracts",
+        LENT_TRANSACTION,
         "fleet-engine",
+        "fleet-machine-login",
+        "fleet-request-log",
         "fleet-runtime-ports",
         "fleet-workspace-access",
         "workspace-ids",
@@ -105,19 +169,25 @@ pub(super) const ENGINE_EDGES: &[&str] = &[
     "central-engine-model",
     "central-storage",
     "fleet-contracts",
+    LENT_TRANSACTION,
     "fleet-runtime",
     "fleet-runtime-ports",
     "workspace-model",
 ];
-const FLEET_ENGINE_FUTURES: &[&str] = &[
-    "futures-core",
-    "futures-sink",
-    "futures-task",
-    "futures-util",
+
+pub(super) const SESSION_READ_CRATES: [(&str, &[&str]); 2] = [
+    ("switchboard-session-payloads", &["workspace-ids"]),
+    ("switchboard-session-calls", &["workspace-ids"]),
 ];
-const FLEET_WASM_TARGET: &str = "wasm32-unknown-unknown";
-// Chrono's wasm support reaches these runtime-independent helpers via js-sys.
-const FLEET_WASM_SUPPORT_PACKAGES: &[&str] = &["futures-core", "futures-task", "futures-util"];
+
+const APPROVAL_HOLDER: (&str, &[&str]) = (
+    "switchboard-approval-holder",
+    &[
+        "approval-request-protocol",
+        "state-machine-core",
+        "workspace-ids",
+    ],
+);
 
 const PURE_CRATES: [(&str, &[&str]); 8] = [
     ("workspace-ids", &[]),
@@ -133,7 +203,13 @@ const PURE_CRATES: [(&str, &[&str]); 8] = [
     ),
     (
         "central-link-protocol",
-        &["workspace-ids", "workspace-model"],
+        &[
+            "approval-request-protocol",
+            "fleet-identity-protocol",
+            "fleet-rpc",
+            "workspace-ids",
+            "workspace-model",
+        ],
     ),
     ("central-storage", &[]),
     ("state-machine-core", &[]),
@@ -161,13 +237,14 @@ fn is_collaboration(name: &str) -> bool {
         || name.starts_with("central-")
         || matches!(name, "agent-collaboration" | "agent-automation")
 }
-fn is_effectful(name: &str) -> bool {
+pub(super) fn is_effectful(name: &str) -> bool {
     name.starts_with("tokio")
         || name.starts_with("futures")
         || name.starts_with("async-")
         || name.starts_with("sqlx")
         || name.starts_with("turso")
         || name.starts_with("rusqlite")
+        || name == "libsqlite3-sys"
         || name.starts_with("worker")
         || name.starts_with("reqwest")
         || name.starts_with("hyper")
@@ -212,7 +289,12 @@ pub(super) fn check_boundaries(
             }
         }
     }
-    for (name, allowed) in PURE_CRATES.into_iter().chain(FLEET_PURE_CRATES) {
+    for (name, allowed) in PURE_CRATES
+        .into_iter()
+        .chain(FLEET_PURE_CRATES)
+        .chain(SESSION_READ_CRATES)
+        .chain([APPROVAL_HOLDER])
+    {
         let Some(source) = graph.workspace_id(name) else {
             continue;
         };
@@ -233,13 +315,26 @@ pub(super) fn check_boundaries(
         }
         check_workspace_driver_edges(graph, source)?;
     }
+    link_reachability::check_link_reachability(graph)?;
+    check_resolved_session_read_dev_edges(graph)?;
+    check_closed_workspace_edges(
+        graph,
+        WORKSPACE_SERVICE,
+        &["central-storage", "fleet-contracts", "workspace-model"],
+    )?;
+    check_job_reachability(graph, WORKSPACE_SERVICE, &["fleet-runtime"])?;
+    check_job_reachability(graph, CENTRAL_CORE, &[WORKSPACE_SERVICE])?;
     check_closed_workspace_edges(graph, FLEET_ENGINE, ENGINE_EDGES)?;
     for (name, allowed) in TIMER_CRATES {
         check_closed_workspace_edges(graph, name, allowed)?;
     }
+    check_closed_workspace_edges(graph, APPROVALS_LAYER.0, APPROVALS_LAYER.1)?;
     check_closed_workspace_edges(graph, MAIL_LAYER.0, MAIL_LAYER.1)?;
     check_closed_workspace_edges(graph, NOTICES_LAYER.0, NOTICES_LAYER.1)?;
     check_closed_workspace_edges(graph, DIRECTORY_LAYER.0, DIRECTORY_LAYER.1)?;
+    check_closed_workspace_edges(graph, SESSION_STORE.0, SESSION_STORE.1)?;
+    check_closed_workspace_edges(graph, SESSION_EVENTS.0, SESSION_EVENTS.1)?;
+    check_harness_layers(graph)?;
     check_job_reachability(
         graph,
         FLEET_WAKES,
@@ -277,6 +372,7 @@ pub(super) fn check_boundaries(
         graph,
         FLEET_DIRECTORY,
         &[
+            LENT_TRANSACTION,
             FLEET_ACCESS,
             FLEET_ENGINE,
             FLEET_MAIL,
@@ -344,6 +440,136 @@ fn check_job_reachability(
     Ok(())
 }
 
+// Default feature resolution omits inactive optional dependencies. Match the
+// manifest declaration's package name and path against workspace members.
+pub(super) fn check_declared_session_owner_edges(
+    metadata: &CargoMetadata,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let workspace_packages: Vec<_> = metadata
+        .packages
+        .iter()
+        .filter(|package| metadata.workspace_members.contains(&package.id))
+        .collect();
+    for (owner, allowed) in [SESSION_STORE, SESSION_EVENTS]
+        .into_iter()
+        .chain(HARNESS_LAYERS)
+    {
+        let package = workspace_packages
+            .iter()
+            .find(|package| package.name == owner)
+            .ok_or_else(|| format!("closed dependency policy package missing: {owner}"))?;
+        for dependency in &package.dependencies {
+            let kind = dependency.kind.unwrap_or(DependencyKind::Normal);
+            if kind == DependencyKind::Dev && !is_harness_layer(owner) {
+                continue;
+            }
+            if let Some(path) = dependency.path.as_deref()
+                && workspace_packages.iter().any(|package| {
+                    package.name == dependency.name && package.manifest_path.parent() == Some(path)
+                })
+            {
+                check_closed_workspace_edge(owner, &dependency.name, kind, allowed)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+// Only the declaration inventory sees every inactive optional dependency.
+pub(super) fn check_declared_session_read_edges(
+    metadata: &CargoMetadata,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let workspace_packages: Vec<_> = metadata
+        .packages
+        .iter()
+        .filter(|package| metadata.workspace_members.contains(&package.id))
+        .collect();
+    for (owner, allowed_workspace) in SESSION_READ_CRATES {
+        let package = workspace_packages
+            .iter()
+            .find(|package| package.name == owner)
+            .ok_or_else(|| format!("closed dependency policy package missing: {owner}"))?;
+        for dependency in &package.dependencies {
+            let kind = dependency.kind.unwrap_or(DependencyKind::Normal);
+            let workspace_edge = dependency.path.as_deref().is_some_and(|path| {
+                workspace_packages.iter().any(|package| {
+                    package.name == dependency.name && package.manifest_path.parent() == Some(path)
+                })
+            });
+            let registry_edge = dependency
+                .source
+                .as_deref()
+                .is_some_and(|source| source.starts_with("registry+"))
+                && dependency.path.is_none();
+            let allowed: &[&str] = match (kind, workspace_edge, registry_edge) {
+                (DependencyKind::Normal, true, false) => allowed_workspace,
+                (DependencyKind::Normal, false, true) if owner == "switchboard-session-calls" => {
+                    &["serde", "schemars", "thiserror"]
+                }
+                (DependencyKind::Normal, false, true) => &["serde", "schemars"],
+                (DependencyKind::Dev, false, true) => allowed_session_read_dev_dependencies(owner),
+                _ => &[],
+            };
+            check_closed_workspace_edge(owner, &dependency.name, kind, allowed)?;
+            let allowed_features: &[&str] = match dependency.name.as_str() {
+                "serde" => &["derive"],
+                "hegeltest" => &["static-engine"],
+                _ => &[],
+            };
+            if dependency.features != allowed_features || !dependency.uses_default_features {
+                return Err(format!(
+                    "BD1: forbidden {kind:?} feature settings {owner} -> {}: features {:?}, default features: {}",
+                    dependency.name, dependency.features, dependency.uses_default_features
+                ).into());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn allowed_session_read_dev_dependencies(owner: &str) -> &'static [&'static str] {
+    if owner == "switchboard-session-calls" {
+        &["serde_json", "serde_path_to_error", "hegeltest"]
+    } else {
+        &["serde_json", "serde_path_to_error"]
+    }
+}
+
+fn check_resolved_session_read_dev_edges(
+    graph: &NonDevDependencyGraph,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for (owner, _) in SESSION_READ_CRATES {
+        let Some(source) = graph.workspace_id(owner) else {
+            continue;
+        };
+        for destination in graph.dev_edges.get(source).into_iter().flatten() {
+            let target = graph
+                .names
+                .get(destination)
+                .ok_or("dependency name absent")?;
+            let allowed = if graph.workspace_members.contains(destination) {
+                &[]
+            } else {
+                allowed_session_read_dev_dependencies(owner)
+            };
+            check_closed_workspace_edge(owner, target, DependencyKind::Dev, allowed)?;
+        }
+    }
+    Ok(())
+}
+
+fn check_closed_workspace_edge(
+    source: &str,
+    destination: &str,
+    kind: DependencyKind,
+    allowed: &[&str],
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !allowed.contains(&destination) {
+        return Err(format!("BD1: forbidden {kind:?} dependency {source} -> {destination}").into());
+    }
+    Ok(())
+}
+
 fn check_closed_workspace_edges(
     graph: &NonDevDependencyGraph,
     package: &str,
@@ -352,15 +578,72 @@ fn check_closed_workspace_edges(
     let Some(source) = graph.workspace_id(package) else {
         return Ok(());
     };
-    for (destination, kind) in graph.edges.get(source).into_iter().flatten() {
+    let normal_and_build = graph
+        .edges
+        .get(source)
+        .into_iter()
+        .flatten()
+        .map(|(destination, kind)| (destination, *kind));
+    let harness_dev = graph
+        .dev_edges
+        .get(source)
+        .filter(|_| is_harness_layer(package))
+        .into_iter()
+        .flatten()
+        .map(|destination| (destination, DependencyKind::Dev));
+    for (destination, kind) in normal_and_build.chain(harness_dev) {
         if graph.workspace_members.contains(destination) {
             let target = graph
                 .names
                 .get(destination)
                 .ok_or("dependency name absent")?;
-            if !allowed.contains(&target.as_str()) {
+            check_closed_workspace_edge(package, target, kind, allowed)?;
+        }
+    }
+    Ok(())
+}
+
+fn is_harness_layer(package: &str) -> bool {
+    HARNESS_LAYERS.iter().any(|(name, _)| *name == package)
+}
+
+pub(super) fn check_harness_layers(
+    graph: &NonDevDependencyGraph,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for (package, allowed) in HARNESS_LAYERS {
+        check_closed_workspace_edges(graph, package, allowed)?;
+        check_harness_reachability(graph, package, allowed)?;
+    }
+    Ok(())
+}
+
+fn check_harness_reachability(
+    graph: &NonDevDependencyGraph,
+    package: &str,
+    allowed: &[&str],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(source) = graph.workspace_id(package) else {
+        return Ok(());
+    };
+    // A dependency's own dev edges are not part of the root package's tests.
+    let test_dependencies = graph.dev_edges.get(source).into_iter().flatten();
+    for root in std::iter::once(source).chain(test_dependencies.map(String::as_str)) {
+        for destination in reachable(graph, root) {
+            let target = graph
+                .names
+                .get(destination)
+                .ok_or("dependency name absent")?;
+            if package == HARNESS_CONTRACTS.0 && matches!(target.as_str(), "tokio" | "tokio-util") {
                 return Err(
-                    format!("BD1: forbidden {kind:?} dependency {package} -> {target}").into(),
+                    format!("BD1: forbidden reachable runtime {package} -> {target}").into(),
+                );
+            }
+            if destination != source
+                && graph.workspace_members.contains(destination)
+                && !allowed.contains(&target.as_str())
+            {
+                return Err(
+                    format!("BD1: forbidden reachable dependency {package} -> {target}").into(),
                 );
             }
         }
@@ -396,131 +679,10 @@ fn check_workspace_driver_edges(
     Ok(())
 }
 
-/// Workspace metadata merges features from unrelated roots (notably uuid's wasm
-/// support). A package-scoped tree checks the actual pure-rule dependency closure.
-pub(super) fn check_pure_dependency_tree(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    for package in PURE_CRATES
-        .into_iter()
-        .chain(FLEET_PURE_CRATES)
-        .map(|(package, _)| package)
-        .chain([
-            FLEET_ACCESS,
-            FLEET_ENGINE,
-            FLEET_MAIL,
-            FLEET_NOTICES,
-            FLEET_DIRECTORY,
-        ])
-        .chain(TIMER_CRATES.into_iter().map(|(package, _)| package))
-    {
-        check_package_targets(root, package)?;
-    }
-    Ok(())
-}
-
-fn check_package_targets(root: &Path, package: &str) -> Result<(), Box<dyn std::error::Error>> {
-    check_package_tree(root, package, None)?;
-    if matches!(
-        package,
-        FLEET_ACCESS
-            | FLEET_DIRECTORY
-            | FLEET_ENGINE
-            | FLEET_MAIL
-            | FLEET_NOTICES
-            | FLEET_WAKES
-            | FLEET_SCHEDULES
-            | FLEET_TIMER_POLICY
-    ) || FLEET_PURE_CRATES.iter().any(|(name, _)| *name == package)
-    {
-        check_package_tree(root, package, Some(FLEET_WASM_TARGET)).map_err(|error| {
-            format!("{package} dependency tree for {FLEET_WASM_TARGET}: {error}")
-        })?;
-    }
-    Ok(())
-}
-
-fn check_package_tree(
-    root: &Path,
-    package: &str,
-    target: Option<&str>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut cargo = Command::new("cargo");
-    cargo.args([
-        "tree",
-        "--locked",
-        "--offline",
-        "-p",
-        package,
-        "-e",
-        "normal,build",
-        "--prefix",
-        "none",
-        "--format",
-        "{p}\t{f}",
-    ]);
-    if let Some(triple) = target {
-        cargo.args(["--target", triple]);
-    }
-    let output = cargo.current_dir(root).output()?;
-    if !output.status.success() {
-        return Err(format!(
-            "pure dependency tree failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        )
-        .into());
-    }
-    let allowed_support = if matches!(
-        package,
-        FLEET_ENGINE | FLEET_MAIL | FLEET_NOTICES | FLEET_WAKES | FLEET_SCHEDULES
-    ) {
-        FLEET_ENGINE_FUTURES
-    } else if target == Some(FLEET_WASM_TARGET) {
-        FLEET_WASM_SUPPORT_PACKAGES
-    } else {
-        &[]
-    };
-    check_tree_output(&String::from_utf8(output.stdout)?, allowed_support, package)
-}
-fn check_tree_output(
-    tree: &str,
-    allowed_support: &[&str],
-    package: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    for line in tree.lines() {
-        let (identity, features) = line.split_once('\t').unwrap_or((line, ""));
-        let Some(name) = identity.split_whitespace().next() else {
-            continue;
-        };
-        if !is_effectful(name) || allowed_support.contains(&name) {
-            continue;
-        }
-        if matches!(
-            package,
-            FLEET_ACCESS
-                | FLEET_ENGINE
-                | FLEET_MAIL
-                | FLEET_NOTICES
-                | FLEET_WAKES
-                | FLEET_SCHEDULES
-        ) && name == "tokio"
-        {
-            let features = features.strip_suffix(" (*)").unwrap_or(features).trim();
-            if matches!(features, "" | "sync") {
-                continue;
-            }
-            return Err(format!(
-                "BD2: {package} reaches Tokio features {features}; only sync is allowed"
-            )
-            .into());
-        }
-        return Err(format!("BD2: pure rules transitively reach {name}").into());
-    }
-    Ok(())
-}
-
 #[test]
 fn pure_package_tree_rejects_effectful_transitive_dependencies() {
     assert!(
-        check_tree_output(
+        check_package_tree_output(
             "workspace-rules v1\nserde v1\ntokio v1",
             &[],
             "workspace-rules"
@@ -528,10 +690,11 @@ fn pure_package_tree_rejects_effectful_transitive_dependencies() {
         .is_err()
     );
     assert!(
-        check_tree_output("workspace-rules v1\nsqlx-sqlite v1", &[], "workspace-rules").is_err()
+        check_package_tree_output("workspace-rules v1\nsqlx-sqlite v1", &[], "workspace-rules")
+            .is_err()
     );
     assert!(
-        check_tree_output(
+        check_package_tree_output(
             "workspace-rules v1\nworkspace-model v1\nuuid v1\nserde v1",
             &[],
             "workspace-rules",
@@ -543,10 +706,10 @@ fn pure_package_tree_rejects_effectful_transitive_dependencies() {
 #[test]
 fn access_dependency_tree_allows_tokio_sync_but_rejects_the_executor() {
     let valid = "fleet-workspace-access v1\t\ntokio v1\tsync";
-    assert!(check_tree_output(valid, &[], FLEET_ACCESS).is_ok());
+    assert!(check_package_tree_output(valid, &[], FLEET_ACCESS).is_ok());
 
     let invalid = "fleet-workspace-access v1\t\ntokio v1\trt,sync";
-    let violation = check_tree_output(invalid, &[], FLEET_ACCESS)
+    let violation = check_package_tree_output(invalid, &[], FLEET_ACCESS)
         .expect_err("workspace access cannot enable the Tokio executor");
     assert_eq!(
         violation.to_string(),
@@ -648,6 +811,43 @@ fn fleet_interfaces_reject_upward_normal_and_build_edges() {
     }
 }
 
+#[test]
+fn workspace_rpc_rejects_upward_normal_and_build_edges() {
+    for kind in [DependencyKind::Normal, DependencyKind::Build] {
+        for (from, to) in [
+            (FLEET_RPC, "fleet-runtime"),
+            (WORKSPACE_SERVICE, CENTRAL_WORKER),
+            (WORKSPACE_SERVICE, CENTRAL_CORE),
+            (WORKSPACE_SERVICE, "fleet-runtime"),
+            (CENTRAL_CORE, WORKSPACE_SERVICE),
+        ] {
+            let violation = check_boundaries(&graph(&[(from, to, kind)]))
+                .expect_err("the workspace RPC layer must reject an upward edge");
+            let diagnostic = violation.to_string();
+            assert!(
+                diagnostic.contains(from) && diagnostic.contains(to),
+                "{diagnostic}"
+            );
+        }
+    }
+}
+
+#[test]
+fn workspace_rpc_rejects_effects_and_concrete_sqlite_in_the_package_tree() {
+    for (package, allowed, dependency) in [
+        (FLEET_RPC, &[][..], "sqlx"),
+        (FLEET_RPC, &[][..], "worker"),
+        (WORKSPACE_SERVICE, SERVICE_SUPPORT_PACKAGES, "sqlx-sqlite"),
+        (WORKSPACE_SERVICE, SERVICE_SUPPORT_PACKAGES, "tokio"),
+        (CENTRAL_WORKER, &[][..], "libsqlite3-sys"),
+    ] {
+        let violation =
+            check_package_tree_output(&format!("{package} v1\n{dependency} v1"), allowed, package)
+                .expect_err("the workspace RPC layer must reject this dependency");
+        assert!(violation.to_string().contains(dependency));
+    }
+}
+
 fn graph(edges: &[(&str, &str, DependencyKind)]) -> NonDevDependencyGraph {
     let names: BTreeMap<_, _> = edges
         .iter()
@@ -685,6 +885,21 @@ fn graph(edges: &[(&str, &str, DependencyKind)]) -> NonDevDependencyGraph {
     graph
 }
 #[test]
+fn lent_transaction_allows_sqlx_without_a_backend() {
+    let neutral = "fleet-lent-transaction v1\nsqlx v0.9\nsqlx-core v0.9";
+    assert!(check_package_tree_output(neutral, &[], LENT_TRANSACTION).is_ok());
+    for backend in [
+        "sqlx-sqlite",
+        "sqlx-postgres",
+        "sqlx-mysql",
+        "sqlx-durable-object",
+    ] {
+        let with_backend = format!("{neutral}\n{backend} v0.9");
+        assert!(check_package_tree_output(&with_backend, &[], LENT_TRANSACTION).is_err());
+    }
+}
+
+#[test]
 fn pure_rules_reject_unlisted_workspace_and_transitive_external_effects() {
     for kind in [DependencyKind::Normal, DependencyKind::Build] {
         assert!(check_boundaries(&graph(&[("workspace-rules", "unlisted-host", kind)])).is_err());
@@ -696,6 +911,9 @@ fn pure_rules_reject_unlisted_workspace_and_transitive_external_effects() {
             .is_err()
         );
         assert!(check_boundaries(&graph(&[("workspace-rules", "sqlx-sqlite", kind)])).is_err());
+        assert!(
+            check_boundaries(&graph(&[("fleet-runtime-ports", LENT_TRANSACTION, kind)])).is_err()
+        );
     }
     assert!(
         check_boundaries(&graph(&[
@@ -741,3 +959,11 @@ fn proxy_boundary_rejects_direct_and_transitive_normal_and_build_edges() {
         .is_ok()
     );
 }
+
+#[cfg(test)]
+#[path = "approval_holder_dependency_test.rs"]
+mod approval_holder_dependency_tests;
+
+#[cfg(test)]
+#[path = "session_read_dependency_test.rs"]
+mod session_read_dependency_tests;

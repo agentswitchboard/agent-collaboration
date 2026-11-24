@@ -1,6 +1,7 @@
 use crate::stored_rows::decode_automations;
 use agent_automation::TimingRule;
 use central_storage::{GuardedStatement, ReadOutcome, Statement, StoreFailure};
+use fleet_engine::{DueItemKey, DueKind, DueOwnerTiming, DueTableChange, plan_due_table_change};
 use fleet_runtime_ports::guarded_statements::{exact, text};
 use fleet_runtime_ports::stored_values::{encode_json, format_utc_millis};
 use mail::{CentralMailAnswer as Answer, CentralMailRefusal as Refusal};
@@ -54,21 +55,32 @@ pub fn plan_set_automation(
         }));
     };
     let id: AutomationId = mint()?;
+    let mut statements = vec![exact(
+        "INSERT INTO automation_schedules(automation_id,target,timing_rule,anchor_at,expires_at,evaluated_through_at,text,next_due_at,state,created_at,updated_at) VALUES (?,?,?,?,?,NULL,?,?,'active',?,?)",
+        vec![
+            text(&id),
+            encode_json(target, "mail JSON")?,
+            encode_json(timing, "mail JSON")?,
+            text(format_utc_millis(anchor)),
+            text(format_utc_millis(expires_at)),
+            text(body.as_str()),
+            text(format_utc_millis(first)),
+            at(),
+            at(),
+        ],
+    )];
+    statements.extend(plan_due_table_change(
+        &DueTableChange::PublishItem(DueOwnerTiming::at(
+            DueItemKey {
+                kind: DueKind::AutomationTimer,
+                subject: central_engine_model::InstanceKey(id.to_string()),
+            },
+            first,
+        )?),
+        now,
+    )?);
     Ok(Ok((
-        vec![exact(
-            "INSERT INTO automation_schedules(automation_id,target,timing_rule,anchor_at,expires_at,evaluated_through_at,text,next_due_at,state,created_at,updated_at) VALUES (?,?,?,?,?,NULL,?,?,'active',?,?)",
-            vec![
-                text(&id),
-                encode_json(target, "mail JSON")?,
-                encode_json(timing, "mail JSON")?,
-                text(format_utc_millis(anchor)),
-                text(format_utc_millis(expires_at)),
-                text(body.as_str()),
-                text(format_utc_millis(first)),
-                at(),
-                at(),
-            ],
-        )],
+        statements,
         Answer::AutomationSet {
             automation_id: id,
             next_due_at: Some(first),
@@ -109,12 +121,19 @@ pub fn plan_disable_automation(
             vec![at(), text(automation_id)],
         )]
     };
-    statements.push(fleet_engine::delete_attempt(
+    statements.push(fleet_engine::plan_attempt_delete(
         &fleet_contracts::EngineSubject {
             kind: central_engine_model::MachineKind("automation_timer"),
             key: central_engine_model::InstanceKey(automation_id.to_string()),
         },
     ));
+    statements.extend(plan_due_table_change(
+        &DueTableChange::RemoveItem(DueItemKey {
+            kind: DueKind::AutomationTimer,
+            subject: central_engine_model::InstanceKey(automation_id.to_string()),
+        }),
+        now,
+    )?);
     Ok(Ok((
         statements,
         Answer::AutomationDisabled {

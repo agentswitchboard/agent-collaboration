@@ -13,6 +13,9 @@ use session_event_model::SessionEvent;
 #[path = "provider_prompt_wire_test.rs"]
 mod provider_prompt_wire;
 
+#[path = "managed_notice_test.rs"]
+mod managed_notice;
+
 #[path = "cancel_after_turn_test.rs"]
 mod cancel_after_turn_tests;
 
@@ -67,7 +70,7 @@ struct SteeringSession {
     _root: tempfile::TempDir,
     receipt: std::path::PathBuf,
     target: SessionRef,
-    hub: Arc<collaboration_runtime::ProviderSessionEventHub>,
+    hub: Arc<switchboard_session_events::ProviderSessionEventHub>,
     hub_target: message_board::SessionRef,
     supervisor: Arc<ExternalProviderSupervisor>,
 }
@@ -99,7 +102,7 @@ async fn steering_session_on(
         program,
         session_id,
         arguments,
-        Arc::new(router_clock::SystemRuntimeClock::new()),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
 }
@@ -121,8 +124,9 @@ async fn steering_session_on_clock(
             .await
             .expect("store"),
     ));
-    let hub = Arc::new(collaboration_runtime::ProviderSessionEventHub::new(
+    let hub = Arc::new(switchboard_session_events::ProviderSessionEventHub::new(
         Arc::clone(&store),
+        clock.clone(),
     ));
     let hub_target: message_board::SessionRef =
         serde_json::from_value(serde_json::to_value(&target).expect("target JSON"))
@@ -138,7 +142,7 @@ async fn steering_session_on_clock(
         Arc::clone(&hub),
         hub_target.endpoint.clone(),
         Arc::new(acp_provider_adapters::StandardAcpBehavior),
-        clock,
+        clock.clone(),
     )
     .await
     .expect("fixture provider");
@@ -151,6 +155,7 @@ async fn steering_session_on_clock(
             Arc::clone(&store),
             Some(hub.clone()),
             None,
+            clock,
         )
         .expect("supervisor"),
     );
@@ -228,7 +233,7 @@ async fn busy_with_steering_uses_the_running_owner_answer_after_the_turn_ends() 
     let refused = rig.supervisor.prompt_contents(direct);
     tokio::pin!(refused);
     tokio::select! {
-        result = acknowledgement.reached => result.expect("the owner refused the command"),
+        result = acknowledgement.reached => { let _observed = result.expect("the owner refused the command"); },
         result = &mut refused => panic!("refusal was rendered early: {result:?}"),
     }
     node_test_fixture::release_fixture(&rig.receipt, ".release").expect("release foreground");

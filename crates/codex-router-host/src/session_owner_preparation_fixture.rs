@@ -9,9 +9,13 @@ use tokio::sync::oneshot;
 #[derive(Default)]
 pub(crate) struct PreparationFixture {
     restore_pause: Mutex<Option<PreparationPause>>,
+    #[cfg(test)]
     create_pause: Mutex<Option<PreparationPause>>,
     delivery_ack: Mutex<Option<DeliveryAckPause>>,
+    #[cfg(test)]
     recovery_pause: Mutex<Option<PreparationPause>>,
+    #[cfg(test)]
+    refuse_replacement: AtomicBool,
     restore_fault: AtomicBool,
 }
 
@@ -21,15 +25,23 @@ struct PreparationPause {
 }
 
 pub(crate) struct DeliveryAckPause {
-    reached: PreparationPause,
+    reached: oneshot::Sender<DeliveryAcknowledgement>,
+    release: oneshot::Receiver<()>,
     pub(crate) finished: oneshot::Sender<()>,
     pub(crate) lose_ack: bool,
 }
 
-pub(crate) struct DeliveryAckControl {
-    pub(crate) reached: oneshot::Receiver<()>,
-    pub(crate) release: oneshot::Sender<()>,
-    pub(crate) finished: oneshot::Receiver<()>,
+pub struct DeliveryAckControl {
+    pub reached: oneshot::Receiver<DeliveryAcknowledgement>,
+    pub release: oneshot::Sender<()>,
+    pub finished: oneshot::Receiver<()>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum DeliveryAcknowledgement {
+    Accepted,
+    Refused,
+    OwnerStopped,
 }
 
 impl DeliveryAckPause {
@@ -40,8 +52,15 @@ impl DeliveryAckPause {
         Result<(), crate::session_owner_door::OwnerDoorError>,
         Option<oneshot::Sender<()>>,
     ) {
-        let _test_withdrew_pause = self.reached.entered.send(());
-        let _test_withdrew_resume = self.reached.release.await;
+        let observed = match &admission {
+            Ok(()) => DeliveryAcknowledgement::Accepted,
+            Err(crate::session_owner_door::OwnerDoorError::OwnerStopped) => {
+                DeliveryAcknowledgement::OwnerStopped
+            }
+            Err(_) => DeliveryAcknowledgement::Refused,
+        };
+        let _test_withdrew_pause = self.reached.send(observed);
+        let _test_withdrew_resume = self.release.await;
         let admission = if self.lose_ack {
             Err(crate::session_owner_door::OwnerDoorError::OwnerStopped)
         } else {
@@ -59,12 +78,10 @@ impl PreparationFixture {
         let previous = self
             .delivery_ack
             .lock()
-            .expect("fixture lock")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .replace(DeliveryAckPause {
-                reached: PreparationPause {
-                    entered,
-                    release: released,
-                },
+                reached: entered,
+                release: released,
                 finished,
                 lose_ack,
             });
@@ -77,13 +94,28 @@ impl PreparationFixture {
     }
 
     pub(crate) fn take_delivery_ack_pause(&self) -> Option<DeliveryAckPause> {
-        self.delivery_ack.lock().expect("fixture lock").take()
+        self.delivery_ack
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
     }
 
+    #[cfg(test)]
     pub(crate) fn pause_recovery(&self) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
         Self::arm(&self.recovery_pause)
     }
 
+    #[cfg(test)]
+    pub(crate) fn refuse_next_replacement(&self) {
+        self.refuse_replacement.store(true, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_replacement_refusal(&self) -> bool {
+        self.refuse_replacement.swap(false, Ordering::AcqRel)
+    }
+
+    #[cfg(test)]
     pub(crate) fn hold_recovery(&self) -> Option<oneshot::Receiver<()>> {
         Self::enter(&self.recovery_pause)
     }
@@ -92,6 +124,7 @@ impl PreparationFixture {
         Self::arm(&self.restore_pause)
     }
 
+    #[cfg(test)]
     pub(crate) fn pause_create(&self) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
         Self::arm(&self.create_pause)
     }
@@ -112,6 +145,7 @@ impl PreparationFixture {
         Self::enter(&self.restore_pause)
     }
 
+    #[cfg(test)]
     pub(crate) fn hold_create(&self) -> Option<oneshot::Receiver<()>> {
         Self::enter(&self.create_pause)
     }
@@ -121,7 +155,7 @@ impl PreparationFixture {
         let (release, released) = oneshot::channel();
         let previous = slot
             .lock()
-            .expect("fixture lock")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .replace(PreparationPause {
                 entered,
                 release: released,
@@ -131,7 +165,10 @@ impl PreparationFixture {
     }
 
     fn enter(slot: &Mutex<Option<PreparationPause>>) -> Option<oneshot::Receiver<()>> {
-        let pause = slot.lock().expect("fixture lock").take()?;
+        let pause = slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()?;
         let _test_withdrew_pause = pause.entered.send(());
         Some(pause.release)
     }

@@ -1,10 +1,8 @@
 #[cfg(test)]
 use crate::schema_validation;
 
-use collaboration_central_core::identity_contract::{
-    ConnectionView, DecideDeviceLogin, MachineEnrollment, MachinePresenceAnswer,
-    PersonAdmissionRequest,
-};
+use collaboration_central_core::identity_contract::MachineEnrollment;
+use fleet_contracts::DecideDeviceLogin;
 use fleet_identity_protocol::ReportSessionActivity;
 use schemars::JsonSchema;
 use serde::{Serialize, de::DeserializeOwned};
@@ -74,15 +72,6 @@ fn internal_enrollments_never_become_public_states() {
 
 #[test]
 fn optional_reads_accept_null_but_writes_omit_the_key() {
-    assert_null_read_omitted_write::<MachinePresenceAnswer>(
-        json!({"state":"notConnected"}),
-        "closedAgoMs",
-    );
-    assert_null_read_omitted_write::<ConnectionView>(json!({"state":"notConnected"}), "lastSeenAt");
-    assert_null_read_omitted_write::<PersonAdmissionRequest>(
-        json!({"operation":"admitSignIn","organizationId":"019a3dce-2000-7000-8000-000000000001","personId":"019a3dce-2000-7000-8000-000000000002"}),
-        "verifiedEmail",
-    );
     let enrollments: Vec<Value> = serde_json::from_str(include_str!(
         "../../contracts/MachineEnrollment.fixtures.json"
     ))
@@ -144,19 +133,6 @@ fn javascript_counters_refuse_two_to_the_fifty_third() {
             .unwrap()
             .is_valid(&invalid)
     );
-    let presence: Value = serde_json::from_str(include_str!(
-        "../../contracts/MachinePresenceAnswer.fixtures.json"
-    ))
-    .unwrap();
-    let mut invalid = presence[0].clone();
-    invalid["attachSequence"] = json!(9007199254740992_u64);
-    assert!(serde_json::from_value::<MachinePresenceAnswer>(invalid.clone()).is_err());
-    let schema = serde_json::to_value(schemars::schema_for!(MachinePresenceAnswer)).unwrap();
-    assert!(
-        !schema_validation::contract_validator(&schema)
-            .unwrap()
-            .is_valid(&invalid)
-    );
 }
 
 #[test]
@@ -167,7 +143,7 @@ fn reviewed_scalar_claim_schema_rejects_invalid_installation() {
     .unwrap();
     let mut invalid = fixtures[0].clone();
     invalid["principal"]["installation_id"] = json!("x".repeat(36));
-    assert_refused::<collaboration_central_core::identity_contract::MachineTokenClaims>(invalid);
+    assert_refused::<fleet_contracts::MachineTokenClaims>(invalid);
 }
 
 #[test]

@@ -87,7 +87,12 @@ function validReceipt(): C2ProductReceipt {
     kind: "c2Hibernation",
     organization,
     machineId,
-    welcome: { kind: "welcome", machineId, centralTime: "2027-01-15T08:00:00Z" },
+    welcome: {
+      kind: "welcome",
+      machineId,
+      centralTime: "2027-01-15T08:00:00Z",
+      effectiveExpiresAt: "2027-01-15T08:10:00Z",
+    },
     baselineRequest: frame({
       correlationId: baselineId,
       operation: { kind: "createWorkspace", name: "Baseline workspace" },

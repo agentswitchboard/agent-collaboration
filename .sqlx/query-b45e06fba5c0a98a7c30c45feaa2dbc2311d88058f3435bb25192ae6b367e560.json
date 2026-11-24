@@ -1,0 +1,158 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT router_run_id, organization_id, machine_id, enrollment_id,\n       registration_order, registered_at, retired_at, enrollment_cleanup_ms, enrollment_cleanup_due_ms, marker_cleanup_due_ms, created_at, updated_at\nFROM approval_router_runs\nWHERE router_run_id = ?1\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "router_run_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_router_runs",
+            "name": "router_run_id"
+          }
+        }
+      },
+      {
+        "name": "organization_id",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_router_runs",
+            "name": "organization_id"
+          }
+        }
+      },
+      {
+        "name": "machine_id",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_router_runs",
+            "name": "machine_id"
+          }
+        }
+      },
+      {
+        "name": "enrollment_id",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_router_runs",
+            "name": "enrollment_id"
+          }
+        }
+      },
+      {
+        "name": "registration_order",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "approval_router_runs",
+            "name": "registration_order"
+          }
+        }
+      },
+      {
+        "name": "registered_at",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_router_runs",
+            "name": "registered_at"
+          }
+        }
+      },
+      {
+        "name": "retired_at",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_router_runs",
+            "name": "retired_at"
+          }
+        }
+      },
+      {
+        "name": "enrollment_cleanup_ms",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "approval_router_runs",
+            "name": "enrollment_cleanup_ms"
+          }
+        }
+      },
+      {
+        "name": "enrollment_cleanup_due_ms",
+        "ordinal": 8,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "approval_router_runs",
+            "name": "enrollment_cleanup_due_ms"
+          }
+        }
+      },
+      {
+        "name": "marker_cleanup_due_ms",
+        "ordinal": 9,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "approval_router_runs",
+            "name": "marker_cleanup_due_ms"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 10,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_router_runs",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 11,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_router_runs",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "b45e06fba5c0a98a7c30c45feaa2dbc2311d88058f3435bb25192ae6b367e560"
+}

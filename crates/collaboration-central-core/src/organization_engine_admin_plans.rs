@@ -10,7 +10,7 @@ use crate::{
     workspace_runtime::engine_admin_dispatch::KIND_REGISTRY,
 };
 use central_storage::{AlarmUpdate, GuardedStatement, StoreFailure};
-use fleet_engine::{AttemptRefusal, DiscardOutcome, Engine};
+use fleet_engine::{AttemptRefusal, DiscardOutcome, FleetEngine};
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
 use fleet_runtime_ports::{
     stored_values::{json, string},
@@ -55,7 +55,7 @@ fn refusal(refusal: AttemptRefusal) -> OrganizationAdminResult {
             AttemptRefusal::NotFound => AdminRefusal::NotFound,
             AttemptRefusal::NotRetired => AdminRefusal::NotRetired,
             AttemptRefusal::DiscardUnsupported => AdminRefusal::DiscardUnsupported,
-            AttemptRefusal::Stale => AdminRefusal::Stale,
+            AttemptRefusal::DiscardSuperseded => AdminRefusal::Stale,
             AttemptRefusal::SubjectUnreadable => AdminRefusal::SubjectUnreadable,
         },
     }
@@ -81,21 +81,23 @@ fn retained_engine_result(encoded: &str) -> Result<OrganizationAdminResult, Stor
 
 impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
     pub(crate) async fn engine_health_result(&self) -> Result<EngineAdminPlan, StoreFailure> {
-        let health = Engine::new(self).engine_health(&KIND_REGISTRY).await?;
+        let health = FleetEngine::new(self)
+            .read_engine_attempt_health(&KIND_REGISTRY)
+            .await?;
         Ok(EngineAdminPlan::read(
             OrganizationAdminResult::EngineHealth {
                 kinds: health
-                    .kinds
+                    .health_by_machine_kind
                     .into_iter()
                     .map(|kind| EngineKindHealth {
-                        kind: kind.kind,
-                        failing: kind.failing,
-                        retired: kind.retired,
+                        kind: kind.machine_kind,
+                        failing: kind.failing_attempt_count,
+                        retired: kind.retired_attempt_count,
                         oldest_first_failed_at: kind.oldest_first_failed_at,
-                        last_failure: kind.last_failure,
+                        last_failure: kind.latest_failure_class,
                     })
                     .collect(),
-                alarm: health.alarm,
+                alarm: health.published_alarm_at,
                 alarm_missing: health.alarm_missing,
             },
         ))
@@ -106,8 +108,8 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
         after: Option<uuid::Uuid>,
         limit: u16,
     ) -> Result<EngineAdminPlan, StoreFailure> {
-        let (items, next) = Engine::new(self)
-            .engine_retired_page(&KIND_REGISTRY, after, limit)
+        let (items, next) = FleetEngine::new(self)
+            .read_retired_attempt_page(&KIND_REGISTRY, after, limit)
             .await?;
         Ok(EngineAdminPlan::read(
             OrganizationAdminResult::EngineRetired {
@@ -115,12 +117,12 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
                     .into_iter()
                     .map(|item| EngineRetiredItem {
                         attempt_id: item.attempt_id,
-                        kind: item.kind,
+                        kind: item.machine_kind,
                         subject_key: item.subject_key,
                         failure_class: item.failure_class,
-                        count: item.count,
+                        count: item.failure_count,
                         retired_at: item.retired_at,
-                        last_failure: item.last_failure,
+                        last_failure: item.last_failure_detail,
                     })
                     .collect(),
                 next,
@@ -148,10 +150,8 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
         let logged = self
             .execution
             .statement_host()
-            .read(fleet_runtime::workspace_request_log::lookup(
-                fleet_runtime::workspace_request_log::RequestLogStore::Organization,
-                &operation,
-                &cutoff,
+            .read(fleet_request_log::lookup_organization_request(
+                &operation, &cutoff,
             ))
             .await?;
         if logged.rows.len() > 1 {
@@ -205,18 +205,17 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
                 cutoff,
             } => (operation, actor, statements, cutoff),
         };
-        let result = match Engine::new(self)
-            .plan_engine_retry(&KIND_REGISTRY, request.attempt_id)
+        let result = match FleetEngine::new(self)
+            .plan_retired_attempt_retry(&KIND_REGISTRY, request.attempt_id, now)
             .await?
         {
-            Ok(delete) => {
-                statements.push(delete);
+            Ok(retry) => {
+                statements.extend(retry);
                 OrganizationAdminResult::EngineRetried {}
             }
             Err(reason) => refusal(reason),
         };
-        statements.extend(fleet_runtime::workspace_request_log::retain(
-            fleet_runtime::workspace_request_log::RequestLogStore::Organization,
+        statements.extend(fleet_request_log::retain_organization_request(
             &operation,
             &actor,
             &person.intent_digest,
@@ -226,11 +225,9 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
         )?);
         Ok(EngineAdminPlan {
             alarm: match result {
-                OrganizationAdminResult::EngineRetried {} => AlarmUpdate::SetEngineFromQuery {
-                    query: central_engine_model::next_due_sql(
-                        crate::engine::query_registry::ALARM_INPUTS,
-                    ),
-                },
+                OrganizationAdminResult::EngineRetried {} => {
+                    AlarmUpdate::Engine(central_storage::EngineAlarmPlan::Recompute)
+                }
                 _ => AlarmUpdate::Unchanged,
             },
             result,
@@ -263,8 +260,7 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
             } => (operation, actor, statements, cutoff),
         };
         let retain = |result: &OrganizationAdminResult| {
-            fleet_runtime::workspace_request_log::retain(
-                fleet_runtime::workspace_request_log::RequestLogStore::Organization,
+            fleet_request_log::retain_organization_request(
                 &operation,
                 &actor,
                 &person.intent_digest,
@@ -276,18 +272,16 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
         let mut committed = admission.clone();
         committed.extend(statements.clone());
         committed.extend(retain(&OrganizationAdminResult::EngineDiscarded {})?);
-        match Engine::new(self)
-            .discard(request.attempt_id, committed)
+        match FleetEngine::new(self)
+            .discard_retired_attempt(request.attempt_id, committed)
             .await?
         {
             DiscardOutcome::Committed => {
                 admission.clear();
                 // The re-arm is this event's last step; a failed publication is
                 // observed and the next event re-publishes.
-                let _ = Engine::new(self)
-                    .publish_engine_query(central_engine_model::next_due_sql(
-                        crate::engine::query_registry::ALARM_INPUTS,
-                    ))
+                let _ = FleetEngine::new(self)
+                    .publish_engine_alarm(central_storage::EngineAlarmPlan::Recompute)
                     .await;
                 Ok(EngineAdminPlan {
                     result: OrganizationAdminResult::EngineDiscarded {},

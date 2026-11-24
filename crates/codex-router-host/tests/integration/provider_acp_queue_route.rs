@@ -23,13 +23,12 @@ use collaboration_protocol::{
     PushId, RouterAccess, SessionId, SessionRef, UuidIdentity,
 };
 use collaboration_runtime::EndpointDirectory;
-use collaboration_runtime::ProviderOperationStore;
-use collaboration_runtime::ProviderSessionRecord;
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
 };
+use switchboard_session_store::ProviderOperationStore;
+use switchboard_session_store::ProviderSessionRecord;
 use tokio::io::AsyncReadExt as _;
 
 struct NoLivePeer;
@@ -89,6 +88,7 @@ fn one_prompt_fixture(event_socket: &Path) -> ExternalProviderLaunch {
 
 #[tokio::test]
 async fn idle_explicit_queue_is_accepted_and_drains_for_both_providers() {
+    let fixture_clock = crate::provider_test_clock();
     for (endpoint_id, provider) in [
         ("claude-local", ProviderKind::ClaudeCode),
         ("cursor-local", ProviderKind::Cursor),
@@ -136,6 +136,7 @@ async fn idle_explicit_queue_is_accepted_and_drains_for_both_providers() {
         let runtime = ExternalProviderRuntime::initialize(
             one_prompt_fixture(&event_socket),
             std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+            fixture_clock.clone(),
         )
         .await
         .expect("fixture provider");
@@ -161,6 +162,7 @@ async fn idle_explicit_queue_is_accepted_and_drains_for_both_providers() {
             })
             .await
             .expect("session record");
+        let fixture_retirement = runtime.retirement();
         let supervisor = Arc::new(
             ExternalProviderSupervisor::new(
                 vec![ExternalProviderBinding {
@@ -168,6 +170,7 @@ async fn idle_explicit_queue_is_accepted_and_drains_for_both_providers() {
                     runtime,
                 }],
                 Arc::clone(&store),
+                fixture_clock.clone(),
             )
             .expect("supervisor"),
         );
@@ -202,7 +205,7 @@ async fn idle_explicit_queue_is_accepted_and_drains_for_both_providers() {
             Arc::clone(&supervisor),
             store,
             Arc::new(NoLivePeer),
-            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+            fixture_clock.clone(),
         );
         let evidence = RecordedEvidence(tokio::sync::Mutex::new(Vec::new()), Arc::default());
         let attempt = AttemptId::generate();
@@ -250,9 +253,8 @@ async fn idle_explicit_queue_is_accepted_and_drains_for_both_providers() {
             if effect.submission == SubmissionEffect::RouterQueued),
             "{endpoint_id}"
         );
-        let (mut stream, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
+        let (mut stream, _) = crate::provider_socket_event(&listener, &fixture_retirement)
             .await
-            .expect("queued prompt deadline")
             .expect("queued prompt event");
         let mut marker = Vec::new();
         stream.read_to_end(&mut marker).await.expect("event bytes");

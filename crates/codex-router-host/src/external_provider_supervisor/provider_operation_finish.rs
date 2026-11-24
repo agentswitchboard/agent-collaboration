@@ -25,7 +25,7 @@ type PersistedResult = (
 impl SupervisorInner {
     pub(super) async fn settle_late_dispatch_mark(
         &self,
-        store: &mut collaboration_runtime::ProviderOperationStore,
+        store: &mut switchboard_session_store::ProviderOperationStore,
         operation: &OperationId,
         failure: &ConversationOperationFailure,
         live: &LiveOperation,
@@ -50,7 +50,7 @@ impl SupervisorInner {
 
     pub(super) async fn preserve_operation_residue(
         &self,
-        store: &mut collaboration_runtime::ProviderOperationStore,
+        store: &mut switchboard_session_store::ProviderOperationStore,
         operation: &OperationId,
         live: &LiveOperation,
     ) {
@@ -65,13 +65,13 @@ impl SupervisorInner {
 
     async fn write_terminal_failure(
         &self,
-        store: &mut collaboration_runtime::ProviderOperationStore,
+        store: &mut switchboard_session_store::ProviderOperationStore,
         operation: &OperationId,
         failure: &ConversationOperationFailure,
         reconciliation: ProviderReconciliationState,
     ) -> Result<
-        collaboration_runtime::ProviderOperationRecord,
-        collaboration_runtime::ProviderOperationStoreError,
+        switchboard_session_store::ProviderOperationRecord,
+        switchboard_session_store::ProviderOperationStoreError,
     > {
         let row = store
             .record_terminal(
@@ -168,6 +168,9 @@ impl SupervisorInner {
                     target.as_ref(),
                     session_record.as_deref(),
                     terminal_stop_reason,
+                    self.clock.as_ref(),
+                    #[cfg(test)]
+                    None,
                 )
                 .await
                 {
@@ -411,7 +414,7 @@ impl SupervisorInner {
 /// The durable stage an operation's row still has after a failed write;
 /// none when the row can't be read either.
 async fn durable_stage(
-    store: &mut collaboration_runtime::ProviderOperationStore,
+    store: &mut switchboard_session_store::ProviderOperationStore,
     operation_id: &OperationId,
 ) -> Option<ProviderOperationStage> {
     store

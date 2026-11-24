@@ -14,9 +14,8 @@ async fn business_upgrade_failure_preserves_both_owners_and_every_history_column
         .inspect_workspace(&f.workspace, history())
         .await
         .unwrap();
-    // 0001-0004 plus the probe fixture this test-support bundle appends; core's
-    // workspace_migrations_test.rs proves a production build has exactly 0001-0004.
-    assert_eq!(central.rows.len(), 5);
+    // Fourteen production migrations plus the test-only Engine probe fixture.
+    assert_eq!(central.rows.len(), 16);
     assert_eq!(workspace.rows.len(), 1);
     assert_eq!(central.columns.len(), 6);
     assert_eq!(workspace.columns.len(), 6);

@@ -21,10 +21,11 @@ use collaboration_protocol::{
     ProviderCapabilityName, ProviderCapabilityStatus, ProviderKind, ProviderRuntimeIdentity,
     ProviderTransport, ProviderWorkingDirectory, RouterAccess,
 };
-use collaboration_runtime::{EndpointDirectory, ProviderSessionRecord};
+use collaboration_runtime::EndpointDirectory;
 use message_board::SessionRef as BoardSessionRef;
 use session_event_model::{PromptContent, ProviderSubmission, SettingApplicationIntent};
 use std::path::PathBuf;
+use switchboard_session_store::ProviderSessionRecord;
 
 #[path = "provider_session_command_port_acp_failure_test.rs"]
 mod acp_failures;
@@ -162,7 +163,11 @@ async fn command_port_rig(fixture: AgentFixture) -> CommandPortRig {
             .await
             .expect("store"),
     ));
-    let hub = Arc::new(ProviderSessionEventHub::new(Arc::clone(&store)));
+    let clock = crate::external_provider_runtime::acp_scripted_fixture::manual_clock();
+    let hub = Arc::new(ProviderSessionEventHub::new(
+        Arc::clone(&store),
+        clock.clone(),
+    ));
     let seed_target = protocol_target("session-1");
     let binding = provider_binding(&seed_target);
     let board_endpoint: SessionEndpointRef =
@@ -203,7 +208,7 @@ async fn command_port_rig(fixture: AgentFixture) -> CommandPortRig {
         Arc::clone(&hub),
         board_endpoint,
         behavior,
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        clock.clone(),
     )
     .await
     .expect("provider runtime");
@@ -238,6 +243,7 @@ async fn command_port_rig(fixture: AgentFixture) -> CommandPortRig {
                 runtime,
             }],
             Arc::clone(&store),
+            clock.clone(),
         )
         .expect("supervisor"),
     );
@@ -248,14 +254,14 @@ async fn command_port_rig(fixture: AgentFixture) -> CommandPortRig {
         Arc::clone(&supervisor),
         Arc::clone(&store),
         Arc::new(NoLivePeer),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        clock.clone(),
     ));
     let port = HostSessionCommandPort::new(
         Arc::clone(&supervisor),
         delivery,
         Arc::clone(&hub),
         store,
-        Arc::new(router_clock::ManualClock::new(chrono::DateTime::UNIX_EPOCH)),
+        clock,
     );
     let board_target: BoardSessionRef =
         serde_json::from_value(serde_json::to_value(&target).expect("target JSON"))

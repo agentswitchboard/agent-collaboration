@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM approval_request_destinations WHERE approval_row_id = ?1\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "dc6e6fa605034a0f40edb18aa71f633d970c932fb28bfa767e615be8c57b18d0"
+}

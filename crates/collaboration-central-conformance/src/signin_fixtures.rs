@@ -4,18 +4,30 @@ use crate::ConformanceResult;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use ring::signature::{Ed25519KeyPair, KeyPair};
 use serde_json::{Value, json};
+mod approval_case_registration;
+mod approval_harness;
+mod approval_preflight;
+pub use approval_preflight::check_approval_preflight;
+pub mod approval_routes;
+mod approval_rows;
+mod issuer_replies;
+use issuer_replies::IssuerReplies;
+pub use issuer_replies::{HeldIssuerFetch, IssuerReply};
 mod machine_tokens;
 pub use machine_tokens::{
     MACHINE_AUDIENCE, enroll_another_machine, machine_token, resign_machine_token,
 };
 mod one_id_vectors;
+#[cfg(feature = "session-link-test-support")]
+pub mod person_approval_races;
 mod person_requests;
-pub use one_id_vectors::{check_admission_identity_vectors, check_machine_identity_vectors};
+pub use one_id_vectors::check_machine_identity_vectors;
 mod revocation_journey;
 pub use person_requests::{
-    CREATE, LOOKUP, MEMBER, MEMBER_SUBJECT, ORGANIZATION, OWNER, OWNER_SUBJECT, POLICY, Person,
-    ProofKey, RECORDS, SESSION, canonical, create_body, create_intent, fresh_request_id,
-    lookup_intent, records_intent, sha256_url,
+    CREATE, LIST_WORKSPACES, LOOKUP, MEMBER, MEMBER_SUBJECT, ORGANIZATION, OWNER, OWNER_SUBJECT,
+    POLICY, Person, ProofKey, RECORDS, SESSION, canonical, create_body, create_intent,
+    fresh_request_id, list_workspaces_body, list_workspaces_intent, lookup_intent, records_intent,
+    sha256_url,
 };
 pub use revocation_journey::RevocationJourney;
 
@@ -27,6 +39,8 @@ pub const PUBLIC_ORIGIN: &str = "https://central.example.invalid";
 pub const NOW_SECONDS: i64 = 1_900_000_000;
 /// 120 days, the owner's statement lifetime.
 pub const LIFETIME_SECONDS: i64 = 10_368_000;
+/// The ruled machine login deadline, independent of the production policy constant.
+pub const MACHINE_IDLE_LIMIT_SECONDS: i64 = 60 * 24 * 60 * 60;
 
 pub fn signing_key(seed: u8) -> ConformanceResult<Ed25519KeyPair> {
     // Public test fixture only: never a deployment signing key.
@@ -169,6 +183,7 @@ pub struct SignInKeys {
     retired: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     fetches: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     failing: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    replies: std::sync::Arc<IssuerReplies>,
     stop: tokio::sync::oneshot::Sender<()>,
     task: tokio::task::JoinHandle<Result<(), std::io::Error>>,
 }
@@ -182,23 +197,30 @@ impl SignInKeys {
         let counted = fetches.clone();
         let failing = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let unavailable = failing.clone();
+        let replies = std::sync::Arc::new(IssuerReplies::default());
+        let scheduled = replies.clone();
         let router = axum::Router::new().route(
             "/api/auth/jwks",
             axum::routing::get(move || {
                 let published = published.clone();
+                let scheduled = scheduled.clone();
                 counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let unavailable = unavailable.load(std::sync::atomic::Ordering::SeqCst);
                 async move {
-                    if unavailable {
-                        return Err(axum::http::StatusCode::SERVICE_UNAVAILABLE);
+                    use axum::response::IntoResponse;
+                    if let Some(response) = scheduled.next_response().await {
+                        return response;
                     }
-                    let retired = published
-                        .lock()
-                        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?
-                        .clone();
+                    if unavailable {
+                        return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response();
+                    }
+                    let unavailable =
+                        || axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                    let Ok(retired) = published.lock() else {
+                        return unavailable();
+                    };
                     published_keys_except(&retired)
-                        .map(axum::Json)
-                        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)
+                        .map_or_else(|_| unavailable(), |keys| axum::Json(keys).into_response())
                 }
             }),
         );
@@ -215,6 +237,7 @@ impl SignInKeys {
             retired,
             fetches,
             failing,
+            replies,
             stop,
             task,
         })
@@ -234,6 +257,10 @@ impl SignInKeys {
         self.failing
             .store(true, std::sync::atomic::Ordering::SeqCst);
     }
+    pub fn hold_next_fetch(&self) -> HeldIssuerFetch {
+        self.replies.hold_next()
+    }
+
     /// How many times central has fetched the published key set.
     pub fn fetches(&self) -> usize {
         self.fetches.load(std::sync::atomic::Ordering::SeqCst)
@@ -249,3 +276,25 @@ mod statement_refusals;
 pub use statement_refusals::{
     StatementRefusalCase, statement_refusal_case, statement_with_header, statement_with_times,
 };
+
+mod stamp_trace;
+pub use stamp_trace::StampTrace;
+
+mod issuer_order;
+pub use issuer_order::{IssuerOrder, IssuerOrderHost, prove_issuer_completion_order};
+
+mod issuer_trace;
+mod standing_trace;
+mod trust_trace;
+pub use issuer_trace::{
+    IssuerProbe, IssuerProbeKey, IssuerTracePlan, ScriptedKeyReply, prove_issuer_trace,
+};
+pub use standing_trace::{StandingProbe, StandingSample, prove_standing_trace};
+pub use trust_trace::TrustTraceHost;
+
+pub mod machine_lifecycle;
+
+pub mod engine_admin_decisions;
+
+#[cfg(feature = "session-link-test-support")]
+pub mod person_link;

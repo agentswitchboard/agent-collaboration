@@ -1,12 +1,12 @@
 use super::*;
 use crate::session_owner_publication::SessionOwnerPublisher;
 use collaboration_contracts::SessionEventHub;
-use collaboration_runtime::ProviderSessionEventHub;
 use provider_session_machines::session_lifecycle_machine::CloseAttempt;
 use provider_session_machines::session_owner::{PromptCompletion, PublicationStatus};
 use router_clock::ClockInstant;
 use session_event_model::{SessionEvent, SessionState, StopReason};
 use std::time::Duration;
+use switchboard_session_events::ProviderSessionEventHub;
 use tokio_util::task::TaskTracker;
 
 struct RealHubPorts {
@@ -20,6 +20,7 @@ impl SessionOwnerPorts for RealHubPorts {
         owner: OwnerAddress,
         effect: OwnerEffect,
         completions: &OwnerCompletionPort,
+        caller_wakes: &mut acp_client_runtime::session_owner_task::OwnerCallerWakes,
     ) -> Result<Option<OwnerEvent>, OwnerTaskError> {
         match effect {
             OwnerEffect::Publish(batch) => {
@@ -28,6 +29,7 @@ impl SessionOwnerPorts for RealHubPorts {
                     owner,
                     OwnerEffect::Publish(batch.clone()),
                     completions,
+                    caller_wakes,
                 )?;
                 self.publisher.publish(owner, batch, completions)
             }
@@ -36,13 +38,16 @@ impl SessionOwnerPorts for RealHubPorts {
                     owner,
                     OwnerEffect::Wire(SessionWireRequest::Close(run)),
                     completions,
+                    caller_wakes,
                 )?;
                 Ok(rejected.or(Some(OwnerEvent::Wire(SessionWireResult::Close {
                     run,
                     outcome: WireOutcome::Confirmed(()),
                 }))))
             }
-            effect => self.wire_and_store.execute(owner, effect, completions),
+            effect => self
+                .wire_and_store
+                .execute(owner, effect, completions, caller_wakes),
         }
     }
 }
@@ -65,7 +70,10 @@ async fn a_refused_closed_batch_rebases_the_real_hub_without_another_owner_comma
     let shutdown = CancellationToken::new();
     let lane_worker = tokio::spawn(lane_task.run(shutdown.clone()));
 
-    let hub = Arc::new(ProviderSessionEventHub::new(fixture.store.clone()));
+    let hub = Arc::new(ProviderSessionEventHub::new(
+        fixture.store.clone(),
+        fixture.clock.clone(),
+    ));
     let (inbox, inbox_task) = hub.owner_inbox(board_session.clone(), NonZeroUsize::MIN);
     let address = session.owner.address;
     inbox

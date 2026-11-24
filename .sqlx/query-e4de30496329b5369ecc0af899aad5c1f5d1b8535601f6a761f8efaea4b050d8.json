@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM runtime_request_log WHERE created_at<=?\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "e4de30496329b5369ecc0af899aad5c1f5d1b8535601f6a761f8efaea4b050d8"
+}
