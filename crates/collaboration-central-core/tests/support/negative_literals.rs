@@ -123,7 +123,7 @@ pub fn explicit_negatives(name: &str, literals: &[Value]) -> Vec<Value> {
                 let mut wrong_identity = literal.clone();
                 wrong_identity["operationId"] = if matches!(
                     literal["operation"].as_str(),
-                    Some("CreateWorkspace" | "EngineRetry" | "EngineDiscard")
+                    Some("CreateWorkspace")
                 ) {
                     Value::Null
                 } else {
@@ -133,7 +133,7 @@ pub fn explicit_negatives(name: &str, literals: &[Value]) -> Vec<Value> {
                 let mut wrong_params = literal.clone();
                 wrong_params["params"] = if matches!(
                     literal["operation"].as_str(),
-                    Some("WorkspaceLookup" | "EngineHealth")
+                    Some("WorkspaceLookup")
                 ) {
                     json!({"name":"Fixture workspace","description":"Fixture description"})
                 } else {

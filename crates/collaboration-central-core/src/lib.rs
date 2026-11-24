@@ -84,10 +84,24 @@ pub mod person_request;
 mod sign_in_trust_settings;
 pub use sign_in_trust_settings::SignInTrustSettings;
 mod authorization_revision_plans;
+#[cfg(feature = "test-support")]
+mod engine_admin_fixture;
+mod engine_admin_types;
 mod organization_admin_contract;
 mod organization_admin_plans;
 mod organization_authority_cache;
+#[cfg_attr(
+    not(feature = "test-support"),
+    expect(
+        dead_code,
+        reason = "engine operations remain for a future person call and are exercised through test support"
+    )
+)]
 mod organization_engine_admin_plans;
+#[cfg(feature = "test-support")]
+pub use engine_admin_fixture::{EngineAdminControl, fixture_engine_admin};
+#[cfg(feature = "test-support")]
+pub use engine_admin_types::EngineAttemptAction;
 mod organization_provisioning_plans;
 mod organization_signin_http;
 mod organization_signin_port;

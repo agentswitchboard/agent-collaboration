@@ -152,10 +152,10 @@ Ported from the paused reliability branch (alarm robustness):
   guard-failed drain batches each take their own outcome, and the two-workspace mixes keep
   CentralDown first and a committed workspace committed.
 - `organization_signin::engine_admin_support`: an organization with a workspace, today's
-  timers and the four engine admin routes over the real sign-in link with person proofs.
+  timers and the four engine methods exercised through test support.
 - `organization_signin::engine_admin`: V13 on the native host; EngineHealth lists every
   kind, the retired list pages in attempt order, retry and discard with their refusals,
-  replays and admission.
+  and retained replies.
 - `organization_signin::engine_unit_revival`: V2 notice units and `engine_source` on the
   native host; each unit recovers by itself, restarts its 60-day period, retires at 60
   days, stays stopped and returns only by EngineRetry; a retired source is never read.

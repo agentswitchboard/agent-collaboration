@@ -57,17 +57,17 @@ async fn unstamped_private_reads_and_revisions_reveal_nothing_and_unknown_routes
         digest.body.is_empty(),
         "an unknown private digest revealed a response payload"
     );
-    let unknown = f
-        .post(
-            "/internal/no-such-signin-route",
-            &json!({"organizationId":A}),
-        )
-        .await?;
-    assert_eq!(unknown.status, 404);
-    assert!(
-        unknown.body.is_empty(),
-        "an unknown private route revealed a response payload"
-    );
+    for path in [
+        "/internal/no-such-signin-route",
+        "/organization-admin/v1/engine-health",
+        "/organization-admin/v1/engine-retired",
+        "/organization-admin/v1/engine-retry",
+        "/organization-admin/v1/engine-discard",
+    ] {
+        let unknown = f.post(path, &json!({"organizationId":A})).await?;
+        assert_eq!(unknown.status, 404, "{path}");
+        assert!(unknown.body.is_empty(), "{path} returned a body");
+    }
     let counts=f.rows(A,"SELECT (SELECT COUNT(*) FROM signin_organization_identity),(SELECT COUNT(*) FROM signin_change_records),(SELECT COUNT(*) FROM admin_used_requests),(SELECT COUNT(*) FROM signin_authorization_floors),(SELECT COUNT(*) FROM signin_person_authorization_floors),(SELECT COUNT(*) FROM runtime_request_log),(SELECT COUNT(*) FROM directory_workspaces)",vec![]).await?;
     assert!(
         counts == vec![vec![number(0)?; 7]],
