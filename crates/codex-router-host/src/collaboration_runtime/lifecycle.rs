@@ -33,6 +33,7 @@ impl CollaborationRuntime {
     pub async fn shutdown(mut self) -> io::Result<()> {
         self.manifest.take();
         self.shutdown.cancel();
+        self.message_runtime.stop().await;
         if let Some(cache_warm) = self.provider_cache_warm.take() {
             cache_warm.shutdown().await;
         }

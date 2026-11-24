@@ -1,4 +1,5 @@
 //! Bind listeners, prepare service owners and start the Host runtime.
+use super::message_startup::{HostCustodyEvents, HostMessageRoots};
 use super::{
     BackendPublication, BoundCollaborationApi, CancellationToken, CollaborationRuntime,
     CollaborationRuntimeInputs, EndpointId, EndpointRef, HostCollaborationInputs, JoinSet,
@@ -6,6 +7,11 @@ use super::{
     SchemaDigest, SocketAddr, create_private_socket_directory, io, load_installation_peer,
     load_service_identity, new_service_uuid,
 };
+use std::sync::Arc;
+use switchboard_message_custody::recipient_sessions::{
+    CombinedRecipientSessionDirectory, RecipientSessionSources,
+};
+use switchboard_message_unit::MessageRuntime;
 
 #[cfg(test)]
 pub(crate) type BeforeProviderRetention = Box<dyn FnOnce(&CollaborationRuntime) + Send>;
@@ -29,6 +35,7 @@ impl CollaborationRuntime {
             None,
             None,
             std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+            None,
         ))
         .await
     }
@@ -57,6 +64,7 @@ impl CollaborationRuntime {
             Some(host_inputs.router_proxy_endpoint),
             prepared_exposure,
             worker_clock.clone(),
+            host_inputs.message_roots,
         ))
         .await?;
         crate::debug_readiness_timing::record_with_clock(
@@ -110,6 +118,7 @@ impl CollaborationRuntime {
             None,
             None,
             worker_clock,
+            None,
         ))
         .await
     }
@@ -121,6 +130,7 @@ impl CollaborationRuntime {
         router_proxy_endpoint: Option<SocketAddr>,
         prepared_exposure: Option<crate::tailscale_exposure::PreparedTailscaleExposure>,
         worker_clock: std::sync::Arc<dyn router_clock::RuntimeClock>,
+        message_roots: Option<HostMessageRoots>,
     ) -> io::Result<Self> {
         let mut owner_human_id = inputs.owner_human_id.clone();
         let service_id = load_service_identity(&inputs.directory)?;
@@ -373,7 +383,7 @@ impl CollaborationRuntime {
             service_id.clone(),
             publication.admission_gate(),
             stored,
-            unmaterialized_threads,
+            unmaterialized_threads.clone(),
             crate::codex_conversation_recording_composition::adapter_recorder(codex_recorder),
             std::sync::Arc::clone(&open_scratch_scopes)
                 as std::sync::Arc<dyn codex_acp_adapter::ScratchScopeRegister>,
@@ -480,6 +490,41 @@ impl CollaborationRuntime {
                 router_proxy_endpoint,
             },
         )?;
+        let message_runtime = match message_roots {
+            Some(roots) => {
+                let custody_events = Arc::new(HostCustodyEvents);
+                let recipient_directory = Arc::new(CombinedRecipientSessionDirectory::new(
+                    RecipientSessionSources {
+                        codex: Arc::new(
+                            crate::recipient_session_inventory::CodexSessionInventory::new(
+                                inputs.codex_home.clone(),
+                                unmaterialized_threads.clone(),
+                                publication.admission_gate(),
+                            ),
+                        ),
+                        managed_providers: Arc::new(
+                            crate::recipient_session_inventory::ManagedProviderSessionInventory::new(
+                                service_id.clone(),
+                                provider_store.clone(),
+                                external_provider_supervisor.clone(),
+                            )
+                            .map_err(io::Error::other)?,
+                        ),
+                        claude_terminal: Arc::new(
+                            crate::recipient_session_inventory::ClaudeTerminalSessionInventory::new(
+                                claude_code_sessions,
+                                worker_clock.clone(),
+                                custody_events.clone(),
+                            ),
+                        ),
+                    },
+                ));
+                roots
+                    .start(worker_clock.clone(), recipient_directory, custody_events)
+                    .await
+            }
+            None => MessageRuntime::without_router_root(),
+        };
         let shutdown = CancellationToken::new();
         let collaboration_api =
             collaboration_api.serve(&collaboration_mcp::CollaborationApiConfig {
@@ -519,6 +564,7 @@ impl CollaborationRuntime {
         });
         let mut runtime = Self {
             clock: worker_clock,
+            message_runtime,
             installation_peer,
             owner_human_id,
             provider_store,

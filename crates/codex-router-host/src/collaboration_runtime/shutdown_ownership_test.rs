@@ -118,6 +118,7 @@ async fn pause_retired_queue_settlement() -> PausedQueueSettlement {
             None,
             None,
             clock.clone(),
+            None,
         ),
     )
     .await
