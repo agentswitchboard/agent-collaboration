@@ -135,6 +135,11 @@ pub(in crate::workspace_requests) enum C2EvictionError {
     deny_unknown_fields
 )]
 enum BridgeReply {
+    JwksRequests {
+        private_gets: usize,
+        unexpected_private: usize,
+        public_requests: usize,
+    },
     #[serde(rename = "c2Evicted")]
     C2Evicted {
         organization: OrganizationId,
@@ -205,6 +210,28 @@ impl WorkerdHost {
             return Err(StoreFailure::Unavailable);
         }
         Ok(reply)
+    }
+    pub(in crate::workspace_requests) async fn assert_jwks_requests(
+        &self,
+        expected_private_gets: usize,
+    ) -> Result<(), StoreFailure> {
+        let BridgeReply::JwksRequests {
+            private_gets,
+            unexpected_private,
+            public_requests,
+        } = self
+            .c2_control(serde_json::json!({"jwksRequests": true}))
+            .await?
+        else {
+            return Err(StoreFailure::Unavailable);
+        };
+        assert_eq!(public_requests, 0, "global outbound JWKS trap calls");
+        assert_eq!(unexpected_private, 0, "non-GET or non-JWKS private calls");
+        assert_eq!(
+            private_gets, expected_private_gets,
+            "private GET /api/auth/jwks calls"
+        );
+        Ok(())
     }
     pub(in crate::workspace_requests) async fn c2_evict(
         &self,
@@ -314,7 +341,6 @@ pub(super) async fn open_fixture(
     std::fs::write(&plan, serde_json::to_vec(&serde_json::json!({"textBindings":{
             "CENTRAL_SIGN_IN_ISSUER":signed::ISSUER,"CENTRAL_SIGN_IN_AUDIENCE":signed::AUDIENCE,
             "CENTRAL_MACHINE_AUDIENCE":signed::MACHINE_AUDIENCE,
-            "CENTRAL_SIGN_IN_JWKS_URL":"https://signin.test/.well-known/jwks.json",
             "CENTRAL_ADMIN_AUDIENCE":signed::ADMIN_AUDIENCE,"CENTRAL_PUBLIC_ORIGIN":signed::PUBLIC_ORIGIN,
             "CENTRAL_SIGN_IN_SERVICE_ID":"019f0000-0000-7000-8000-00000000d290"
         },"jwksFixtureUrl":keys.url})).map_err(|_| StoreFailure::Unavailable)?).map_err(|_| StoreFailure::Unavailable)?;
