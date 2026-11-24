@@ -1,6 +1,9 @@
 //! Adapts one enrollment context to the Central driver's lease and retirement port.
 
-use std::{fmt, future::Future, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, Mutex, PoisonError},
+};
 
 use central_link_client::EnrollmentEnd;
 use router_clock::{ClockInstant, RuntimeClock};
@@ -9,8 +12,8 @@ use switchboard_central_link::{
     link_policy::LeaseVersion,
 };
 use switchboard_machine_enrollment::{
-    CredentialStore, EnrollmentEnd as StoredEnding, EnrollmentKey, RefreshOwner, RefreshSource,
-    RetirementFence,
+    CredentialStore, EnrollmentEnd as StoredEnding, EnrollmentId, EnrollmentKey, RefreshOwner,
+    RefreshSource, RetirementFence,
 };
 use tokio::{
     sync::{Mutex as AsyncMutex, mpsc, oneshot, watch},
@@ -21,46 +24,145 @@ mod lease_worker;
 
 use lease_worker::{LeaseCommand, run};
 
-const CLOSE_BUDGET: Duration = Duration::from_secs(5);
-
 /// Lease adapter started and closed by its composition owner.
+///
+/// The executor calls `seal_ending_reports` after the driver physically joins
+/// or when it proves that the driver never started. A timed-out driver stop
+/// leaves reports open until the late driver join.
 pub struct EnrollmentLeaseSource {
     commands: mpsc::UnboundedSender<LeaseCommand>,
     retirements: RetirementFence,
     closing: watch::Sender<Option<ClockInstant>>,
-    clock: Arc<dyn RuntimeClock + Send + Sync>,
+    admission: Arc<Mutex<Admission>>,
+    ending_reports: watch::Sender<Admission>,
+    worker_exit: watch::Receiver<Option<LeaseWorkerExit>>,
+    excluded: Arc<BTreeSet<EnrollmentId>>,
     completion: AsyncMutex<Completion>,
 }
 
-/// Operations that did not finish on the closing adapter.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct UnfinishedLeaseWork {
-    pub acquisitions: Vec<EnrollmentKey>,
-    pub retirements: Vec<EnrollmentKey>,
+/// Physical completion of the worker and its child tasks.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LeaseJoin {
+    pub unsettled_retirements: Vec<EnrollmentKey>,
+    pub worker: Result<(), LeaseWorkerFailure>,
 }
 
 enum Completion {
-    Running(JoinHandle<UnfinishedLeaseWork>),
-    Closed(Result<UnfinishedLeaseWork, LeaseWorkerStopped>),
+    Running(JoinHandle<Result<(), LeaseWorkerFailure>>),
+    Reaped(Result<(), LeaseWorkerFailure>),
+    Finished(Result<LeaseJoin, LeaseJoinUnconfirmed>),
 }
 
-/// The task ended without returning its shutdown report.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct LeaseWorkerStopped;
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Admission {
+    Open,
+    Sealed,
+}
 
-impl fmt::Display for LeaseWorkerStopped {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("the enrollment lease worker stopped without a shutdown report")
+/// The worker exited before the lease's physical join was necessarily ready.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LeaseWorkerExit {
+    Stopped,
+    Failed(LeaseWorkerFailure),
+    Unconfirmed,
+}
+
+struct WorkerExitPublication {
+    admission: Arc<Mutex<Admission>>,
+    observed: watch::Sender<Option<LeaseWorkerExit>>,
+}
+
+impl WorkerExitPublication {
+    fn seal(&self) {
+        *self
+            .admission
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Admission::Sealed;
+    }
+
+    fn publish(&self, outcome: Result<(), LeaseWorkerFailure>) {
+        self.seal();
+        self.observed.send_replace(Some(match outcome {
+            Ok(()) => LeaseWorkerExit::Stopped,
+            Err(error) => LeaseWorkerExit::Failed(error),
+        }));
     }
 }
 
-impl std::error::Error for LeaseWorkerStopped {}
+impl Drop for WorkerExitPublication {
+    fn drop(&mut self) {
+        self.seal();
+    }
+}
+
+/// The reaper was lost before it certified the physical join.
+///
+/// The executor keeps this piece outstanding and starts no replacement.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LeaseJoinUnconfirmed {
+    ReaperPanicked,
+    ReaperCancelled,
+}
+
+impl From<tokio::task::JoinError> for LeaseJoinUnconfirmed {
+    fn from(error: tokio::task::JoinError) -> Self {
+        if error.is_panic() {
+            Self::ReaperPanicked
+        } else {
+            Self::ReaperCancelled
+        }
+    }
+}
+
+impl std::fmt::Display for LeaseJoinUnconfirmed {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ReaperPanicked => {
+                formatter.write_str("the lease reaper panicked before confirming the join")
+            }
+            Self::ReaperCancelled => {
+                formatter.write_str("the lease reaper was cancelled before confirming the join")
+            }
+        }
+    }
+}
+
+impl std::error::Error for LeaseJoinUnconfirmed {}
+
+/// Diagnostic outcome of the lease worker.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LeaseWorkerFailure {
+    Panicked,
+    Cancelled,
+}
+
+impl std::fmt::Display for LeaseWorkerFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Panicked => formatter.write_str("the enrollment lease worker panicked"),
+            Self::Cancelled => formatter.write_str("the enrollment lease worker was cancelled"),
+        }
+    }
+}
+
+impl std::error::Error for LeaseWorkerFailure {}
+
+impl From<tokio::task::JoinError> for LeaseWorkerFailure {
+    fn from(error: tokio::task::JoinError) -> Self {
+        if error.is_panic() {
+            Self::Panicked
+        } else {
+            Self::Cancelled
+        }
+    }
+}
 
 impl EnrollmentLeaseSource {
     /// Starts the lease supervisor in the caller's runtime.
     pub fn start<Store, Source>(
         owner: RefreshOwner<Store, Source>,
         clock: Arc<dyn RuntimeClock + Send + Sync>,
+        excluded: Arc<BTreeSet<EnrollmentId>>,
     ) -> Self
     where
         Store: CredentialStore + 'static,
@@ -68,44 +170,102 @@ impl EnrollmentLeaseSource {
     {
         let (commands, work) = mpsc::unbounded_channel();
         let (closing, stopped) = watch::channel(None);
+        let (observed, worker_exit) = watch::channel(None);
+        let admission = Arc::new(Mutex::new(Admission::Open));
+        let publication = WorkerExitPublication {
+            admission: admission.clone(),
+            observed,
+        };
         owner.supervise_retirement();
         let retirements = owner.retirement_fence();
-        let task = tokio::spawn(run(owner, clock.clone(), work, stopped));
+        let task = tokio::spawn(run(
+            owner,
+            clock,
+            work,
+            stopped,
+            excluded.clone(),
+            publication,
+        ));
         Self {
             commands,
             retirements,
             closing,
-            clock,
+            admission,
+            ending_reports: watch::channel(Admission::Open).0,
+            worker_exit,
+            excluded,
             completion: AsyncMutex::new(Completion::Running(task)),
         }
     }
 
-    /// Stops admission immediately and gives all close callers the same deadline.
-    ///
-    /// The five-second bound uses the injected clock. It requires the runtime to
-    /// schedule the supervisor and injected futures to yield promptly. Cancellation
-    /// is cooperative, so a store operation already admitted may still settle.
-    pub fn close(
-        &self,
-    ) -> impl Future<Output = Result<UnfinishedLeaseWork, LeaseWorkerStopped>> + '_ {
+    /// Closes admission and requests the earliest supplied shutdown cutoff.
+    pub fn request_stop_by(&self, cutoff: ClockInstant) {
+        let mut admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        *admission = Admission::Sealed;
         self.closing.send_if_modified(|deadline| {
-            if deadline.is_some() {
+            if deadline.is_some_and(|previous| previous <= cutoff) {
                 return false;
             }
-            *deadline = Some(self.clock.monotonic_now().after(CLOSE_BUDGET));
+            *deadline = Some(cutoff);
             true
         });
-        async {
-            let mut completion = self.completion.lock().await;
-            match &mut *completion {
-                Completion::Running(task) => {
-                    let result = task.await.map_err(|_| LeaseWorkerStopped);
-                    *completion = Completion::Closed(result.clone());
-                    result
-                }
-                Completion::Closed(result) => result.clone(),
+    }
+
+    /// Closes definitive reports after the driver has joined or never started.
+    pub fn seal_ending_reports(&self) {
+        self.ending_reports.send_if_modified(|admission| {
+            if *admission == Admission::Sealed {
+                return false;
             }
+            *admission = Admission::Sealed;
+            true
+        });
+    }
+
+    /// Observes the worker's retained exit before waiting for its children.
+    pub async fn worker_exit(&self) -> LeaseWorkerExit {
+        let mut observed = self.worker_exit.clone();
+        match observed.wait_for(Option::is_some).await {
+            Ok(outcome) => outcome.unwrap_or(LeaseWorkerExit::Unconfirmed),
+            Err(_) => LeaseWorkerExit::Unconfirmed,
         }
+    }
+
+    /// Waits for reaping and the driver report seal. Cancelling a wait retains the receipt.
+    pub async fn join(&self) -> Result<LeaseJoin, LeaseJoinUnconfirmed> {
+        let mut completion = self.completion.lock().await;
+        let worker = match &mut *completion {
+            Completion::Running(task) => match task.await {
+                Ok(worker) => {
+                    *completion = Completion::Reaped(worker);
+                    worker
+                }
+                Err(error) => {
+                    let unconfirmed = LeaseJoinUnconfirmed::from(error);
+                    *completion = Completion::Finished(Err(unconfirmed));
+                    return Err(unconfirmed);
+                }
+            },
+            Completion::Reaped(worker) => *worker,
+            Completion::Finished(joined) => return joined.clone(),
+        };
+        // This adapter holds the sender for the entire wait.
+        let mut reports = self.ending_reports.subscribe();
+        let _ = reports
+            .wait_for(|admission| *admission == Admission::Sealed)
+            .await;
+
+        // An admitted retirement write is store-owned and can finish
+        // after its child stops waiting. Pending here stays fenced.
+        let joined = LeaseJoin {
+            unsettled_retirements: self.retirements.pending_keys(),
+            worker,
+        };
+        *completion = Completion::Finished(Ok(joined.clone()));
+        Ok(joined)
     }
 }
 
@@ -118,11 +278,14 @@ impl LeaseSource<EnrollmentKey> for EnrollmentLeaseSource {
         Box::pin(async move {
             let (reply, result) = oneshot::channel();
             {
-                let closing = self.closing.borrow();
-                if self.retirements.is_fenced(key) {
+                let admission = self
+                    .admission
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                if self.excluded.contains(&key.enrollment_id) || self.retirements.is_fenced(key) {
                     return Err(LeaseFailure::EnrollmentEnded);
                 }
-                if closing.is_some() {
+                if *admission == Admission::Sealed {
                     return Err(LeaseFailure::Fault);
                 }
                 self.commands
@@ -134,7 +297,7 @@ impl LeaseSource<EnrollmentKey> for EnrollmentLeaseSource {
                     .map_err(|_| LeaseFailure::Fault)?;
             }
             let result = result.await.map_err(|_| LeaseFailure::Fault)?;
-            if self.retirements.is_fenced(key) {
+            if self.excluded.contains(&key.enrollment_id) || self.retirements.is_fenced(key) {
                 return Err(LeaseFailure::EnrollmentEnded);
             }
             result
@@ -142,8 +305,8 @@ impl LeaseSource<EnrollmentKey> for EnrollmentLeaseSource {
     }
 
     fn end(&self, key: &EnrollmentKey, cause: EnrollmentEnd) {
-        let closing = self.closing.borrow();
-        if closing.is_some() {
+        let admission = self.ending_reports.borrow();
+        if *admission == Admission::Sealed || self.excluded.contains(&key.enrollment_id) {
             return;
         }
         let why = match cause {

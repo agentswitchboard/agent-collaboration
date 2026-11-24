@@ -30,10 +30,14 @@ pub struct CollaborationRuntimeInputs {
 /// Host-owned startup facts that are not part of the public collaboration runtime inputs.
 pub(crate) struct HostCollaborationInputs {
     pub collaboration_runtime: CollaborationRuntimeInputs,
+    pub message_roots: Option<HostMessageRoots>,
     pub router_proxy_endpoint: SocketAddr,
     pub remote_access: Option<crate::RemoteAccess>,
     pub provider_operation_retention_days: Option<std::num::NonZeroU32>,
 }
+
+mod message_startup;
+pub(crate) use message_startup::HostMessageRoots;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExternalProviderLaunchBinding {
     pub endpoint_id: EndpointId,
@@ -131,6 +135,7 @@ pub enum CollaborationFailure {
 }
 pub struct CollaborationRuntime {
     clock: std::sync::Arc<dyn router_clock::RuntimeClock>,
+    message_runtime: switchboard_message_unit::MessageRuntime,
     owner_human_id: Option<message_board::HumanId>,
     provider_store: Option<
         std::sync::Arc<tokio::sync::Mutex<switchboard_session_store::ProviderOperationStore>>,
@@ -170,6 +175,11 @@ pub struct CollaborationRuntime {
 }
 
 impl CollaborationRuntime {
+    /// The central message custody entry for this runtime's enrollment at startup.
+    pub fn message_front(&self) -> switchboard_message_unit::MessageFront {
+        self.message_runtime.front()
+    }
+
     #[cfg(feature = "runtime-test-support")]
     pub async fn attach_provider_events_for_test(
         &self,

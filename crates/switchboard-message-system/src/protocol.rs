@@ -224,6 +224,8 @@ impl StopBudgets {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FrontRefusal {
+    /// Composition could not start a supervisor for this front.
+    CouldNotStart,
     AwaitingFirstRead,
     NotEnrolled,
     EnrollmentEnded,

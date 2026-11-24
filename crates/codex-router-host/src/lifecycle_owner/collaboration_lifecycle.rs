@@ -9,6 +9,7 @@ use std::{io, path::PathBuf, sync::Arc};
 pub(super) struct CollaborationLifecycle {
     owner_human_id: Option<message_board::HumanId>,
     directory: PathBuf,
+    message_roots: Option<crate::collaboration_runtime::HostMessageRoots>,
     codex_home: PathBuf,
     peer_registry_directory: Option<PathBuf>,
     backend_socket: PathBuf,
@@ -53,6 +54,13 @@ impl CollaborationLifecycle {
         let mut owner = Self {
             owner_human_id: config.owner_human_id().cloned(),
             directory: directory.to_owned(),
+            message_roots: config
+                .coordination_paths()
+                .router_root()
+                .zip(router_secret_root)
+                .map(|(root, secrets)| {
+                    crate::collaboration_runtime::HostMessageRoots::new(root.to_owned(), secrets)
+                }),
             codex_home: config
                 .collaboration_codex_home()
                 .ok_or_else(|| io::Error::other("collaboration requires explicit Codex home"))?
@@ -141,6 +149,7 @@ impl CollaborationLifecycle {
             );
             let mut runtime = CollaborationRuntime::start_for_host_with_router_proxy_endpoint(
                 crate::HostCollaborationInputs {
+                    message_roots: self.message_roots.clone(),
                     collaboration_runtime: CollaborationRuntimeInputs {
                         directory: self.directory.clone(),
                         codex_home: self.codex_home.clone(),

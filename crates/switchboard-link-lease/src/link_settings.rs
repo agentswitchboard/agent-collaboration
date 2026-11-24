@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     future::{Future, pending},
     sync::Arc,
     time::Duration,
@@ -7,8 +8,8 @@ use std::{
 use router_clock::{ClockInstant, RuntimeClock};
 use switchboard_central_link::{AddressError, DialAddress, link_driver::DriverSettings};
 use switchboard_machine_enrollment::{
-    CredentialStore, DiscoveryAnswer, EnrollmentContext, EnrollmentKey, EnrollmentMetadata,
-    MachineId, OrganizationId, SignInClient, SignInDeployment, SignInFailure,
+    CredentialStore, DiscoveryAnswer, EnrollmentContext, EnrollmentId, EnrollmentKey,
+    EnrollmentMetadata, MachineId, OrganizationId, SignInClient, SignInDeployment, SignInFailure,
 };
 use tokio::sync::watch;
 
@@ -34,6 +35,7 @@ pub struct LinkSettingsSource<Store, Discovery = SignInClient> {
     context: EnrollmentContext,
     clock: Arc<dyn RuntimeClock + Send + Sync>,
     changes: watch::Receiver<u64>,
+    excluded: Arc<BTreeSet<EnrollmentId>>,
     settings: watch::Sender<DriverSettings<EnrollmentKey>>,
 }
 
@@ -65,13 +67,14 @@ impl<Store: CredentialStore> LinkSettingsSource<Store, SignInClient> {
         organization_id: OrganizationId,
         clock: Arc<dyn RuntimeClock + Send + Sync>,
         changes: watch::Receiver<u64>,
+        excluded: Arc<BTreeSet<EnrollmentId>>,
     ) -> (Self, watch::Receiver<DriverSettings<EnrollmentKey>>) {
         let context = EnrollmentContext {
             machine_id,
             organization_id,
             deployment: client.deployment().clone(),
         };
-        Self::with_discovery(store, client, context, clock, changes)
+        Self::with_discovery(store, client, context, clock, changes, excluded)
     }
 }
 
@@ -83,6 +86,7 @@ impl<Store: CredentialStore, Discovery: DiscoverySource> LinkSettingsSource<Stor
         context: EnrollmentContext,
         clock: Arc<dyn RuntimeClock + Send + Sync>,
         changes: watch::Receiver<u64>,
+        excluded: Arc<BTreeSet<EnrollmentId>>,
     ) -> (Self, watch::Receiver<DriverSettings<EnrollmentKey>>) {
         let (settings, receiver) = watch::channel(no_settings());
         (
@@ -92,6 +96,7 @@ impl<Store: CredentialStore, Discovery: DiscoverySource> LinkSettingsSource<Stor
                 context,
                 clock,
                 changes,
+                excluded,
                 settings,
             },
             receiver,
@@ -122,7 +127,7 @@ impl<Store: CredentialStore, Discovery: DiscoverySource> LinkSettingsSource<Stor
                     Ok(metadata) => {
                         read_at = self.clock.monotonic_now().after(METADATA_POLL);
                         if self.observe_target(
-                            target_for(&self.context, &metadata),
+                            target_for(&self.context, &self.excluded, &metadata),
                             &mut discovery_state,
                         ) {
                             in_flight = None;
@@ -246,13 +251,20 @@ async fn wait_until(clock: &dyn RuntimeClock, deadline: Option<ClockInstant>) {
     }
 }
 
-fn target_for(context: &EnrollmentContext, metadata: &EnrollmentMetadata) -> MetadataTarget {
+fn target_for(
+    context: &EnrollmentContext,
+    excluded: &BTreeSet<EnrollmentId>,
+    metadata: &EnrollmentMetadata,
+) -> MetadataTarget {
     let EnrollmentMetadata::Active {
         key, deployment, ..
     } = metadata
     else {
         return MetadataTarget::Unbound;
     };
+    if excluded.contains(&key.enrollment_id) {
+        return MetadataTarget::Unbound;
+    }
     if key.organization_id != context.organization_id
         || key.machine_id != context.machine_id
         || deployment != &context.deployment
