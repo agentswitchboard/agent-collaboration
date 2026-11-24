@@ -20,7 +20,7 @@ use switchboard_message_custody::{
     recipient_sessions::{RecipientSessionAnswer, RecipientSessionDirectory},
 };
 use tokio::sync::mpsc;
-use workspace_ids::SessionId;
+use workspace_ids::{RequestId, SessionId};
 
 pub(super) const EPOCH: &str = "2030-03-17T17:46:40Z";
 
@@ -55,6 +55,7 @@ pub(super) async fn open_store(
 pub(super) async fn grant_at_central(
     central: &MachineLinkFixture,
     machine_id: &MachineId,
+    approval_request: RequestId,
 ) -> (EnrollmentId, SecretValue) {
     let organization = central.organization_id.as_str();
     let now = central.clock.utc_now().timestamp();
@@ -65,7 +66,7 @@ pub(super) async fn grant_at_central(
         .unwrap();
     let approved = runtime.decide_device_login(&serde_json::from_value(json!({
         "organizationId": organization, "approver": signed::OWNER,
-        "permissionChecked": "machine:enroll", "requestId": "019f0000-0000-7000-8000-00000000cd11",
+        "permissionChecked": "machine:enroll", "requestId": approval_request,
         "machineId": machine_id.as_str(), "label": "Message unit fixture", "allowedWorkspaces": [],
         "approverSecondFactorAt": now - 60, "codeExpiresAt": now + 600,
     })).unwrap()).await.unwrap();

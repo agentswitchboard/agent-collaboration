@@ -6,7 +6,8 @@ use std::{
 
 use collaboration_protocol::message_tools::{
     AdmittedLocalSession, DirectMessageWrite, MachineId, MessageCallerRefusal,
-    MessageDeliveryObservation, MessageOperationFuture, MessageUnitPort, Timestamp,
+    MessageDeliveryObservation, MessageInboxAcknowledgment, MessageInboxRead,
+    MessageOperationFuture, MessageUnitPort, Timestamp,
 };
 use collaboration_service::collaboration_application::message_operations::{
     MessageOperations, MessageSessionDirectory, MessageSessionPresence, V0MessageAdmission,
@@ -39,6 +40,23 @@ struct FixtureMessageUnit {
 }
 
 impl MessageUnitPort for FixtureMessageUnit {
+    fn read_inbox<'call>(
+        &'call self,
+        caller: &'call AdmittedLocalSession,
+        read: MessageInboxRead,
+    ) -> MessageOperationFuture<'call, MessageInboxPage> {
+        assert_eq!(caller.address().session_id.as_str(), "sender");
+        assert_eq!(read.limit, 20);
+        Box::pin(ready(Ok(MessageInboxPage {
+            messages: Vec::new(),
+            read_token: "W10".to_owned(),
+            acknowledgment: read.acknowledge.map(|ids| MessageInboxAcknowledgment {
+                changed: 0,
+                unchanged: ids.len(),
+            }),
+        })))
+    }
+
     fn submit<'call>(
         &'call self,
         caller: &'call AdmittedLocalSession,
@@ -188,6 +206,47 @@ async fn message_routes_preserve_typed_results_on_loopback_and_unix() {
                 message_id: "019a0000-0000-7000-8000-000000000004".parse().unwrap(),
                 delivery: MessageDeliveryObservation::Unknown,
             })
+        );
+        let page = served
+            .call_tool("message_inbox", json!({"callerSessionId":"sender"}))
+            .await;
+        let decoded: MessageToolResult<MessageInboxPage> =
+            serde_json::from_value(page.structured_content.unwrap()).unwrap();
+        let MessageToolResult::Returned(page) = decoded else {
+            panic!("expected the admitted inbox page, got {decoded:?}");
+        };
+        assert!(page.messages.is_empty());
+        assert_eq!(page.acknowledgment, None);
+        let acknowledged = served
+            .call_tool(
+                "message_inbox",
+                json!({"callerSessionId":"sender", "acknowledge":page.read_token}),
+            )
+            .await;
+        let decoded: MessageToolResult<MessageInboxPage> =
+            serde_json::from_value(acknowledged.structured_content.unwrap()).unwrap();
+        assert!(matches!(
+            decoded,
+            MessageToolResult::Returned(MessageInboxPage {
+                acknowledgment: Some(MessageInboxAcknowledgment {
+                    changed: 0,
+                    unchanged: 0
+                }),
+                ..
+            })
+        ));
+        let malformed = served
+            .call_tool(
+                "message_inbox",
+                json!({"callerSessionId":"sender", "acknowledge":"!"}),
+            )
+            .await;
+        assert_eq!(
+            serde_json::from_value::<MessageToolResult<MessageInboxPage>>(
+                malformed.structured_content.unwrap()
+            )
+            .unwrap(),
+            MessageToolResult::Refused(MessageToolRefusal::InvalidInboxReadToken)
         );
         served.stop().await;
     }

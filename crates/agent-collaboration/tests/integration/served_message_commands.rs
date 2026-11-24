@@ -7,9 +7,10 @@ use std::{
 };
 
 use collaboration_client::protocol::message_tools::{
-    AdmittedLocalSession, DirectMessageWrite, MessageCallerRefusal, MessageOperationFuture,
-    MessageSendOutcome, MessageToolRefusal, MessageToolResult, MessageUnitPort, MessageWriteStatus,
-    RequestId, SessionId,
+    AdmittedLocalSession, DirectMessageWrite, MessageCallerRefusal, MessageInboxAcknowledgment,
+    MessageInboxPage, MessageInboxRead, MessageOperationFuture, MessageSendOutcome,
+    MessageToolRefusal, MessageToolResult, MessageUnitPort, MessageWriteStatus, RequestId,
+    SessionId,
 };
 use collaboration_mcp::test_support::ServedCollaborationApi;
 use collaboration_service::{
@@ -40,6 +41,26 @@ impl MessageSessionDirectory for CliFixture {
 }
 
 impl MessageUnitPort for CliFixture {
+    fn read_inbox<'call>(
+        &'call self,
+        caller: &'call AdmittedLocalSession,
+        read: MessageInboxRead,
+    ) -> MessageOperationFuture<'call, MessageInboxPage> {
+        assert_eq!(
+            caller.address().session_id.as_str(),
+            "message-fixture-caller"
+        );
+        assert_eq!(read.limit, 5);
+        Box::pin(ready(Ok(MessageInboxPage {
+            messages: Vec::new(),
+            read_token: "W10".to_owned(),
+            acknowledgment: read.acknowledge.map(|ids| MessageInboxAcknowledgment {
+                changed: 0,
+                unchanged: ids.len(),
+            }),
+        })))
+    }
+
     #[expect(
         clippy::unwrap_used,
         reason = "the static fixture mark must be a valid timestamp"
@@ -167,5 +188,46 @@ async fn cli_send_and_status_use_the_harness_report_on_the_served_unix_socket() 
             MessageCallerRefusal::UnknownSession
         ))
     );
+    let inbox = command(
+        directory.path(),
+        "message-fixture-caller",
+        &["message", "inbox", "--limit", "5"],
+    )
+    .await;
+    assert!(inbox.status.success(), "{inbox:?}");
+    let shown: serde_json::Value = serde_json::from_slice(&inbox.stdout).unwrap();
+    assert!(jsonschema::is_valid(
+        &schemas["MessageToolResult_for_MessageInboxPage"],
+        &shown
+    ));
+    let page = serde_json::from_value::<MessageToolResult<MessageInboxPage>>(shown).unwrap();
+    let MessageToolResult::Returned(page) = page else {
+        panic!("expected an inbox page, got {page:?}");
+    };
+    assert_eq!(page.acknowledgment, None);
+    let ack = command(
+        directory.path(),
+        "message-fixture-caller",
+        &[
+            "message",
+            "inbox",
+            "--limit",
+            "5",
+            "--acknowledge",
+            &page.read_token,
+        ],
+    )
+    .await;
+    assert!(ack.status.success(), "{ack:?}");
+    assert!(matches!(
+        serde_json::from_slice::<MessageToolResult<MessageInboxPage>>(&ack.stdout).unwrap(),
+        MessageToolResult::Returned(MessageInboxPage {
+            acknowledgment: Some(MessageInboxAcknowledgment {
+                changed: 0,
+                unchanged: 0
+            }),
+            ..
+        })
+    ));
     api.stop().await.unwrap();
 }

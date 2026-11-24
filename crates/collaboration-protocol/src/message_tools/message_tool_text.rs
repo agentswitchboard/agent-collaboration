@@ -1,14 +1,47 @@
 use super::{
     CentralMailRefusal, MessageCallerRefusal, MessageDeliveryObservation, MessageFrontRefusal,
-    MessageSendOutcome, MessageStatus, MessageSubmitRefusal, MessageToolRefusal, MessageToolResult,
-    MessageWriteRefusal, MessageWriteStatus, RefusalReason,
+    MessageInboxPage, MessageSendOutcome, MessageStatus, MessageSubmitRefusal, MessageToolRefusal,
+    MessageToolResult, MessageWriteRefusal, MessageWriteStatus, RefusalReason,
 };
-use workspace_model::central_mail::TimingRequirement;
+use std::fmt::Write as _;
+use workspace_model::central_mail::{MessageBody, TimingRequirement};
 
 pub const ADDRESS_FORMAT: &str = "Use machineId and sessionId.";
-pub const MESSAGE_CLI_HELP: &str = "  message send --to PAIR_JSON --body TEXT [--request-id UUID] [--json]\n  message status --request-id UUID [--json]\n";
+pub const MESSAGE_CLI_HELP: &str = "  message send --to PAIR_JSON --body TEXT [--request-id UUID] [--json]\n  message status --request-id UUID [--json]\n  message inbox [--limit N] [--acknowledge TOKEN] [--json]\n";
 pub const MESSAGE_SEND_DESCRIPTION: &str = "Sends one direct message to an exact machineId and sessionId. Report your own harness session ID as callerSessionId. An outbox receipt confirms this Mac kept the write for a scheduled send.";
 pub const MESSAGE_STATUS_DESCRIPTION: &str = "Checks your original write by requestId. Report your own harness session ID as callerSessionId. A write accepted by central also shows the current delivery observation.";
+pub const MESSAGE_INBOX_DESCRIPTION: &str = "Lists your kept direct messages, newest first (20 by default). To acknowledge a page, pass its readToken as acknowledge. Report your own harness session ID as callerSessionId.";
+
+pub fn message_inbox_text(result: &MessageToolResult<MessageInboxPage>) -> String {
+    let page = match result {
+        MessageToolResult::Returned(page) => page,
+        MessageToolResult::Refused(refusal) => return refusal.to_string(),
+    };
+    let mut text = String::new();
+    if let Some(ack) = page.acknowledgment {
+        let _ = writeln!(
+            text,
+            "Acknowledged. {} changed, {} unchanged.",
+            ack.changed, ack.unchanged
+        );
+    }
+    if page.messages.is_empty() {
+        text.push_str("No current direct messages.\n");
+    }
+    for message in &page.messages {
+        if let MessageBody::Direct { body, .. } = &message.body {
+            let _ = writeln!(
+                text,
+                "{} · {}\n{}",
+                message.created_at.to_rfc3339(),
+                message.message_id,
+                body.as_str()
+            );
+        }
+    }
+    let _ = write!(text, "Read token {}.", page.read_token);
+    text
+}
 
 pub fn message_send_text(result: &MessageToolResult<MessageSendOutcome>) -> String {
     match result {
@@ -87,6 +120,13 @@ impl std::fmt::Display for MessageToolRefusal {
             Self::InvalidRequestId => "Use a canonical UUIDv7 request id.",
             Self::InvalidCaller => "Provide your exact harness session id.",
             Self::InvalidArguments => "Use the arguments listed for this message tool.",
+            Self::InvalidInboxLimit => "Use an inbox limit between 1 and 100.",
+            Self::InvalidInboxReadToken => "Use the read token returned by message inbox.",
+            Self::InboxAcknowledgmentNotKept => {
+                "The read token includes a message outside your kept inbox."
+            }
+            Self::InboxChanged => "The inbox changed while recording this read. Read it again.",
+            Self::InboxUnavailable => "This Mac could not read or update its inbox.",
             Self::RequestIdUnavailable => "This Mac could not create a request id.",
             Self::UnexpectedReply => "The message system returned an unexpected write result.",
             Self::ReadAnswerLost => "The message system lost its read answer.",

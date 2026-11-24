@@ -1,4 +1,7 @@
-//! The shared HTTP and Unix MCP routes for a direct send and its status.
+//! Shared HTTP and Unix MCP routes for direct sends, sender status, and the recipient inbox.
+use collaboration_protocol::message_tools::{
+    MESSAGE_INBOX_DESCRIPTION, MessageInboxArguments, MessageInboxPage, message_inbox_text,
+};
 use collaboration_protocol::message_tools::{
     MESSAGE_SEND_DESCRIPTION, MESSAGE_STATUS_DESCRIPTION, MessageSendArguments, MessageSendOutcome,
     MessageStatusArguments, MessageToolRefusal, MessageToolResult, MessageWriteStatus, PostText,
@@ -15,6 +18,24 @@ use super::{
 
 #[tool_router(router = message_tool_router, vis = "pub(super)")]
 impl CollaborationMcpServer {
+    #[tool(name = "message_inbox", description = MESSAGE_INBOX_DESCRIPTION, output_schema = schema_for_type::<McpToolOutput<MessageToolResult<MessageInboxPage>>>())]
+    async fn message_inbox(
+        &self,
+        Parameters(input): Parameters<DecodedMessageInput<MessageInboxArguments>>,
+    ) -> CallToolResult {
+        let result = async {
+            let input = input.0?;
+            let operations = self.application.messages();
+            let caller = operations.admit_caller(input.caller_session_id).await?;
+            operations
+                .inbox(&caller, input.limit, input.acknowledge.as_deref())
+                .await
+        }
+        .await
+        .into();
+        message_result(&result, message_inbox_text(&result))
+    }
+
     #[tool(name = "message_send", description = MESSAGE_SEND_DESCRIPTION, output_schema = schema_for_type::<McpToolOutput<MessageToolResult<MessageSendOutcome>>>())]
     async fn message_send(
         &self,
@@ -83,6 +104,24 @@ impl<Arguments: schemars::JsonSchema> schemars::JsonSchema for DecodedMessageInp
 
 trait MessageArguments: DeserializeOwned {
     fn explain_invalid(value: &Value) -> MessageToolRefusal;
+}
+
+impl MessageArguments for MessageInboxArguments {
+    fn explain_invalid(value: &Value) -> MessageToolRefusal {
+        if value
+            .get("limit")
+            .is_some_and(|limit| !valid::<Option<u16>>(limit))
+        {
+            return MessageToolRefusal::InvalidInboxLimit;
+        }
+        if value
+            .get("acknowledge")
+            .is_some_and(|token| !valid::<Option<String>>(token))
+        {
+            return MessageToolRefusal::InvalidInboxReadToken;
+        }
+        invalid_caller_or_arguments(value)
+    }
 }
 
 impl MessageArguments for MessageSendArguments {

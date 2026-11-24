@@ -1,19 +1,23 @@
-//! Public send/status inputs and normalized results shared by CLI, MCP and their application.
-use std::{future::Future, pin::Pin};
+//! Public message tool inputs and results shared by the CLI, MCP, and application.
+use std::{collections::BTreeSet, future::Future, pin::Pin};
 
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub use workspace_ids::{
     AdmittedLocalSession, MachineId, MessageId, RequestId, SessionId, SessionRef,
 };
-pub use workspace_model::{PostText, Timestamp, central_mail::MessageStatus};
+pub use workspace_model::{
+    PostText, Timestamp,
+    central_mail::{MessageRecord, MessageStatus},
+};
 use workspace_model::{RefusalReason, central_mail::CentralMailRefusal};
 
 mod message_tool_text;
 pub use message_tool_text::{
-    ADDRESS_FORMAT, MESSAGE_CLI_HELP, MESSAGE_SEND_DESCRIPTION, MESSAGE_STATUS_DESCRIPTION,
-    message_send_text, message_status_text,
+    ADDRESS_FORMAT, MESSAGE_CLI_HELP, MESSAGE_INBOX_DESCRIPTION, MESSAGE_SEND_DESCRIPTION,
+    MESSAGE_STATUS_DESCRIPTION, message_inbox_text, message_send_text, message_status_text,
 };
 
 /// A v0 caller report beside the semantic input, supplied by the MCP client or CLI.
@@ -147,6 +151,12 @@ pub trait MessageUnitPort: Send + Sync {
         caller: &'call AdmittedLocalSession,
         request_id: RequestId,
     ) -> MessageOperationFuture<'call, MessageWriteStatus>;
+
+    fn read_inbox<'call>(
+        &'call self,
+        caller: &'call AdmittedLocalSession,
+        read: MessageInboxRead,
+    ) -> MessageOperationFuture<'call, MessageInboxPage>;
 }
 
 /// A retained refusal reported by the outbox or the Central request log.
@@ -216,6 +226,11 @@ pub enum MessageToolRefusal {
     InvalidRequestId,
     InvalidCaller,
     InvalidArguments,
+    InvalidInboxLimit,
+    InvalidInboxReadToken,
+    InboxAcknowledgmentNotKept,
+    InboxChanged,
+    InboxUnavailable,
     Caller(MessageCallerRefusal),
     NoMessageLink,
     Front(MessageFrontRefusal),
@@ -225,6 +240,86 @@ pub enum MessageToolRefusal {
     UnexpectedReply,
     ReadAnswerLost,
     TransportUnavailable,
+}
+
+pub const DEFAULT_INBOX_LIMIT: u16 = 20;
+pub const MAX_INBOX_LIMIT: u16 = 100;
+const MAX_TOKEN_LENGTH: usize = ((MAX_INBOX_LIMIT as usize * 39 + 2) * 4).div_ceil(3);
+
+/// A CLI or MCP caller asks for their inbox and can acknowledge a previously returned page.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MessageInboxArguments {
+    pub caller_session_id: Option<SessionId>,
+    #[schemars(range(min = 1, max = 100))]
+    pub limit: Option<u16>,
+    pub acknowledge: Option<String>,
+}
+
+/// The message unit returns the current page and any acknowledgment recorded for this call.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MessageInboxPage {
+    pub messages: Vec<MessageRecord>,
+    pub read_token: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub acknowledgment: Option<MessageInboxAcknowledgment>,
+}
+
+/// The message unit counts the acknowledged messages that changed or retained their state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MessageInboxAcknowledgment {
+    pub changed: usize,
+    pub unchanged: usize,
+}
+
+/// The application decodes the ordered IDs to be validated against the admitted recipient's inbox.
+pub struct MessageInboxRead {
+    pub limit: u16,
+    pub acknowledge: Option<Vec<MessageId>>,
+}
+
+impl MessageInboxRead {
+    pub fn from_arguments(
+        limit: Option<u16>,
+        acknowledge: Option<&str>,
+    ) -> Result<Self, MessageToolRefusal> {
+        let limit = limit.unwrap_or(DEFAULT_INBOX_LIMIT);
+        if !(1..=MAX_INBOX_LIMIT).contains(&limit) {
+            return Err(MessageToolRefusal::InvalidInboxLimit);
+        }
+        Ok(Self {
+            limit,
+            acknowledge: acknowledge.map(decode_read_token).transpose()?,
+        })
+    }
+}
+
+pub fn inbox_read_token(messages: &[MessageRecord]) -> Result<String, MessageToolRefusal> {
+    let ids: Vec<_> = messages.iter().map(|message| &message.message_id).collect();
+    encode_read_ids(&ids)
+}
+
+fn encode_read_ids(ids: &[&MessageId]) -> Result<String, MessageToolRefusal> {
+    let encoded = serde_json::to_vec(ids).map_err(|_| MessageToolRefusal::UnexpectedReply)?;
+    Ok(URL_SAFE_NO_PAD.encode(encoded))
+}
+
+fn decode_read_token(token: &str) -> Result<Vec<MessageId>, MessageToolRefusal> {
+    let refusal = MessageToolRefusal::InvalidInboxReadToken;
+    if token.len() > MAX_TOKEN_LENGTH {
+        return Err(refusal);
+    }
+    let encoded = URL_SAFE_NO_PAD.decode(token).map_err(|_| refusal.clone())?;
+    let ids: Vec<MessageId> = serde_json::from_slice(&encoded).map_err(|_| refusal.clone())?;
+    if ids.len() > usize::from(MAX_INBOX_LIMIT)
+        || ids.iter().collect::<BTreeSet<_>>().len() != ids.len()
+        || encode_read_ids(&ids.iter().collect::<Vec<_>>())? != token
+    {
+        return Err(refusal);
+    }
+    Ok(ids)
 }
 
 #[cfg(test)]

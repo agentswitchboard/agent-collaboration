@@ -41,15 +41,13 @@ const RETIRED_COMMAND_GROUPS: &[&str] = &[
 const NOT_AVAILABLE: &str = "not available in this build";
 const USAGE_EXIT: i32 = 2;
 
-/// Refuses `arguments` when the first word of its first argument names a retired group, and
+/// After the active message commands have been dispatched, refuses `arguments` when the first word
+/// of its first argument names a retired group, and
 /// returns the exit code. The first argument may hold the whole command as one quoted string
 /// (`"wake send --json"`); its words count as arguments, so `--help` and `--json` inside it are
 /// honoured. Returns `None` for every other command.
 #[must_use]
 pub fn refuse_retired_command_group(arguments: &[OsString]) -> Option<i32> {
-    if crate::is_message_command(arguments) {
-        return None;
-    }
     let first = arguments.first()?.to_str()?;
     let group = first.split_ascii_whitespace().next()?;
     if !RETIRED_COMMAND_GROUPS.contains(&group) {

@@ -1,4 +1,4 @@
-//! Local caller admission and the two direct-message operations.
+//! Local caller admission and direct-message operations.
 use std::{future::Future, pin::Pin, sync::Arc};
 
 use collaboration_protocol::message_tools::{
@@ -6,6 +6,7 @@ use collaboration_protocol::message_tools::{
     MessageOperationFuture, MessageSendOutcome, MessageToolRefusal, MessageUnitPort,
     MessageWriteStatus, PostText, RequestId, SessionId, SessionRef,
 };
+use collaboration_protocol::message_tools::{MessageInboxPage, MessageInboxRead};
 use router_clock::RuntimeClock;
 
 /// The W1 directory adapter reports what it knows about one exact session ID on this Mac.
@@ -150,6 +151,16 @@ impl MessageOperations {
             .unit
             .request_status(caller, request_id)
             .await
+    }
+
+    pub async fn inbox(
+        &self,
+        caller: &AdmittedLocalSession,
+        limit: Option<u16>,
+        acknowledge: Option<&str>,
+    ) -> Result<MessageInboxPage, MessageToolRefusal> {
+        let read = MessageInboxRead::from_arguments(limit, acknowledge)?;
+        self.bindings()?.unit.read_inbox(caller, read).await
     }
 }
 

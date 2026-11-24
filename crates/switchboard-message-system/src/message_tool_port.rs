@@ -2,9 +2,10 @@
 use central_link_protocol::{ReplyPayload, RequestScope, RequestStatusQuery};
 use collaboration_protocol::message_tools::{
     AdmittedLocalSession, DirectMessageWrite, MachineId, MessageDeliveryObservation,
-    MessageFrontRefusal, MessageId, MessageOperationFuture, MessageSendOutcome, MessageStatus,
-    MessageSubmitRefusal, MessageToolRefusal, MessageUnitPort, MessageWriteRefusal,
-    MessageWriteStatus, RequestId, Timestamp,
+    MessageFrontRefusal, MessageId, MessageInboxAcknowledgment, MessageInboxPage, MessageInboxRead,
+    MessageOperationFuture, MessageSendOutcome, MessageStatus, MessageSubmitRefusal,
+    MessageToolRefusal, MessageUnitPort, MessageWriteRefusal, MessageWriteStatus, RequestId,
+    Timestamp, inbox_read_token,
 };
 use switchboard_machine_core_store::{
     LocalOutboxRefusal, OutboxCancellation, OutboxCentralRefusal, OutboxRefusal,
@@ -13,6 +14,7 @@ use switchboard_message_custody::{
     custody_status::CustodyRequestStatus,
     custody_submission::{Submission, SubmissionPayload, SubmitRefusal},
     custody_task::CustodyTaskHandle,
+    inbox_read::{InboxReadError, RecipientInboxRead},
 };
 use workspace_model::{
     Caller,
@@ -24,6 +26,39 @@ use crate::{FrontRefusal, MessageFront};
 impl MessageUnitPort for MessageFront {
     fn check_available(&self) -> Result<(), MessageToolRefusal> {
         self.outbox_and_inbox().map(drop)
+    }
+
+    fn read_inbox<'call>(
+        &'call self,
+        caller: &'call AdmittedLocalSession,
+        read: MessageInboxRead,
+    ) -> MessageOperationFuture<'call, MessageInboxPage> {
+        Box::pin(async move {
+            let handle = self.outbox_and_inbox()?;
+            let acknowledgment = if let Some(ids) = read.acknowledge {
+                let settled = handle
+                    .record_inbox_read(caller.clone(), RecipientInboxRead::for_session(caller, ids))
+                    .await
+                    .map_err(|error| self.inbox_error(error))?;
+                Some(MessageInboxAcknowledgment {
+                    changed: settled.changed,
+                    unchanged: settled.unchanged,
+                })
+            } else {
+                None
+            };
+            let messages = handle
+                .read_inbox(caller.clone(), usize::from(read.limit))
+                .await
+                .map_err(|error| self.inbox_error(error))?
+                .into_messages();
+            let read_token = inbox_read_token(&messages)?;
+            Ok(MessageInboxPage {
+                messages,
+                read_token,
+                acknowledgment,
+            })
+        })
     }
 
     fn submit<'call>(
@@ -129,6 +164,19 @@ impl MessageUnitPort for MessageFront {
 }
 
 impl MessageFront {
+    fn inbox_error(&self, error: InboxReadError) -> MessageToolRefusal {
+        match error {
+            InboxReadError::Closed => self.stopped_tool(),
+            InboxReadError::RecipientChanged | InboxReadError::MessageNotKept => {
+                MessageToolRefusal::InboxAcknowledgmentNotKept
+            }
+            InboxReadError::ChangedSinceRead => MessageToolRefusal::InboxChanged,
+            InboxReadError::Handover(_) | InboxReadError::Inbox(_) => {
+                MessageToolRefusal::InboxUnavailable
+            }
+        }
+    }
+
     /// Returns the Fleet identity from the same generation that owns the tool queue.
     pub fn available_machine(&self) -> Result<MachineId, MessageToolRefusal> {
         self.forwarding_machine()

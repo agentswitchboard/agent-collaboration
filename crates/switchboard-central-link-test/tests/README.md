@@ -4,6 +4,8 @@ The integration target uses Central’s public fixture and the Mac driver’s lo
 
 The custody journey joins the real admitted driver to in-process Tokio Central and a real Mac SQLite store on one manual clock.
 
+The first-message journey uses two message systems, one native Tokio Central, and one manual clock. Each Mac's enrollment is written directly into its store with a fixture bearer. Tests enter at the real message-system port with fixture-admitted sessions, below the service and MCP/CLI. They check acceptance, keep, a scripted managed notice, Seen, and acknowledgement. The other cases check restart during a notice, reads after the delivery window, and acknowledgement before notice. The recipient directory and notice writer are fixtures. PR 411's Host fixtures and the owner's watched run cover the ACP Claude step separately.
+
 The simulated link cases run the same Mac driver, custody and SQLite stores against
 Central's real Axum router over Turmoil TCP. They inspect the simulator's queued
 TCP segments to delay or drop a selected WebSocket frame and model connections

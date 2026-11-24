@@ -75,7 +75,7 @@ fn events(active: NoticeAttemptId, stale: NoticeAttemptId) -> [HandoffEvent; 13]
             now: after,
         },
         HandoffEvent::RecoverWriting,
-        HandoffEvent::InboxRead {
+        HandoffEvent::ReadAcknowledged {
             completed_at: after,
         },
     ]
@@ -102,6 +102,42 @@ fn the_declared_handover_table_matches_the_reducer() {
             .map(move |event| (state, event))
     });
     check_state_machine_transitions::<DirectHandoffMachine>(cases).unwrap();
+}
+
+#[test]
+fn acknowledging_while_waiting_owes_seen_and_cannot_claim_a_notice() {
+    let completed_at = at(CUTOFF - 1);
+    let state = Handoff {
+        expires_at: at(CUTOFF),
+        phase: DirectHandoff::Waiting,
+    };
+    let acknowledgment = HandoffEvent::ReadAcknowledged { completed_at };
+    let transitioned = Handoff {
+        phase: seen(completed_at),
+        ..state
+    };
+    assert_eq!(
+        DirectHandoffMachine::transition(&state, acknowledgment),
+        Ok((transitioned, vec![HandoffEffect::WakeReceiptPump]))
+    );
+    assert!(matches!(
+        DirectHandoffMachine::transition(
+            &transitioned,
+            HandoffEvent::EligibleAtMark {
+                attempt: attempt(1),
+                now: completed_at
+            }
+        ),
+        Err(TransitionError::NotAllowed { .. })
+    ));
+    let missed = Handoff {
+        phase: DirectHandoff::NotSeen,
+        ..state
+    };
+    assert!(matches!(
+        DirectHandoffMachine::transition(&missed, acknowledgment),
+        Err(TransitionError::NotAllowed { .. })
+    ));
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -195,10 +231,14 @@ impl NoticeHistory {
                 }
                 self.cannot_offer_again = true;
             }
-            HandoffEvent::InboxRead { completed_at } => {
-                if !self.cannot_offer_again || self.confirmed_at.is_some() {
+            HandoffEvent::ReadAcknowledged { completed_at } => {
+                if !matches!(
+                    self.phase(),
+                    DirectHandoff::Waiting | DirectHandoff::NotKnown
+                ) {
                     return Err(ExpectedFailure::Inapplicable);
                 }
+                self.cannot_offer_again = true;
                 self.confirmed_at = Some(completed_at);
                 return Ok(vec![HandoffEffect::WakeReceiptPump]);
             }

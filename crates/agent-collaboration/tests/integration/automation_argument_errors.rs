@@ -31,7 +31,7 @@ const RETIRED_GROUP_COMMANDS: [[&str; 2]; 33] = [
     ["process", "show"],
     ["move", "show"],
     ["hook", "list"],
-    ["message", "inbox"],
+    ["message", "history"],
     ["show", "push-id"],
     ["approval", "list"],
     ["question", "list"],
