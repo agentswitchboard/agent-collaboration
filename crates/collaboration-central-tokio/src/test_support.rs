@@ -59,6 +59,7 @@ async fn open_machine_link_fixture(
             issuer: signed::ISSUER.into(),
             audience: signed::AUDIENCE.into(),
             admin_audience: signed::ADMIN_AUDIENCE.into(),
+            person_link_audience: Some(format!("{}/audiences/central-person-link", signed::ISSUER)),
             machine_audience: signed::MACHINE_AUDIENCE.into(),
             public_origin: signed::PUBLIC_ORIGIN.into(),
             jwks_url: keys.url.clone(),

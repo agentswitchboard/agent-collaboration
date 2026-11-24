@@ -2,7 +2,9 @@
 
 mod admission;
 mod compact_jwt;
+mod link_token;
 mod refusal;
+pub use link_token::{CheckedPersonLink, PersonLinkFacts, PersonLinkSecondFactor};
 mod signed_claims;
 mod verifier;
 

@@ -910,6 +910,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "central-person-link"
+version = "0.1.158"
+dependencies = [
+ "central-link-protocol",
+ "fleet-identity-protocol",
+ "fleet-rpc",
+ "fleet-signin",
+ "serde",
+ "workspace-ids",
+ "workspace-model",
+]
+
+[[package]]
 name = "central-storage"
 version = "0.1.158"
 dependencies = [
@@ -1580,6 +1593,7 @@ dependencies = [
  "central-engine-model",
  "central-engine-test-support",
  "central-link-protocol",
+ "central-person-link",
  "central-storage",
  "chrono",
  "fleet-approvals",

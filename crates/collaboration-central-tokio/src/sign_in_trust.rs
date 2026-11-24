@@ -86,6 +86,7 @@ impl NativeSignInTrust {
             machine_token_verifier,
             self.settings.service_id.clone(),
             &self.cache,
+            self.settings.person_link_audience.clone(),
         )))
     }
 }

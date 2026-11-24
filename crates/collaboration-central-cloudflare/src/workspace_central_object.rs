@@ -410,6 +410,7 @@ impl CentralObject {
         let mail_retirements = self.mail_retirements.clone();
         let state_for_revocation = self.state.clone();
         let calls_for_revocation = self.pending_mac_calls.clone();
+        let state_for_person_revision = self.state.clone();
         let deadline_state = self.state.clone();
         let central = Arc::new(
             central
@@ -427,6 +428,9 @@ impl CentralObject {
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .insert(machine.machine_id);
+                }))
+                .with_person_revision_observer(Arc::new(move |revision| {
+                    workspace_person_socket::close_affected(&state_for_person_revision, &revision);
                 }))
                 .with_enrollment_invalidation_observer(Arc::new(move |invalidation| {
                     workspace_machine_link::close_enrollment_sockets(
@@ -532,12 +536,19 @@ impl DurableObject for CentralObject {
             self.flush_ready_mail(&runtime).await;
             return response.try_into();
         }
-        if let Some(path_organization) = crate::workspace_link_entry::organization(&request.path())
-        {
-            if path_organization.as_ref() != Ok(&organization) {
-                return Response::error("wrong organization", 403);
-            }
-            return self.upgrade_machine_link(organization, &request).await;
+        use crate::workspace_link_entry::{LinkRoute, link_route};
+        if let Some(route) = link_route(&request.path()) {
+            return match route {
+                LinkRoute::Machine(Ok(target)) if target == organization => {
+                    self.upgrade_machine_link(organization, &request).await
+                }
+                LinkRoute::Person(Ok(target)) if target == organization => {
+                    self.upgrade_person_socket(organization, &request).await
+                }
+                LinkRoute::Machine(_) | LinkRoute::Person(_) => {
+                    Response::error("wrong organization", 403)
+                }
+            };
         }
         Response::error("unknown central route", 404)
     }
@@ -547,7 +558,11 @@ impl DurableObject for CentralObject {
         socket: worker::WebSocket,
         message: worker::WebSocketIncomingMessage,
     ) -> Result<()> {
-        self.handle_machine_message(socket, message).await
+        if workspace_person_socket::is_person_socket(&self.state, &socket)? {
+            self.handle_person_socket(socket, message).await
+        } else {
+            self.handle_machine_message(socket, message).await
+        }
     }
     async fn websocket_close(
         &self,
@@ -614,3 +629,6 @@ use workspace_alarm_owner::ColdAlarmStart;
 
 #[path = "workspace_link_text.rs"]
 mod workspace_link_text;
+
+#[path = "workspace_person_socket.rs"]
+mod workspace_person_socket;

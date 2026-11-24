@@ -62,6 +62,14 @@ impl<Ed: Ed25519Verification, Es: Es256Verification, Keys: IssuerKeySource>
         Self(PersonProofVerifier::new(signatures, proofs, clock, policy))
     }
 
+    pub async fn verify_person_link(
+        &self,
+        token: &str,
+        audience: &str,
+    ) -> Result<fleet_signin::person_proof::CheckedPersonLink, PersonRequestRefusal> {
+        self.0.verify_person_link(token, audience).await
+    }
+
     pub async fn verify_approval(
         &self,
         input: fleet_signin::ApprovalPersonVerificationInput<'_>,

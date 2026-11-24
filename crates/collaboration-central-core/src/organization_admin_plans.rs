@@ -16,6 +16,16 @@ use fleet_contracts::{
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
 use fleet_workspace_directory::CentralWorkspaceDirectory;
 impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
+    pub(crate) async fn list_organization_workspaces(
+        &self,
+        after: Option<&message_board::WorkspaceId>,
+        limit: u16,
+    ) -> Result<fleet_workspace_directory::WorkspaceDirectoryPage, StoreFailure> {
+        CentralWorkspaceDirectory::new(self.execution.statement_host())
+            .read_workspace_page(after, limit)
+            .await
+    }
+
     pub async fn admin_person_request(
         &self,
         input: &PersonRequestInput,
@@ -125,9 +135,8 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
                 })
             }
             AdminOperation::ListWorkspaces(request) => {
-                let directory = CentralWorkspaceDirectory::new(self.execution.statement_host());
-                let page = directory
-                    .read_workspace_page(request.after.as_ref(), request.limit.get())
+                let page = self
+                    .list_organization_workspaces(request.after.as_ref(), request.limit.get())
                     .await?;
                 OrganizationAdminAnswer::WorkspaceList(ListWorkspacesResult::Workspaces {
                     workspaces: page

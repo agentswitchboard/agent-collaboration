@@ -15,6 +15,7 @@ mod mac_call_address;
 mod mac_call_capabilities;
 #[cfg(test)]
 mod parent_session_rpc_test;
+pub mod person_link_rpc;
 mod request_status;
 pub mod session_lifecycle_rpc;
 mod socket_direct_mail;
@@ -32,7 +33,7 @@ pub use typed_call_correlations::{MAX_PENDING_TYPED_CALLS, TypedCallCorrelations
 
 pub use central_egress::{CentralEgress, check_central_egress_length, encode_central_egress};
 pub use correlation_id::{CorrelationId, FreshCorrelationId};
-pub use link_close::MachineLinkCloseCode;
+pub use link_close::{MachineLinkCloseCode, PersonLinkCloseCode};
 pub use link_codec::{DataFrame, LinkFrame, decode_text, encode_text};
 pub use link_delivery::{
     DeliveryMessage, DirectOfferBody, DirectOfferMessage, MAX_RECEIPTS, MAX_TIME_LEFT_MS, Receipt,

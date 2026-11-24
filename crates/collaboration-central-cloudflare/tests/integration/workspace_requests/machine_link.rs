@@ -9,6 +9,7 @@ mod delivery;
 mod fixture;
 mod idle_expiry;
 mod link_boundary;
+mod person_admission;
 mod private_enrollment_invalidation;
 mod probe_diagnostic;
 mod receipt;

@@ -110,3 +110,9 @@ pub use organization_signin_port::OrganizationSignInPort;
 #[cfg(test)]
 #[cfg(all(feature = "wire-export", not(target_arch = "wasm32")))]
 mod signin_wire_export_test;
+
+mod person_link_admission;
+pub use central_person_link::{
+    PersonConnectionRegistry, PersonConnectionState, PersonRevision, PersonSocketAttachment,
+};
+pub use person_link_admission::{PersonLinkAdmission, PersonLinkReply, PersonSocketRegistration};

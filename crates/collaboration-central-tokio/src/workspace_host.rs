@@ -161,6 +161,7 @@ pub struct TokioWorkspaceHost {
         Mutex<BTreeMap<OrganizationId, Arc<WorkspaceRuntime<ObjectStorage, TokioWorkspaceStores>>>>,
     alarms: Mutex<Vec<WorkspaceAlarmOwner>>,
     pub(crate) push_registry: MachinePushRegistry,
+    pub(crate) person_sockets: collaboration_central_core::PersonConnectionRegistry,
     approval_deadline_tasks: workspace_approval_delivery::ApprovalDeadlineTasks,
     #[cfg(feature = "test-support")]
     fixture_link_calls: bool,
@@ -199,6 +200,7 @@ impl TokioWorkspaceHost {
             orgs: Default::default(),
             alarms: Default::default(),
             push_registry: MachinePushRegistry::default(),
+            person_sockets: Default::default(),
             approval_deadline_tasks: Default::default(),
             #[cfg(feature = "test-support")]
             fixture_link_calls: false,
@@ -313,6 +315,7 @@ impl TokioWorkspaceHost {
         let revocation_registry = self.push_registry.clone();
         let revocation_org = organization.clone();
         let deadline_tasks = self.approval_deadline_tasks.clone();
+        let person_sockets = self.person_sockets.clone();
         let central = Arc::new(
             central
                 .with_approval_delivery_completion(Arc::new(move |work| {
@@ -324,6 +327,9 @@ impl TokioWorkspaceHost {
                 .with_mail_retirement_observer(Arc::new(move |machine| {
                     retirement_registry
                         .mail_claim_retired(&retirement_organization, machine.machine_id);
+                }))
+                .with_person_revision_observer(Arc::new(move |revision| {
+                    person_sockets.close_affected(&revision);
                 }))
                 .with_enrollment_invalidation_observer(Arc::new(move |invalidation| {
                     revocation_registry.invalidate_enrollment(&revocation_org, &invalidation);

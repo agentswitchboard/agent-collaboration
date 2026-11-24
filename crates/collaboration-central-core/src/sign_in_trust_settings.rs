@@ -10,6 +10,9 @@ pub struct SignInTrustSettings {
     pub audience: String,
     /// Audience of person tokens for central's admin surface.
     pub admin_audience: String,
+    /// Audience for Sign-in's short, connection-bound bearer. Absent disables person links.
+    #[serde(default)]
+    pub person_link_audience: Option<String>,
     /// Byte-exact audience of machine access tokens for this deployment.
     pub machine_audience: String,
     /// Central's external HTTPS origin, used for DPoP request targets.

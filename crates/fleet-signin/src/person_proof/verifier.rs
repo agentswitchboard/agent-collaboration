@@ -76,6 +76,20 @@ impl CheckedPersonProof {
     }
 }
 
+pub(super) enum PersonHeaderPolicy {
+    Admin,
+    Link,
+}
+
+impl PersonHeaderPolicy {
+    fn accepts(self, header: Option<&str>) -> bool {
+        match self {
+            Self::Admin => matches!(header, None | Some("JWT" | "at+jwt")),
+            Self::Link => header == Some("at+jwt"),
+        }
+    }
+}
+
 pub struct PersonProofVerifier<Ed, Es, Keys> {
     signatures: IssuerSignatureVerifier<Ed, Keys>,
     proofs: Es,
@@ -101,18 +115,11 @@ impl<Ed: Ed25519Verification, Es: Es256Verification, Keys: IssuerKeySource>
         }
     }
 
-    pub async fn verify(
+    pub(super) async fn verify_signed_token(
         &self,
-        path: &str,
-        method: &str,
-        authorization: &str,
-        proof: &str,
-    ) -> Result<CheckedPersonProof, PersonRequestRefusal> {
-        let htu = expected_htu(&self.policy, path)?;
-        let token = authorization
-            .strip_prefix("DPoP ")
-            .filter(|token| !token.is_empty() && !token.contains(char::is_whitespace))
-            .ok_or(PersonRequestRefusal::DpopRequired)?;
+        token: &str,
+        header_policy: PersonHeaderPolicy,
+    ) -> Result<CompactJwt, PersonRequestRefusal> {
         let parsed_token = CompactJwt::parse(token)?;
         let header: PersonTokenHeader = from_json(
             &parsed_token.header,
@@ -120,10 +127,7 @@ impl<Ed: Ed25519Verification, Es: Es256Verification, Keys: IssuerKeySource>
         )?;
         if header.alg != "EdDSA"
             || header.kid.is_empty()
-            || header
-                .typ
-                .as_ref()
-                .is_some_and(|typ| typ != "JWT" && typ != "at+jwt")
+            || !header_policy.accepts(header.typ.as_deref())
         {
             return Err(PersonRequestRefusal::UnsupportedHeader);
         }
@@ -148,6 +152,32 @@ impl<Ed: Ed25519Verification, Es: Es256Verification, Keys: IssuerKeySource>
                 | fleet_contracts::IssuerSignatureRefusal::Crypto { .. },
             ) => return Err(PersonRequestRefusal::VerificationUnavailable),
         }
+        Ok(parsed_token)
+    }
+
+    pub(super) fn clock_millis(&self) -> i64 {
+        self.clock.now().unix_millis()
+    }
+
+    pub(super) fn trusted_issuer(&self) -> &str {
+        &self.policy.issuer
+    }
+
+    pub async fn verify(
+        &self,
+        path: &str,
+        method: &str,
+        authorization: &str,
+        proof: &str,
+    ) -> Result<CheckedPersonProof, PersonRequestRefusal> {
+        let htu = expected_htu(&self.policy, path)?;
+        let token = authorization
+            .strip_prefix("DPoP ")
+            .filter(|token| !token.is_empty() && !token.contains(char::is_whitespace))
+            .ok_or(PersonRequestRefusal::DpopRequired)?;
+        let parsed_token = self
+            .verify_signed_token(token, PersonHeaderPolicy::Admin)
+            .await?;
         let person: PersonClaims =
             from_json(&parsed_token.claims, PersonRequestRefusal::PersonClaims)?;
         let proof = CompactJwt::parse(proof)?;
@@ -280,15 +310,36 @@ fn validate_person(
     {
         return Err(PersonRequestRefusal::PersonClaims);
     }
-    let jwt_expiry_ms = person
-        .exp
-        .0
+    validate_person_lifetime(
+        PersonLifetime {
+            expires_seconds: person.exp.0,
+            snapshot_ms: person.authorization_snapshot_at_ms.0,
+            snapshot_expires_ms: person.authorization_snapshot_valid_until_ms.0,
+            session_expires_ms: person.session_expires_at_ms.0,
+        },
+        now_ms,
+    )
+}
+
+pub(super) struct PersonLifetime {
+    pub(super) expires_seconds: i64,
+    pub(super) snapshot_ms: i64,
+    pub(super) snapshot_expires_ms: i64,
+    pub(super) session_expires_ms: i64,
+}
+
+pub(super) fn validate_person_lifetime(
+    lifetime: PersonLifetime,
+    now_ms: i64,
+) -> Result<i64, PersonRequestRefusal> {
+    let jwt_expiry_ms = lifetime
+        .expires_seconds
         .checked_mul(1000)
         .filter(|value| *value <= MAX_SAFE_INTEGER)
         .ok_or(PersonRequestRefusal::ExpiryBounds)?;
-    let snapshot = person.authorization_snapshot_at_ms.0;
-    let snapshot_deadline = person.authorization_snapshot_valid_until_ms.0;
-    let session_deadline = person.session_expires_at_ms.0;
+    let snapshot = lifetime.snapshot_ms;
+    let snapshot_deadline = lifetime.snapshot_expires_ms;
+    let session_deadline = lifetime.session_expires_ms;
     if snapshot > now_ms
         || snapshot_deadline <= snapshot
         || snapshot_deadline - snapshot > 300_000
