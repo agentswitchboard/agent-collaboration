@@ -143,36 +143,6 @@ export const rows: InventoryRow[] = [
     fixedBy: "D1",
   },
   {
-    file: "crates/collaboration-service/src/collaboration_application/journal_operations.rs",
-    line: 60,
-    owner: "router-vocabulary",
-    kind: "method-table",
-    defines:
-      "JournalError to JournalFailure: read_wait InvalidRecord, HistoryExpired and JournalChanged to CursorInvalidated, rest Unavailable (l60-76); address_snapshot SnapshotExpired, InvalidRecord, Capacity to Overloaded, rest Unavailable (l110-117)",
-    usedBy: [
-      {
-        part: "N11",
-      },
-    ],
-    duplicateGroup: "failure-kind-mapping",
-    disposition: "boundary-encoding",
-  },
-  {
-    file: "crates/collaboration-service/src/collaboration_application/journal_operations.rs",
-    line: 191,
-    owner: "mcp",
-    kind: "hand-json",
-    defines:
-      "JournalFailure bodies: invalidRequest {kind,message} l191, unavailable {kind,stage:discovery,message} l193, {kind:snapshotExpired} l195, cursor invalidation {kind:historyExpired|journalChanged,current} l196",
-    usedBy: [
-      {
-        part: "N11",
-      },
-    ],
-    duplicateGroup: null,
-    disposition: "boundary-encoding",
-  },
-  {
     file: "crates/collaboration-service/src/collaboration_application/provider_observation_operations.rs",
     line: 253,
     owner: "router-vocabulary",

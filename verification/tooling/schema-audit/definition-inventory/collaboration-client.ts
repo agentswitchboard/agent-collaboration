@@ -261,7 +261,7 @@ export const rows: InventoryRow[] = [
   toolNames(
     "collaboration_client.rs",
     204,
-    "sessions_list, session_inspect, turn_interrupt, journal_read, installation_show, ...",
+    "sessions_list, session_inspect, turn_interrupt, installation_show, ...",
   ),
   {
     file: `${R}collaboration_client.rs`,

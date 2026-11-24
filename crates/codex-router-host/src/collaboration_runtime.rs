@@ -2,7 +2,7 @@
 use crate::BackendPublication;
 use crate::RemoteControlServerName;
 use collaboration_protocol::{
-    CodexGeneration, EndpointId, EndpointRef, NonEmptyText, ObservationTimestamp, ProviderKind,
+    EndpointId, EndpointRef, NonEmptyText, ObservationTimestamp, ProviderKind,
     RouterExecutableRelation, SchemaDigest, UuidIdentity,
 };
 use collaboration_runtime::NativeRelayListener;
@@ -167,10 +167,6 @@ pub struct CollaborationRuntime {
     shutdown: CancellationToken,
     tasks: JoinSet<io::Result<()>>,
     provider_retirement_tasks: JoinSet<io::Result<()>>,
-    journal: Option<std::sync::Arc<lifecycle_observation::LifecycleStore>>,
-    maintenance: Option<tokio::task::JoinHandle<Result<(), lifecycle_observation::JournalError>>>,
-    current_generation: Option<CodexGeneration>,
-    observer_task: Option<tokio::task::JoinHandle<()>>,
     manifest: Option<collaboration_runtime::ManifestPublication>,
     collaboration_api: ServedCollaborationApi,
     tailscale_exposure: Option<crate::tailscale_exposure::TailscaleExposure>,
@@ -242,7 +238,6 @@ use collaboration_api_serving::{BoundCollaborationApi, ServedCollaborationApi};
 mod lifecycle;
 #[path = "collaboration_runtime/native_backend.rs"]
 mod native_backend;
-mod observation_recheck;
 #[path = "collaboration_runtime/schema_bundle_retention.rs"]
 mod schema_bundle_retention;
 #[path = "collaboration_runtime/startup_composition.rs"]
@@ -254,13 +249,6 @@ impl Drop for CollaborationRuntime {
         self.shutdown.cancel();
         let _retire = self.publication.admission_gate().retire();
     }
-}
-
-fn unix_seconds() -> io::Result<i64> {
-    let elapsed = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(io::Error::other)?;
-    i64::try_from(elapsed.as_secs()).map_err(io::Error::other)
 }
 
 fn create_private_socket_directory(path: &std::path::Path) -> io::Result<()> {

@@ -13,12 +13,7 @@ pub fn protocol_type_schemas() -> Result<BTreeMap<String, Value>, serde_json::Er
     add_type::<crate::EndpointDescription>(&mut schemas)?;
     add_type::<crate::ServiceManifest>(&mut schemas)?;
     add_type::<crate::SessionRef>(&mut schemas)?;
-    add_type::<crate::AddressPage>(&mut schemas)?;
-    add_type::<crate::JournalPage>(&mut schemas)?;
     add_type::<crate::EndpointInventory>(&mut schemas)?;
-    add_type::<crate::JournalStatus>(&mut schemas)?;
-    add_type::<crate::JournalReadParams>(&mut schemas)?;
-    add_type::<crate::AddressListParams>(&mut schemas)?;
     add_type::<crate::MessageContent>(&mut schemas)?;
     add_type::<crate::DeliveryReceipt>(&mut schemas)?;
     add_type::<crate::NativeSendReceipt>(&mut schemas)?;

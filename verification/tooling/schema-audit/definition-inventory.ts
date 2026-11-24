@@ -37,7 +37,6 @@ import { rows as collaborationService2 } from "./definition-inventory/collaborat
 import { rows as collaborationService3 } from "./definition-inventory/collaboration-service-3.ts";
 import { rows as collaborationService } from "./definition-inventory/collaboration-service.ts";
 import { rows as fleetIdentityProtocol } from "./definition-inventory/fleet-identity-protocol.ts";
-import { rows as lifecycleObservation } from "./definition-inventory/lifecycle-observation.ts";
 import { rows as messageBoard2 } from "./definition-inventory/message-board-2.ts";
 import { rows as messageBoard } from "./definition-inventory/message-board.ts";
 import { rows as providersClaudeAcp } from "./definition-inventory/providers-claude-acp.ts";
@@ -77,7 +76,6 @@ export const DEFINITION_INVENTORY: readonly InventoryRow[] = [
   ...collaborationService3,
   ...collaborationService,
   ...fleetIdentityProtocol,
-  ...lifecycleObservation,
   ...messageBoard,
   ...messageBoard2,
   ...providersClaudeAcp,

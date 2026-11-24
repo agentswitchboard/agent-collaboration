@@ -177,6 +177,8 @@ const RETIRED_MAIL_AND_INTERACTION_TOOLS: [&str; 7] = [
     "question_answer",
 ];
 
+const RETIRED_JOURNAL_TOOLS: [&str; 3] = ["journal_status", "journal_read", "addresses_list"];
+
 #[test]
 fn retired_tools_are_absent_from_the_catalog() {
     let tools = CollaborationMcpServer::catalog_only().resolved_tools();
@@ -184,6 +186,7 @@ fn retired_tools_are_absent_from_the_catalog() {
         .into_iter()
         .chain(RETIRED_BOARD_TOOLS)
         .chain(RETIRED_MAIL_AND_INTERACTION_TOOLS)
+        .chain(RETIRED_JOURNAL_TOOLS)
     {
         assert!(
             tools.iter().all(|tool| tool.name != retired),
@@ -212,6 +215,7 @@ async fn a_retired_tool_gets_the_ordinary_unknown_tool_answer() {
         .into_iter()
         .chain(RETIRED_BOARD_TOOLS)
         .chain(RETIRED_MAIL_AND_INTERACTION_TOOLS)
+        .chain(RETIRED_JOURNAL_TOOLS)
         .enumerate()
     {
         // Act
@@ -244,14 +248,14 @@ async fn a_retired_tool_gets_the_ordinary_unknown_tool_answer() {
 fn catalog_has_complete_unique_tools_with_resolvable_schemas() {
     let server = CollaborationMcpServer::catalog_only();
     let tools = server.resolved_tools();
-    assert_eq!(tools.len(), 27);
+    assert_eq!(tools.len(), 24);
     let mut names = tools
         .iter()
         .map(|tool| tool.name.as_ref())
         .collect::<Vec<_>>();
     names.sort_unstable();
     names.dedup();
-    assert_eq!(names.len(), 27);
+    assert_eq!(names.len(), 24);
     assert!(names.contains(&"message_send"));
     assert!(names.contains(&"message_status"));
     assert!(names.contains(&"message_inbox"));

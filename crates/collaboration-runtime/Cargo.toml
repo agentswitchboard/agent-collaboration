@@ -26,7 +26,6 @@ switchboard-session-store.workspace = true
 codex-acp-adapter = { path = "../codex-acp-adapter", version = "0.1.14" }
 codex-native-integration.workspace = true
 chrono.workspace = true
-lifecycle-observation = { path = "../lifecycle-observation", version = "0.1.14" }
 nix.workspace = true
 futures-util.workspace = true
 tokio-tungstenite.workspace = true
