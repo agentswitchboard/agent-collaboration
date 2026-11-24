@@ -1,9 +1,9 @@
 //! Machine Login's enrollment projection for session custody.
 
-use central_storage::StoreFailure;
+use central_storage::{SqlValue, StoreFailure};
 use fleet_identity_protocol::EnrollmentId;
 use fleet_lent_transaction::CentralTransaction;
-use fleet_runtime_ports::workspace_decode_error::corrupt;
+use fleet_runtime_ports::{workspace_decode_error::corrupt, workspace_is_servable};
 use sqlx_core::{
     arguments::IntoArguments, column::ColumnIndex, database::Database, decode::Decode,
     encode::Encode, query_as::query_as, types::Type,
@@ -123,7 +123,7 @@ pub async fn machine_can_start_in_workspace(
     machine: &MachineId,
     workspace: &workspace_ids::WorkspaceId,
 ) -> Result<bool, StoreFailure> {
-    use central_storage::{SqlValue, Statement};
+    use central_storage::Statement;
     let outcome = host
         .read(Statement {
             sql: include_str!("queries/read_session_workspace_allowance.sql"),
@@ -136,7 +136,10 @@ pub async fn machine_can_start_in_workspace(
     match outcome.rows.as_slice() {
         [] => Ok(false),
         [row] => match row.as_slice() {
-            [SqlValue::Text(state)] => decode_start_allowance(Some(state)),
+            [SqlValue::Text(allowance), SqlValue::Text(workspace)] => {
+                decode_start_allowance(allowance, Some(workspace))
+            }
+            [SqlValue::Text(allowance), SqlValue::Null] => decode_start_allowance(allowance, None),
             _ => Err(corrupt("login_machine_allowances.state")),
         },
         _ => Err(corrupt("login_machine_allowances.state")),
@@ -154,11 +157,13 @@ where
     String: Type<Transaction::Database>
         + for<'q> Encode<'q, Transaction::Database>
         + for<'r> Decode<'r, Transaction::Database>,
+    Option<String>: Type<Transaction::Database> + for<'r> Decode<'r, Transaction::Database>,
     for<'r> &'r str: ColumnIndex<<Transaction::Database as Database>::Row>,
 {
     #[derive(sqlx::FromRow)]
     struct StoredStartAllowance {
-        state: String,
+        allowance_state: String,
+        workspace_state: Option<String>,
     }
 
     let machine = machine.as_str();
@@ -178,13 +183,19 @@ where
     .fetch_optional(tx.executor())
     .await
     .map_err(lent_read_failure)?;
-    decode_start_allowance(stored.as_ref().map(|allowance| allowance.state.as_str()))
+    stored.map_or(Ok(false), |row| {
+        decode_start_allowance(&row.allowance_state, row.workspace_state.as_deref())
+    })
 }
 
-fn decode_start_allowance(state: Option<&str>) -> Result<bool, StoreFailure> {
-    match state {
-        Some("active") => Ok(true),
-        Some("withdrawn") | None => Ok(false),
-        Some(_) => Err(corrupt("login_machine_allowances.state")),
-    }
+fn decode_start_allowance(
+    allowance: &str,
+    workspace_state: Option<&str>,
+) -> Result<bool, StoreFailure> {
+    let allowance_active = match allowance {
+        "active" => true,
+        "withdrawn" => false,
+        _ => return Err(corrupt("login_machine_allowances.state")),
+    };
+    workspace_is_servable(allowance_active, workspace_state)
 }

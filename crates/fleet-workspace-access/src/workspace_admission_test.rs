@@ -1,7 +1,7 @@
 use super::decode_workspace_state;
 use central_storage::{ReadOutcome, SqlValue};
 use fleet_runtime_ports::workspace_decode_error::corrupt;
-use workspace_model::WorkspaceState;
+use fleet_runtime_ports::workspace_is_servable;
 
 #[test]
 fn workspace_admission_decodes_only_known_states() {
@@ -13,14 +13,8 @@ fn workspace_admission_decodes_only_known_states() {
 
     for (value, state) in [
         (SqlValue::Null, None),
-        (
-            SqlValue::Text("active".to_owned()),
-            Some(WorkspaceState::Active),
-        ),
-        (
-            SqlValue::Text("archived".to_owned()),
-            Some(WorkspaceState::Archived),
-        ),
+        (SqlValue::Text("active".to_owned()), Some("active")),
+        (SqlValue::Text("archived".to_owned()), Some("archived")),
     ] {
         outcome.rows = vec![vec![value]];
         assert_eq!(decode_workspace_state(&outcome).unwrap(), state);
@@ -28,7 +22,7 @@ fn workspace_admission_decodes_only_known_states() {
 
     outcome.rows = vec![vec![SqlValue::Text("enabled".to_owned())]];
     assert_eq!(
-        decode_workspace_state(&outcome),
+        workspace_is_servable(true, decode_workspace_state(&outcome).unwrap()),
         Err(corrupt("directory_workspaces.state"))
     );
 

@@ -15,7 +15,7 @@ crate-type = ["cdylib"]
 [features]
 link = []
 # The storage boundary's workerd cases (Verification O1); never in a production bundle.
-test-support = ["central-link-call-composition/test-support", "fleet-engine/test-support", "fleet-runtime/test-support", "fleet-storage-schema/test-support", "collaboration-central-core/test-support", "central-link-protocol/test-support", "sqlx-durable-object/test-support", "dep:sqlx", "dep:fleet-actor-identity", "dep:fleet-approvals", "dep:fleet-machine-login", "fleet-machine-login/test-support", "dep:central-engine-model", "dep:approval-request-protocol"]
+test-support = ["fleet-runtime-ports/test-support", "central-link-call-composition/test-support", "fleet-engine/test-support", "fleet-runtime/test-support", "fleet-storage-schema/test-support", "collaboration-central-core/test-support", "central-link-protocol/test-support", "sqlx-durable-object/test-support", "dep:sqlx", "dep:fleet-actor-identity", "dep:fleet-approvals", "dep:fleet-machine-login", "fleet-machine-login/test-support", "dep:central-engine-model", "dep:approval-request-protocol"]
 
 [dependencies]
 central-link-call-composition.workspace = true

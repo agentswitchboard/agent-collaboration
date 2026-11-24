@@ -84,6 +84,8 @@ impl Clock for ClockHandle {
 pub struct TokioWorkspaceStores {
     root: PathBuf,
     stores: Arc<Mutex<BTreeMap<WorkspaceId, Arc<ObjectStorage>>>>,
+    #[cfg(feature = "test-support")]
+    workspace_calls: Arc<std::sync::atomic::AtomicU64>,
 }
 impl TokioWorkspaceStores {
     /// Use the fixture's existing object storage for both legacy and typed calls.
@@ -92,7 +94,14 @@ impl TokioWorkspaceStores {
         Self {
             root,
             stores: Arc::new(Mutex::new(BTreeMap::from([(id, store)]))),
+            workspace_calls: Default::default(),
         }
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn workspace_call_count(&self) -> u64 {
+        self.workspace_calls
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     async fn store(&self, id: &WorkspaceId) -> Result<Arc<ObjectStorage>, StoreFailure> {
@@ -117,6 +126,9 @@ impl WorkspaceStores for TokioWorkspaceStores {
         workspace: &WorkspaceId,
         call: StoreCall,
     ) -> Result<StoreReply, StoreFailure> {
+        #[cfg(feature = "test-support")]
+        self.workspace_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let store = self.store(workspace).await?;
         match call {
             StoreCall::Read(statement) => store.read(statement).await.map(StoreReply::Read),
@@ -195,6 +207,8 @@ impl TokioWorkspaceHost {
             stores: TokioWorkspaceStores {
                 root: root.join("workspace-stores"),
                 stores: Default::default(),
+                #[cfg(feature = "test-support")]
+                workspace_calls: Default::default(),
             },
             orgs: Default::default(),
             alarms: Default::default(),

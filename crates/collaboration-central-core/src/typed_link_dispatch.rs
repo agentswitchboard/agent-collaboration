@@ -313,11 +313,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             )
             .await?
         {
-            SessionProjectLookup::Named {
-                workspace: project_ref.workspace.clone(),
-                project: project_ref.project.clone(),
-                result: self.execution.read_session_start_project(project_ref).await,
-            }
+            self.execution.read_session_start_project(project_ref).await
         } else {
             SessionProjectLookup::NotRead
         };

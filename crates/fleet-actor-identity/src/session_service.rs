@@ -8,7 +8,8 @@ use fleet_identity_protocol::{
 };
 use fleet_lent_transaction::OrganizationTransaction;
 use fleet_machine_login::{
-    SessionEnrollmentStatus, link_authority::ValidatedMachineConnection, read_session_enrollment,
+    SessionEnrollmentStatus, link_authority::ValidatedMachineConnection,
+    machine_can_start_in_workspace_in_transaction, read_session_enrollment,
 };
 use fleet_runtime_ports::{SessionProjectLookup, workspace_decode_error::corrupt};
 use sqlx_core::{
@@ -164,7 +165,8 @@ where
                         self.repository.tx,
                         &caller.machine_id,
                         &request.project,
-                        creator.delegate_parent_project(&request.session_kind),
+                        &request.session_kind,
+                        creator.recorded_project(),
                         project_lookup,
                     )
                     .await?
@@ -190,9 +192,29 @@ where
         } else {
             None
         };
-        let issue_secret = matches!(first, Some(NewSessionAdmission::Permitted(_)))
-            || matches!(prior.read_at(context.now, historical),
-                SessionState::Reserved(reserved) if reserved.allows_rotation(&digest, request.attempt));
+        let rotates_secret = if let SessionState::Reserved(reserved) =
+            prior.read_at(context.now, historical)
+            && reserved.allows_rotation(&digest, request.attempt)
+        {
+            if !machine_can_start_in_workspace_in_transaction(
+                self.repository.tx,
+                &caller.machine_id,
+                &reserved.reservation.project.workspace,
+            )
+            .await?
+            {
+                return Ok(SessionCallOutcome::Answered(
+                    CreateFleetSessionReply::Refused {
+                        reason: CreateSessionRefusal::MachineNotAllowed {},
+                    },
+                ));
+            }
+            true
+        } else {
+            false
+        };
+        let issue_secret =
+            matches!(first, Some(NewSessionAdmission::Permitted(_))) || rotates_secret;
         let candidate_secret = issue_secret
             .then(|| secrets.new_session_secret())
             .transpose()?;
@@ -550,19 +572,11 @@ impl CreatorScope {
         }
     }
 
-    fn delegate_parent_project(&self, proposed: &CreateSessionKind) -> Option<&ProjectRef> {
-        let (
-            Self::Session {
-                session_id,
-                project,
-                ..
-            },
-            CreateSessionKind::Delegate { parent },
-        ) = (self, proposed)
-        else {
-            return None;
-        };
-        (parent == session_id).then_some(project)
+    fn recorded_project(&self) -> Option<&ProjectRef> {
+        match self {
+            Self::Operator => None,
+            Self::Session { project, .. } => Some(project),
+        }
     }
 
     fn identity(self) -> RecordedSessionCreator {

@@ -498,3 +498,71 @@ async fn failure_after_actor_insert_rolls_back_before_retry() {
     );
     assert_eq!(store.count("SELECT COUNT(*) FROM actor_sessions").await, 1);
 }
+
+#[tokio::test]
+async fn equal_create_after_reservation_deadline_returns_projection_without_persisting_it() {
+    use fleet_identity_protocol::{AbandonedSessionCause, SessionSettlement};
+
+    let mut store = SessionStoreFixture::new().await;
+    let request = create(5, 1);
+    let (session_id, secret) = reservation(
+        store
+            .apply(Operation::Create(request.clone()), 0)
+            .await
+            .unwrap(),
+    );
+    let before = entire_session_row(&store).await;
+    let expected = SessionSettlement::Abandoned {
+        cause: AbandonedSessionCause::TimeRanOut {},
+        time: "2026-11-22T10:10:00.000Z".to_owned().try_into().unwrap(),
+    };
+
+    for now in [600_000, 600_001] {
+        assert_eq!(
+            store
+                .apply(Operation::Create(request.clone()), now)
+                .await
+                .unwrap(),
+            Receipt::Create(SessionCallOutcome::Answered(
+                CreateFleetSessionReply::Settled {
+                    settlement: expected.clone(),
+                }
+            )),
+        );
+        assert!(
+            entire_session_row(&store).await == before,
+            "equal replay changed the stored session row"
+        );
+    }
+
+    assert_eq!(
+        store
+            .apply(
+                Operation::Bind(BindFleetSession {
+                    session_id,
+                    harness_session_id: "deadline-witness".parse().unwrap(),
+                    secret,
+                }),
+                600_002
+            )
+            .await
+            .unwrap(),
+        Receipt::Bind(SessionCallOutcome::Answered(
+            BindFleetSessionReply::Settled {
+                settlement: expected
+            }
+        )),
+    );
+    assert!(
+        entire_session_row(&store).await != before,
+        "Bind did not persist the expiry"
+    );
+}
+
+async fn entire_session_row(store: &SessionStoreFixture) -> String {
+    let mut database = store.open().await;
+    sqlx::query_scalar("SELECT json_array(actor_id,machine_id,enrollment_id,harness_session_id,create_operation_id,create_contents_digest,create_attempt,agent_program,session_kind,creator_kind,creator_actor_id,secret_hash,session_state,reserved_until,bound_at,settled_cause,settled_at,created_at,updated_at,project_id,workspace_id) FROM actor_sessions")
+        .fetch_one(&mut database)
+        .await
+        .unwrap()
+}

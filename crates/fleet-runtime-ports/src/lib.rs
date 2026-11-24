@@ -8,17 +8,19 @@ mod issuer_key_source;
 mod session_project_lookup;
 mod signature_crypto;
 mod time_and_ids;
+mod workspace_service_admission;
 mod workspace_stores;
 
 pub use central_engine_model::{DueListKind, DueListQuery, DueRow, EngineTime};
 pub use central_observer::Observer;
 pub use central_store::CentralStore;
 pub use issuer_key_source::{IssuerKeySource, KeyFetchFailure, RawJwks};
-pub use session_project_lookup::SessionProjectLookup;
+pub use session_project_lookup::{NamedProjectMembership, SessionProjectLookup};
 pub use signature_crypto::{
     Ed25519Verification, Es256Verification, ProofJwk, SignatureValidity, VerifyFailure,
 };
 pub use time_and_ids::{Clock, IdSource, SyncTime, canonical_uuid_v7, uuid_v7};
+pub use workspace_service_admission::workspace_is_servable;
 pub use workspace_stores::WorkspaceStores;
 
 pub mod guarded_statements;

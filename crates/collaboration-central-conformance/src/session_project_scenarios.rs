@@ -26,6 +26,8 @@ const UNKNOWN_WORKSPACE: &str = "019a3dce-2000-7000-8000-000000005312";
 const CHILD_OPERATION: &str = "019a3dce-2000-7000-8000-000000005313";
 const OUTSIDE_OPERATION: &str = "019a3dce-2000-7000-8000-000000005314";
 const INHERITED_OPERATION: &str = "019a3dce-2000-7000-8000-000000005315";
+const ORDINARY_CHILD_OPERATION: &str = "019a3dce-2000-7000-8000-000000005317";
+const ORDINARY_OUTSIDE_OPERATION: &str = "019a3dce-2000-7000-8000-000000005318";
 const WITHDRAWN_OPERATION: &str = "019a3dce-2000-7000-8000-000000005316";
 
 /// The parent Create response supplies both the session and the admitted workspace.
@@ -137,19 +139,36 @@ pub async fn admit_session_projects(
         expect_reserved(socket, organization, request.clone(), &first_project).await?;
     request.operation_id = OUTSIDE_OPERATION.parse()?;
     request.project = StartProject::Named {
-        project_ref: second_project,
+        project_ref: second_project.clone(),
     };
     assert_eq!(
-        create_reply(socket, organization, request).await?,
+        create_reply(socket, organization, request.clone()).await?,
         CreateFleetSessionReply::Refused {
             reason: CreateSessionRefusal::HelperOutsideWorkspace {}
         },
     );
 
+    request.session_kind = CreateSessionKind::Ordinary {};
+    request.operation_id = ORDINARY_OUTSIDE_OPERATION.parse()?;
+    let before_ordinary_refusal = read_sessions().await?;
+    assert_eq!(
+        create_reply(socket, organization, request.clone()).await?,
+        CreateFleetSessionReply::Refused {
+            reason: CreateSessionRefusal::HelperOutsideWorkspace {}
+        },
+    );
+    assert_eq!(read_sessions().await?, before_ordinary_refusal);
+    request.operation_id = ORDINARY_CHILD_OPERATION.parse()?;
+    request.project = StartProject::Named {
+        project_ref: sibling_project.clone(),
+    };
+    let ordinary_child = expect_reserved(socket, organization, request, &sibling_project).await?;
+
     let mut sessions = [
         (session_id, FIRST_PROJECT),
         (named_child, SIBLING_PROJECT),
         (inherited_child, FIRST_PROJECT),
+        (ordinary_child, SIBLING_PROJECT),
     ];
     sessions.sort_by(|left, right| left.0.cmp(&right.0));
     Ok(sessions
@@ -218,7 +237,7 @@ fn named(workspace: &str, project: &str) -> Result<StartProject> {
     })
 }
 
-async fn create_reply(
+pub(crate) async fn create_reply(
     socket: &mut WebSocket,
     organization: &OrganizationId,
     request: CreateFleetSession,
@@ -229,7 +248,7 @@ async fn create_reply(
     )
 }
 
-async fn expect_reserved(
+pub(crate) async fn expect_reserved(
     socket: &mut WebSocket,
     organization: &OrganizationId,
     request: CreateFleetSession,

@@ -267,11 +267,10 @@ impl SessionStoreFixture {
                     Operation::Create(request) => {
                         let project_lookup = match &request.project {
                             fleet_identity_protocol::StartProject::Named { project_ref } => {
-                                fleet_runtime_ports::SessionProjectLookup::Named {
-                                    workspace: project_ref.workspace.clone(),
-                                    project: project_ref.project.clone(),
-                                    result: Ok(true),
-                                }
+                                fleet_runtime_ports::SessionProjectLookup::fixture_named_project(
+                                    &project_ref.workspace,
+                                    &project_ref.project,
+                                )
                             }
                             fleet_identity_protocol::StartProject::SameAsParent {} => {
                                 fleet_runtime_ports::SessionProjectLookup::NotRead

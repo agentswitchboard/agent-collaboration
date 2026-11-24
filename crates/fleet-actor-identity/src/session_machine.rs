@@ -171,12 +171,20 @@ fn create(
                 address: address_of(&bound),
             }),
         ),
-        SessionState::Abandoned { ref cause, at, .. } => {
+        SessionState::Abandoned {
+            reserved,
+            cause,
+            at,
+        } => {
             let settlement = SessionSettlement::Abandoned {
-                cause: cause.clone(),
+                cause,
                 time: wire_time(at)?,
             };
-            let next = state.read_at(now, enrollment_ended_at);
+            let next = if reserved.attempt == attempt {
+                state.clone()
+            } else {
+                state.read_at(now, enrollment_ended_at)
+            };
             Ok((
                 next,
                 vec![SessionReceipt::Create(CreateFleetSessionReply::Settled {
@@ -184,12 +192,16 @@ fn create(
                 })],
             ))
         }
-        SessionState::Ended { ref cause, at, .. } => {
+        SessionState::Ended { bound, cause, at } => {
             let settlement = SessionSettlement::Ended {
-                cause: cause.clone(),
+                cause,
                 time: wire_time(at)?,
             };
-            let next = state.read_at(now, enrollment_ended_at);
+            let next = if bound.reserved.attempt == attempt {
+                state.clone()
+            } else {
+                state.read_at(now, enrollment_ended_at)
+            };
             Ok((
                 next,
                 vec![SessionReceipt::Create(CreateFleetSessionReply::Settled {

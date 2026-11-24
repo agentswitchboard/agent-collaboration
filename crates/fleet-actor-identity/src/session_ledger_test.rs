@@ -159,7 +159,12 @@ impl Ledger {
                     }
                     Self::Abandoned(..) | Self::Ended(..) => {
                         let settlement = effective.settlement().unwrap();
-                        *self = effective;
+                        if self
+                            .reservation()
+                            .is_none_or(|saved| saved.attempt != attempt)
+                        {
+                            *self = effective;
+                        }
                         Reply::Settled { settlement }
                     }
                 };

@@ -1,10 +1,10 @@
 //! Establish the immutable project for a new reservation inside its write transaction.
 
 use central_storage::StoreFailure;
-use fleet_identity_protocol::{CreateSessionRefusal, ProjectRef, StartProject};
+use fleet_identity_protocol::{CreateSessionKind, CreateSessionRefusal, ProjectRef, StartProject};
 use fleet_lent_transaction::CentralTransaction;
 use fleet_machine_login::machine_can_start_in_workspace_in_transaction;
-use fleet_runtime_ports::{SessionProjectLookup, workspace_decode_error::corrupt};
+use fleet_runtime_ports::SessionProjectLookup;
 use sqlx_core::{
     arguments::IntoArguments, column::ColumnIndex, database::Database, decode::Decode,
     encode::Encode, types::Type,
@@ -15,7 +15,8 @@ pub(crate) async fn admit_session_project<Transaction: CentralTransaction>(
     transaction: &mut Transaction,
     machine: &MachineId,
     choice: &StartProject,
-    parent_project: Option<&ProjectRef>,
+    kind: &CreateSessionKind,
+    creator_project: Option<&ProjectRef>,
     lookup: SessionProjectLookup,
 ) -> Result<Result<ProjectRef, CreateSessionRefusal>, StoreFailure>
 where
@@ -27,9 +28,11 @@ where
 {
     let requested = match choice {
         StartProject::Named { project_ref } => project_ref,
-        StartProject::SameAsParent {} => match parent_project {
-            Some(project) => project,
-            None => return Ok(Err(CreateSessionRefusal::ProjectRequired {})),
+        StartProject::SameAsParent {} => match (kind, creator_project) {
+            (CreateSessionKind::Delegate { .. }, Some(project)) => project,
+            (CreateSessionKind::Delegate { .. }, None) | (CreateSessionKind::Ordinary {}, _) => {
+                return Ok(Err(CreateSessionRefusal::ProjectRequired {}));
+            }
         },
     };
     if !machine_can_start_in_workspace_in_transaction(transaction, machine, &requested.workspace)
@@ -38,26 +41,13 @@ where
         return Ok(Err(CreateSessionRefusal::MachineNotAllowed {}));
     }
     if matches!(choice, StartProject::Named { .. }) {
-        match lookup {
-            SessionProjectLookup::Named {
-                workspace,
-                project,
-                result,
-            } if workspace == requested.workspace && project == requested.project => {
-                if !result? {
-                    return Ok(Err(CreateSessionRefusal::ProjectNotInWorkspace {}));
-                }
-            }
-            SessionProjectLookup::NotRead => {
-                // No allowance was held before the cross-store read.
-                return Ok(Err(CreateSessionRefusal::MachineNotAllowed {}));
-            }
-            SessionProjectLookup::Named { .. } => {
-                return Err(corrupt("session project lookup target"));
-            }
+        match lookup.consume_for(&requested.workspace, &requested.project)? {
+            Some(true) => {}
+            Some(false) => return Ok(Err(CreateSessionRefusal::ProjectNotInWorkspace {})),
+            None => return Ok(Err(CreateSessionRefusal::MachineNotAllowed {})),
         }
     }
-    if parent_project.is_some_and(|parent| parent.workspace != requested.workspace) {
+    if creator_project.is_some_and(|creator| creator.workspace != requested.workspace) {
         return Ok(Err(CreateSessionRefusal::HelperOutsideWorkspace {}));
     }
     Ok(Ok(requested.clone()))
