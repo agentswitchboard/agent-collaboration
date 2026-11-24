@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT requests.*\nFROM approval_request_destinations AS destination\nJOIN approval_requests AS requests ON requests.approval_row_id = destination.approval_row_id\nWHERE destination.organization_id = ?1 AND destination.destination_kind = 'people'\n  AND destination.approval_row_id > ?2 AND requests.organization_id = ?1\nORDER BY destination.approval_row_id\nLIMIT ?3\n",
+  "query": "SELECT requests.*\nFROM approval_requests AS requests\nWHERE organization_id = ?1 AND machine_id = ?2 AND enrollment_id = ?3\n  AND router_run_id = ?4\n  AND (record_state = 'waiting' OR (record_state = 'ended' AND delivery_state = 'owed'\n       AND (ended_at IS NULL OR (?5 IS NOT NULL AND ended_at > ?5))))\nORDER BY approval_row_id\nLIMIT ?6\n",
   "describe": {
     "columns": [
       {
@@ -255,10 +255,32 @@
             "name": "updated_at"
           }
         }
+      },
+      {
+        "name": "erase_after_ms",
+        "ordinal": 23,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "erase_after_ms"
+          }
+        }
+      },
+      {
+        "name": "compact_ending_json",
+        "ordinal": 24,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "compact_ending_json"
+          }
+        }
       }
     ],
     "parameters": {
-      "Right": 3
+      "Right": 6
     },
     "nullable": [
       false,
@@ -283,8 +305,10 @@
       true,
       true,
       false,
-      false
+      false,
+      true,
+      true
     ]
   },
-  "hash": "27ee407683e344e3632789600d9f55fd649f7b18c5259564f9cb879157616a45"
+  "hash": "9356aec74ef42dc238e3375584a80abaea43370babb58240140cb4a0497718b7"
 }

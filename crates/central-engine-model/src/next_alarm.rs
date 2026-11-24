@@ -3,6 +3,10 @@ use crate::{DueBatchPolicy, EngineTime};
 pub const MAX_ALARM_UNIX_MILLIS: i64 = 9_223_372_036_854;
 const FIVE_MINUTE_MILLIS: i64 = 300_000;
 
+/// The last five-minute mark supported by the portable Central clock.
+pub const LAST_ALARM_GRID_UNIX_MILLIS: i64 =
+    MAX_ALARM_UNIX_MILLIS - MAX_ALARM_UNIX_MILLIS % FIVE_MINUTE_MILLIS;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AlarmInputs {
     pub now: EngineTime,

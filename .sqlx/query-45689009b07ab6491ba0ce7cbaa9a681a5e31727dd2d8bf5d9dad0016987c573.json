@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT router_run_id, organization_id, machine_id, enrollment_id,\n       registration_order, registered_at, retired_at, created_at, updated_at\nFROM approval_router_runs\nWHERE router_run_id = ?1\n",
+  "query": "SELECT router_run_id, organization_id, machine_id, enrollment_id,\n       registration_order, registered_at, retired_at, enrollment_cleanup_ms, enrollment_cleanup_due_ms, marker_cleanup_due_ms, created_at, updated_at\nFROM approval_router_runs\nWHERE organization_id = ?1 AND machine_id = ?2 AND enrollment_id = ?3\nORDER BY registration_order DESC\nLIMIT 1\n",
   "describe": {
     "columns": [
       {
@@ -81,8 +81,41 @@
         }
       },
       {
-        "name": "created_at",
+        "name": "enrollment_cleanup_ms",
         "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "approval_router_runs",
+            "name": "enrollment_cleanup_ms"
+          }
+        }
+      },
+      {
+        "name": "enrollment_cleanup_due_ms",
+        "ordinal": 8,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "approval_router_runs",
+            "name": "enrollment_cleanup_due_ms"
+          }
+        }
+      },
+      {
+        "name": "marker_cleanup_due_ms",
+        "ordinal": 9,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "approval_router_runs",
+            "name": "marker_cleanup_due_ms"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 10,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -93,7 +126,7 @@
       },
       {
         "name": "updated_at",
-        "ordinal": 8,
+        "ordinal": 11,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -104,7 +137,7 @@
       }
     ],
     "parameters": {
-      "Right": 1
+      "Right": 3
     },
     "nullable": [
       false,
@@ -114,9 +147,12 @@
       false,
       false,
       true,
+      true,
+      true,
+      true,
       false,
       false
     ]
   },
-  "hash": "62334b1dc5b3418eb9e8aba61efc098d1ea5a1187bbefb1c76593070f8ccef1e"
+  "hash": "45689009b07ab6491ba0ce7cbaa9a681a5e31727dd2d8bf5d9dad0016987c573"
 }

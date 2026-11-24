@@ -13,6 +13,7 @@ mod expanded_coverage;
 mod holder_delivery;
 mod request;
 mod retained_cases;
+mod retention_page;
 pub use expanded_coverage::{ClockBoundary, ExpandedCase, SignedMutation};
 #[cfg(feature = "session-link-test-support")]
 use request::decide_in_organization;
@@ -35,6 +36,8 @@ pub enum Case {
     DecideNotVisible,
     DecideTimeout,
     DecideCancelled,
+    ErasureCutoff,
+    ListWithCorruptStoredCutoff,
     ApplyingTimeFloor,
     AlreadyDecided,
     InvalidAnswer,
@@ -165,21 +168,139 @@ pub async fn check(host: &impl PersonApprovalHarness, case: Case) -> Conformance
                 &json!({"expected":"identical visibility replies"}),
             )?;
             expect(hidden_reply, 200, json!({"kind":"notVisible"}))?;
-            let decide_was_admitted = matches!(case, Case::DecideNotVisible);
-            assert_count(
-                host,
-                "SELECT COUNT(*) FROM actor_persons",
-                i64::from(decide_was_admitted),
-            )
-            .await?;
-            if decide_was_admitted {
+            assert_count(host, "SELECT COUNT(*) FROM actor_persons", 0).await?;
+            assert_count(host, "SELECT COUNT(*) FROM runtime_request_log", 0).await?;
+            if matches!(case, Case::DecideNotVisible) {
                 seed(host, 9, AnswerClass::Once, InitialApproval::Waiting).await?;
                 let retry = decide(&missing, &id(101), &answer)
                     .send(host, &owner)
                     .await?;
-                expect(retry, 200, json!({"kind":"notVisible"}))?;
-                assert_count(host, "SELECT COUNT(*) FROM runtime_request_log", 2).await?;
+                let body: Value = serde_json::from_slice(&expect_status(retry, 200)?)?;
+                assert_eq!(
+                    body.get("kind").and_then(Value::as_str),
+                    Some("savedDecision")
+                );
+                assert_count(
+                    host,
+                    "SELECT COUNT(*) FROM runtime_request_log WHERE approval_row_id IS NOT NULL",
+                    1,
+                )
+                .await?;
             }
+        }
+        Case::ListWithCorruptStoredCutoff => retention_page::check(host, &owner).await?,
+        Case::ErasureCutoff => {
+            let ending = time(1 - 5_184_000)?;
+            let request = seed(
+                host,
+                10,
+                AnswerClass::Once,
+                InitialApproval::CancelledAt(ending),
+            )
+            .await?;
+            let read_before = expect_status(read(&request).send(host, &owner).await?, 200)?;
+            assert_eq!(
+                serde_json::from_slice::<Value>(&read_before)?
+                    .get("kind")
+                    .and_then(Value::as_str),
+                Some("request")
+            );
+            let retry = decide(&request, &operation, &answer);
+            expect(
+                retry.send(host, &owner).await?,
+                200,
+                json!({"kind":"tooLate"}),
+            )?;
+            assert_count(
+                host,
+                "SELECT COUNT(*) FROM runtime_request_log WHERE approval_row_id IS NOT NULL",
+                1,
+            )
+            .await?;
+
+            let other = seed(host, 11, AnswerClass::Once, InitialApproval::Waiting).await?;
+            let collision_op = id(102);
+            let result = expect_status(
+                decide(&other, &collision_op, &answer)
+                    .send(host, &owner)
+                    .await?,
+                200,
+            )?;
+            let body: Value = serde_json::from_slice(&result)?;
+            assert_eq!(
+                body.get("kind").and_then(Value::as_str),
+                Some("savedDecision")
+            );
+            host.write(
+                "UPDATE approval_requests SET ending_json='expired and corrupt' WHERE request_id=?",
+                vec![text(&request)],
+            )
+            .await?;
+
+            let headers = retry.headers(&owner, &fresh_request_id(NOW_SECONDS)?, &|_| {})?;
+            let exact_cutoff = host
+                .post_after_verification(retry.path, &retry.body, headers, 1000)
+                .await?;
+            expect(exact_cutoff, 200, json!({"kind":"notVisible"}))?;
+            expect(
+                read(&request).send(host, &owner).await?,
+                200,
+                json!({"kind":"notVisible"}),
+            )?;
+            let page = expect_status(list("all", None).send(host, &owner).await?, 200)?;
+            let page: Value = serde_json::from_slice(&page)?;
+            let items = page
+                .get("items")
+                .and_then(Value::as_array)
+                .ok_or("expected approval page")?;
+            assert_eq!(items.len(), 1);
+            assert!(
+                items
+                    .iter()
+                    .all(|item| item.get("requestId").and_then(Value::as_str)
+                        == Some(other.as_str()))
+            );
+            let unseen = id(99);
+            let collision = decide(&request, &collision_op, &answer)
+                .send(host, &owner)
+                .await?;
+            let never = decide(&unseen, &collision_op, &answer)
+                .send(host, &owner)
+                .await?;
+            assert_eq!(collision, never);
+            expect(collision, 200, json!({"kind":"notVisible"}))?;
+            host.write("DELETE FROM runtime_request_log WHERE approval_row_id=(SELECT approval_row_id FROM approval_requests WHERE request_id=?)", vec![text(&request)]).await?;
+            host.write(
+                "DELETE FROM approval_request_destinations WHERE request_id=?",
+                vec![text(&request)],
+            )
+            .await?;
+            host.write(
+                "DELETE FROM approval_requests WHERE request_id=?",
+                vec![text(&request)],
+            )
+            .await?;
+            expect(
+                decide(&request, &collision_op, &answer)
+                    .send(host, &owner)
+                    .await?,
+                200,
+                json!({"kind":"notVisible"}),
+            )?;
+            expect(
+                decide(&request, &id(103), &answer)
+                    .send(host, &owner)
+                    .await?,
+                200,
+                json!({"kind":"notVisible"}),
+            )?;
+            assert_count(
+                host,
+                "SELECT COUNT(*) FROM runtime_request_log WHERE approval_row_id IS NULL",
+                0,
+            )
+            .await?;
+            assert_count(host, "SELECT COUNT(*) FROM runtime_request_log", 1).await?;
         }
         Case::DecideTimeout | Case::DecideCancelled => {
             let initial = if matches!(case, Case::DecideTimeout) {

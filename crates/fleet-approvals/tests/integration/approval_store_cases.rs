@@ -229,7 +229,7 @@ async fn public_raise_installs_the_recorded_parent_and_unknown_session_writes_no
             .iter()
             .map(|(_, count)| count)
             .sum::<u64>(),
-        3
+        4
     );
 }
 
@@ -264,7 +264,7 @@ async fn simultaneous_decisions_commit_once_and_the_accepted_binding_replays_aft
         })
         .await;
     assert_eq!(invalid.0.unwrap().reply, ApprovalDecisionReply::Invalid {});
-    assert_eq!(invalid.1.sql_writes.len(), 2);
+    assert_eq!(invalid.1.sql_writes.len(), 3);
 
     let (first, second) = tokio::join!(
         fixture.apply(None, async |store| {
@@ -295,7 +295,7 @@ async fn simultaneous_decisions_commit_once_and_the_accepted_binding_replays_aft
             second_result.reply,
             ApprovalDecisionReply::Standing { .. }
         ));
-        assert_eq!(second.1.sql_writes.len(), 2);
+        assert_eq!(second.1.sql_writes.len(), 3);
         (
             first_actor.clone(),
             second_actor,
@@ -311,7 +311,7 @@ async fn simultaneous_decisions_commit_once_and_the_accepted_binding_replays_aft
             second_result.reply,
             ApprovalDecisionReply::SavedDecision { .. }
         ));
-        assert_eq!(first.1.sql_writes.len(), 2);
+        assert_eq!(first.1.sql_writes.len(), 3);
         (
             second_actor,
             first_actor.clone(),
@@ -319,7 +319,7 @@ async fn simultaneous_decisions_commit_once_and_the_accepted_binding_replays_aft
             second_result.reply,
         )
     };
-    assert_eq!(first.1.sql_writes.len() + second.1.sql_writes.len(), 6);
+    assert_eq!(first.1.sql_writes.len() + second.1.sql_writes.len(), 9);
     assert_eq!(
         fixture.inspect_rows("SELECT decided_operation_id FROM approval_requests WHERE decided_operation_id IS NOT NULL").await,
         [saved_input.operation_id.as_str()],
@@ -419,7 +419,7 @@ async fn a_page_times_out_only_its_rows_and_held_alarms_cannot_restore_waiting()
         page.ending_offers[0].request.request_id(),
         &expired_first.request_id
     );
-    assert_eq!(evidence.sql_writes.len(), 2);
+    assert_eq!(evidence.sql_writes.len(), 3);
     let due_after = fixture.due_rows(time(HOUR), 10).await;
     assert_eq!(due_after, [due_before[1].clone()]);
 
@@ -445,7 +445,7 @@ async fn a_page_times_out_only_its_rows_and_held_alarms_cannot_restore_waiting()
         })
         .await;
     assert_eq!(reply.unwrap().reply, ApprovalDecisionReply::TooLate {});
-    assert_eq!(evidence.sql_writes.len(), 2);
+    assert_eq!(evidence.sql_writes.len(), 3);
     assert!(
         evidence
             .sql_writes

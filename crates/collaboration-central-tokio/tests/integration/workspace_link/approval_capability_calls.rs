@@ -48,6 +48,7 @@ use fleet_runtime::PausePoint as LedgerPause;
 fn native_mac_event(event: MacDeliveryEvent) -> LedgerPause {
     match event {
         MacDeliveryEvent::BeforeEndingOffer => LedgerPause::BeforeMacEndingOffer,
+        MacDeliveryEvent::BeforeEndingSocketWrite => LedgerPause::BeforeApprovalEndingWrite,
         MacDeliveryEvent::AfterEndingOffer => LedgerPause::AfterMacEndingOffer,
         MacDeliveryEvent::BeforeNoticeOffer => LedgerPause::BeforeMacNoticeOffer,
         MacDeliveryEvent::AfterNoticeOffer => LedgerPause::AfterMacNoticeOffer,

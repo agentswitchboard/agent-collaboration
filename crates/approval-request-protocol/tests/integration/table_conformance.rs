@@ -142,9 +142,15 @@ fn table_requests_and_reply_cases_match_the_core_protocol() -> Result<(), String
             ]}
         }),
     )?;
+    let erased = json!({
+        "kind":"alreadyEnded",
+        "marker":{"requestId":REQUEST,"routerRun":RUN,"ending":{"kind":"timedOut"}}
+    });
+    super::map_only::assert_objects_require_named_maps::<RaiseReply>(&erased)?;
     assert_authority_reply::<RaiseReply>(
         "Raise",
         &[
+            ("alreadyEnded", erased),
             (
                 "receipt",
                 json!({"kind":"receipt","receipt":{"requestId":REQUEST,"window":{
@@ -159,6 +165,7 @@ fn table_requests_and_reply_cases_match_the_core_protocol() -> Result<(), String
         |reply| match reply {
             RaiseReply::Receipt { .. } => "receipt",
             RaiseReply::AlreadyStopped {} => "alreadyStopped",
+            RaiseReply::AlreadyEnded { .. } => "alreadyEnded",
             RaiseReply::SessionEnded {} => "sessionEnded",
             RaiseReply::ContentsDiffer {} => "contentsDiffer",
             RaiseReply::TooManyOutstanding {} => "tooManyOutstanding",

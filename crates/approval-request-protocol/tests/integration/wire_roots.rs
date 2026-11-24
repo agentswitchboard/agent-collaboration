@@ -115,6 +115,10 @@ fn authority_refused() -> Value {
     json!({"kind":"authorityRefused","refusal":{"kind":"runRetired"}})
 }
 
+fn erased_approval_marker(ending: Value) -> Value {
+    json!({"requestId": REQUEST_ID, "routerRun": RUN_ID, "ending": ending})
+}
+
 fn private_approval_ending() -> Value {
     json!({"kind":"providerApproval","ending":{"kind":"decided","answer":1,"by":deciding_person()}})
 }
@@ -133,7 +137,9 @@ macro_rules! expected_wire_roots {
             json!({"kind":"providerQuestion","requestId":REQUEST_ID,"holder":holder(),"offer":question_offer()}));
         $root!(RaiseReceipt, json!({"requestId":REQUEST_ID,"window":approval_window()}));
         $root!(RaiseReply, json!({"kind":"receipt","receipt":{"requestId":REQUEST_ID,"window":approval_window()}}),
-            json!({"kind":"alreadyStopped"}), json!({"kind":"sessionEnded"}),
+            json!({"kind":"alreadyStopped"}),
+            json!({"kind":"alreadyEnded","marker":erased_approval_marker(json!({"kind":"timedOut"}))}),
+            json!({"kind":"sessionEnded"}),
             json!({"kind":"contentsDiffer"}), json!({"kind":"tooManyOutstanding"}), authority_refused());
         $root!(StopRequest,
             json!({"kind":"provider","requestId":REQUEST_ID,"routerRun":RUN_ID,"contentsDigest":DIGEST,"cause":"turnStopped"}),
@@ -153,6 +159,10 @@ macro_rules! expected_wire_roots {
             json!({"kind":"stands","ending":{"kind":"decidedEarlier"}}),
             json!({"kind":"notVisible"}), authority_refused());
         $root!(StopReceiptEnding, json!({"kind":"timedOut"}), json!({"kind":"decidedEarlier"}));
+        $root!(ErasedApprovalMarker,
+            erased_approval_marker(json!({"kind":"timedOut"})),
+            erased_approval_marker(json!({"kind":"decidedEarlier"})),
+            erased_approval_marker(json!({"kind":"cancelled","reason":{"kind":"requesterGone"}})));
         $root!(PrivateEnding, private_approval_ending(),
             json!({"kind":"providerQuestion","ending":{"kind":"decided","answer":{"kind":"declined"},"by":deciding_person()}}),
             json!({"kind":"unprovenCall","ending":{"kind":"cancelled","reason":{"kind":"stopped","cause":"holderRefusedLocally"}}}));

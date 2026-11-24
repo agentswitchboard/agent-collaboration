@@ -1,16 +1,16 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT router_run_id, organization_id, machine_id, enrollment_id,\n       registration_order, registered_at, retired_at, created_at, updated_at\nFROM approval_router_runs\nWHERE organization_id = ?1 AND machine_id = ?2 AND enrollment_id = ?3\nORDER BY registration_order DESC\nLIMIT 1\n",
+  "query": "SELECT approval_row_id, organization_id, machine_id, enrollment_id, router_run_id,\n       request_id, record_state, ended_at\nFROM approval_requests\nWHERE organization_id=?1 AND machine_id=?2 AND enrollment_id=?3 AND router_run_id=?4\n  AND record_state='ended' AND delivery_state='owed' AND ended_at IS NOT NULL\n  AND (?5 IS NULL OR ended_at <= ?5)\nORDER BY ended_at DESC LIMIT 1\n",
   "describe": {
     "columns": [
       {
-        "name": "router_run_id",
+        "name": "approval_row_id",
         "ordinal": 0,
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "approval_router_runs",
-            "name": "router_run_id"
+            "table": "approval_requests",
+            "name": "approval_row_id"
           }
         }
       },
@@ -20,7 +20,7 @@
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "approval_router_runs",
+            "table": "approval_requests",
             "name": "organization_id"
           }
         }
@@ -31,7 +31,7 @@
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "approval_router_runs",
+            "table": "approval_requests",
             "name": "machine_id"
           }
         }
@@ -42,69 +42,58 @@
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "approval_router_runs",
+            "table": "approval_requests",
             "name": "enrollment_id"
           }
         }
       },
       {
-        "name": "registration_order",
+        "name": "router_run_id",
         "ordinal": 4,
-        "type_info": "Integer",
+        "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "approval_router_runs",
-            "name": "registration_order"
+            "table": "approval_requests",
+            "name": "router_run_id"
           }
         }
       },
       {
-        "name": "registered_at",
+        "name": "request_id",
         "ordinal": 5,
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "approval_router_runs",
-            "name": "registered_at"
+            "table": "approval_requests",
+            "name": "request_id"
           }
         }
       },
       {
-        "name": "retired_at",
+        "name": "record_state",
         "ordinal": 6,
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "approval_router_runs",
-            "name": "retired_at"
+            "table": "approval_requests",
+            "name": "record_state"
           }
         }
       },
       {
-        "name": "created_at",
+        "name": "ended_at",
         "ordinal": 7,
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "approval_router_runs",
-            "name": "created_at"
-          }
-        }
-      },
-      {
-        "name": "updated_at",
-        "ordinal": 8,
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "approval_router_runs",
-            "name": "updated_at"
+            "table": "approval_requests",
+            "name": "ended_at"
           }
         }
       }
     ],
     "parameters": {
-      "Right": 3
+      "Right": 5
     },
     "nullable": [
       false,
@@ -113,10 +102,9 @@
       false,
       false,
       false,
-      true,
       false,
-      false
+      true
     ]
   },
-  "hash": "de08271ab0f0a18132d20a2889d9e3d93acf1fd11486aab6929ca3c7582a0e46"
+  "hash": "18886348cbafb61a9a88cd6a894615c8c3a01136717671aeca1122e9caa3323a"
 }

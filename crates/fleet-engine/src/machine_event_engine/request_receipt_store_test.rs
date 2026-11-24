@@ -19,7 +19,7 @@ async fn a_live_receipt_cannot_be_overwritten_and_expiry_is_one_millisecond_excl
         .await
         .unwrap();
     let claim = fixture_receipt_claim();
-    sqlx::query("INSERT INTO runtime_request_log VALUES (?,'original caller','original digest','original answer',?,?)")
+    sqlx::query("INSERT INTO runtime_request_log (request_id,caller,content_digest,answer,created_at,updated_at) VALUES (?,'original caller','original digest','original answer',?,?)")
         .bind(claim.request_id.as_str()).bind(format_utc_millis(claim.receipt_retention_cutoff)).bind(format_utc_millis(claim.receipt_retention_cutoff))
         .execute(&mut connection).await.unwrap();
     let answer = EngineReceipt::<String, String>::Applied {

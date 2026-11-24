@@ -58,7 +58,7 @@ async fn first_raise_forward_decide_delivery_and_run_replacement_roll_back_at_ev
         .await;
     assert_eq!(repeat_pass.0.unwrap().reply, PassOnReply::Forwarded {});
     assert!(repeat_pass.1.sql_writes.is_empty());
-    let decided = assert_rollback_each_write(&fixture, 4, async |store| {
+    let decided = assert_rollback_each_write(&fixture, 6, async |store| {
         store
             .fixture_decide_approval(
                 &holder.organization_id,
@@ -118,7 +118,7 @@ async fn first_raise_forward_decide_delivery_and_run_replacement_roll_back_at_ev
         },
         organization_id: holder.organization_id.clone(),
     };
-    assert_rollback_each_write(&fixture, 4, async |store| {
+    assert_rollback_each_write(&fixture, 5, async |store| {
         store
             .register_approval_run(
                 &fleet_approvals::ApprovalHolderAdmission::for_fixture_scope(&replacement),
@@ -137,7 +137,7 @@ async fn first_raise_forward_decide_delivery_and_run_replacement_roll_back_at_ev
 }
 
 #[tokio::test]
-async fn retirement_at_capacity_commits_the_fence_endings_and_due_removals_together() {
+async fn retirement_at_capacity_commits_the_fence_endings_and_retention_due_work_together() {
     let (fixture, holder, requester) = fixture_with_owner().await;
     for ordinal in 1..=u16::try_from(MAX_OUTSTANDING_PER_RUN).unwrap() {
         let raise = provider(&key(&holder.run, ordinal), &requester, "Outstanding");
@@ -161,7 +161,7 @@ async fn retirement_at_capacity_commits_the_fence_endings_and_due_removals_toget
         })
         .await;
     assert_eq!(retired.unwrap().reply, Ok(()));
-    assert_eq!(evidence.sql_writes.len(), 1 + 2 * MAX_OUTSTANDING_PER_RUN);
+    assert_eq!(evidence.sql_writes.len(), 1 + 3 * MAX_OUTSTANDING_PER_RUN);
     assert_eq!(
         evidence
             .sql_writes
@@ -199,7 +199,7 @@ async fn session_end_enrollment_end_alarm_and_waiting_stop_roll_back_after_each_
             RaiseReply::Receipt { .. }
         ));
     }
-    assert_rollback_each_write(&fixture, 2, async |store| {
+    assert_rollback_each_write(&fixture, 3, async |store| {
         store
             .apply_holder_command(
                 &fleet_approvals::ApprovalHolderAdmission::for_fixture_scope(&holder),
@@ -210,7 +210,7 @@ async fn session_end_enrollment_end_alarm_and_waiting_stop_roll_back_after_each_
     .await;
     let due = fixture.due_rows(time(HOUR), 1).await;
     fixture.clock.set_millis(HOUR);
-    let timed_out = assert_rollback_each_write(&fixture, 2, async |store| {
+    let timed_out = assert_rollback_each_write(&fixture, 3, async |store| {
         store.apply_approval_deadline(&due[0].key, time(HOUR)).await
     })
     .await;
@@ -244,7 +244,7 @@ async fn session_end_enrollment_end_alarm_and_waiting_stop_roll_back_after_each_
     fixture
         .store_session(&holder.organization_id, &requester, None, false)
         .await;
-    let cancelled = assert_rollback_each_write(&fixture, 2, async |store| {
+    let cancelled = assert_rollback_each_write(&fixture, 3, async |store| {
         store
             .end_approval_session(&holder.organization_id, &requester)
             .await
@@ -255,13 +255,16 @@ async fn session_end_enrollment_end_alarm_and_waiting_stop_roll_back_after_each_
         cancel.request_id()
     );
     fixture.store_enrollment(&holder, "ended").await;
-    // Two previously ended Owed rows close delivery, the last waiting row ends,
-    // its due entry clears, and the run's fence retires.
-    assert_rollback_each_write(&fixture, 5, async |store| {
+    // The run retires, two previously owed endings close, and the last
+    // waiting request ends. The transaction also publishes enrollment cleanup.
+    assert_rollback_each_write(&fixture, 9, async |store| {
         store.end_approval_enrollment(&scope).await
     })
     .await;
-    assert!(fixture.due_rows(time(HOUR), 10).await.is_empty());
+    let candidates = fixture.due_rows(time(HOUR), 10).await;
+    assert!(
+        matches!(candidates.as_slice(), [cleanup] if cleanup.key.0.starts_with("ended-enrollment:"))
+    );
 }
 
 #[tokio::test]
