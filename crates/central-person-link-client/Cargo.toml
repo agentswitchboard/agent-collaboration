@@ -1,0 +1,54 @@
+[package]
+name = "central-person-link-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+autotests = false
+
+[lints]
+workspace = true
+
+[dependencies]
+base64.workspace = true
+central-link-protocol.workspace = true
+fleet-identity-protocol = { path = "../fleet-identity-protocol", version = "0.1.156" }
+fleet-rpc.workspace = true
+futures-util.workspace = true
+reqwest.workspace = true
+reqwest-websocket = "=0.5.1"
+ring = "=0.17.14"
+router-clock.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+state-machine-core.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tungstenite = { version = "=0.27.0", default-features = false }
+url.workspace = true
+uuid.workspace = true
+workspace-ids.workspace = true
+zeroize = { workspace = true, features = ["derive"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework.workspace = true
+
+[dev-dependencies]
+aws-lc-rs = { version = "=1.18.2", default-features = false, features = ["alloc", "non-fips"] }
+axum = { workspace = true, features = ["form", "http1", "json", "tokio", "ws"] }
+chrono.workspace = true
+collaboration-central-conformance = { path = "../collaboration-central-conformance", version = "0.1.158", features = ["signin-test-support"] }
+collaboration-central-core = { path = "../collaboration-central-core", version = "0.1.158" }
+collaboration-central-tokio = { path = "../collaboration-central-tokio", version = "0.1.158" }
+fleet-contracts.workspace = true
+rcgen = "0.14"
+reqwest = { workspace = true, features = ["json"] }
+router-clock = { workspace = true, features = ["test-support"] }
+tempfile = "3.27.0"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+tokio-util.workspace = true
+hegel = { package = "hegeltest", version = "=0.52.6", features = ["static-engine"] }
+
+[[test]]
+name = "integration"
+path = "tests/integration/main.rs"

@@ -220,7 +220,12 @@ where
         }
         #[cfg(unix)]
         CliCommand::Central(command) => {
-            central_command::run_central_command(command, stdout).await?;
+            central_command::run_central_command(
+                command,
+                context.stdin_is_terminal() && context.stdout_is_terminal(),
+                stdout,
+            )
+            .await?;
             stderr.flush().map_err(CliError::Stderr)
         }
         #[cfg(unix)]
@@ -868,6 +873,7 @@ commands:
   host app-server update         Update managed Codex and activate it if changed
   host router restart            Restart the router when host-owned
   central serve --config FILE   Run a self-hosted central
+  central workspaces --target FILE   List an organization’s workspaces through Sign-in
   enroll --organization <uuid> --sign-in <https-origin>  Enroll this Mac
   enrollment status             Show this Mac's stored enrollment
   doctor                        Diagnose local router setup
