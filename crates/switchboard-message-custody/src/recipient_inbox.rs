@@ -305,6 +305,80 @@ impl RecipientInbox {
         Ok(waiting)
     }
 
+    pub(crate) fn recipient_directory(&self) -> Arc<dyn RecipientSessionDirectory> {
+        self.directory.clone()
+    }
+
+    pub(crate) async fn direct_handoffs(
+        &mut self,
+    ) -> Result<Vec<switchboard_machine_core_store::DirectHandoffRow>, InboxCustodyError> {
+        let scan = self.store.scan_direct_handoffs().await?;
+        Ok(inbox_scan(scan, &mut self.operator_events))
+    }
+
+    pub(crate) async fn commit_direct_handoffs(
+        &mut self,
+        target: &SessionRef,
+        changes: &[switchboard_machine_core_store::DirectHandoffChange],
+    ) -> Result<switchboard_machine_core_store::HandoffCommit, InboxCustodyError> {
+        Ok(self
+            .store
+            .compare_and_set_direct_handoffs(target, changes, self.clock.utc_now())
+            .await?)
+    }
+
+    pub(crate) async fn read_inbox(
+        &mut self,
+        session: &crate::inbox_read::AdmittedLocalSession,
+    ) -> Result<crate::inbox_read::RecipientInboxPage, crate::inbox_read::InboxReadError> {
+        let target = session.session();
+        let scan = self
+            .store
+            .direct_inbox_messages(target)
+            .await
+            .map_err(InboxCustodyError::from)?;
+        let messages = inbox_scan(scan, &mut self.operator_events);
+        Ok(crate::inbox_read::RecipientInboxPage::new(
+            target.clone(),
+            messages,
+        ))
+    }
+
+    pub(crate) async fn record_inbox_read(
+        &mut self,
+        session: &crate::inbox_read::AdmittedLocalSession,
+        read: crate::inbox_read::RecipientInboxRead,
+    ) -> Result<(), crate::inbox_read::InboxReadError> {
+        use crate::inbox_read::InboxReadError;
+        use switchboard_machine_core_store::{DirectHandoff, HandoffCommit};
+
+        let target = session.session();
+        if &read.target != target {
+            return Err(InboxReadError::RecipientChanged);
+        }
+        let returned: std::collections::BTreeSet<_> = read.returned.into_iter().collect();
+        let rows: Vec<_> = self
+            .direct_handoffs()
+            .await?
+            .into_iter()
+            .filter(|row| {
+                &row.target == target
+                    && row.handoff == DirectHandoff::NotKnown
+                    && returned.contains(&row.message_id)
+            })
+            .collect();
+        let (changes, _) = crate::handover_task::changes_for(
+            &rows,
+            crate::handover::HandoffEvent::InboxRead {
+                completed_at: self.clock.utc_now(),
+            },
+        )?;
+        if self.commit_direct_handoffs(target, &changes).await? != HandoffCommit::Committed {
+            return Err(InboxReadError::ChangedSinceRead);
+        }
+        Ok(())
+    }
+
     pub(crate) async fn pending_sender_notices(
         &mut self,
     ) -> Result<Vec<MessageRecord>, InboxCustodyError> {

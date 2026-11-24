@@ -73,13 +73,24 @@ pub fn custody_task(
         exit.run(run_offer_taker(lane, inbox, offers_stopped, retries, saved))
             .await;
     });
+    let handover = custody.notice_port.clone().map(|port| {
+        crate::handover_task::HandoverRunner::new(
+            port,
+            custody.inbox.clone(),
+            custody.clock.clone(),
+            stop.1.clone(),
+            worker_stopped.clone(),
+        )
+    });
     let remote_tools = Arc::new(Mutex::new(JoinSet::new()));
     let worker_tools = remote_tools.clone();
+    let stop_worker = stop.clone();
     let worker = tokio::spawn(async move {
         let (exit, receiver) = commands.split();
         let member = Box::pin(async move {
             let mut tools = worker_tools.lock().await;
-            run_custody(
+            let handover_sink = sink.clone();
+            let worker = run_custody(
                 custody,
                 receiver,
                 offers,
@@ -87,8 +98,16 @@ pub fn custody_task(
                 worker_stopped,
                 sink,
                 &mut tools,
-            )
-            .await;
+            );
+            if let Some(handover) = handover {
+                let run_worker = async {
+                    worker.await;
+                    stop_worker.request();
+                };
+                tokio::join!(run_worker, handover.run(&*handover_sink));
+            } else {
+                worker.await;
+            }
         });
         exit.run(member).await;
     });
@@ -474,6 +493,23 @@ async fn handle_tool(
         }
         CustodyCommand::Waiting { session, reply } => {
             let _ = reply.send(custody.waiting_for_session(&session).await);
+        }
+        CustodyCommand::ReadInbox { session, reply } => {
+            let _ = reply.send(custody.inbox.lock().await.read_inbox(&session).await);
+        }
+        CustodyCommand::RecordInboxRead {
+            session,
+            read,
+            reply,
+        } => {
+            let _ = reply.send(
+                custody
+                    .inbox
+                    .lock()
+                    .await
+                    .record_inbox_read(&session, read)
+                    .await,
+            );
         }
     }
 }

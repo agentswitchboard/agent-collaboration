@@ -11,7 +11,8 @@ use central_link_protocol::{
 use router_clock::ClockInstant;
 use std::collections::BTreeSet;
 use switchboard_machine_core_store::{
-    InboxDecision, InboxReceipt, InboxRefusalReason, InboxStore, InboxStoreError,
+    DirectHandoff, DirectHandoffChange, HandoffCommit, InboxDecision, InboxReceipt,
+    InboxRefusalReason, InboxStore, InboxStoreError, SeenReceiptRejection, SeenReceiptState,
 };
 use workspace_ids::MessageId;
 use workspace_model::{Timestamp, central_mail::MessageRefusal};
@@ -53,6 +54,8 @@ pub enum ReceiptDeliveryError {
     InvalidBatch(#[from] ProtocolError),
     #[error("invalid arrival time on the stored receipt for {0}")]
     InvalidArrivalTime(MessageId),
+    #[error("invalid local receipt settlement time")]
+    InvalidSettlementTime,
 }
 
 #[derive(Default)]
@@ -106,15 +109,42 @@ impl ReceiptDelivery {
             self.flight = ReceiptFlight::AwaitingAnswer(frame.clone());
             return Ok(Some(frame));
         }
-        if pending.is_empty() {
-            self.flight = ReceiptFlight::Idle;
-            return Ok(None);
-        }
-        let receipts = pending
+        let mut receipts = pending
             .into_iter()
             .take(MAX_RECEIPTS)
             .map(receipt_for_decision)
             .collect::<Result<Vec<_>, _>>()?;
+        if receipts.len() < MAX_RECEIPTS && store.has_seen_receipt_owed().await? {
+            let rows = inbox_scan(store.scan_direct_handoffs().await?, operator_events);
+            let free = MAX_RECEIPTS - receipts.len();
+            let initial_in_frame: BTreeSet<_> = receipts
+                .iter()
+                .map(|receipt| receipt.message_id.clone())
+                .collect();
+            receipts.extend(
+                rows.into_iter()
+                    .filter_map(|row| {
+                        let DirectHandoff::Seen {
+                            completed_at,
+                            receipt: SeenReceiptState::Owed,
+                        } = row.handoff
+                        else {
+                            return None;
+                        };
+                        (row.delivery_receipt_confirmed
+                            || initial_in_frame.contains(&row.message_id))
+                        .then_some(Receipt {
+                            message_id: row.message_id,
+                            kind: ReceiptKind::Seen { completed_at },
+                        })
+                    })
+                    .take(free),
+            );
+        }
+        if receipts.is_empty() {
+            self.flight = ReceiptFlight::Idle;
+            return Ok(None);
+        }
         let frame = ReceiptFrame {
             connection: connection.clone(),
             correlation_id: FreshCorrelationId::mint_at(now_ms).wire_id().clone(),
@@ -172,17 +202,81 @@ impl ReceiptDelivery {
             .into_iter()
             .map(|receipt| receipt.message_id)
             .collect();
-        for receipt in submitted.receipts.receipts() {
+        let mut seen_changes = vec![];
+        for (receipt, result) in submitted
+            .receipts
+            .receipts()
+            .iter()
+            .zip(results.iter().copied())
+        {
             // A retry after a partially committed local confirmation can
             // receive the same checked answer. Confirm only the pending rows.
-            if pending.contains(&receipt.message_id) {
-                store
-                    .mark_receipt_confirmed(&receipt.message_id, now_ms)
-                    .await?;
+            match receipt.kind {
+                ReceiptKind::Delivered { .. } | ReceiptKind::Refused { .. } => {
+                    if pending.contains(&receipt.message_id) {
+                        store
+                            .mark_receipt_confirmed(&receipt.message_id, now_ms)
+                            .await?;
+                    }
+                }
+                ReceiptKind::Seen { completed_at } => {
+                    seen_changes.push((receipt.message_id.clone(), completed_at, result));
+                }
+            }
+        }
+        if !seen_changes.is_empty() {
+            let now = Timestamp::from_timestamp_millis(now_ms)
+                .ok_or(ReceiptDeliveryError::InvalidSettlementTime)?;
+            let rows = inbox_scan(store.scan_direct_handoffs().await?, operator_events);
+            for (message_id, completed_at, result) in seen_changes {
+                let Some(row) = rows.iter().find(|row| row.message_id == message_id) else {
+                    continue;
+                };
+                let expected = DirectHandoff::Seen {
+                    completed_at,
+                    receipt: SeenReceiptState::Owed,
+                };
+                if row.handoff != expected {
+                    continue;
+                }
+                let next = DirectHandoff::Seen {
+                    completed_at,
+                    receipt: seen_confirmation(result),
+                };
+                if store
+                    .compare_and_set_direct_handoffs(
+                        &row.target,
+                        &[DirectHandoffChange {
+                            message_id,
+                            expected,
+                            next,
+                        }],
+                        now,
+                    )
+                    .await?
+                    != HandoffCommit::Committed
+                {
+                    return Ok(ReceiptFrameOutcome::RetryPending);
+                }
             }
         }
         self.flight = ReceiptFlight::Idle;
         Ok(ReceiptFrameOutcome::Confirmed { results })
+    }
+}
+
+fn seen_confirmation(result: ReceiptResult) -> SeenReceiptState {
+    match result {
+        ReceiptResult::Recorded => SeenReceiptState::Recorded,
+        ReceiptResult::AlreadySettled => SeenReceiptState::Rejected {
+            reason: SeenReceiptRejection::AlreadySettled,
+        },
+        ReceiptResult::NoSuchMessage => SeenReceiptState::Rejected {
+            reason: SeenReceiptRejection::NoSuchMessage,
+        },
+        ReceiptResult::NotApplicable => SeenReceiptState::Rejected {
+            reason: SeenReceiptRejection::NotApplicable,
+        },
     }
 }
 

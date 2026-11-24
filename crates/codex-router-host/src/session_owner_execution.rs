@@ -105,7 +105,7 @@ impl NoticeWriterTake {
         let result = self.notice.while_live(|| {
             wire.take_when(authorization, || {
                 let taken_at = self.clock.utc_now();
-                if self.clock.monotonic_now() >= self.notice.not_after() {
+                if !self.notice.can_take_at(self.clock.as_ref(), taken_at) {
                     return false;
                 }
                 checked_at = Some(taken_at);

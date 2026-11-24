@@ -150,9 +150,15 @@ impl IdleClaudeRun for IdleManagedClaude {
             let Ok(content) = session_event_model::PromptContent::text(notice.text()) else {
                 return NoticeWriteOutcome::DefinitelyNotWritten(RejectedBeforeTake);
             };
+            let (Ok(operation_id), Ok(input_id)) = (
+                OperationId::try_from(String::from(notice.attempt())),
+                session_event_model::InputId::new(String::from(notice.attempt())),
+            ) else {
+                return NoticeWriteOutcome::DefinitelyNotWritten(RejectedBeforeTake);
+            };
             let request = ProviderPromptContentsRequest {
-                operation_id: OperationId::generate(),
-                input_id: session_event_model::InputId::generate(),
+                operation_id,
+                input_id,
                 target: self.local_target,
                 requested_by: record.created_by,
                 approver: record.approver,

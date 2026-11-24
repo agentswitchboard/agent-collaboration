@@ -1,7 +1,7 @@
 //! Local authority carried from a committed inbox claim to a managed writer.
 
 use crate::handover::NoticeWriteOutcome;
-use router_clock::ClockInstant;
+use router_clock::{ClockInstant, RuntimeClock};
 use std::{future::Future, pin::Pin, sync::Arc};
 pub use switchboard_machine_core_store::NoticeAttemptId;
 use tokio::sync::watch;
@@ -40,7 +40,8 @@ impl NoticeAuthority {
     }
 
     pub fn close(&self) {
-        self.0.send_replace(false);
+        self.0
+            .send_if_modified(|live| std::mem::replace(live, false));
     }
 }
 
@@ -56,6 +57,7 @@ pub struct ClaimedNotice {
     attempt: NoticeAttemptId,
     messages: Vec<MessageId>,
     not_after: ClockInstant,
+    expires_at: workspace_model::Timestamp,
     authority: Arc<NoticeAuthority>,
 }
 
@@ -65,6 +67,7 @@ impl ClaimedNotice {
         attempt: NoticeAttemptId,
         messages: Vec<MessageId>,
         not_after: ClockInstant,
+        expires_at: workspace_model::Timestamp,
         authority: Arc<NoticeAuthority>,
     ) -> Result<Self, EmptyNoticeClaim> {
         if messages.is_empty() {
@@ -75,6 +78,7 @@ impl ClaimedNotice {
             attempt,
             messages,
             not_after,
+            expires_at,
             authority,
         })
     }
@@ -99,6 +103,14 @@ impl ClaimedNotice {
 
     pub fn not_after(&self) -> ClockInstant {
         self.not_after
+    }
+
+    pub fn can_take_at(
+        &self,
+        clock: &dyn RuntimeClock,
+        taken_at: workspace_model::Timestamp,
+    ) -> bool {
+        clock.monotonic_now() < self.not_after && taken_at < self.expires_at
     }
 
     /// Run the synchronous writer operation only while the custody unit

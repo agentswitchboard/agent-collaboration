@@ -5,7 +5,10 @@ use sqlite_storage_maintenance::TransactionStart;
 use std::collections::BTreeSet;
 use uuid::{Uuid, Variant};
 use workspace_ids::{MessageId, SessionRef};
-use workspace_model::Timestamp;
+use workspace_model::{
+    Timestamp,
+    central_mail::{MessageBody, MessageDelivery},
+};
 
 use super::InboxRow;
 use super::{
@@ -53,6 +56,16 @@ impl From<NoticeAttemptId> for String {
 }
 
 impl NoticeAttemptId {
+    pub fn mint(now: Timestamp) -> Self {
+        let millis = u64::try_from(now.timestamp_millis()).unwrap_or_default();
+        let timestamp = uuid::Timestamp::from_unix(
+            uuid::NoContext,
+            millis / 1_000,
+            u32::try_from(millis % 1_000).unwrap_or_default() * 1_000_000,
+        );
+        Self(Uuid::new_v7(timestamp))
+    }
+
     #[must_use]
     pub const fn uuid(self) -> Uuid {
         self.0
@@ -101,6 +114,8 @@ pub struct DirectHandoffRow {
     pub message_id: MessageId,
     pub target: SessionRef,
     pub expires_at: Timestamp,
+    pub delivery: MessageDelivery,
+    pub delivery_receipt_confirmed: bool,
     pub handoff: DirectHandoff,
 }
 
@@ -134,19 +149,59 @@ impl StoredDelivery {
 
     fn into_direct_handoff(self) -> Option<DirectHandoffRow> {
         let handoff = self.direct_handoff()?;
+        let message = self.message?;
+        let MessageBody::Direct { delivery, .. } = message.body else {
+            return None;
+        };
         Some(DirectHandoffRow {
             message_id: self.message_id,
-            target: self.message?.target,
+            target: message.target,
             expires_at: self.expires_at?,
+            delivery,
+            delivery_receipt_confirmed: self.state.receipt == super::ReceiptConfirmation::Confirmed,
             handoff,
         })
     }
 }
 
 impl InboxStore {
+    pub async fn direct_inbox_messages(
+        &mut self,
+        target: &SessionRef,
+    ) -> Result<StoreScan<Vec<workspace_model::central_mail::MessageRecord>>, InboxStoreError> {
+        Ok(self.scan_direct_rows().await?.map_healthy(|rows| {
+            rows.into_iter()
+                .filter_map(|row| row.message)
+                .filter(|message| &message.target == target)
+                .collect()
+        }))
+    }
+
+    pub async fn has_seen_receipt_owed(&mut self) -> Result<bool, InboxStoreError> {
+        let owed = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM inbox_messages
+                WHERE CASE WHEN json_valid(delivery_state_json)
+                    THEN json_extract(delivery_state_json, '$.handoff.state.receipt.kind') = 'owed'
+                    ELSE 0 END)",
+        )
+        .fetch_one(&mut self.store.connection)
+        .await?;
+        Ok(owed)
+    }
+
     pub async fn scan_direct_handoffs(
         &mut self,
     ) -> Result<StoreScan<Vec<DirectHandoffRow>>, InboxStoreError> {
+        Ok(self.scan_direct_rows().await?.map_healthy(|rows| {
+            rows.into_iter()
+                .filter_map(StoredDelivery::into_direct_handoff)
+                .collect()
+        }))
+    }
+
+    async fn scan_direct_rows(
+        &mut self,
+    ) -> Result<StoreScan<Vec<StoredDelivery>>, InboxStoreError> {
         let rows = select_inbox_rows!(
             "message_json",
             r#"WHERE CASE WHEN json_valid(delivery_state_json)
@@ -156,15 +211,7 @@ impl InboxStore {
         )
         .fetch_all(&mut self.store.connection)
         .await?;
-        Ok(rows
-            .into_iter()
-            .map(InboxRow::decode)
-            .collect::<StoreScan<Vec<_>>>()
-            .map_healthy(|rows| {
-                rows.into_iter()
-                    .filter_map(StoredDelivery::into_direct_handoff)
-                    .collect()
-            }))
+        Ok(rows.into_iter().map(InboxRow::decode).collect())
     }
 
     /// Compare every row before committing all changes for one recipient.

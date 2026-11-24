@@ -112,6 +112,16 @@ pub enum HandoffRefusal {
     TakeOutsideDeliveryWindow,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum HandoverError {
+    #[error("inbox handover storage failed")]
+    Inbox(#[from] crate::recipient_inbox::InboxCustodyError),
+    #[error("inbox handover returned an invalid transition")]
+    Transition,
+    #[error("inbox handover attempted to offer an empty notice")]
+    EmptyClaim(#[from] crate::handover_notice::EmptyNoticeClaim),
+}
+
 impl RefusalTag for HandoffRefusal {
     fn refusal_tag(&self) -> &'static str {
         match self {

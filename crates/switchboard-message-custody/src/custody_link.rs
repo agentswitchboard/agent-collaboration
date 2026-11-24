@@ -48,6 +48,8 @@ const IMMEDIATE_COMMAND_WINDOW: Duration = Duration::from_secs(30);
 /// A failure produced while custody uses a ready link or its durable stores.
 #[derive(Debug, thiserror::Error)]
 pub enum CustodyLinkError {
+    #[error("the inbox handover could not complete its turn")]
+    Handover(#[from] crate::handover::HandoverError),
     #[error("the custody task closed before giving an answer")]
     TaskClosed,
     #[error("the outbox is unavailable")]
@@ -132,6 +134,7 @@ pub struct CustodyLink {
     jitter: Arc<dyn FlushJitter>,
     outbox: OutboxWork,
     pub(crate) inbox: SharedRecipientInbox,
+    pub(crate) notice_port: Option<Arc<dyn crate::handover_notice::ManagedClaudeNoticePort>>,
     dispatcher: OutboxDispatcher,
     waiting_cutoffs: WaitingCutoffSchedule,
     schedule: OutboxFlushState,
@@ -158,6 +161,7 @@ impl CustodyLink {
             jitter,
             outbox,
             inbox: Arc::new(tokio::sync::Mutex::new(inbox)),
+            notice_port: None,
             dispatcher: OutboxDispatcher::default(),
             waiting_cutoffs: WaitingCutoffSchedule::default(),
             schedule: OutboxFlushState::default(),
@@ -168,6 +172,16 @@ impl CustodyLink {
             drain_connection: None,
             startup_orphan_claims: None,
         }
+    }
+
+    /// Supply the managed-Claude writer for the custody unit's local notice lane.
+    #[must_use]
+    pub fn with_notice_port(
+        mut self,
+        port: Arc<dyn crate::handover_notice::ManagedClaudeNoticePort>,
+    ) -> Self {
+        self.notice_port = Some(port);
+        self
     }
 
     fn admitted_connection(&self) -> Option<AdmittedConnection> {
