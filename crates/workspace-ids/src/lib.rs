@@ -229,6 +229,21 @@ impl<'de> Deserialize<'de> for SessionRef {
     }
 }
 
+/// The local admission owner records the exact session allowed to use one Mac's message tools.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdmittedLocalSession(SessionRef);
+
+impl AdmittedLocalSession {
+    /// Used by the local message admission owner after its v0 session lookup succeeds.
+    pub fn admitted_by_local_session_directory(address: SessionRef) -> Self {
+        Self(address)
+    }
+
+    pub fn address(&self) -> &SessionRef {
+        &self.0
+    }
+}
+
 #[cfg(test)]
 #[path = "identifier_test.rs"]
 mod tests;

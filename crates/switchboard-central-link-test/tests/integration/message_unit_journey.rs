@@ -16,20 +16,23 @@ use switchboard_machine_enrollment::{
     ConditionalWrite, CredentialStore as _, EnrollmentEnd, EnrollmentMetadata,
 };
 use switchboard_message_custody::{
-    custody_submission::{Submission, SubmissionPayload},
     custody_task::CustodyTaskEvent,
     flush_clock::{FlushJitter, MachineFlushJitter, wake_for_mark},
 };
 use switchboard_message_system::{
     CloseReport, FrontRefusal, MessageRoots, MessageSystem, MessageSystemEvents,
     MessageSystemStatus as Status,
-    test_support::{LinkFixture, start_with_link_fixture},
+    test_support::{
+        AdmittedLocalSession, DirectMessageWrite, LinkFixture, MessageDeliveryObservation,
+        MessageSendOutcome, MessageStatus, MessageUnitPort, MessageWriteStatus,
+        start_with_link_fixture,
+    },
 };
 use tokio::sync::{mpsc, oneshot, watch};
 use workspace_ids::{RequestId, SessionRef};
 use workspace_model::{
-    Caller, PostText,
-    central_mail::{CentralMailAnswer, CentralMailResult, MessageDelivery, SendMessageRequest},
+    PostText,
+    central_mail::{CentralMailAnswer, CentralMailResult},
 };
 
 use super::message_unit_fixture::{
@@ -89,6 +92,7 @@ async fn live_enrollment_sends_through_central_restarts_and_drains_in_order() {
     let mut status = system.status();
     observe_status(&mut status, Status::NotEnrolled).await;
     assert!(matches!(front.custody(), Err(FrontRefusal::NotEnrolled)));
+    assert!(front.available_machine().is_err());
     let poll = Duration::from_secs(15);
     clock
         .not_due_check_now(clock.monotonic_now().after(poll))
@@ -116,39 +120,41 @@ async fn live_enrollment_sends_through_central_restarts_and_drains_in_order() {
         .custody()
         .expect("connected message system publishes custody");
     let request: RequestId = "019f0000-0000-7000-8000-000000000052".parse().unwrap();
-    let submission = handle
-        .reserve()
-        .await
-        .unwrap()
+    let sender = AdmittedLocalSession::admitted_by_local_session_directory(sender);
+    assert_eq!(front.available_machine(), Ok(machine_id.clone()));
+    let submission = front
         .submit(
-            Caller::Session(sender),
-            SubmissionPayload::SendMessage {
-                request: request.clone(),
-                message: SendMessageRequest {
-                    to: recipient,
-                    body: PostText::try_from("fixture message for another session".to_owned())
-                        .unwrap(),
-                    delivery: MessageDelivery::Auto,
-                    reply_to: None,
-                },
+            &sender,
+            DirectMessageWrite {
+                request_id: request.clone(),
+                to: recipient,
+                body: PostText::try_from("fixture message for another session".to_owned()).unwrap(),
             },
         )
-        .resolve()
-        .await;
-    let Submission::InOutbox(receipt) = submission else {
+        .await
+        .unwrap();
+    let MessageSendOutcome::InOutbox {
+        request_id,
+        flush_at,
+    } = submission
+    else {
         assert!(
-            matches!(submission, Submission::InOutbox(_)),
+            matches!(submission, MessageSendOutcome::InOutbox { .. }),
             "expected an outbox receipt: {submission:?}"
         );
         return;
     };
-    assert_eq!(receipt.id, request);
-    let jitter = MachineFlushJitter::new(&machine_id);
-    let first_wake = wake_for_mark(
-        anchor,
-        receipt.flush_at,
-        jitter.jitter_millis(receipt.flush_at),
+    assert_eq!(request_id, request);
+    assert_eq!(
+        front
+            .request_status(&sender, request.clone())
+            .await
+            .unwrap(),
+        MessageWriteStatus::InOutbox { flush_at }
     );
+    let mark = runtime_primitives::SyncTime::from_unix_millis(flush_at.timestamp_millis());
+    let jitter = MachineFlushJitter::new(&machine_id);
+    let first_wake = wake_for_mark(anchor, mark, jitter.jitter_millis(mark));
     clock.not_due_check_now(first_wake).await;
     clock
         .advance(first_wake.saturating_duration_since(clock.monotonic_now()))
@@ -157,6 +163,19 @@ async fn live_enrollment_sends_through_central_restarts_and_drains_in_order() {
     assert!(matches!(event, CustodyTaskEvent::Flush(report)
         if report.issues.is_empty() && matches!(report.answered.as_slice(), [answer]
         if answer.request == request && matches!(answer.reply, ReplyPayload::Mail(CentralMailResult::Done(CentralMailAnswer::Queued { .. }))))));
+    let status_after_flush = front.request_status(&sender, request).await.unwrap();
+    assert!(
+        matches!(
+            status_after_flush,
+            MessageWriteStatus::Answered {
+                delivery: MessageDeliveryObservation::Checked(
+                    MessageStatus::Sent { .. } | MessageStatus::Delivered { .. }
+                ),
+                ..
+            }
+        ),
+        "expected Central acceptance and a separate delivery observation, got {status_after_flush:?}"
+    );
 
     first_driver.exit.send(()).unwrap();
     observe_status(&mut status, Status::Restarting).await;

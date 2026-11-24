@@ -2,6 +2,10 @@
 
 use std::{future::Future, sync::Arc};
 
+pub use collaboration_protocol::message_tools::{
+    AdmittedLocalSession, DirectMessageWrite, MessageDeliveryObservation, MessageSendOutcome,
+    MessageStatus, MessageUnitPort, MessageWriteStatus,
+};
 use router_clock::RuntimeClock;
 use switchboard_central_link::link_driver::LinkDriver;
 use switchboard_link_lease::{DiscoverySource, EnrollmentLeaseSource};

@@ -31,7 +31,7 @@ const RETIRED_GROUP_COMMANDS: [[&str; 2]; 33] = [
     ["process", "show"],
     ["move", "show"],
     ["hook", "list"],
-    ["message", "send"],
+    ["message", "inbox"],
     ["show", "push-id"],
     ["approval", "list"],
     ["question", "list"],
@@ -186,15 +186,20 @@ fn top_level_help_no_longer_lists_retired_command_groups() {
         .expect("CLI executes");
     assert!(output.status.success());
     let help = String::from_utf8_lossy(&output.stdout);
-    for [group, _] in RETIRED_GROUP_COMMANDS {
+    for [group, leaf] in RETIRED_GROUP_COMMANDS {
+        let retired = if group == "message" {
+            format!("  {group} {leaf}")
+        } else {
+            format!("  {group} ")
+        };
         assert!(
-            !help
-                .lines()
-                .any(|line| line.starts_with(&format!("  {group} "))),
-            "help still lists {group}: {help}"
+            !help.lines().any(|line| line.starts_with(&retired)),
+            "help still lists {retired}: {help}"
         );
     }
     assert!(help.contains("  conversation operation show|wait|reconcile"));
+    assert!(help.contains("  message send "));
+    assert!(help.contains("  message status "));
 }
 
 #[test]
