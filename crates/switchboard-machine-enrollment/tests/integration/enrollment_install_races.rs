@@ -1,9 +1,9 @@
 use std::time::Duration;
 
 use switchboard_machine_enrollment::{
-    BindingGeneration, ConditionalWrite, CredentialStore, EnrollmentBinding, EnrollmentContext,
-    EnrollmentEnd, EnrollmentFailure, EnrollmentReceipt, RefreshCredential, SecretValue,
-    StoreDurability, StoredEnrollment,
+    ApprovedEnrollmentSaveFailure, BindingGeneration, ConditionalWrite, CredentialStore,
+    EnrollmentBinding, EnrollmentContext, EnrollmentEnd, EnrollmentFailure, EnrollmentReceipt,
+    EnrollmentSaveFailure, RefreshCredential, SecretValue, StoreDurability, StoredEnrollment,
 };
 use tokio::{sync::oneshot, task::JoinHandle};
 
@@ -120,7 +120,9 @@ async fn a_late_approval_cannot_overwrite_a_different_enrollment() {
     release.send(()).expect("deliver approval");
     assert_eq!(
         enrollment.await.expect("enrollment task"),
-        Err(EnrollmentFailure::ReplacementConflict)
+        Err(EnrollmentFailure::AfterApproval(
+            ApprovedEnrollmentSaveFailure::NotSaved(EnrollmentSaveFailure::ReplacementConflict)
+        ))
     );
     assert_eq!(store.snapshot(), StoredEnrollment::Active(winner));
     script.assert_exhausted();
@@ -192,8 +194,10 @@ async fn approved_install_attempts_to_read_even_when_the_write_stays_unknown() {
 
     assert_eq!(
         enrollment.await.expect("enrollment task"),
-        Err(EnrollmentFailure::Store(
-            switchboard_machine_enrollment::CredentialStoreError::OutcomeNotKnown
+        Err(EnrollmentFailure::AfterApproval(
+            ApprovedEnrollmentSaveFailure::OutcomeUnknown(EnrollmentSaveFailure::Store(
+                switchboard_machine_enrollment::CredentialStoreError::Read
+            ))
         ))
     );
     assert_eq!(store.submissions().len(), 1);

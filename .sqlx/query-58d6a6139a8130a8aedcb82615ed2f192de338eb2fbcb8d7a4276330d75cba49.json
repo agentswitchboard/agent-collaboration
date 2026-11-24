@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT subject_key FROM engine_due_entries\nWHERE subject_key = ?1 AND work_kind = 'approval_request' AND entry_role = 'item'\n  AND occurrence_ms = ?2\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "subject_key",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "engine_due_entries",
+            "name": "subject_key"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "58d6a6139a8130a8aedcb82615ed2f192de338eb2fbcb8d7a4276330d75cba49"
+}

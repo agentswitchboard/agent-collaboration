@@ -26,6 +26,27 @@ pub enum EnrollmentFailure {
     Ended(EnrollmentEnd),
     #[error(transparent)]
     Store(#[from] CredentialStoreError),
+    #[error(transparent)]
+    AfterApproval(#[from] ApprovedEnrollmentSaveFailure),
+}
+
+/// Sign-in approved the attempt, but the Mac cannot report a durable save.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum ApprovedEnrollmentSaveFailure {
+    #[error("sign-in approved the request, but the local save failed")]
+    NotSaved(#[source] EnrollmentSaveFailure),
+    #[error("sign-in approved the request, but the local save outcome is unknown")]
+    OutcomeUnknown(#[source] EnrollmentSaveFailure),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum EnrollmentSaveFailure {
+    #[error(transparent)]
+    Store(#[from] CredentialStoreError),
+    #[error("another enrollment replaced the preceding binding")]
+    ReplacementConflict,
+    #[error("the enrollment generation cannot be advanced")]
+    GenerationExhausted,
 }
 
 impl SignInClient {
@@ -159,33 +180,44 @@ async fn install_approved_binding(
     before: &StoredEnrollment,
     context: &EnrollmentContext,
     credential: RefreshCredential,
-) -> Result<EnrollmentReceipt, EnrollmentFailure> {
+) -> Result<EnrollmentReceipt, ApprovedEnrollmentSaveFailure> {
     let old_identity = before.key();
     let mut expected = before.generation();
-    let mut binding = EnrollmentBinding {
-        generation: expected
-            .binding_successor()
-            .ok_or(EnrollmentFailure::GenerationExhausted)?,
-        context: context.clone(),
-        credential,
-    };
+    let mut binding =
+        EnrollmentBinding {
+            generation: expected.binding_successor().ok_or(
+                ApprovedEnrollmentSaveFailure::NotSaved(EnrollmentSaveFailure::GenerationExhausted),
+            )?,
+            context: context.clone(),
+            credential,
+        };
 
-    loop {
+    let mut earlier_write_unresolved = false;
+    let result = loop {
         let current = match store.replace(expected, &binding).await {
-            Ok(ConditionalWrite::Applied) => break,
-            Ok(ConditionalWrite::Superseded) => store.read().await?,
+            Ok(ConditionalWrite::Applied) => break Ok(()),
+            Ok(ConditionalWrite::Superseded) => match store.read().await {
+                Ok(current) => current,
+                Err(error) => break Err(error.into()),
+            },
             Err(CredentialStoreError::OutcomeNotKnown) => {
-                let current = store
-                    .read()
-                    .await
-                    .map_err(|_| CredentialStoreError::OutcomeNotKnown)?;
+                let current = match store.read().await {
+                    Ok(current) => current,
+                    Err(error) => {
+                        earlier_write_unresolved = true;
+                        break Err(error.into());
+                    }
+                };
                 if matches!(&current, StoredEnrollment::Active(stored) if binding.matches_replacement(stored))
                 {
-                    break;
+                    break Ok(());
                 }
                 if current.generation() == expected {
                     continue;
                 }
+                // A later generation can hide a save that committed and was
+                // then replaced. Preserve that uncertainty unless we succeed.
+                earlier_write_unresolved |= current.generation() > binding.generation;
                 current
             }
             Err(
@@ -194,16 +226,24 @@ async fn install_approved_binding(
                 | CredentialStoreError::EnrollmentScopeMismatch
                 | CredentialStoreError::Remove
                 | CredentialStoreError::CleanupTimedOut),
-            ) => return Err(error.into()),
+            ) => break Err(error.into()),
         };
         if current.key() != old_identity || current.generation() <= expected {
-            return Err(EnrollmentFailure::ReplacementConflict);
+            break Err(EnrollmentSaveFailure::ReplacementConflict);
         }
         expected = current.generation();
-        binding.generation = expected
-            .binding_successor()
-            .ok_or(EnrollmentFailure::GenerationExhausted)?;
-    }
+        let Some(successor) = expected.binding_successor() else {
+            break Err(EnrollmentSaveFailure::GenerationExhausted);
+        };
+        binding.generation = successor;
+    };
+    result.map_err(|failure| {
+        if earlier_write_unresolved {
+            ApprovedEnrollmentSaveFailure::OutcomeUnknown(failure)
+        } else {
+            ApprovedEnrollmentSaveFailure::NotSaved(failure)
+        }
+    })?;
     Ok(EnrollmentReceipt {
         generation: binding.generation,
         enrollment_id: binding.credential.enrollment_id,

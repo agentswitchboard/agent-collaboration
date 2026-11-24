@@ -3,7 +3,7 @@ use approval_request_protocol::{
     AdmittedDestination, Answer, CentralTime, DecidedBy, Ending, EndingView,
 };
 use central_engine_model::supported_time;
-use central_storage::{GuardedStatement, ReadOutcome, Statement, StoreFailure};
+use central_storage::{GuardedStatement, ReadOutcome, RowExpectation, Statement, StoreFailure};
 use fleet_identity_protocol::OrganizationId;
 use fleet_request_log::{
     decode_organization_request, lookup_organization_request, request_log_digest,
@@ -13,7 +13,7 @@ use fleet_runtime_ports::{stored_values::json, workspace_decode_error::corrupt};
 use serde::{Deserialize, Serialize};
 use workspace_ids::{ActorIdentityId, ApprovalRequestId, RequestId};
 
-use crate::{ApprovalDecideInput, ApprovalDecisionReply, ApprovalState};
+use crate::{ApprovalDecideInput, ApprovalDecisionReply, ApprovalRequestRowId, ApprovalState};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -129,6 +129,7 @@ impl ApprovalDecisionLogKey {
 
     pub(crate) fn retain(
         &self,
+        row_id: &ApprovalRequestRowId,
         reply: &ApprovalDecisionReply,
     ) -> Result<Vec<GuardedStatement>, StoreFailure> {
         let answer = match reply {
@@ -147,7 +148,8 @@ impl ApprovalDecisionLogKey {
                 return Err(invalid_retained_answer());
             }
         };
-        retain_organization_request(
+        retain_approval_operation(
+            row_id,
             &self.operation_id,
             &self.caller,
             &self.digest,
@@ -156,6 +158,29 @@ impl ApprovalDecisionLogKey {
             &self.cutoff,
         )
     }
+}
+
+pub(crate) fn retain_approval_operation(
+    row_id: &ApprovalRequestRowId,
+    operation: &RequestId,
+    caller: &ActorIdentityId,
+    digest: &str,
+    answer: &impl Serialize,
+    at: &str,
+    cutoff: &str,
+) -> Result<Vec<GuardedStatement>, StoreFailure> {
+    let mut writes = retain_organization_request(operation, caller, digest, answer, at, cutoff)?;
+    writes.push(GuardedStatement {
+        statement: fleet_engine::checked_engine_statement!(
+            query_file,
+            [],
+            "src/queries/tag_approval_operation_result.sql",
+            operation = operation.as_str().to_owned(),
+            row_id = row_id.as_str().to_owned(),
+        ),
+        expect: RowExpectation::Exactly(1),
+    });
+    Ok(writes)
 }
 
 pub(crate) fn retained_answer_matches(

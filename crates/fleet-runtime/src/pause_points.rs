@@ -29,6 +29,8 @@ pub enum PausePoint {
     BeforeTimerCommit,
     BeforeWakeRequestCommit,
     BeforeReceiptTransaction,
+    BeforeMachineLinkWelcome,
+    AfterMachineLinkWelcome,
     BeforeSessionTransaction,
     BeforeApprovalCommit,
     ApprovalEndingNeverReached,
@@ -73,6 +75,9 @@ pub enum PausePoint {
     BeforeDriveGuard,
     /// The renewal token is verified and the organization turn is held.
     BeforeRenewalApplyingSample,
+    BeforeMachineAuthorityCloseWrite,
+    AfterMachineFrameHandled,
+    AfterMachineMailOffer,
     BeforeSignInSample,
     AfterSignInSample,
 }

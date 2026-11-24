@@ -164,7 +164,10 @@ pub type AdmittedReceipt<'loan, Transaction> =
     fleet_machine_login::receipt_authority::AdmittedReceipt<'loan, Transaction, ReceiptKind>;
 
 pub enum ApplyReceipt {
-    Applied { ready: Option<MailDeliveryReady> },
+    Applied {
+        ready: Option<MailDeliveryReady>,
+        retired_recipient: Option<fleet_contracts::MailClaimRetired>,
+    },
     Stop(ReceiptResult),
     AuthorityLapsed(fleet_contracts::mail_link::MachineLinkCloseCode),
 }
@@ -196,6 +199,7 @@ pub struct OwnedDirectStatus {
 pub struct AppliedDirectStatus {
     pub status: MessageStatus,
     pub ready: Option<MailDeliveryReady>,
+    pub retired_recipient: Option<fleet_contracts::MailClaimRetired>,
 }
 
 pub struct DirectOfferLookup {

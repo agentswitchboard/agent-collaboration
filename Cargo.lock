@@ -1162,7 +1162,9 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "sqlx",
+ "switchboard-machine-core-store",
  "switchboard-machine-enrollment",
+ "switchboard-machine-enrollment-store",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -1273,6 +1275,7 @@ dependencies = [
  "state-machine-core",
  "switchboard-machine-core-store",
  "switchboard-message-custody",
+ "switchboard-message-unit",
  "switchboard-session-events",
  "switchboard-session-store",
  "tempfile",
@@ -1664,6 +1667,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-tungstenite",
  "tokio-util",
  "tracing",
  "tracing-subscriber",
@@ -5935,6 +5939,7 @@ dependencies = [
  "switchboard-machine-enrollment",
  "switchboard-machine-enrollment-store",
  "switchboard-message-custody",
+ "switchboard-message-unit",
  "tokio",
  "tungstenite 0.29.0",
  "turmoil",
@@ -6061,6 +6066,25 @@ dependencies = [
  "thiserror 2.0.18",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "switchboard-message-unit"
+version = "0.1.158"
+dependencies = [
+ "router-clock",
+ "switchboard-central-link",
+ "switchboard-link-lease",
+ "switchboard-machine-core-store",
+ "switchboard-machine-enrollment",
+ "switchboard-machine-enrollment-store",
+ "switchboard-message-custody",
+ "switchboard-message-system",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "workspace-ids",
 ]
 
 [[package]]

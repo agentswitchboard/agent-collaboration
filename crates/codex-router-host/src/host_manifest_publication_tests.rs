@@ -70,6 +70,7 @@ async fn host_startup_publishes_the_configured_router_proxy_port() {
 
     let runtime = CollaborationRuntime::start_for_host_with_router_proxy_endpoint(
         HostCollaborationInputs {
+            message_roots: None,
             remote_access: None,
             collaboration_runtime: runtime_inputs(root.path()),
             provider_operation_retention_days: None,
@@ -145,6 +146,7 @@ async fn host_discovers_and_closes_its_stores_without_touching_predecessor_mail(
 
         let runtime = CollaborationRuntime::start_for_host_with_router_proxy_endpoint(
             HostCollaborationInputs {
+                message_roots: None,
                 remote_access: None,
                 collaboration_runtime: runtime_inputs(root.path()),
                 provider_operation_retention_days: None,

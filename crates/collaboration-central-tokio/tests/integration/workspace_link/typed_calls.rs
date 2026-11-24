@@ -9,9 +9,10 @@ use central_link_protocol::{
 };
 use central_storage::BatchOutcome;
 use collaboration_central_conformance::ConformanceResult as Result;
+use collaboration_central_conformance::fixture_link_reader::read_fixture_frame;
 use collaboration_central_core::TYPED_LINK_CALL_TIMEOUT;
 use fleet_rpc::{CallFailure, Envelope};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::SinkExt;
 use reqwest_websocket::{CloseCode, Message, WebSocket};
 use router_clock::RuntimeClock;
 use serde_json::json;
@@ -32,9 +33,8 @@ async fn central_typed_calls_reply_with_their_correlation_and_refuse_unknown_and
         let correlation: CorrelationId = CENTRAL_CORRELATION.parse()?;
         let target = INSTALLATION.parse()?;
         send_central_probe(&mut socket, correlation.clone(), target).await?;
-        let message = socket
-            .next()
-            .await
+        let message = read_fixture_frame(&mut socket, "typed calls link frame")
+            .await?
             .ok_or("expected a fixture probe reply")??;
         let Message::Text(text) = message else {
             return Err("expected a fixture probe reply".into());
@@ -129,7 +129,7 @@ async fn verify_lapsed_authority(fixture: &Fixture, state: EnrollmentAtApply) ->
         },
     )
     .await?;
-    let close = socket.next().await;
+    let close = read_fixture_frame(&mut socket, "link close").await?;
     if !matches!(close, Some(Ok(Message::Close { code, .. })) if MachineLinkCloseCode::from_code(code.into()) == Some(cause))
     {
         return Err(format!("expected socket to finish with {cause:?}, got {close:?}").into());
@@ -256,7 +256,7 @@ async fn mac_typed_call_never_dispatches_to_an_open_socket_with_lapsed_authority
             fixture.host.call_machine::<MacProbe>(&organization, &machine, probe_request(machine.clone(), 42)).await,
             CallFailure::NeverReached,
         )?;
-        let close = socket.next().await;
+        let close = read_fixture_frame(&mut socket, "link close").await?;
         if !matches!(close, Some(Ok(Message::Close { code, .. })) if MachineLinkCloseCode::from_code(code.into()) == Some(MachineLinkCloseCode::Expired)) {
             return Err(format!("expected Expired before any call went on the wire, got {close:?}").into());
         }

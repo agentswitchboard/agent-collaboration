@@ -4,6 +4,10 @@ pub mod alarm_input_scenarios;
 #[cfg(feature = "session-link-test-support")]
 pub mod approval_authority_scenarios;
 #[cfg(feature = "session-link-test-support")]
+pub mod approval_cleanup_fairness;
+#[cfg(feature = "session-link-test-support")]
+pub mod approval_erasure_scenarios;
+#[cfg(feature = "session-link-test-support")]
 pub mod approval_link_scenarios;
 #[cfg(feature = "session-link-test-support")]
 pub mod approval_provider_scenarios;
@@ -20,3 +24,9 @@ pub mod workspace_schema_fixture;
 
 /// The error-boxing result every shared fixture and host scenario returns.
 pub type ConformanceResult<TValue> = Result<TValue, Box<dyn std::error::Error + Send + Sync>>;
+
+#[cfg(feature = "session-link-test-support")]
+pub mod machine_link_boundary;
+
+#[cfg(feature = "session-link-test-support")]
+pub mod fixture_link_reader;

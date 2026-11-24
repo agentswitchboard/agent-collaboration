@@ -124,6 +124,12 @@ pub enum CliError {
     /// Quota command failed.
     #[error(transparent)]
     Quota(#[from] QuotaCommandError),
+    #[cfg(unix)]
+    #[error(transparent)]
+    Enrollment(#[from] crate::enrollment_command::EnrollCommandError),
+    #[cfg(unix)]
+    #[error("enrollment commands require async CLI dispatch")]
+    EnrollmentRequiresAsyncDispatch,
     /// Live quota command needs exactly one source.
     #[error("live quota requires --profiles-root")]
     LiveQuotaSourceRequired,

@@ -437,7 +437,13 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
             >,
     {
         let failure = match apply.await {
-            Ok(CheckedDueUnit::Applied { ready }) => {
+            Ok(CheckedDueUnit::Applied {
+                ready,
+                retired_recipient,
+            }) => {
+                if let Some(machine) = retired_recipient {
+                    self.0.direct_claim_retired(machine);
+                }
                 if let Some(ready) = ready {
                     self.0.offer_ready_mail(ready);
                 }

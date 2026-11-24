@@ -1,0 +1,110 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT requests.approval_row_id, requests.organization_id, requests.machine_id, requests.enrollment_id,\n       requests.router_run_id, requests.request_id, requests.record_state, requests.ended_at\nFROM approval_requests AS requests\nWHERE requests.organization_id = ?1\n  AND (?2 = '' OR requests.request_id < ?2)\n  AND (?3 = 1 OR requests.record_state = 'waiting')\n  AND CASE WHEN ?5 = 1\n      THEN requests.record_state = 'ended' AND requests.ended_at IS NOT NULL\n           AND (?4 IS NULL OR requests.ended_at <= ?4)\n      ELSE requests.record_state <> 'ended' OR requests.ended_at IS NULL\n           OR (?4 IS NOT NULL AND requests.ended_at > ?4)\n  END\n  AND EXISTS (\n      SELECT 1 FROM approval_request_destinations AS destination\n      WHERE destination.approval_row_id = requests.approval_row_id\n        AND destination.organization_id = requests.organization_id\n        AND destination.destination_kind = 'people'\n  )\nORDER BY CASE WHEN ?5 = 1 THEN requests.ended_at END DESC, requests.request_id DESC\nLIMIT ?6\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "approval_row_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "approval_row_id"
+          }
+        }
+      },
+      {
+        "name": "organization_id",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "organization_id"
+          }
+        }
+      },
+      {
+        "name": "machine_id",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "machine_id"
+          }
+        }
+      },
+      {
+        "name": "enrollment_id",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "enrollment_id"
+          }
+        }
+      },
+      {
+        "name": "router_run_id",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "router_run_id"
+          }
+        }
+      },
+      {
+        "name": "request_id",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "request_id"
+          }
+        }
+      },
+      {
+        "name": "record_state",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "record_state"
+          }
+        }
+      },
+      {
+        "name": "ended_at",
+        "ordinal": 7,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "ended_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "83da65e79ed387e1f0639d5df2616f1bae315065e0d9c4b43da141d0adba8d30"
+}

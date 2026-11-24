@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM approval_router_runs\nWHERE router_run_id IN (\n    SELECT run.router_run_id\n    FROM approval_router_runs AS run\n    WHERE organization_id = ?1 AND enrollment_id = ?2\n      AND router_run_id <> ?3 AND retired_at IS NOT NULL\n      AND NOT EXISTS (\n          SELECT 1 FROM approval_erased_requests AS marker\n          WHERE marker.router_run_id = run.router_run_id\n      )\n    ORDER BY registration_order LIMIT ?4\n)\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "33864d6a44c7ee6c0293b66c0958c2e9d41b48f6f9e4475358599a7593ac59df"
+}

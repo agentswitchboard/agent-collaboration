@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT count(*) AS outstanding\nFROM (\n    SELECT 1 FROM approval_requests\n    WHERE organization_id = ?1 AND machine_id = ?2 AND enrollment_id = ?3\n      AND router_run_id = ?4 AND record_state = 'waiting'\n    UNION ALL\n    SELECT 1 FROM approval_requests\n    WHERE organization_id = ?1 AND machine_id = ?2 AND enrollment_id = ?3\n      AND router_run_id = ?4 AND record_state = 'ended' AND delivery_state = 'owed'\n      AND (ended_at IS NULL OR (?5 IS NOT NULL AND ended_at > ?5))\n    LIMIT ?6\n)\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "outstanding",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f222bdbef1aaa93f87c5c0f6f43cd9aa6330c9c101375c80be720d72651ed312"
+}

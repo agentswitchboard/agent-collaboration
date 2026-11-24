@@ -1,3 +1,6 @@
+#[path = "approval_erasure_cases.rs"]
+mod approval_erasure_cases;
+
 #[path = "approval_publication_failure.rs"]
 mod approval_publication_failure;
 
@@ -124,6 +127,13 @@ impl ApprovalLinkFixture for NativeApprovalFixture {
         self.link
             .clock
             .set_utc(time + chrono::Duration::seconds(seconds - time.timestamp()));
+        Ok(())
+    }
+
+    async fn set_wall_millis(&self, millis: i64) -> Result<()> {
+        self.link.clock.set_utc(
+            chrono::DateTime::from_timestamp_millis(millis).ok_or("fixture milliseconds")?,
+        );
         Ok(())
     }
 
@@ -338,8 +348,8 @@ async fn tokio_engine_delivers_or_recovers_approval_timeout_and_applies_stop_owe
 }
 
 use collaboration_central_conformance::approval_link_scenarios::{
-    FIXTURE_DECIDER, FIXTURE_DECISION_OPERATION, heartbeat, next_ending, read_request,
-    receive_fixture_decision, register_run, registered_waiting_request, require_owed,
+    FIXTURE_DECIDER, FIXTURE_DECISION_OPERATION, heartbeat, read_request, receive_fixture_decision,
+    register_run, registered_waiting_request, require_owed,
 };
 use collaboration_central_core::FixtureApprovalDecision;
 use fleet_runtime::PausePoint;
@@ -411,20 +421,16 @@ async fn tokio_fixture_decide_offers_only_after_commit_and_records_received() ->
         );
         let observe = async {
             before_commit.until_held().await;
-            let result = heartbeat(&mut socket).await;
+            let observation =
+                collaboration_central_conformance::machine_link_boundary::expect_transport_pong(
+                    &mut socket,
+                )
+                .await;
             before_commit.release();
-            result
+            observation
         };
         let (failed, no_offer) = tokio::join!(decide, observe);
         no_offer?;
-        if failed.is_ok() {
-            let (_, ending) = next_ending(&mut socket, &target).await?;
-            return Err(format!(
-                "uncommitted approval ending reached the holder for request {}",
-                ending.request_id(),
-            )
-            .into());
-        }
         if !matches!(failed, Err(central_storage::StoreFailure::Unavailable)) {
             return Err(format!("expected a known rollback, got {failed:?}").into());
         }
@@ -631,3 +637,45 @@ mod person_approval_races;
 
 #[path = "approval_capability_calls.rs"]
 mod approval_capability_calls;
+
+#[tokio::test]
+async fn native_silent_approval_and_application_readers_name_the_missing_frame() -> Result<()> {
+    use collaboration_central_conformance::{
+        approval_link_scenarios::{next_ending, receive_decision},
+        fixture_link_reader::require_withheld_frame,
+        machine_link_boundary::{
+            assert_welcome, expect_close, offered_message, read_pong_checkpoint,
+        },
+    };
+    let fixture = NativeApprovalFixture {
+        link: start_session_link_fixture(signed_clock()?).await?,
+        before_alarm: Cell::new(0),
+        delivery_answer: RefCell::default(),
+        before_write: RefCell::default(),
+        notice_recovery: RefCell::default(),
+    };
+    let observed = async {
+        let (target, mut socket, request) = registered_waiting_request(&fixture).await?;
+        require_withheld_frame("application frame", receive_frame(&mut socket)).await?;
+        require_withheld_frame("Welcome", assert_welcome(&mut socket)).await?;
+        require_withheld_frame("direct delivery", offered_message(&mut socket)).await?;
+        require_withheld_frame("application Pong", read_pong_checkpoint(&mut socket)).await?;
+        require_withheld_frame("link close", expect_close(&mut socket, 4102)).await?;
+        require_withheld_frame("holder ending offer", next_ending(&mut socket, &target)).await?;
+        require_withheld_frame(
+            "holder ending offer",
+            receive_decision(
+                &fixture,
+                &mut socket,
+                target,
+                &request,
+                serde_json::from_value(json!({"kind":"timedOut"}))?,
+            ),
+        )
+        .await?;
+        heartbeat(&mut socket).await
+    }
+    .await;
+    fixture.link.close().await?;
+    observed
+}

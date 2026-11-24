@@ -163,6 +163,7 @@ const REAL_TEST_DEV: &[Edge] = &[
     workspace(ENROLLMENT, &[]),
     workspace(ENROLLMENT_STORE, &["test-support"]),
     workspace("switchboard-message-custody", &[]),
+    workspace("switchboard-message-unit", &["test-support"]),
     workspace("workspace-ids", &[]),
     workspace("workspace-model", &[]),
     registry(

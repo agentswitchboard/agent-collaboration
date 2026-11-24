@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM runtime_request_log WHERE approval_row_id = ?1\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "9e38400b1c1a2fdebb43ea44d590025ed0dec47410198d420da8bd2ac952eece"
+}

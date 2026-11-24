@@ -1,5 +1,6 @@
 use super::*;
-use switchboard_link_lease::{EnrollmentLeaseSource, UnfinishedLeaseWork};
+use std::collections::BTreeSet;
+use switchboard_link_lease::EnrollmentLeaseSource;
 use switchboard_machine_core_store::{MACHINE_LOCAL_DATABASE, load_or_create_machine_id};
 use switchboard_machine_enrollment::{
     BindingGeneration, ConditionalWrite, CredentialStore, EnrollmentBinding, EnrollmentContext,
@@ -10,6 +11,14 @@ use switchboard_machine_enrollment_store::{
     MachineEnrollmentStore,
     test_support::{KeychainAccess, KeychainAccessError},
 };
+
+async fn stop_lease(lease: &EnrollmentLeaseSource, clock: &dyn RuntimeClock) {
+    lease.seal_ending_reports();
+    lease.request_stop_by(clock.monotonic_now().after(Duration::from_secs(5)));
+    let joined = lease.join().await.unwrap();
+    assert_eq!(joined.worker, Ok(()));
+    assert!(joined.unsettled_retirements.is_empty());
+}
 
 struct FixtureKeychain;
 
@@ -156,7 +165,11 @@ async fn real_central_revocation_ends_the_sqlite_enrollment_and_never_redials_it
         clock.clone(),
         context.clone(),
     );
-    let lease = Arc::new(EnrollmentLeaseSource::start(owner, clock.clone()));
+    let lease = Arc::new(EnrollmentLeaseSource::start(
+        owner,
+        clock.clone(),
+        Arc::new(BTreeSet::new()),
+    ));
     // This harness supplies the address at the settings boundary. Its real
     // Central listens on loopback HTTP, so the test dialer uses the fixture URI.
     let fixture_uri = format!(
@@ -274,7 +287,7 @@ async fn real_central_revocation_ends_the_sqlite_enrollment_and_never_redials_it
     );
     stop.send_replace(true);
     driver.await.unwrap();
-    assert_eq!(lease.close().await.unwrap(), UnfinishedLeaseWork::default());
+    stop_lease(&lease, clock.as_ref()).await;
     store.close().await.unwrap();
     drop(central_owner);
     central.close().await.unwrap();

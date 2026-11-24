@@ -17,3 +17,9 @@ impl From<&MessageRecord> for MailDeliveryReady {
         }
     }
 }
+
+/// A committed direct-mail transition retired a recipient's offer claim.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MailClaimRetired {
+    pub machine_id: MachineId,
+}

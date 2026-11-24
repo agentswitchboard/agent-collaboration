@@ -80,6 +80,7 @@ async fn started_host_retention_wakes_on_its_supervisor_and_store() {
     let mut runtime = Box::pin(
         CollaborationRuntime::start_for_host_with_router_proxy_endpoint(
             crate::HostCollaborationInputs {
+                message_roots: None,
                 collaboration_runtime: CollaborationRuntimeInputs {
                     directory: root.clone(),
                     codex_home: root.join("fixture-codex"),

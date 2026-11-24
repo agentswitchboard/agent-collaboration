@@ -1,7 +1,7 @@
 //! Allowed normal/build edges between workspace packages.
 use super::workspace_boundaries;
 
-const LAYER_POLICY: [(&str, &[&str]); 47] = [
+const LAYER_POLICY: [(&str, &[&str]); 48] = [
     ("workspace-ids", &[]),
     (
         "workspace-model",
@@ -55,6 +55,19 @@ const LAYER_POLICY: [(&str, &[&str]); 47] = [
     ("central-storage", &[]),
     ("state-machine-core", &[]),
     ("switchboard-message-system", &["state-machine-core"]),
+    (
+        "switchboard-message-unit",
+        &[
+            "router-clock",
+            "switchboard-central-link",
+            "switchboard-link-lease",
+            "switchboard-machine-core-store",
+            "switchboard-machine-enrollment",
+            "switchboard-machine-enrollment-store",
+            "switchboard-message-custody",
+            "switchboard-message-system",
+        ],
+    ),
     (
         "provider-session-machines",
         &[
@@ -332,6 +345,7 @@ const LAYER_POLICY: [(&str, &[&str]); 47] = [
     (
         "codex-router-host",
         &[
+            "switchboard-message-unit",
             "acp-client-runtime",
             "acp-provider-adapters",
             "router-clock",
@@ -345,6 +359,10 @@ const LAYER_POLICY: [(&str, &[&str]); 47] = [
     (
         "codex-router-cli",
         &[
+            // The enroll and enrollment-status commands compose the machine identity and the enrollment store.
+            "switchboard-machine-core-store",
+            // The enroll and enrollment-status commands compose the machine identity and the enrollment store.
+            "switchboard-machine-enrollment-store",
             // The central serve composition root owns the two listeners and clock.
             "collaboration-central-core",
             "collaboration-central-tokio",

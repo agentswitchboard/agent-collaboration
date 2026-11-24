@@ -58,7 +58,7 @@ async fn saved_decision_missing_ending(
 ) -> ConformanceResult<()> {
     let request = id(10);
     let operation = id(100);
-    let answer = AnswerClass::Once.answer();
+    let answer = json!({"kind":"approval","optionId":15});
     let call = decide(&request, &operation, &answer);
 
     expect(
@@ -66,12 +66,20 @@ async fn saved_decision_missing_ending(
         200,
         json!({"kind":"notVisible"}),
     )?;
+    assert_count(host, "SELECT COUNT(*) FROM runtime_request_log", 0).await?;
     seed(host, 10, AnswerClass::Once, InitialApproval::Waiting).await?;
-    expect(
-        call.send(host, owner).await?,
-        200,
-        json!({"kind":"notVisible"}),
-    )?;
+    let refused = expect_status(call.send(host, owner).await?, 200)?;
+    let refused: serde_json::Value = serde_json::from_slice(&refused)?;
+    assert_eq!(
+        refused.get("kind").and_then(serde_json::Value::as_str),
+        Some("invalid")
+    );
+    assert_count(
+        host,
+        "SELECT COUNT(*) FROM runtime_request_log WHERE approval_row_id IS NOT NULL",
+        1,
+    )
+    .await?;
 
     // The forged reply agrees with the signed intent and actor. The request itself
     // has never committed a decision, which makes this replay invalid.

@@ -27,6 +27,7 @@ pub trait EngineHost: Send + Sync + Sized {
     fn due_batch_state(&self) -> &DueBatchState;
     fn emit_central_observation(&self, observation: CentralObservation);
     fn offer_ready_mail(&self, delivery: MailDeliveryReady);
+    fn direct_claim_retired(&self, machine: fleet_contracts::MailClaimRetired);
     /// Today's organization stamp check (P3): `Ok(false)` when unprovisioned.
     fn organization_is_provisioned(
         &self,

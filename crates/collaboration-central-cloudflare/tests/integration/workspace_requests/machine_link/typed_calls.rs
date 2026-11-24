@@ -1,5 +1,6 @@
 //! Typed exchanges use the real public WebSocket and private object invocation.
 
+use collaboration_central_conformance::fixture_link_reader::read_fixture_frame;
 mod addressing;
 mod capacity;
 mod lifecycle;
@@ -16,7 +17,7 @@ use central_link_protocol::{
 use central_storage::BatchOutcome;
 use collaboration_central_conformance::ConformanceResult as Result;
 use fleet_rpc::Envelope;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::SinkExt;
 use reqwest::{Response, StatusCode};
 use reqwest_websocket::{Message, WebSocket};
 use serde_json::json;
@@ -95,7 +96,7 @@ async fn check_authority_lapse(fixture: &Fixture, state: EnrollmentAtApply) -> R
             reason: LinkCallRefusal::AuthorityLapsed { cause }
         }
     );
-    let closed = link.socket.next().await;
+    let closed = read_fixture_frame(&mut link.socket, "link close").await?;
     assert!(
         matches!(closed, Some(Ok(Message::Close { code, .. }))
         if MachineLinkCloseCode::from_code(code.into()) == Some(cause)),
@@ -118,9 +119,8 @@ async fn central_probe(
         },
     )?;
     socket.send(Message::Text(text)).await?;
-    let message = socket
-        .next()
-        .await
+    let message = read_fixture_frame(socket, "typed calls link frame")
+        .await?
         .ok_or("expected fixture probe reply")??;
     let Message::Text(text) = message else {
         return Err("expected fixture probe reply".into());

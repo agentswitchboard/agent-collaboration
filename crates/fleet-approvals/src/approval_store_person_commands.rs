@@ -52,11 +52,13 @@ where
             ));
         }
 
+        let at = self.sample_applying_time()?;
         let mut records = read_approval_request_page_for_person(
             self.transaction,
             admission.organization(),
             cursor,
             filter,
+            at,
             APPROVAL_PAGE_SIZE,
         )
         .await?;
@@ -70,7 +72,6 @@ where
         } else {
             None
         };
-        let at = self.sample_applying_time()?;
         let mut items = Vec::with_capacity(records.len());
         let mut ending_offers = Vec::new();
         for record in &records {

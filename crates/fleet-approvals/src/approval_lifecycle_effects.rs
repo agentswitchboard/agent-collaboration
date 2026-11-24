@@ -113,7 +113,7 @@ pub(super) fn with_delivery(
     }
 }
 
-pub(super) fn standing(ending: &Ending) -> StopReceiptEnding {
+pub(crate) fn standing(ending: &Ending) -> StopReceiptEnding {
     match ending {
         Ending::Decided { .. } | Ending::UnprovenCallDecided { .. } => {
             StopReceiptEnding::DecidedEarlier {}

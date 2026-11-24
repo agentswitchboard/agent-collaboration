@@ -45,6 +45,11 @@ impl ApprovalDeadlineTasks {
         });
     }
 
+    #[cfg(feature = "test-support")]
+    pub(super) fn tracked(&self) -> bool {
+        !self.tasks.is_empty()
+    }
+
     pub(super) async fn close(&self) {
         self.stop.cancel();
         self.tasks.close();

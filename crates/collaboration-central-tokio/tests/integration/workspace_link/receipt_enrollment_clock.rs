@@ -5,8 +5,8 @@ use central_link_protocol::{
     ReceiptResult,
 };
 use central_storage::{SqlValue, Statement};
+use collaboration_central_conformance::fixture_link_reader::read_fixture_frame;
 use collaboration_central_conformance::{ConformanceResult as Result, signin_fixtures as signed};
-use futures_util::StreamExt;
 use reqwest_websocket::Message;
 use workspace_ids::SessionRef;
 use workspace_model::central_mail::{CentralMailAnswer, CentralMailResult, MessageRefusal};
@@ -135,7 +135,8 @@ async fn clock_move(fixture: &Fixture, boundary: AfterEnrollmentRead) -> Result<
             ]]
         }
         AfterEnrollmentRead::AtExpiry => {
-            let reply = socket.next().await;
+            let reply =
+                read_fixture_frame(&mut socket, "receipt enrollment clock link frame").await?;
             if !matches!(
                 reply,
                 Some(Ok(Message::Close { code, .. }))

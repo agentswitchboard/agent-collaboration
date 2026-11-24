@@ -38,6 +38,7 @@ pub trait ApprovalLinkFixture {
         async { Ok(()) }
     }
     fn set_wall_seconds(&self, seconds: i64) -> impl Future<Output = Result<()>>;
+    fn set_wall_millis(&self, millis: i64) -> impl Future<Output = Result<()>>;
     fn connect_without_capabilities(&self) -> impl Future<Output = Result<WebSocket>>;
     fn connect(&self) -> impl Future<Output = Result<WebSocket>> {
         async {
@@ -342,14 +343,37 @@ pub async fn receive_fixture_decision(
     .await
 }
 
-pub(crate) async fn receive_decision(
+pub async fn receive_decision(
     fixture: &impl ApprovalLinkFixture,
     socket: &mut WebSocket,
     target: ApprovalHolderTarget,
     request: &Raise,
     expected: approval_request_protocol::Ending,
 ) -> Result<()> {
-    let (correlation, offered) = next_ending(socket, &target).await?;
+    let offer = next_ending(socket, &target).await?;
+    accept_fixture_decision(fixture, socket, target, request, expected, offer).await
+}
+
+pub async fn receive_decision_before(
+    fixture: &impl ApprovalLinkFixture,
+    socket: &mut WebSocket,
+    target: ApprovalHolderTarget,
+    request: &Raise,
+    expected: approval_request_protocol::Ending,
+    unavailable: impl Future<Output = Result<()>>,
+) -> Result<()> {
+    let offer = next_ending_before(socket, &target, unavailable).await?;
+    accept_fixture_decision(fixture, socket, target, request, expected, offer).await
+}
+
+async fn accept_fixture_decision(
+    fixture: &impl ApprovalLinkFixture,
+    socket: &mut WebSocket,
+    target: ApprovalHolderTarget,
+    request: &Raise,
+    expected: approval_request_protocol::Ending,
+    (correlation, offered): (CorrelationId, DeliverEndingRequest),
+) -> Result<()> {
     assert_eq!(offered.request_id(), request.request_id());
     assert_eq!(offered.contents_digest(), &request.contents_digest()?);
     assert_eq!(offered.into_ending(), expected);
@@ -446,10 +470,29 @@ pub async fn next_ending(
     socket: &mut WebSocket,
     expected: &ApprovalHolderTarget,
 ) -> Result<(CorrelationId, DeliverEndingRequest)> {
+    let frame = receive_expected_text(socket, "holder ending offer").await?;
+    ending_frame(frame, expected)
+}
+
+async fn next_ending_before(
+    socket: &mut WebSocket,
+    expected: &ApprovalHolderTarget,
+    unavailable: impl Future<Output = Result<()>>,
+) -> Result<(CorrelationId, DeliverEndingRequest)> {
+    let frame =
+        approval_socket_frames::receive_frame_before(socket, "holder ending offer", unavailable)
+            .await?;
+    ending_frame(frame, expected)
+}
+
+fn ending_frame(
+    frame: LinkFrame,
+    expected: &ApprovalHolderTarget,
+) -> Result<(CorrelationId, DeliverEndingRequest)> {
     let LinkFrame::Data(DataFrame::CallMac {
         correlation_id,
         request,
-    }) = receive_frame(socket).await?
+    }) = frame
     else {
         return Err("expected a holder ending offer".into());
     };
@@ -603,3 +646,5 @@ pub use mac_capability_scenarios::{
 mod approval_socket_frames;
 pub use approval_socket_frames::receive_frame;
 pub(crate) use approval_socket_frames::send_frame;
+
+pub(crate) use approval_socket_frames::receive_expected_text;

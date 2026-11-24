@@ -6,6 +6,7 @@ use central_link_protocol::{
 use central_storage::{
     AlarmUpdate, GuardedStatement, RowExpectation, SqlValue, Statement, StatementBatch,
 };
+use collaboration_central_conformance::fixture_link_reader::read_fixture_frame;
 use collaboration_central_conformance::{ConformanceResult as Result, signin_fixtures as signed};
 use fleet_runtime::PausePoint;
 use futures_util::{FutureExt, StreamExt};
@@ -152,7 +153,7 @@ async fn renew_and_receive(
 }
 
 pub(super) async fn require_inactive_close(socket: &mut WebSocket) -> Result<()> {
-    let frame = socket.next().await;
+    let frame = read_fixture_frame(socket, "idle expiry link frame").await?;
     if !matches!(frame, Some(Ok(Message::Close { code, .. })) if MachineLinkCloseCode::from_code(code.into()) == Some(MachineLinkCloseCode::Inactive))
     {
         return Err(format!("expected Inactive close, got {frame:?}").into());
@@ -187,7 +188,7 @@ async fn idle_renewal_commits_before_its_correlated_inactive_reply_and_close() -
         .await?;
         tokio::select! {
             () = barrier.until_held() => {},
-            early = socket.next() => {
+            early = read_fixture_frame(&mut socket, "idle expiry link frame")=> {
                 return Err(format!("renewal emitted a frame before reaching the idle commit: {early:?}").into());
             }
         }

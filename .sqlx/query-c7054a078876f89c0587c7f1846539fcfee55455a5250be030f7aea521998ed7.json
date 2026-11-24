@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT marker.request_id, marker.router_run_id, run.machine_id, run.enrollment_id,\n       marker.ending_json\nFROM approval_erased_requests AS marker\nJOIN approval_router_runs AS run ON run.router_run_id = marker.router_run_id\n  AND run.organization_id = marker.organization_id AND run.retired_at IS NULL\nWHERE marker.organization_id = ?1 AND marker.request_id = ?2\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "request_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_erased_requests",
+            "name": "request_id"
+          }
+        }
+      },
+      {
+        "name": "router_run_id",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_erased_requests",
+            "name": "router_run_id"
+          }
+        }
+      },
+      {
+        "name": "machine_id",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_router_runs",
+            "name": "machine_id"
+          }
+        }
+      },
+      {
+        "name": "enrollment_id",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_router_runs",
+            "name": "enrollment_id"
+          }
+        }
+      },
+      {
+        "name": "ending_json",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_erased_requests",
+            "name": "ending_json"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "c7054a078876f89c0587c7f1846539fcfee55455a5250be030f7aea521998ed7"
+}

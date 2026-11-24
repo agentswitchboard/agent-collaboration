@@ -9,9 +9,10 @@ use central_link_protocol::{
     MachineLinkCloseCode, TypedCallResult, fixture_central_probe::encode_probe_call,
     test_calls::ProbeRequest,
 };
+use collaboration_central_conformance::fixture_link_reader::read_fixture_frame;
 use fleet_contracts::MachineTokenDecision;
 use fleet_rpc::Envelope;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::SinkExt;
 use reqwest::StatusCode;
 use reqwest_websocket::Message;
 
@@ -101,7 +102,7 @@ async fn exercise_faulted_close(fixture: &Fixture) -> Result<()> {
             },
         )?;
         link.socket.send(Message::Text(text)).await?;
-        let close = link.socket.next().await;
+        let close = read_fixture_frame(&mut link.socket, "link close").await?;
         assert!(
             matches!(close, Some(Ok(Message::Close { code, .. })) if
             MachineLinkCloseCode::from_code(code.into()) == Some(MachineLinkCloseCode::Expired)),

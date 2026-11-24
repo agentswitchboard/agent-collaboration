@@ -50,7 +50,7 @@ test("Workerd persists an admitted retained refusal, conflict, or reoffer deadli
         database,
         command,
         atMs: hourMs,
-        writes: 2,
+        writes: 3,
       });
       assert.deepEqual(
         typedResult(timedOut),
@@ -80,7 +80,7 @@ test("Workerd persists an admitted retained refusal, conflict, or reoffer deadli
         command: personDecision(request.requestId, uuid(5702), 1),
       });
       assert.deepEqual(typedResult(beforeDeadline), { kind: "tooLate" });
-      assert.equal(beforeDeadline.writes, 2);
+      assert.equal(beforeDeadline.writes, 3);
     }
   } finally {
     await central.close();

@@ -1,5 +1,6 @@
 //! SQLite persistence for the Mac Router's machine identity, outbox and inbox.
 
+mod enrollment_metadata_read;
 mod enrollment_row;
 mod enrollment_row_store;
 #[cfg(all(feature = "test-support", debug_assertions))]
@@ -21,6 +22,10 @@ mod store_scan;
 #[cfg(all(feature = "test-support", debug_assertions))]
 pub use inbox_commit_pause::HeldInboxCommit;
 
+pub use enrollment_metadata_read::{
+    EnrollmentMetadataQueryError, EnrollmentMetadataReadError, MachineEnrollmentMetadataRow,
+    read_machine_enrollment_row,
+};
 pub use enrollment_row::{
     EnrollmentRowCorruption, StoredEnrollmentEnd, StoredEnrollmentRow, StoredEnrollmentRowMetadata,
     StoredInvalidEnrollmentReason,

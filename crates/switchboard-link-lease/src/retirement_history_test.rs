@@ -118,13 +118,13 @@ async fn dropped_receiver(
     }
 
     fixture.store.fail_end.send_replace(!close_healthy);
-    let report = fixture.source.close().await.unwrap();
+    let report = stop_lease(&fixture.source, fixture.clock.as_ref()).await;
     if durable || close_healthy {
-        assert_eq!(report, UnfinishedLeaseWork::default());
+        assert_eq!(report, clean_join());
         assert_ended(&fixture, &key, 2, StoredEnding::RefreshRefused);
     } else {
-        assert_eq!(report.retirements, vec![key.clone()]);
-        assert!(report.acquisitions.is_empty());
+        assert_eq!(report.unsettled_retirements, vec![key.clone()]);
+        assert_eq!(report.worker, Ok(()));
         assert_eq!(
             *fixture.store.row.borrow(),
             StoredEnrollment::Active(fixture.binding.clone())
@@ -172,8 +172,8 @@ async fn delayed_callback(probes: usize) {
         assert!(release.send(Box::new(|| {})).is_ok());
     }
     assert_eq!(
-        fixture.source.close().await.unwrap(),
-        UnfinishedLeaseWork::default()
+        stop_lease(&fixture.source, fixture.clock.as_ref()).await,
+        clean_join()
     );
     assert_ended(&fixture, &key, 3, StoredEnding::RefreshRefused);
     for _ in 0..probes {
@@ -205,12 +205,12 @@ async fn retained_handle(
     }
 
     assert_blocked(&mut fixture, &key).await;
-    let report = fixture.source.close().await.unwrap();
-    assert!(report.acquisitions.is_empty());
+    let report = stop_lease(&fixture.source, fixture.clock.as_ref()).await;
+    assert_eq!(report.worker, Ok(()));
     if other_key || close_healthy {
-        assert!(report.retirements.is_empty());
+        assert!(report.unsettled_retirements.is_empty());
     } else {
-        assert_eq!(report.retirements, vec![key.clone()]);
+        assert_eq!(report.unsettled_retirements, vec![key.clone()]);
     }
     if !other_key && close_healthy {
         assert_ended(&fixture, &key, 2, why);
@@ -248,8 +248,8 @@ async fn replaced_before_read(credential_unavailable: bool) {
         StoredEnrollment::Active(replacement)
     );
     assert_eq!(
-        fixture.source.close().await.unwrap(),
-        UnfinishedLeaseWork::default()
+        stop_lease(&fixture.source, fixture.clock.as_ref()).await,
+        clean_join()
     );
     assert!(!fixture.retirements.is_fenced(&key));
     assert!(fixture.refreshes.try_recv().is_err());
@@ -269,8 +269,8 @@ async fn waiting_definitive(link_cause: EnrollmentEnd, stored_cause: StoredEndin
     assert!(release.send(Box::new(|| {})).is_ok());
 
     assert_eq!(
-        fixture.source.close().await.unwrap(),
-        UnfinishedLeaseWork::default()
+        stop_lease(&fixture.source, fixture.clock.as_ref()).await,
+        clean_join()
     );
     assert_ended(&fixture, &key, 3, stored_cause);
     assert!(fixture.retirements.is_fenced(&key));

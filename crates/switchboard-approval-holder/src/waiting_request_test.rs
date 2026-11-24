@@ -1,8 +1,9 @@
 use super::{LinkAttemptDisposition, LinkCallAnswer, RequestFamily};
 use approval_request_protocol::{
-    ApprovalOffer, CancelReason, DeliverEndingReply, DeliverEndingRequest, Ending, HolderStopCause,
-    OfferedOption, OfferedOptionId, OfferedOptions, OptionEffect, OptionLifetime, ProviderHolder,
-    ProviderStopCause, Raise, RaiseReply, StopReceiptEnding, StopReply, StopRequest,
+    ApprovalOffer, CancelReason, DeliverEndingReply, DeliverEndingRequest, Ending,
+    ErasedApprovalMarker, HolderStopCause, OfferedOption, OfferedOptionId, OfferedOptions,
+    OptionEffect, OptionLifetime, ProviderHolder, ProviderStopCause, Raise, RaiseReply,
+    StopReceiptEnding, StopReply, StopRequest,
 };
 use hegel::generators as gs;
 use state_machine_core::{EventTag, StateMachine, StateTag, Transition, TransitionError};
@@ -436,6 +437,89 @@ fn a_writer_result_describes_only_the_local_submission() {
 }
 
 #[test]
+fn erased_raise_with_a_pending_stop_preserves_the_selected_local_reply() {
+    let mut state = published();
+    let frozen = raise();
+    assert!(
+        apply(
+            &mut state,
+            Event::LocalStop {
+                cause: HolderStopCause::TurnStopped
+            },
+        )
+        .is_empty()
+    );
+    assert!(matches!(
+        state.central,
+        super::CentralDuty::AwaitingRaiseDisposition { .. }
+    ));
+
+    let effects = apply(
+        &mut state,
+        Event::AttemptSettled {
+            call: call(1, 1),
+            disposition: LinkAttemptDisposition::Answered(LinkCallAnswer::Raise(
+                RaiseReply::AlreadyEnded {
+                    marker: ErasedApprovalMarker {
+                        request_id: frozen.request_id().clone(),
+                        router_run: frozen.router_run().clone(),
+                        ending: StopReceiptEnding::TimedOut {},
+                    },
+                },
+            )),
+        },
+    );
+
+    assert!(effects.is_empty());
+    assert!(matches!(state.central, super::CentralDuty::Refusing));
+    assert_eq!(
+        state.claimed_reply(),
+        Some((
+            &RESPONDER,
+            &ProviderReply::LocalNegative(LocalNegative::Stopped(STOP_CAUSE))
+        ))
+    );
+    assert_eq!(
+        transition(&state, publish(1, 2)),
+        Err(TransitionError::Stale)
+    );
+}
+
+#[test]
+fn erasure_marker_must_match_the_in_flight_raise_and_run() {
+    let state = published();
+    let frozen = raise();
+    let request_id = frozen.request_id().clone();
+    let router_run = frozen.router_run().clone();
+    let different_id = "01890f2e-7b4c-7cc0-98c4-000000000009";
+    for marker in [
+        ErasedApprovalMarker {
+            request_id: different_id.parse().unwrap(),
+            router_run,
+            ending: StopReceiptEnding::TimedOut {},
+        },
+        ErasedApprovalMarker {
+            request_id,
+            router_run: different_id.parse().unwrap(),
+            ending: StopReceiptEnding::TimedOut {},
+        },
+    ] {
+        let event = Event::AttemptSettled {
+            call: call(1, 1),
+            disposition: LinkAttemptDisposition::Answered(LinkCallAnswer::Raise(
+                RaiseReply::AlreadyEnded { marker },
+            )),
+        };
+        assert_eq!(
+            transition(&state, event),
+            Err(TransitionError::Domain(
+                super::WaitRefusal::ErasureMarkerForDifferentRequestOrRun,
+            )),
+        );
+    }
+}
+
+#[test]
 fn capacity_and_other_terminal_refusals_use_the_same_one_time_writer() {
     for (reply, refusal) in [
         (
@@ -443,6 +527,16 @@ fn capacity_and_other_terminal_refusals_use_the_same_one_time_writer() {
             RaiseRefusal::TooManyOutstanding,
         ),
         (RaiseReply::AlreadyStopped {}, RaiseRefusal::AlreadyStopped),
+        (
+            RaiseReply::AlreadyEnded {
+                marker: ErasedApprovalMarker {
+                    request_id: raise().request_id().clone(),
+                    router_run: raise().router_run().clone(),
+                    ending: StopReceiptEnding::TimedOut {},
+                },
+            },
+            RaiseRefusal::AlreadyEnded(StopReceiptEnding::TimedOut {}),
+        ),
         (RaiseReply::ContentsDiffer {}, RaiseRefusal::ContentsDiffer),
         (RaiseReply::SessionEnded {}, RaiseRefusal::SessionEnded),
     ] {

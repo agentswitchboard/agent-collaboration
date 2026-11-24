@@ -48,6 +48,15 @@ pub use delivery_cases::{
     stale_recovery_page,
 };
 pub use proof_cases::{ParentApprovalProof, observe_parent_proof};
+#[path = "parent_approval_cutoff.rs"]
+mod cutoff;
+pub use cutoff::{
+    queued_ending_uses_persisted_cutoff, session_page_and_durable_cutoff,
+    session_page_uses_the_ending_when_stored_cutoff_is_corrupt,
+};
+#[path = "parent_approval_erasure.rs"]
+mod erasure;
+pub use erasure::destination_replays_and_unpaid_ending_at_cutoff;
 #[path = "parent_approval_rollback.rs"]
 mod rollback;
 pub use rollback::{enrollment_and_approval_rollback, session_end_and_approval_rollback};
