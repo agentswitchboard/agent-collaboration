@@ -29,7 +29,7 @@ use switchboard_message_custody::{
     custody_link::CustodyLink,
     custody_status::CustodyRequestStatus,
     custody_submission::{OutboxReceipt, Submission, SubmissionPayload},
-    custody_task::{CustodyTaskEvent, CustodyTaskHandle, custody_task},
+    custody_task::{CustodyRunGroup, CustodyTaskEvent, CustodyTaskHandle, custody_task},
     flush_clock::{FlushJitter, MachineFlushJitter, shared_time_at, wake_for_mark},
     flush_marks::{mark_in_window, next_mark_after},
     outbox_dispatch::FlushReport,
@@ -37,10 +37,7 @@ use switchboard_message_custody::{
     receipt_delivery::ReceiptFrameOutcome,
     recipient_inbox::RecipientInbox,
 };
-use tokio::{
-    sync::{mpsc, watch},
-    task::JoinHandle,
-};
+use tokio::sync::mpsc;
 use workspace_ids::{MessageId, RequestId, SessionRef};
 use workspace_model::{
     Caller, PostText,
@@ -65,8 +62,7 @@ struct NetworkCustody {
     calls: CustodyTaskHandle,
     events: mpsc::UnboundedReceiver<CustodyTaskEvent>,
     receipt_outcomes: VecDeque<ReceiptFrameOutcome>,
-    stop: watch::Sender<bool>,
-    worker: JoinHandle<()>,
+    custody_group: CustodyRunGroup,
     jitter: Arc<MachineFlushJitter>,
     inbox: InboxStore,
 }
@@ -109,10 +105,8 @@ impl NetworkCustody {
                 link.clock.clone(),
             ),
         );
-        let (stop, stopped) = watch::channel(false);
         let (sender, events) = mpsc::unbounded_channel();
-        let (calls, worker) = custody_task(custody, stopped, Arc::new(RecordCustody(sender)));
-        let worker = tokio::spawn(worker);
+        let (calls, custody_group) = custody_task(custody, Arc::new(RecordCustody(sender)));
         let case = Self {
             link,
             custody_clock,
@@ -120,8 +114,7 @@ impl NetworkCustody {
             calls,
             events,
             receipt_outcomes: VecDeque::new(),
-            stop,
-            worker,
+            custody_group,
             jitter,
             inbox,
         };
@@ -449,8 +442,8 @@ impl NetworkCustody {
 
     async fn close(self) {
         self.assert_minute_writes();
-        self.stop.send_replace(true);
-        self.worker.await.unwrap();
+        self.custody_group.request_stop();
+        self.custody_group.join().await.unwrap();
         self.link.close().await;
     }
 }

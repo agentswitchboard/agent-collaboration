@@ -27,6 +27,9 @@ mod process;
 #[path = "enrollment_keyed_read_test.rs"]
 mod keyed_read;
 
+#[path = "enrollment_lifecycle_test.rs"]
+mod lifecycle;
+
 fn assert_queued<T>(future: Pin<&mut impl Future<Output = T>>) {
     assert!(
         future

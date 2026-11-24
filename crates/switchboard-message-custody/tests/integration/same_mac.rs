@@ -61,7 +61,7 @@ async fn local_and_remote_messages_share_the_minute_path_and_central_can_refuse_
     );
     assert!(lane.batch_commands().is_empty());
 
-    let (calls, stop, mut events, running) = start_worker(custody);
+    let (calls, group, mut events) = start_worker(custody);
     let wake = ClockInstant::ZERO.after(Duration::from_secs(20));
     clock.not_due_check_now(wake).await;
     assert!(
@@ -125,6 +125,6 @@ async fn local_and_remote_messages_share_the_minute_path_and_central_can_refuse_
             .unwrap(),
     );
     assert!(inbox.pending_receipts().await.unwrap().healthy.is_empty());
-    stop.send_replace(true);
-    running.await.unwrap();
+    group.request_stop();
+    group.join().await.unwrap();
 }

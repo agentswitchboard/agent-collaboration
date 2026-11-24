@@ -17,15 +17,15 @@ use switchboard_machine_core_store::{
 use switchboard_message_custody::{
     custody_link::CustodyLink,
     custody_status::CustodyRequestStatus,
-    custody_task::{CustodyEventSink, CustodyTaskEvent, CustodyTaskHandle, custody_task},
+    custody_task::{
+        CustodyEventSink, CustodyRunFailure, CustodyRunGroup, CustodyTaskEvent, CustodyTaskHandle,
+        custody_task,
+    },
     outbox_work::OutboxWork,
     recipient_inbox::RecipientInbox,
     recipient_sessions::{RecipientSessionAnswer, RecipientSessionDirectory},
 };
-use tokio::{
-    sync::{Notify, mpsc, watch},
-    task::JoinHandle,
-};
+use tokio::sync::{Notify, mpsc};
 use workspace_ids::SessionId;
 use workspace_model::{
     Caller, ResolvedSender, Timestamp,
@@ -177,22 +177,21 @@ impl NoticeFixture {
         directory: Arc<DeferredDirectory>,
     ) -> (
         CustodyTaskHandle,
-        watch::Sender<bool>,
+        CustodyRunGroup,
         mpsc::UnboundedReceiver<CustodyTaskEvent>,
-        JoinHandle<()>,
     ) {
         let (sender, observations) = mpsc::unbounded_channel();
-        let (calls, stop, worker) = self
+        let (calls, group) = self
             .start_with_sink(directory, Arc::new(ObserveTask(sender)))
             .await;
-        (calls, stop, observations, worker)
+        (calls, group, observations)
     }
 
     async fn start_with_sink(
         &self,
         directory: Arc<DeferredDirectory>,
         sink: Arc<dyn CustodyEventSink>,
-    ) -> (CustodyTaskHandle, watch::Sender<bool>, JoinHandle<()>) {
+    ) -> (CustodyTaskHandle, CustodyRunGroup) {
         let database = self.root.path().join("machine_local.sqlite");
         let inbox = RecipientInbox::new(
             self.reopen().await,
@@ -211,9 +210,7 @@ impl NoticeFixture {
             OutboxWork::new(outbox, self.clock.clone()),
             inbox,
         );
-        let (stop, stopped) = watch::channel(false);
-        let (calls, worker) = custody_task(custody, stopped, sink);
-        (calls, stop, tokio::spawn(worker))
+        custody_task(custody, sink)
     }
 
     async fn status(&self, calls: &CustodyTaskHandle) -> CustodyRequestStatus {
@@ -288,13 +285,16 @@ async fn a_crash_at_the_sender_notice_sink_replays_the_same_owed_notice() {
         .mark_receipt_confirmed(&fixture.notice.message_id, START_MS)
         .await
         .unwrap();
-    let (_calls, _stop, first_run) = fixture
+    let (_calls, first_run) = fixture
         .start_with_sink(
             Arc::new(DeferredDirectory::default()),
             Arc::new(StoppingNoticeSink),
         )
         .await;
-    assert!(first_run.await.unwrap_err().is_panic());
+    assert_eq!(
+        first_run.join().await,
+        Err(CustodyRunFailure::WorkerPanicked)
+    );
     assert_eq!(
         inbox.pending_handoffs().await.unwrap().healthy.as_slice(),
         std::slice::from_ref(&fixture.notice),
@@ -308,16 +308,15 @@ async fn a_crash_at_the_sender_notice_sink_replays_the_same_owed_notice() {
         .unwrap();
     assert_eq!(retained.inbox_message_id, fixture.notice.message_id);
 
-    let (calls, stop, mut events, restarted) =
-        fixture.start(Arc::new(DeferredDirectory::default())).await;
+    let (calls, group, mut events) = fixture.start(Arc::new(DeferredDirectory::default())).await;
     assert!(
         matches!(projection_event(&mut events).await, CustodyTaskEvent::Flush(report)
         if matches!(report.sender_notices.as_slice(), [sent] if sent.notice == retained))
     );
     assert_eq!(fixture.status(&calls).await, fixture.projected_status());
     assert!(inbox.pending_handoffs().await.unwrap().healthy.is_empty());
-    stop.send_replace(true);
-    restarted.await.unwrap();
+    group.request_stop();
+    group.join().await.unwrap();
 }
 
 #[tokio::test]
@@ -362,7 +361,7 @@ async fn startup_drains_an_acknowledged_sender_notice_and_reconciles_lost_commit
         if let Some(stage) = stage {
             fixture.faults.arm(FaultSite::RecordSenderNotice, stage);
         }
-        let (calls, stop, mut events, running) =
+        let (calls, group, mut events) =
             fixture.start(Arc::new(DeferredDirectory::default())).await;
 
         if stage == Some(FaultStage::BeforeCall) {
@@ -415,8 +414,8 @@ async fn startup_drains_an_acknowledged_sender_notice_and_reconciles_lost_commit
         );
         assert!(fixture.lane.take_calls().is_empty());
         assert!(fixture.faults.is_drained());
-        stop.send_replace(true);
-        running.await.unwrap();
+        group.request_stop();
+        group.join().await.unwrap();
         assert!(
             events.try_recv().is_err(),
             "the durable notice reports only once"
@@ -429,7 +428,7 @@ async fn a_deferred_sender_notice_is_projected_after_lookup_heals_without_a_reof
     let fixture = NoticeFixture::prepare().await;
     fixture.queue_offer();
     let directory = Arc::new(DeferredDirectory::default());
-    let (calls, stop, mut events, running) = fixture.start(directory.clone()).await;
+    let (calls, group, mut events) = fixture.start(directory.clone()).await;
     directory.attempted.notified().await;
     assert_eq!(
         fixture.status(&calls).await,
@@ -463,6 +462,6 @@ async fn a_deferred_sender_notice_is_projected_after_lookup_heals_without_a_reof
         fixture.notice.message_id
     );
     assert_eq!(fixture.status(&calls).await, fixture.projected_status());
-    stop.send_replace(true);
-    running.await.unwrap();
+    group.request_stop();
+    group.join().await.unwrap();
 }

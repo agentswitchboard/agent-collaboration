@@ -4,12 +4,15 @@ use central_link_client::{
     AdmittedConnection, ConnectionAttempt, LinkLaneEvent, LinkLocalFault, ReadyLinkLane,
 };
 use central_link_protocol::DeliveryMessage;
-use std::sync::Arc;
+use std::{future::Future, sync::Arc};
 use switchboard_machine_core_store::InboxDecision;
 use tokio::sync::{Mutex, mpsc, watch};
 use workspace_model::central_mail::MessageBody;
 
-use crate::recipient_inbox::{InboxCustodyError, InboxOfferResult, RecipientInbox};
+use crate::{
+    custody_run_group::{CustodyRunState, wait_for_stop},
+    recipient_inbox::{InboxCustodyError, InboxOfferResult, RecipientInbox},
+};
 
 pub(crate) type SharedRecipientInbox = Arc<Mutex<RecipientInbox>>;
 
@@ -42,6 +45,7 @@ pub(crate) fn admitted_for(lane: &dyn ReadyLinkLane) -> Option<AdmittedConnectio
 pub(crate) async fn take_event(
     inbox: &SharedRecipientInbox,
     event: Option<LinkLaneEvent>,
+    stop: impl Future<Output = ()>,
 ) -> Result<TakenEvent, InboxCustodyError> {
     let observation = match event {
         Some(
@@ -62,7 +66,7 @@ pub(crate) async fn take_event(
             let sender_notice = matches!(offer.message(),
                 DeliveryMessage::System(record) if matches!(record.body, MessageBody::DeliveryOutcome { .. }));
             let first_offer = inbox.lock().await.start_offer(offer, arrived_at)?;
-            let kept = RecipientInbox::keep_shared_offer(inbox, first_offer).await?;
+            let kept = RecipientInbox::keep_shared_offer(inbox, first_offer, stop).await?;
             let accepted = matches!(
                 kept,
                 InboxOfferResult::Recorded {
@@ -86,40 +90,47 @@ pub(crate) async fn take_event(
     })
 }
 
+enum OfferInput {
+    Event(Option<LinkLaneEvent>),
+    Retry(Option<()>),
+}
+
 pub(crate) async fn run_offer_taker(
     lane: Arc<dyn ReadyLinkLane>,
     inbox: SharedRecipientInbox,
-    mut stop: watch::Receiver<bool>,
-    retries: mpsc::Receiver<()>,
-    observations: mpsc::UnboundedSender<Result<TakenEvent, InboxCustodyError>>,
-) {
-    tokio::select! {
-        biased;
-        () = async { let _ = stop.wait_for(|stop| *stop).await; } => {}
-        () = consume_offers(lane, inbox, retries, observations) => {}
-    }
-}
-
-async fn consume_offers(
-    lane: Arc<dyn ReadyLinkLane>,
-    inbox: SharedRecipientInbox,
+    mut stop: watch::Receiver<CustodyRunState>,
     mut retries: mpsc::Receiver<()>,
     observations: mpsc::UnboundedSender<Result<TakenEvent, InboxCustodyError>>,
 ) {
     let mut lane_open = true;
     loop {
-        let taken = tokio::select! {
-            event = lane.next_event(), if lane_open => {
-                lane_open = event.is_some();
-                take_event(&inbox, event).await
-            }
-            requested = retries.recv() => {
-                if requested.is_none() {
-                    return;
+        // Stop can interrupt input and lookup waits. The inbox owns the
+        // boundary after which a durable keep runs to completion.
+        let input = tokio::select! {
+            biased;
+            () = wait_for_stop(&mut stop) => return,
+            input = async {
+                tokio::select! {
+                    event = lane.next_event(), if lane_open => OfferInput::Event(event),
+                    retry = retries.recv() => OfferInput::Retry(retry),
                 }
+            } => input,
+        };
+        let taken = match input {
+            OfferInput::Event(event) => {
+                lane_open = event.is_some();
+                take_event(&inbox, event, wait_for_stop(&mut stop)).await
+            }
+            OfferInput::Retry(None) => return,
+            OfferInput::Retry(Some(())) => {
                 let offered = inbox.lock().await.take_uncommitted();
                 for offer in offered.into_values() {
-                    if let Err(error) = RecipientInbox::keep_shared_offer(&inbox, offer).await
+                    if stop.borrow().stopped {
+                        return;
+                    }
+                    if let Err(error) =
+                        RecipientInbox::keep_shared_offer(&inbox, offer, wait_for_stop(&mut stop))
+                            .await
                         && observations.send(Err(error)).is_err()
                     {
                         return;

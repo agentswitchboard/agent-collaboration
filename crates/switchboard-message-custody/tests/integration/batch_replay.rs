@@ -22,7 +22,10 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     future::Future,
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 use switchboard_machine_core_store::{
@@ -113,6 +116,14 @@ pub(super) struct ScriptedStatusGate {
 pub(super) struct ScriptedBatchGate {
     pub(super) entered: Notify,
     pub(super) release: Notify,
+    crash: AtomicBool,
+}
+
+impl ScriptedBatchGate {
+    pub(super) fn crash_worker(&self) {
+        self.crash.store(true, Ordering::Relaxed);
+        self.release.notify_one();
+    }
 }
 
 pub(super) struct ScriptedBatchLane {
@@ -128,8 +139,27 @@ pub(super) struct ScriptedBatchLane {
     status_answers: Mutex<Vec<(Caller, RequestStatusQuery, RequestStatusAnswer)>>,
     held_status: Mutex<Option<Arc<ScriptedStatusGate>>>,
     held_batch: Mutex<Option<Arc<ScriptedBatchGate>>>,
+    held_immediate: Mutex<Option<Arc<HeldImmediateReply>>>,
     held_receipt_completion: Mutex<Option<oneshot::Receiver<()>>>,
     receipt_commands: watch::Sender<Vec<(ClockInstant, SubmitReceiptsCommand)>>,
+}
+
+pub(super) struct HeldImmediateReply {
+    pub(super) entered: Notify,
+    pub(super) dropping: Notify,
+    pub(super) ended: Notify,
+    pub(super) answer: Notify,
+    release_drop: Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+struct ImmediateReplyLifetime<'gate>(&'gate HeldImmediateReply);
+
+impl Drop for ImmediateReplyLifetime<'_> {
+    fn drop(&mut self) {
+        self.0.dropping.notify_one();
+        let _ = self.0.release_drop.lock().unwrap().recv();
+        self.0.ended.notify_one();
+    }
 }
 
 impl ScriptedBatchLane {
@@ -152,6 +182,7 @@ impl ScriptedBatchLane {
             status_answers: Mutex::new(Vec::new()),
             held_status: Mutex::new(None),
             held_batch: Mutex::new(None),
+            held_immediate: Mutex::new(None),
             held_receipt_completion: Mutex::new(None),
             receipt_commands: watch::channel(Vec::new()).0,
         }
@@ -190,6 +221,27 @@ impl ScriptedBatchLane {
         let gate = Arc::new(ScriptedBatchGate::default());
         *self.held_batch.lock().unwrap() = Some(gate.clone());
         gate
+    }
+
+    pub(super) fn hold_next_immediate_reply(
+        &self,
+    ) -> (Arc<HeldImmediateReply>, std::sync::mpsc::Sender<()>) {
+        let (release, held) = std::sync::mpsc::channel();
+        let gate = Arc::new(HeldImmediateReply {
+            entered: Notify::new(),
+            dropping: Notify::new(),
+            ended: Notify::new(),
+            answer: Notify::new(),
+            release_drop: Mutex::new(held),
+        });
+        assert!(
+            self.held_immediate
+                .lock()
+                .unwrap()
+                .replace(gate.clone())
+                .is_none()
+        );
+        (gate, release)
     }
 
     pub(super) fn hold_next_receipt_completion(&self) -> oneshot::Sender<()> {
@@ -340,6 +392,10 @@ impl ReadyLinkLane for ScriptedBatchLane {
             if let Some(gate) = gate {
                 gate.entered.notify_one();
                 gate.release.notified().await;
+                assert!(
+                    !gate.crash.load(Ordering::Relaxed),
+                    "scripted worker loss with a claimed write frame"
+                );
             }
             disposition
         })
@@ -421,6 +477,16 @@ impl ReadyLinkLane for ScriptedBatchLane {
             .lock()
             .unwrap()
             .push(ScriptedCommand::ImmediateRequest(command));
+        if let Some(gate) = self.held_immediate.lock().unwrap().take() {
+            return Box::pin(async move {
+                let _lifetime = ImmediateReplyLifetime(&gate);
+                gate.entered.notify_one();
+                gate.answer.notified().await;
+                LinkLaneDisposition::NotReached {
+                    cause: UntouchedCommand::ConnectionUnavailable,
+                }
+            });
+        }
         Box::pin(std::future::ready(LinkLaneDisposition::Answered {
             reply,
             accepted_at: self.clock.monotonic_now(),
@@ -556,7 +622,9 @@ async fn check_partial_replay(answers: &[bool]) {
     }
 
     let mut worker = ObservedWorker::start(custody, observed_clock.clone());
-    observed_clock.wait_after(0).await;
+    worker
+        .wait_for_timer(0, ClockInstant::ZERO.after(Duration::from_secs(20)))
+        .await;
     assert!(worker.take_reports().unwrap().answered.is_empty());
     assert!(
         lane.history.lock().unwrap().attempts.is_empty(),

@@ -15,14 +15,12 @@ use switchboard_machine_enrollment::{
     EnrollmentEnd, EnrollmentKey, EnrollmentMetadata, KeyedEnrollment, MachineId, StoreDurability,
     StoredEnrollment,
 };
-use tokio::{
-    sync::{Mutex, mpsc, oneshot, watch},
-    task::JoinHandle,
-};
+use tokio::sync::{mpsc, oneshot, watch};
 
 mod enrollment_row_mapping;
 mod enrollment_status_read;
 mod enrollment_worker;
+mod worker_lifecycle;
 pub use enrollment_status_read::{MachineEnrollmentStatus, read_machine_enrollment_status};
 #[cfg(all(feature = "test-support", debug_assertions))]
 pub mod test_support {
@@ -30,6 +28,10 @@ pub mod test_support {
 }
 
 use enrollment_worker::{EnrollmentWorker, ReadFailure};
+use worker_lifecycle::WorkerLifecycle;
+
+pub use enrollment_worker::EnrollmentWorkerExit;
+pub use worker_lifecycle::{EnrollmentJoin, EnrollmentObservationError};
 
 /// An enrollment store with its own core connection and one FIFO worker.
 #[derive(Clone)]
@@ -37,7 +39,7 @@ pub struct MachineEnrollmentStore {
     requests: mpsc::UnboundedSender<EnrollmentRequest>,
     shutdown: watch::Sender<bool>,
     enrollment_changes: watch::Sender<u64>,
-    worker: Arc<Mutex<WorkerCompletion>>,
+    worker: WorkerLifecycle,
 }
 
 impl MachineEnrollmentStore {
@@ -76,8 +78,7 @@ impl MachineEnrollmentStore {
         let (requests, pending) = mpsc::unbounded_channel();
         let (shutdown, closing) = watch::channel(false);
         let (enrollment_changes, _) = watch::channel(0);
-        let task = tokio::spawn(worker.run(pending, closing, enrollment_changes.clone()));
-        let worker = Arc::new(Mutex::new(WorkerCompletion::Running(task)));
+        let worker = WorkerLifecycle::start(worker, pending, closing, enrollment_changes.clone());
         Self {
             requests,
             shutdown,
@@ -88,11 +89,7 @@ impl MachineEnrollmentStore {
 
     #[cfg(test)]
     fn abort_handle(&self) -> tokio::task::AbortHandle {
-        let worker = self.worker.try_lock().expect("uncontended fixture worker");
-        match &*worker {
-            WorkerCompletion::Running(task) => task.abort_handle(),
-            WorkerCompletion::Closed(_) => panic!("fixture worker already closed"),
-        }
+        self.worker.abort_handle()
     }
 
     /// Tracks enrollment changes from this store's worker.
@@ -100,33 +97,59 @@ impl MachineEnrollmentStore {
         self.enrollment_changes.subscribe()
     }
 
+    /// Stops admitting requests immediately. Repeated calls have no effect.
+    pub fn request_close(&self) {
+        self.shutdown.send_if_modified(|closing| {
+            if *closing {
+                return false;
+            }
+            *closing = true;
+            true
+        });
+    }
+
+    /// Observes the worker task's exit, even while its resources are still
+    /// being reaped. Returns an observation error if the publisher is lost first.
+    pub async fn worker_exit(&self) -> Result<EnrollmentWorkerExit, EnrollmentObservationError> {
+        self.worker.worker_exit().await
+    }
+
+    /// Waits for the worker and its resources to end without requesting close.
+    /// The receipt survives cancellation of earlier waits. An observation error
+    /// leaves the store outstanding with ownership unconfirmed.
+    pub async fn join(&self) -> Result<EnrollmentJoin, EnrollmentObservationError> {
+        self.worker.join().await
+    }
+
     /// Stops admission and waits for the active operation and connection to settle.
     pub async fn close(&self) -> Result<(), EnrollmentStoreCloseError> {
-        self.shutdown.send_replace(true);
-        let mut completion = self.worker.lock().await;
-        let result = match &mut *completion {
-            WorkerCompletion::Running(task) => match task.await {
-                Ok(Ok(())) => Ok(()),
-                Ok(Err(error)) => Err(EnrollmentStoreCloseError::Connection(Arc::new(error))),
-                Err(_) => Err(EnrollmentStoreCloseError::WorkerStopped),
-            },
-            WorkerCompletion::Closed(result) => return result.clone(),
-        };
-        *completion = WorkerCompletion::Closed(result.clone());
-        result
+        self.request_close();
+        self.worker.close_outcome().await
+    }
+
+    fn enqueue_request(
+        &self,
+        request: EnrollmentRequest,
+        definite_error: CredentialStoreError,
+    ) -> Result<(), CredentialStoreError> {
+        // Keep the watch's read guard through the send so request_close cannot
+        // set the stop flag between the check and admission to the queue.
+        let closing = self.shutdown.borrow();
+        if *closing {
+            return Err(definite_error);
+        }
+        self.requests.send(request).map_err(|_| definite_error)
     }
 
     async fn read_enrollment(
         &self,
         key: Option<EnrollmentKey>,
     ) -> Result<KeyedEnrollment, CredentialStoreError> {
-        if *self.shutdown.borrow() {
-            return Err(CredentialStoreError::Read);
-        }
         let (reply, result) = oneshot::channel();
-        self.requests
-            .send(EnrollmentRequest::Read { key, reply })
-            .map_err(|_| CredentialStoreError::Read)?;
+        self.enqueue_request(
+            EnrollmentRequest::Read { key, reply },
+            CredentialStoreError::Read,
+        )?;
         result
             .await
             .map_err(|_| CredentialStoreError::Read)?
@@ -139,19 +162,17 @@ impl MachineEnrollmentStore {
         mutation: EnrollmentMutation,
         definite_error: CredentialStoreError,
     ) -> WriteResult {
-        if *self.shutdown.borrow() {
-            return Err(definite_error);
-        }
         let (reply, result) = oneshot::channel();
         let stage = Arc::new(MutationStage::default());
-        self.requests
-            .send(EnrollmentRequest::Mutate {
+        self.enqueue_request(
+            EnrollmentRequest::Mutate {
                 expected,
                 mutation,
                 reply,
                 stage: Arc::clone(&stage),
-            })
-            .map_err(|_| definite_error)?;
+            },
+            definite_error,
+        )?;
         result
             .await
             .unwrap_or_else(|_| Err(stage.missing_reply(definite_error)))
@@ -178,13 +199,11 @@ impl CredentialStore for MachineEnrollmentStore {
     }
 
     async fn read_metadata(&self) -> Result<EnrollmentMetadata, CredentialStoreError> {
-        if *self.shutdown.borrow() {
-            return Err(CredentialStoreError::Read);
-        }
         let (reply, result) = oneshot::channel();
-        self.requests
-            .send(EnrollmentRequest::ReadMetadata(reply))
-            .map_err(|_| CredentialStoreError::Read)?;
+        self.enqueue_request(
+            EnrollmentRequest::ReadMetadata(reply),
+            CredentialStoreError::Read,
+        )?;
         result
             .await
             .map_err(|_| CredentialStoreError::Read)?
@@ -218,18 +237,13 @@ impl CredentialStore for MachineEnrollmentStore {
     }
 }
 
-/// An enrollment worker or its dedicated database connection could not close.
+/// A failure reported by the enrollment store when reaping its worker and connection.
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum EnrollmentStoreCloseError {
     #[error("the enrollment worker stopped before closing its connection")]
     WorkerStopped,
     #[error("could not close the enrollment database connection")]
     Connection(#[source] Arc<MachineLocalStoreError>),
-}
-
-enum WorkerCompletion {
-    Running(JoinHandle<Result<(), MachineLocalStoreError>>),
-    Closed(Result<(), EnrollmentStoreCloseError>),
 }
 
 type WriteResult = Result<ConditionalWrite, CredentialStoreError>;

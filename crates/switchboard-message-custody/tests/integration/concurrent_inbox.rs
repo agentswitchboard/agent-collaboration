@@ -128,9 +128,10 @@ impl CustodyEventSink for RecordEvents {
 }
 
 #[derive(Default)]
-struct HeldDirectory {
-    entered: Notify,
-    cancelled: Notify,
+pub(super) struct HeldDirectory {
+    pub(super) entered: Notify,
+    pub(super) cancelled: Notify,
+    pub(super) crash: Notify,
 }
 
 struct LookupLifetime<'directory>(&'directory Notify);
@@ -142,6 +143,10 @@ impl Drop for LookupLifetime<'_> {
 }
 
 impl RecipientSessionDirectory for HeldDirectory {
+    #[expect(
+        clippy::panic,
+        reason = "The public group must report an offer taker panic."
+    )]
     fn query_recipient_session<'lookup>(
         &'lookup self,
         _: &'lookup SessionId,
@@ -149,7 +154,8 @@ impl RecipientSessionDirectory for HeldDirectory {
         Box::pin(async move {
             let _lifetime = LookupLifetime(&self.cancelled);
             self.entered.notify_one();
-            std::future::pending().await
+            self.crash.notified().await;
+            panic!("scripted offer taker panic inside the directory lookup");
         })
     }
 }
@@ -244,10 +250,8 @@ async fn an_offline_intake_retry_does_not_delay_receipts_on_a_backwards_welcome(
         outbox,
         inbox,
     );
-    let (stop, stopped) = watch::channel(false);
     let (events, mut observations) = mpsc::unbounded_channel();
-    let (_calls, worker) = custody_task(custody, stopped, Arc::new(RecordEvents(events)));
-    let running = tokio::spawn(worker);
+    let (_calls, group) = custody_task(custody, Arc::new(RecordEvents(events)));
     custody_turns_to_complete(
         clock.not_due_check_now(ClockInstant::ZERO.after(Duration::from_secs(20))),
         "the local intake retry",
@@ -287,8 +291,8 @@ async fn an_offline_intake_retry_does_not_delay_receipts_on_a_backwards_welcome(
             .healthy
             .is_empty()
     );
-    stop.send_replace(true);
-    running.await.unwrap();
+    group.request_stop();
+    group.join().await.unwrap();
 }
 
 #[tokio::test]
@@ -348,10 +352,8 @@ async fn a_held_directory_does_not_block_status_deadlines_or_shutdown() {
         sender: ResolvedSender::Central {},
     };
     lane.push_event(offer);
-    let (stop, stopped) = watch::channel(false);
     let (events, mut observations) = mpsc::unbounded_channel();
-    let (calls, task) = custody_task(custody, stopped, Arc::new(RecordEvents(events)));
-    let running = tokio::spawn(task);
+    let (calls, group) = custody_task(custody, Arc::new(RecordEvents(events)));
     custody_turns_to_complete(directory.entered.notified(), "directory entry").await;
     assert!(
         custody_turns_to_complete(calls.waiting_for_session(session), "the waiting view")
@@ -377,12 +379,21 @@ async fn a_held_directory_does_not_block_status_deadlines_or_shutdown() {
         if matches!(report.ended.as_slice(), [ended] if ended.request_id == item.request
             && ended.reason == OutboxCancellation::NotSentWithin15Minutes)));
     assert!(lane.batch_commands().is_empty());
-    stop.send_replace(true);
-    custody_turns_to_complete(running, "worker shutdown")
+    group.request_stop();
+    custody_turns_to_complete(group.join(), "worker shutdown")
         .await
         .unwrap();
     custody_turns_to_complete(directory.cancelled.notified(), "lookup cancellation").await;
     let mut reopened = InboxStore::new(MachineLocalStore::open(&path).await.unwrap());
+    let interrupted = "019f0000-0000-7000-8000-000000000b23".parse().unwrap();
+    assert!(
+        reopened
+            .message_for(&interrupted)
+            .await
+            .unwrap()
+            .healthy
+            .is_none()
+    );
     assert!(matches!(
         reopened.pending_receipts().await.unwrap().healthy.as_slice(),
         [receipt] if receipt.message_id == owed.message_id
@@ -487,10 +498,8 @@ async fn a_full_offer_queue_is_saved_while_the_senders_status_reply_is_outstandi
         outbox,
         inbox,
     );
-    let (stop, stopped) = watch::channel(false);
     let (events, _observations) = mpsc::unbounded_channel();
-    let (calls, task) = custody_task(custody, stopped, Arc::new(RecordEvents(events)));
-    let running = tokio::spawn(task);
+    let (calls, group) = custody_task(custody, Arc::new(RecordEvents(events)));
     let status = tokio::spawn({
         let calls = calls.clone();
         let caller = Caller::Session(session.clone());
@@ -559,6 +568,6 @@ async fn a_full_offer_queue_is_saved_while_the_senders_status_reply_is_outstandi
     );
     lane.status_gate.send_replace(true);
     assert_eq!(status.await.unwrap(), CustodyRequestStatus::NotFound);
-    stop.send_replace(true);
-    running.await.unwrap();
+    group.request_stop();
+    group.join().await.unwrap();
 }

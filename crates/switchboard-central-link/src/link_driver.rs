@@ -7,12 +7,11 @@ use std::{
 };
 
 use central_link_client::{
-    AdmittedConnection, AttemptOutcome, ClientAction, ClientEvent, ConnectionAttempt, LinkClient,
-    LinkLocalFault, WelcomeClockAnchor, link_frame_write_deadline,
+    AttemptOutcome, ClientAction, ConnectionAttempt, LinkClient, LinkLocalFault,
+    link_frame_write_deadline,
 };
 use central_link_protocol::{
-    DataFrame, FrameDirection, LinkFrame, MachineLinkCloseCode, TokenRenewalResult, decode_text,
-    encode_text,
+    DataFrame, FrameDirection, LinkFrame, MachineLinkCloseCode, encode_text,
 };
 use futures_util::{FutureExt, Sink, SinkExt, Stream};
 use router_clock::{ClockInstant, RuntimeClock};
@@ -23,9 +22,8 @@ use workspace_ids::MachineId;
 
 use crate::{
     AddressError, DialAddress,
-    admitted_lane_policy::SocketReply,
-    admitted_lane_socket::{AdmittedSocketLane, EventPermit, FrameOffer},
-    lane_writer::{FrameWrite, SendFence, write_user_frame},
+    admitted_lane_socket::{AdmittedSocketLane, FrameOffer},
+    lane_writer::{FrameWrite, SendFence, write_fenced_frame},
     lease_source::{LeaseFailure, LeaseFuture, LeaseSource},
     link_lane::LinkLaneOwner,
     link_policy::{DialFailure, LinkEffect, LinkInput, LinkPolicy, LinkState, LinkStatus},
@@ -33,6 +31,9 @@ use crate::{
     socket_upgrade::{MAX_CREDENTIAL_BYTES, MAX_OUTBOUND_TEXT_BYTES},
     wire_write_fence::{LinkConnector, WireWriteFence, default_http_connector},
 };
+
+#[path = "link_driver_receive.rs"]
+mod receive;
 
 const MIN_LEASE_RETRY: Duration = Duration::from_secs(1);
 
@@ -360,10 +361,10 @@ where
                 Err(reason) => return self.interrupted_attempt(&attempt, reason),
             };
             match result {
-                Ok((mut socket, writes)) => {
-                    let done = self
-                        .open_socket(
-                            &mut socket,
+                Ok((socket, writes)) => {
+                    if let Err(reason) = self
+                        .drive_socket(
+                            socket,
                             &attempt,
                             binding,
                             SocketAttemptTiming {
@@ -373,10 +374,8 @@ where
                             control,
                             lane_owner,
                         )
-                        .await;
-                    lane_owner.reject_queued();
-                    finish_socket(&mut socket, &writes);
-                    if let Err(reason) = done {
+                        .await
+                    {
                         return self.interrupted_attempt(&attempt, reason);
                     }
                 }
@@ -408,6 +407,29 @@ where
             });
         }
         Err(reason)
+    }
+
+    async fn drive_socket<Socket>(
+        &mut self,
+        mut socket: Socket,
+        attempt: &ConnectionAttempt,
+        binding: &Binding,
+        timing: SocketAttemptTiming<'_>,
+        control: &mut Control<'_, Binding>,
+        lane_owner: &mut LinkLaneOwner,
+    ) -> Result<(), Interrupted>
+    where
+        Socket: Stream<Item = Result<Message, WebSocketError>>
+            + Sink<Message, Error = WebSocketError>
+            + Unpin,
+    {
+        let writes = timing.writes;
+        let done = self
+            .open_socket(&mut socket, attempt, binding, timing, control, lane_owner)
+            .await;
+        lane_owner.reject_queued();
+        finish_socket(&mut socket, writes);
+        done
     }
 
     async fn open_socket(
@@ -544,18 +566,24 @@ where
                     return Ok(());
                 }
                 SocketInput::Frame(Some(Ok(Message::Text(text))), permit) => {
-                    let Ok(frame) = decode_text(text.as_str(), FrameDirection::ToRouter) else {
-                        self.close(attempt, None);
-                        return Ok(());
-                    };
-                    if !self.receive_frame(
+                    let received = self.receive_text(
                         attempt,
-                        frame,
+                        text.as_str(),
                         timing.started,
                         renewal_sent_at,
                         &mut admitted_lane,
                         permit,
-                    ) {
+                    );
+                    if !self
+                        .complete_receive(
+                            received,
+                            socket,
+                            control,
+                            &mut admitted_lane,
+                            timing.writes,
+                        )
+                        .await?
+                    {
                         self.close(attempt, None);
                         return Ok(());
                     }
@@ -585,7 +613,7 @@ where
                             };
                             let stalled = admitted_lane
                                 .wait_for_delivery_stall(clock.as_ref(), delivery_stall_at);
-                            let writing = control.during(write_user_frame(
+                            let writing = control.during(write_fenced_frame(
                                 socket,
                                 wire,
                                 fence,
@@ -697,146 +725,6 @@ where
                     }
                 }
             }
-        }
-    }
-
-    fn receive_frame(
-        &mut self,
-        attempt: &ConnectionAttempt,
-        frame: LinkFrame,
-        started: ClockInstant,
-        renewal_sent_at: Option<ClockInstant>,
-        admitted_lane: &mut AdmittedSocketLane,
-        permit: Option<EventPermit>,
-    ) -> bool {
-        let reply = match frame {
-            LinkFrame::Data(DataFrame::Reply {
-                correlation_id,
-                result,
-            }) => SocketReply::Request {
-                correlation_id,
-                result,
-            },
-            LinkFrame::Data(DataFrame::RequestStatusReply {
-                correlation_id,
-                result,
-            }) => SocketReply::RequestStatus {
-                correlation_id,
-                result,
-            },
-            LinkFrame::Data(DataFrame::ReceiptResults {
-                correlation_id,
-                results,
-            }) => SocketReply::ReceiptResults {
-                correlation_id,
-                results,
-            },
-            other => {
-                let Ok(event) = self.client.receive(attempt, other) else {
-                    return false;
-                };
-                return self.receive_event(
-                    attempt,
-                    event,
-                    started,
-                    renewal_sent_at,
-                    admitted_lane,
-                    permit,
-                );
-            }
-        };
-        if !admitted_lane.is_admitted() {
-            return false;
-        }
-        let now = self.clock.monotonic_now();
-        if self
-            .state
-            .renewal_deadline()
-            .is_some_and(|deadline| now < deadline)
-        {
-            admitted_lane.reply(attempt, reply, now, self.clock.as_ref());
-        }
-        true
-    }
-
-    fn receive_event(
-        &mut self,
-        attempt: &ConnectionAttempt,
-        event: ClientEvent,
-        started: ClockInstant,
-        renewal_sent_at: Option<ClockInstant>,
-        admitted_lane: &mut AdmittedSocketLane,
-        permit: Option<EventPermit>,
-    ) -> bool {
-        match event {
-            ClientEvent::Welcomed {
-                central_time,
-                effective_expires_at,
-            } => {
-                let lifetime = (effective_expires_at - central_time)
-                    .to_std()
-                    .unwrap_or_default();
-                let now = self.clock.monotonic_now();
-                let accepted = self
-                    .apply(LinkInput::Welcome {
-                        attempt: attempt.clone(),
-                        machine_id: self.machine_id.clone(),
-                        deadline: started.after(lifetime),
-                        now,
-                    })
-                    .is_some();
-                accepted
-                    && (self.state.renewal_deadline().is_none()
-                        || admitted_lane.admit(AdmittedConnection {
-                            connection: attempt.clone(),
-                            clock_anchor: WelcomeClockAnchor {
-                                central_time,
-                                observed_at: now,
-                            },
-                        }))
-            }
-            ClientEvent::TokenRenewal {
-                correlation_id,
-                result,
-            } => {
-                let event = match result {
-                    TokenRenewalResult::Renewed {
-                        central_time,
-                        effective_expires_at,
-                    } => {
-                        let Some(sent_at) = renewal_sent_at else {
-                            return true;
-                        };
-                        let lifetime = (effective_expires_at - central_time)
-                            .to_std()
-                            .unwrap_or_default();
-                        LinkInput::RenewalAccepted {
-                            attempt: attempt.clone(),
-                            correlation_id,
-                            deadline: sent_at.after(lifetime),
-                            now: self.clock.monotonic_now(),
-                        }
-                    }
-                    TokenRenewalResult::Refused { reason } => LinkInput::RenewalRefused {
-                        attempt: attempt.clone(),
-                        correlation_id,
-                        reason,
-                        now: self.clock.monotonic_now(),
-                    },
-                };
-                let _ = self.apply(event);
-                true
-            }
-            event @ ClientEvent::Deliver { .. } => {
-                admitted_lane.deliver(event, permit, self.clock.as_ref())
-            }
-            ClientEvent::Pong => true,
-            // Registered calls remain outside the admitted message lane.
-            ClientEvent::CallMac { .. }
-            | ClientEvent::CentralCallReply { .. }
-            | ClientEvent::ReceiptResults { .. }
-            | ClientEvent::LateReply { .. }
-            | ClientEvent::Reply { .. } => false,
         }
     }
 
