@@ -2,7 +2,7 @@ use switchboard_machine_enrollment::{StoredEnrollment, decode_discovery};
 use tokio::sync::{mpsc, oneshot};
 
 use super::*;
-use crate::tests::Fixture;
+use crate::tests::{Fixture, stop_lease};
 
 struct Script(mpsc::UnboundedSender<oneshot::Sender<Result<DiscoveryAnswer, SignInFailure>>>);
 
@@ -30,6 +30,7 @@ async fn an_external_replacement_supersedes_a_held_discovery_before_it_answers()
         fixture.binding.context.clone(),
         fixture.clock.clone(),
         changes,
+        Arc::new(BTreeSet::new()),
     );
     let work = tokio::spawn(source.run(shutdown));
     let obsolete = discovery_calls.recv().await.unwrap();
@@ -66,7 +67,12 @@ async fn an_external_replacement_supersedes_a_held_discovery_before_it_answers()
     );
     stop.send_replace(true);
     work.await.unwrap();
-    fixture.source.close().await.unwrap();
+    assert_eq!(
+        stop_lease(&fixture.source, fixture.clock.as_ref())
+            .await
+            .worker,
+        Ok(())
+    );
 }
 
 #[tokio::test]
@@ -81,6 +87,7 @@ async fn a_local_change_publishes_an_incompatible_key_without_contacting_discove
         fixture.binding.context.clone(),
         fixture.clock.clone(),
         changes,
+        Arc::new(BTreeSet::new()),
     );
     let work = tokio::spawn(source.run(shutdown));
     let older = discovery_calls.recv().await.unwrap();
@@ -105,7 +112,12 @@ async fn a_local_change_publishes_an_incompatible_key_without_contacting_discove
     assert!(discovery_calls.try_recv().is_err());
     stop.send_replace(true);
     work.await.unwrap();
-    fixture.source.close().await.unwrap();
+    assert_eq!(
+        stop_lease(&fixture.source, fixture.clock.as_ref())
+            .await
+            .worker,
+        Ok(())
+    );
 }
 
 #[test]
@@ -186,6 +198,7 @@ async fn a_metadata_error_starts_unbound_then_preserves_last_publication_after_s
         fixture.binding.context.clone(),
         fixture.clock.clone(),
         changes,
+        Arc::new(BTreeSet::new()),
     );
     let task = tokio::spawn(source.run(shutdown));
     fixture
@@ -219,7 +232,12 @@ async fn a_metadata_error_starts_unbound_then_preserves_last_publication_after_s
 
     stop.send_replace(true);
     task.await.unwrap();
-    fixture.source.close().await.unwrap();
+    assert_eq!(
+        stop_lease(&fixture.source, fixture.clock.as_ref())
+            .await
+            .worker,
+        Ok(())
+    );
 }
 
 struct SettingsFixture {
@@ -241,6 +259,7 @@ impl SettingsFixture {
             fixture.binding.context.clone(),
             fixture.clock.clone(),
             revisions,
+            Arc::new(BTreeSet::new()),
         );
         Self {
             changes,
@@ -295,7 +314,12 @@ async fn observing_replacement_unpublishes_the_old_address_while_discovery_is_he
     assert_eq!(*settings.published.borrow(), unresolved(replacement));
     settings.close().await;
     assert!(held_discovery.is_closed());
-    fixture.source.close().await.unwrap();
+    assert_eq!(
+        stop_lease(&fixture.source, fixture.clock.as_ref())
+            .await
+            .worker,
+        Ok(())
+    );
 }
 
 #[tokio::test]
@@ -322,7 +346,12 @@ async fn a_local_change_during_the_final_read_blocks_the_obsolete_address() {
     assert_eq!(*settings.published.borrow(), unresolved(replacement));
     settings.close().await;
     assert!(held_discovery.is_closed());
-    fixture.source.close().await.unwrap();
+    assert_eq!(
+        stop_lease(&fixture.source, fixture.clock.as_ref())
+            .await
+            .worker,
+        Ok(())
+    );
 }
 
 #[tokio::test]
@@ -345,7 +374,12 @@ async fn a_replacement_seen_on_final_read_is_used_without_a_second_read() {
     assert_eq!(*settings.published.borrow(), unresolved(replacement));
     settings.close().await;
     assert!(held_discovery.unwrap().is_closed());
-    fixture.source.close().await.unwrap();
+    assert_eq!(
+        stop_lease(&fixture.source, fixture.clock.as_ref())
+            .await
+            .worker,
+        Ok(())
+    );
 }
 
 #[tokio::test]
@@ -407,5 +441,10 @@ async fn a_metadata_retry_keeps_the_current_discovery_deadline_but_a_replacement
 
     settings.close().await;
     assert!(replacement_discovery.is_closed());
-    fixture.source.close().await.unwrap();
+    assert_eq!(
+        stop_lease(&fixture.source, fixture.clock.as_ref())
+            .await
+            .worker,
+        Ok(())
+    );
 }

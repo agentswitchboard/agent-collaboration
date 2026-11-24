@@ -19,3 +19,7 @@ tokio.workspace = true
 [dev-dependencies]
 hegel = { package = "hegeltest", version = "=0.52.6", features = ["static-engine"] }
 router-clock = { workspace = true, features = ["test-support"] }
+
+[[test]]
+name = "integration"
+path = "tests/integration/main.rs"
