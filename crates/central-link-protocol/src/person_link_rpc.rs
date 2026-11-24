@@ -3,7 +3,8 @@
 use fleet_identity_protocol::OrganizationId;
 use fleet_rpc::{IndependentReplyRpc, Rpc};
 use serde::{Deserialize, Serialize};
-use workspace_ids::RequestId;
+use workspace_ids::{RequestId, WorkspaceId};
+use workspace_model::{Description, ResourceName};
 
 pub const PERSON_WORKSPACE_PAGE_LIMIT: u16 = 100;
 
@@ -21,7 +22,7 @@ impl Rpc for ListOrganizationWorkspacesRpc {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ListOrganizationWorkspaces {
     pub operation_id: RequestId,
-    pub after: Option<message_board::WorkspaceId>,
+    pub after: Option<WorkspaceId>,
     pub limit: PersonWorkspacePageLimit,
 }
 
@@ -57,14 +58,22 @@ impl From<PersonWorkspacePageLimit> for u16 {
 pub struct OrganizationWorkspacePage {
     pub workspaces: Vec<OrganizationWorkspace>,
     #[serde(deserialize_with = "Option::deserialize")]
-    pub next: Option<message_board::WorkspaceId>,
+    pub next: Option<WorkspaceId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OrganizationWorkspace {
-    pub workspace_id: message_board::WorkspaceId,
-    pub name: message_board::ResourceName,
-    pub description: message_board::Description,
-    pub state: message_board::WorkspaceState,
+    pub workspace_id: WorkspaceId,
+    pub name: ResourceName,
+    pub description: Description,
+    pub state: OrganizationWorkspaceState,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum OrganizationWorkspaceState {
+    Active,
+    Archiving,
+    Archived,
 }

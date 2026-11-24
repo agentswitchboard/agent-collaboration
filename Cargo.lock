@@ -897,7 +897,6 @@ dependencies = [
  "fleet-identity-protocol",
  "fleet-rpc",
  "jsonschema",
- "message-board",
  "schemars 1.2.2",
  "serde",
  "serde_json",

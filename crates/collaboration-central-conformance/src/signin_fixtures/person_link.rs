@@ -276,7 +276,9 @@ pub async fn check_workspace_list(
     use central_link_protocol::{
         CentralLinkRpc, DataFrame, LinkFrame, LinkRequest, ReplyPayload, RequestPayload,
         TypedCallResult,
-        person_link_rpc::{ListOrganizationWorkspaces, ListOrganizationWorkspacesRpc},
+        person_link_rpc::{
+            ListOrganizationWorkspaces, ListOrganizationWorkspacesRpc, OrganizationWorkspaceState,
+        },
     };
     use fleet_rpc::Envelope;
     use workspace_model::{
@@ -286,42 +288,60 @@ pub async fn check_workspace_list(
     let organization = fixture.organization;
     let person = Person::owner(organization, NOW_SECONDS)?;
     install_floors(organization, &post).await?;
-    let create_id = fresh_request_id(NOW_SECONDS)?;
-    let name = "Shared directory person-link workspace";
-    let headers = person.headers(
-        super::CREATE,
-        &super::create_intent(organization, &create_id, name),
-        &fresh_request_id(NOW_SECONDS)?,
-        NOW_SECONDS,
-    )?;
-    expect_http(
-        post(
+    let first = (
+        fresh_request_id(NOW_SECONDS)?,
+        "First person-link workspace",
+    );
+    let second = (
+        fresh_request_id(NOW_SECONDS)?,
+        "Second person-link workspace",
+    );
+    for (create_id, name) in [&first, &second] {
+        let headers = person.headers(
             super::CREATE,
-            &super::create_body(organization, &create_id, name),
-            headers,
-        )
-        .await?,
-        200,
-        "workspace creation",
-    )?;
+            &super::create_intent(organization, create_id, name),
+            &fresh_request_id(NOW_SECONDS)?,
+            NOW_SECONDS,
+        )?;
+        expect_http(
+            post(
+                super::CREATE,
+                &super::create_body(organization, create_id, name),
+                headers,
+            )
+            .await?,
+            200,
+            "workspace creation",
+        )?;
+    }
 
     let mut socket = open_person(&fixture, &person, NOW_SECONDS, 100, 140).await?;
     let operation: workspace_ids::RequestId = fresh_request_id(NOW_SECONDS)?.parse()?;
-    let list = |serial| -> Result<LinkFrame> {
+    let list = |serial, after| -> Result<LinkFrame> {
         Ok(LinkFrame::Data(DataFrame::CallCentral {
             correlation_id: correlation(serial)?,
             request: Box::new(ListOrganizationWorkspacesRpc::request(Envelope {
                 target: organization.to_owned().try_into()?,
                 body: ListOrganizationWorkspaces {
                     operation_id: operation.clone(),
-                    after: None,
-                    limit: 5u16.try_into()?,
+                    after,
+                    limit: 1u16.try_into()?,
                 },
             })),
         }))
     };
-    for serial in [1, 2] {
-        send_frame(&mut socket, list(serial)?).await?;
+    let mut cursor: Option<workspace_ids::WorkspaceId> = None;
+    for (serial, (id, name), expected_next) in [
+        (1, &first, Some(first.0.as_str())),
+        (2, &first, Some(first.0.as_str())),
+        (6, &second, None),
+    ] {
+        let after = if expected_next.is_some() {
+            None
+        } else {
+            cursor.take()
+        };
+        send_frame(&mut socket, list(serial, after)?).await?;
         let LinkFrame::Data(DataFrame::CentralCallReply {
             correlation_id,
             result,
@@ -335,13 +355,21 @@ pub async fn check_workspace_list(
         let answer = ListOrganizationWorkspacesRpc::take_reply(reply).ok_or("wrong list reply")?;
         if correlation_id != correlation(serial)?
             || answer.target.as_str() != organization
-            || !matches!(answer.body.workspaces.as_slice(), [one] if one.name.as_str() == name)
-            || answer.body.next.is_some()
+            || !matches!(answer.body.workspaces.as_slice(), [one]
+                if one.workspace_id.as_str() == id.as_str()
+                    && one.name.as_str() == *name
+                    && one.description.as_str().is_empty()
+                    && one.state == OrganizationWorkspaceState::Active)
+            || answer
+                .body
+                .next
+                .as_ref()
+                .map(workspace_ids::WorkspaceId::as_str)
+                != expected_next
         {
-            return Err(
-                "list did not return the workspace created by the existing admin service".into(),
-            );
+            return Err("list did not return the expected directory row and cursor".into());
         }
+        cursor = answer.body.next;
     }
 
     let machine_id = "019f0000-0000-7000-8000-00000000c808".parse()?;
@@ -388,7 +416,7 @@ pub async fn check_workspace_list(
     ) {
         return Err("machine link did not welcome its own credential".into());
     }
-    send_frame(&mut machine, list(5)?).await?;
+    send_frame(&mut machine, list(5, None)?).await?;
     check_wrong_target(&mut machine, 5).await?;
     expect_pong(&mut machine).await
 }

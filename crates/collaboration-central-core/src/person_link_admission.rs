@@ -4,12 +4,13 @@ use crate::{WorkspaceRuntime, organization_authority_cache::StampStanding};
 use central_link_protocol::{
     CentralLinkRpc, DataFrame, LinkCallRefusal, LinkFrame, TypedCallResult,
     person_link_rpc::{
-        ListOrganizationWorkspacesRpc, OrganizationWorkspace, OrganizationWorkspacePage,
+        ListOrganizationWorkspaces, ListOrganizationWorkspacesRpc, OrganizationWorkspace,
+        OrganizationWorkspacePage, OrganizationWorkspaceState,
     },
 };
 use central_person_link::{PersonFrame, PersonSocketAttachment, dispatch};
 use central_storage::StoreFailure;
-use fleet_runtime_ports::{CentralStore, WorkspaceStores};
+use fleet_runtime_ports::{CentralStore, WorkspaceStores, workspace_decode_error::corrupt};
 use fleet_signin::{
     authorization_floor_store::{read_organization_floor, read_person_floor},
     person_proof::{OrganizationFloor, PersonFloor, PersonRequestRefusal},
@@ -133,29 +134,11 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
                 correlation,
                 request,
             } => {
-                let result = match self
-                    .list_organization_workspaces(
-                        request.body.after.as_ref(),
-                        request.body.limit.into(),
-                    )
-                    .await
-                {
+                let result = match self.read_person_workspace_page(request.body).await {
                     Ok(page) => TypedCallResult::Answered {
                         reply: ListOrganizationWorkspacesRpc::reply(fleet_rpc::Envelope {
                             target: request.target,
-                            body: OrganizationWorkspacePage {
-                                next: page.next,
-                                workspaces: page
-                                    .workspaces
-                                    .into_iter()
-                                    .map(|workspace| OrganizationWorkspace {
-                                        workspace_id: workspace.workspace_id,
-                                        name: workspace.name,
-                                        description: workspace.description,
-                                        state: workspace.state,
-                                    })
-                                    .collect(),
-                            },
+                            body: page,
                         }),
                     },
                     Err(_) => TypedCallResult::Refused {
@@ -167,6 +150,53 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
                     result: Box::new(result),
                 })])
             }
+        })
+    }
+
+    async fn read_person_workspace_page(
+        &self,
+        request: ListOrganizationWorkspaces,
+    ) -> Result<OrganizationWorkspacePage, StoreFailure> {
+        let after = request
+            .after
+            .map(|cursor| message_board::WorkspaceId::try_from(String::from(cursor)))
+            .transpose()
+            .map_err(|_| corrupt("directory_workspaces.workspace_id"))?;
+        let page = self
+            .list_organization_workspaces(after.as_ref(), request.limit.into())
+            .await?;
+        let project_id = |id: message_board::WorkspaceId| {
+            workspace_ids::WorkspaceId::try_from(String::from(id))
+                .map_err(|_| corrupt("directory_workspaces.workspace_id"))
+        };
+        Ok(OrganizationWorkspacePage {
+            next: page.next.map(project_id).transpose()?,
+            workspaces: page
+                .workspaces
+                .into_iter()
+                .map(|workspace| {
+                    Ok(OrganizationWorkspace {
+                        workspace_id: project_id(workspace.workspace_id)?,
+                        name: workspace_model::ResourceName::try_from(String::from(workspace.name))
+                            .map_err(|_| corrupt("directory_workspaces.name"))?,
+                        description: workspace_model::Description::try_from(String::from(
+                            workspace.description,
+                        ))
+                        .map_err(|_| corrupt("directory_workspaces.description"))?,
+                        state: match workspace.state {
+                            message_board::WorkspaceState::Active => {
+                                OrganizationWorkspaceState::Active
+                            }
+                            message_board::WorkspaceState::Archiving => {
+                                OrganizationWorkspaceState::Archiving
+                            }
+                            message_board::WorkspaceState::Archived => {
+                                OrganizationWorkspaceState::Archived
+                            }
+                        },
+                    })
+                })
+                .collect::<Result<_, StoreFailure>>()?,
         })
     }
 }
