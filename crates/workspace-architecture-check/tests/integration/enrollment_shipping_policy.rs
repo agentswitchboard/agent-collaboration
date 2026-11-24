@@ -53,7 +53,7 @@ pub(super) fn check_shipping(root: &Path, workspace: &CargoMetadata) -> PolicyRe
 
 fn resolved_feature_set(name: &str) -> Option<&'static [&'static str]> {
     Some(match name {
-        ENROLLMENT | "router-clock" | "workspace-ids" | "httpdate" => &[],
+        ENROLLMENT | "router-clock" | "state-machine-core" | "workspace-ids" | "httpdate" => &[],
         "futures-util" => &[
             "alloc",
             "futures-io",
@@ -134,7 +134,7 @@ pub(super) fn check_shipping_graph(
         if workspace_members.contains(id)
             && !matches!(
                 package.name.as_str(),
-                ENROLLMENT | "router-clock" | "workspace-ids"
+                ENROLLMENT | "router-clock" | "state-machine-core" | "workspace-ids"
             )
         {
             return Err(format!(

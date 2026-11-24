@@ -16,6 +16,7 @@ reqwest.workspace = true
 router-clock.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+state-machine-core.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 url = { workspace = true, features = ["serde"] }
