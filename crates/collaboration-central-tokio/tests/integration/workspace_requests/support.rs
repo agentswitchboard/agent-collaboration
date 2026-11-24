@@ -32,6 +32,7 @@ pub(super) fn settings(url: &str) -> collaboration_central_core::SignInTrustSett
         issuer: signed::ISSUER.into(),
         audience: signed::AUDIENCE.into(),
         admin_audience: signed::ADMIN_AUDIENCE.into(),
+        person_link_audience: None,
         machine_audience: signed::MACHINE_AUDIENCE.into(),
         public_origin: signed::PUBLIC_ORIGIN.into(),
         jwks_url: url.into(),

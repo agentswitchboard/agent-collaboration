@@ -6,6 +6,7 @@ fn machine_audience_preserves_the_deployments_exact_d08_address() {
         issuer: "https://signin.example.invalid".into(),
         audience: "identity".into(),
         admin_audience: "admin".into(),
+        person_link_audience: None,
         machine_audience: String::new(),
         public_origin: "https://central.example.invalid".into(),
         jwks_url: "https://signin.example.invalid/api/auth/jwks".into(),

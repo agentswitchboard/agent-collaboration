@@ -89,6 +89,7 @@ impl LaunchConfiguration {
                 issuer: arguments.get("issuer")?,
                 audience: arguments.get("audience")?,
                 admin_audience: arguments.get("admin-audience")?,
+                person_link_audience: None,
                 machine_audience: arguments.get("machine-audience")?,
                 public_origin: arguments.get("public-origin")?,
                 jwks_url: arguments.get("jwks-url")?,

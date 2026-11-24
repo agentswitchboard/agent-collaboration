@@ -19,6 +19,15 @@ use std::sync::Arc;
 /// Hosts build one per organization runtime, bound to that organization, the
 /// sign-in issuer and audiences, its published keys and the host's crypto.
 pub trait SignInVerification: fleet_signin::StampVerification + 'static {
+    fn verify_person_link<'a>(
+        &'a self,
+        token: &'a str,
+    ) -> BoxFuture<'a, Result<fleet_signin::person_proof::CheckedPersonLink, PersonRequestRefusal>>
+    {
+        let _ = token;
+        Box::pin(async { Err(PersonRequestRefusal::Audience) })
+    }
+
     fn verify_person_request<'a>(
         &'a self,
         input: &'a PersonRequestInput,
@@ -56,6 +65,7 @@ pub struct SignInVerifiers<Ed, Es, StatementKeys, PersonKeys> {
     pub persons: PersonRequestVerifier<Ed, Es, PersonKeys>,
     pub machines: MachineTokenVerifier<Ed, PersonKeys>,
     pub sign_in_service: Option<message_board::ServiceId>,
+    person_link_audience: Option<String>,
     #[cfg(feature = "test-support")]
     issuer_cache: Arc<fleet_signin::IssuerKeyCache>,
 }
@@ -69,6 +79,7 @@ impl<Ed, Es, StatementKeys, PersonKeys> SignInVerifiers<Ed, Es, StatementKeys, P
         machines: MachineTokenVerifier<Ed, PersonKeys>,
         sign_in_service: Option<message_board::ServiceId>,
         issuer_cache: &Arc<fleet_signin::IssuerKeyCache>,
+        person_link_audience: Option<String>,
     ) -> Self {
         #[cfg(not(feature = "test-support"))]
         let _ = issuer_cache;
@@ -77,6 +88,7 @@ impl<Ed, Es, StatementKeys, PersonKeys> SignInVerifiers<Ed, Es, StatementKeys, P
             persons,
             machines,
             sign_in_service,
+            person_link_audience,
             #[cfg(feature = "test-support")]
             issuer_cache: Arc::clone(issuer_cache),
         }
@@ -126,6 +138,20 @@ where
     StatementKeys: IssuerKeySource + 'static,
     PersonKeys: IssuerKeySource + 'static,
 {
+    fn verify_person_link<'a>(
+        &'a self,
+        token: &'a str,
+    ) -> BoxFuture<'a, Result<fleet_signin::person_proof::CheckedPersonLink, PersonRequestRefusal>>
+    {
+        Box::pin(async move {
+            let audience = self
+                .person_link_audience
+                .as_deref()
+                .ok_or(PersonRequestRefusal::Audience)?;
+            self.persons.verify_person_link(token, audience).await
+        })
+    }
+
     fn verify_person_request<'a>(
         &'a self,
         input: &'a PersonRequestInput,

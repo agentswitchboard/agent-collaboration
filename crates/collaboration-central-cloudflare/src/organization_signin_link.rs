@@ -45,6 +45,7 @@ pub(crate) fn trust_settings(env: &Env) -> worker::Result<Option<SignInTrustSett
     let audience = variable("CENTRAL_SIGN_IN_AUDIENCE")?;
     let jwks_url = variable("CENTRAL_SIGN_IN_JWKS_URL")?;
     let admin_audience = variable("CENTRAL_ADMIN_AUDIENCE")?;
+    let person_link_audience = variable("CENTRAL_PERSON_LINK_AUDIENCE")?;
     let machine_audience = variable("CENTRAL_MACHINE_AUDIENCE")?;
     let public_origin = variable("CENTRAL_PUBLIC_ORIGIN")?;
     let service_id = variable("CENTRAL_SIGN_IN_SERVICE_ID")?;
@@ -53,6 +54,7 @@ pub(crate) fn trust_settings(env: &Env) -> worker::Result<Option<SignInTrustSett
         &audience,
         &jwks_url,
         &admin_audience,
+        &person_link_audience,
         &machine_audience,
         &public_origin,
         &service_id,
@@ -71,6 +73,9 @@ pub(crate) fn trust_settings(env: &Env) -> worker::Result<Option<SignInTrustSett
         issuer: required(issuer)?,
         audience: required(audience)?,
         admin_audience: required(admin_audience)?,
+        person_link_audience: person_link_audience
+            .map(|value| required(Some(value)))
+            .transpose()?,
         machine_audience: required(machine_audience)?,
         public_origin: required(public_origin)?,
         jwks_url: required(jwks_url)?,

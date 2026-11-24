@@ -1,7 +1,7 @@
 //! The bearer exchanged by Sign-in for one person WebSocket upgrade.
 
 use super::{
-    compact_jwt::{CompactJwt, MAX_SAFE_INTEGER, from_json, uuid_v7},
+    compact_jwt::{MAX_SAFE_INTEGER, from_json, uuid_v7},
     refusal::PersonRequestRefusal,
     signed_claims::PersonTokenAudience,
     verifier::{PersonHeaderPolicy, PersonLifetime, PersonProofVerifier, validate_person_lifetime},
@@ -38,19 +38,8 @@ struct PersonLinkClaims {
     second_factor_method: Option<String>,
 }
 
-/// Unsigned input only chooses the verifier. Every trusted claim is read again after signature verification.
-pub fn is_person_link_candidate(token: &str) -> bool {
-    #[derive(Deserialize)]
-    struct ProfileHint {
-        token_profile: String,
-    }
-    CompactJwt::parse(token)
-        .ok()
-        .and_then(|parsed| serde_json::from_slice::<ProfileHint>(&parsed.claims).ok())
-        .is_some_and(|claims| claims.token_profile == PERSON_LINK_PROFILE)
-}
-
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PersonLinkSecondFactor {
     pub at: UnixSeconds,
     pub method: String,
