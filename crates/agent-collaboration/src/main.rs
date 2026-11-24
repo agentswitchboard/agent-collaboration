@@ -45,12 +45,6 @@ fn main() {
     if arguments.first().is_some_and(|arg| arg == "endpoints") {
         std::process::exit(agent_collaboration::run_endpoint_command(arguments));
     }
-    if arguments.first().is_some_and(|arg| arg == "addresses") {
-        std::process::exit(agent_collaboration::run_address_command(arguments));
-    }
-    if arguments.first().is_some_and(|arg| arg == "journal") {
-        std::process::exit(agent_collaboration::run_journal_command(arguments));
-    }
     if arguments
         .first()
         .is_some_and(|arg| arg == "session" || arg == "turn")

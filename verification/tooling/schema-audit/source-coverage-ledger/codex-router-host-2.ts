@@ -16,12 +16,7 @@ export const section: LedgerSection = {
     {
       file: "crates/codex-router-host/src/collaboration_runtime/native_backend.rs",
       disposition: { kind: "sends", owners: ["codex"] },
-      note: "observer opens NativeProtocolConnection::connect to the managed app-server (87), which sends initialize and initialized, then runs NativeObservationStream (104); builds the native schema digest sha256:{hex} by hand (173-178); LifecycleObservation records are typed collaboration_protocol values (209-222,243-249)",
-    },
-    {
-      file: "crates/codex-router-host/src/collaboration_runtime/observation_recheck.rs",
-      disposition: { kind: "none" },
-      note: "observer retry backoff and recheck watch channel (7-96)",
+      note: "Publishes validated native schema and backend availability, and withdraws it at retirement.",
     },
     {
       file: "crates/codex-router-host/src/collaboration_runtime/provider_retention.rs",
@@ -505,30 +500,6 @@ export const section: LedgerSection = {
       coverage: {
         kind: "uncovered",
         reason: "no tap exercises this Host caller; getAuthStatus is in no tap",
-      },
-    },
-    {
-      file: "crates/codex-router-host/src/collaboration_runtime/native_backend.rs",
-      line: 87,
-      edge: "managed-codex",
-      sends: "initialize (NativeProtocolConnection::connect, observer connection)",
-      owner: { crate: "codex-router-host" },
-      origin: "product",
-      coverage: {
-        kind: "uncovered",
-        reason: "no tap opens the Host's native lifecycle observer connection",
-      },
-    },
-    {
-      file: "crates/codex-router-host/src/collaboration_runtime/native_backend.rs",
-      line: 87,
-      edge: "managed-codex",
-      sends: "initialized notification (NativeProtocolConnection::connect, observer connection)",
-      owner: { crate: "codex-router-host" },
-      origin: "product",
-      coverage: {
-        kind: "uncovered",
-        reason: "no tap opens the Host's native lifecycle observer connection",
       },
     },
     {

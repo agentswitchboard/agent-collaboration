@@ -1,6 +1,6 @@
-# Worker startup and observer receipts
+# Worker startup and native publication
 
-Use this split when the caller commissions local-polling Q5. Q5(a) observes the converted workers through a fixture-only Host; it does not start native Codex, real Claude or Cursor. Q5(b), a real native observer connection, stays unverified until the caller supplies a route that excludes existing native account credentials.
+Use this split when the caller commissions local-polling Q5. Q5(a) observes the converted workers through a fixture-only Host; it does not start native Codex, real Claude or Cursor. A separate native readiness journey needs its own declared target and access.
 
 The adopted local-polling Verification Design's Q5 requires owed work from a stopped process to run at startup. An empty-root first-pass/idle observation is the narrower, explicitly commissioned Q5(a) split; it does not by itself establish retained owed-work recovery.
 
@@ -46,13 +46,11 @@ Declare every worker being claimed. With the current private stores opening succ
 
 `startup.json` retains the actual Host identity/publication, fixture receipt, and worker events. `idle.json` requires unchanged worker-loop events over the measured window. This establishes no additional passes in that window. The corresponding absence of store reads for empty-root workers depends on the inspected source path and absence of in-flight units; the driver does not expose a direct SQLite IO counter. Keep that distinction explicit. It does not establish indefinite quiescence or genuine provider cessation.
 
-`native-unavailable.json` reads only this root's backend/observer rows and rejects a native-ready fact on this no-native route. Real observer connection remains unverified here.
+`native-unavailable.json` records the owned Host’s `endpoints_list` reply at both ends of the idle window. Service epoch and identities must match, native readiness must be absent, and the publication sequence must stay fixed.
 
 After the window, the driver settles only its recorded Host, fixture descendants and Router using fresh PID/UID/birth/executable checks. Inspect `worker-startup-result.json`: failure must be null, Host must exit 0, Router must exit 0 or terminate from SIGTERM recorded as sent to its exact PID, no cleanup errors or owned processes may remain, and evidence must survive. The standalone Router serve command has no signal shutdown handler; its actual signal exit remains in the receipt. An interrupted or failed run still keeps its partial evidence and cleanup result. Never signal by process name or remove another root.
 
-## Observer reader and normal owned-runtime preparation
-
-`startup-observation.ts` opens only the selected root's `agent-communication/session-registry.sqlite` read-only. It selects backend facts, preserves exact sequence integers, and requires the latest backend-ready and coverage-restored facts to match the published service epoch and native generation. Backend and observer IDs differ legitimately. Stale epochs/generations, later coverage loss, missing journals and invalid stored facts cannot establish connection. It never reads thread rows into evidence.
+## Normal owned-runtime preparation
 
 The [normal Host startup](../../../../crates/codex-router-host/src/lifecycle_owner.rs) awaits native app-server readiness before constructing collaboration workers. An unusable managed executable fails earlier. Native startup can load persistent account credentials eagerly; the [debug profile projection](../../../../crates/codex-native-integration/src/debug_profile_projection.rs) currently cannot project an ephemeral auth-store override. The caller owns that access decision. Do not redirect Codex home, modify its saved files, or infer that selecting a debug model provider excludes native auth.
 

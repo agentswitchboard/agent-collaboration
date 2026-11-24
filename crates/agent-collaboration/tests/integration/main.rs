@@ -14,7 +14,6 @@ mod delivery_matrix_debug_acceptance;
 mod endpoint_discovery_command;
 mod event_observation_commands;
 mod executable_contract;
-mod journal_read_commands;
 mod native_bridge_command;
 mod native_control_commands;
 mod native_sandbox_access;

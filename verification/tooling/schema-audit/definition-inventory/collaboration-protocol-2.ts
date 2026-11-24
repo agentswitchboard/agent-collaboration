@@ -75,36 +75,6 @@ export const rows: InventoryRow[] = [
     disposition: "boundary-encoding",
   },
   {
-    file: `${P}address_book_contract.rs`,
-    line: 67,
-    owner: "router-vocabulary",
-    kind: "rust-type",
-    defines:
-      "MCP addresses_list AddressPage L67 of AddressEntry L38 with Existence L9, ArchiveState L16, StatusOrdering L23, LifecycleDisposition L30, CoverageState L50, CoverageView L58",
-    usedBy: [
-      { part: "N11" },
-      { crate: "collaboration-service" },
-      { crate: "collaboration-client" },
-    ],
-    duplicateGroup: null,
-    disposition: "boundary-encoding",
-  },
-  {
-    file: `${P}journal_contract.rs`,
-    line: 33,
-    owner: "router-vocabulary",
-    kind: "rust-type",
-    defines:
-      "MCP journal_read / journal_status / addresses_list: JournalPosition L6, JournalBounds L13, LifecycleRecord L22, JournalPage L33, JournalStatus L43, JournalReadParams L49, AddressListParams L59",
-    usedBy: [
-      { part: "N11" },
-      { crate: "collaboration-service" },
-      { crate: "collaboration-client" },
-    ],
-    duplicateGroup: null,
-    disposition: "boundary-encoding",
-  },
-  {
     file: `${P}endpoint_inventory.rs`,
     line: 6,
     owner: "router-vocabulary",

@@ -188,7 +188,7 @@ export const section: LedgerSection = {
     {
       file: "crates/collaboration-mcp/src/mcp_server/session_tools.rs",
       disposition: { kind: "sends", owners: ["mcp"] },
-      note: "Tools installation_show L15 (InstallationIdentity, whose central observation nests board_sync_protocol::FleetLinkRecord: collaboration-protocol installation_peer_identity.rs:31), endpoints_list L26, sessions_list L37 (Claude rejection data json! L46), provider_sessions_list L64, provider_session_inspect L78, session_inspect L92, session_rename L106, turn_interrupt L120, journal_status L134, journal_read L142, addresses_list L157.",
+      note: "Session tools publish installation and endpoint identity, native session list/inspect/rename/interrupt, and provider list/inspect.",
     },
     {
       file: "crates/collaboration-mcp/src/mcp_server/snapshots/main_success_schemas.json",
@@ -375,9 +375,6 @@ export const section: LedgerSection = {
       testFile: N11_TAP,
       cases: ["native_control_tool_to_n10"],
     }),
-    toolReply("session_tools.rs", 134, "journal_status"),
-    toolReply("session_tools.rs", 142, "journal_read"),
-    toolReply("session_tools.rs", 157, "addresses_list"),
     // Caller sites (coordinator ruling): each call in this crate into a library sender that
     // writes on an outside edge is its own row. Writers: collaboration-client AcpConversation
     // (acp_conversation.rs, acp_session_setup.rs) toward the Codex ACP adapter (N8);

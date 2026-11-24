@@ -36,6 +36,8 @@ const RETIRED_COMMAND_GROUPS: &[&str] = &[
     "show",
     "approval",
     "question",
+    "journal",
+    "addresses",
 ];
 
 const NOT_AVAILABLE: &str = "not available in this build";

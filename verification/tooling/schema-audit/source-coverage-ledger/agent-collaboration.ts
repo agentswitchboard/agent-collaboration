@@ -1,24 +1,8 @@
-import type { LedgerSection, SendSite } from "../schema-audit-types.ts";
+import type { LedgerSection } from "../schema-audit-types.ts";
 // Left out by name only: 12 colocated unit-test files (*_test.rs, *_tests.rs). Part 1 of 2 by path order (acp_stdio_bridge.rs to claude_terminal_test_harness.rs); part 2 is agent-collaboration-2.ts.
 
 const CLI_CALLER_REASON =
   "Caller of a collaboration-client method whose tools/call is posted by api_connection.rs:141; no node tap records frames from CLI callers (the N11 tap posts its own request).";
-const AC = "crates/agent-collaboration/src/";
-/** One CLI call into a CollaborationClient method that posts one MCP tools/call; tool defaults to the method name (verified in collaboration-client). */
-const cliToolCall = (
-  file: string,
-  line: number,
-  method: string,
-  tool: string = method,
-): SendSite => ({
-  file,
-  line,
-  edge: "mcp",
-  sends: `tools/call ${tool} via CollaborationClient::${method}`,
-  owner: { crate: "agent-collaboration" },
-  origin: "product",
-  coverage: { kind: "uncovered", reason: CLI_CALLER_REASON },
-});
 
 export const section: LedgerSection = {
   root: "crates/agent-collaboration",
@@ -27,11 +11,6 @@ export const section: LedgerSection = {
       file: "crates/agent-collaboration/src/acp_stdio_bridge.rs",
       disposition: { kind: "sends", owners: ["acp"] },
       note: "agent-collaboration acp: forward_json_lines L95 copies newline-delimited ACP frames byte for byte (writer.write_all L123, 64 MiB FRAME_LIMIT L7) in both directions: stdin to the endpoint's ACP carrier (L79, the outside-edge write) and carrier to stdout (L80, the ACP client that launched the bridge reads it, as native_stdio_bridge.rs:150 lists its stdout direction; send site at L80). Never parses ids, initializes or answers callbacks (L121).",
-    },
-    {
-      file: "crates/agent-collaboration/src/address_book_commands.rs",
-      disposition: { kind: "none" },
-      note: "addresses list: clap AddressArguments L17 / AddressCommand L22; calls client.list_addresses L91 and prints the typed snapshot through result_envelope(json!(snapshot)) L102 (plain serialization of one type) or text L105-L125. No hand-built or hand-converted message shape.",
     },
     {
       file: "crates/agent-collaboration/src/automation_argument_feedback.rs",
@@ -130,6 +109,5 @@ export const section: LedgerSection = {
           "tests/integration/acp_bridge_command.rs:26 checks the relay byte for byte, but no node tap records the relayed frames; the acp_carrier_tool_to_n8 tap goes through collaboration-client, not this bridge.",
       },
     },
-    cliToolCall(`${AC}address_book_commands.rs`, 91, "list_addresses", "addresses_list"),
   ],
 };

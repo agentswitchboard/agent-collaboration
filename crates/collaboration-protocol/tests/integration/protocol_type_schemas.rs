@@ -27,42 +27,6 @@ fn endpoint_schema_matches_runtime_ascii_identity_boundaries() {
 }
 
 #[test]
-fn journal_schema_rejects_unsafe_positions_and_unknown_fields() {
-    let schemas = protocol_type_schemas().unwrap_or_else(|error| panic!("schemas: {error}"));
-    let schema = schemas
-        .get("JournalPage")
-        .unwrap_or_else(|| panic!("journal schema"));
-    let validator =
-        jsonschema::validator_for(schema).unwrap_or_else(|error| panic!("validator: {error}"));
-    let id = "00000000-0000-4000-8000-000000000001";
-    let mut page = json!({"bounds":{"journalId":id,"earliestSequence":1,"lastSequence":0},"records":[],"next":{"journalId":id,"sequence":0},"caughtUp":true});
-    assert!(validator.is_valid(&page));
-    page["bounds"]["lastSequence"] = json!(9007199254740992_u64);
-    assert!(!validator.is_valid(&page));
-    page["bounds"]["lastSequence"] = json!(0);
-    page["surprise"] = json!(true);
-    assert!(!validator.is_valid(&page));
-}
-
-#[test]
-fn snapshot_schema_preserves_required_nullable_coverage_fields() {
-    let schemas = protocol_type_schemas().unwrap_or_else(|error| panic!("schemas: {error}"));
-    let schema = schemas
-        .get("AddressPage")
-        .unwrap_or_else(|| panic!("address schema"));
-    let validator =
-        jsonschema::validator_for(schema).unwrap_or_else(|error| panic!("validator: {error}"));
-    let id = "00000000-0000-4000-8000-000000000001";
-    let mut snapshot = json!({"snapshotId":id,"capturedAt":"2026-09-05T12:00:00Z","watermark":{"journalId":id,"sequence":0},"coverage":{"endpoint":{"serviceId":id,"endpointId":"codex-local"},"observerId":null,"generation":null,"state":"initializing","observedAt":"2026-09-05T12:00:00Z"},"entries":[],"nextCursor":null});
-    assert!(validator.is_valid(&snapshot));
-    snapshot["coverage"]
-        .as_object_mut()
-        .unwrap_or_else(|| panic!("coverage object"))
-        .remove("generation");
-    assert!(!validator.is_valid(&snapshot));
-}
-
-#[test]
 fn permission_diagnostic_schema_exposes_closed_agent_recovery_contract() {
     let schemas = protocol_type_schemas().unwrap_or_else(|error| panic!("schemas: {error}"));
     let schema = schemas

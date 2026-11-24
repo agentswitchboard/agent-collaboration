@@ -4,6 +4,7 @@ import {
   inspectWorkerStartup,
   readWorkerEvents,
   requireIdleWorkerLog,
+  requireNativeUnavailable,
 } from "./worker-startup-evidence.ts";
 
 const pass = '2026-11-08T20:00:00Z DEBUG worker_loop: pass started worker="push hand-off"';
@@ -69,5 +70,35 @@ test("the idle check rejects even one additional pass and a truncated or rewritt
         after: readWorkerEvents(`${pass.replace("20:00:00", "20:00:02")}\n${sleep}`),
       }),
     /idle window/,
+  );
+});
+
+test("native absence uses this Host's actual publication, including its generation", (): void => {
+  const expected = { serviceId: "fixture-service", serviceEpoch: "fixture-epoch" };
+  const native = {
+    endpoint: { serviceId: expected.serviceId, endpointId: "codex-local" },
+    availability: { state: "unprobed" },
+    channels: [{ kind: "nativeCodex", generation: null }],
+  };
+  const inventory = { serviceEpoch: expected.serviceEpoch, sequence: 3n, endpoints: [native] };
+  assert.equal(requireNativeUnavailable(inventory, expected).sequence, 3n);
+  assert.throws(
+    () => requireNativeUnavailable({ ...inventory, serviceEpoch: "stale-epoch" }, expected),
+    /different Host/,
+  );
+  const ready = { ...native, availability: { state: "available" } };
+  assert.throws(
+    () => requireNativeUnavailable({ ...inventory, endpoints: [ready] }, expected),
+    /native backend became ready/,
+  );
+  const readyGeneration = {
+    ...native,
+    channels: [
+      { kind: "nativeCodex", generation: { serviceEpoch: expected.serviceEpoch, generation: 1n } },
+    ],
+  };
+  assert.throws(
+    () => requireNativeUnavailable({ ...inventory, endpoints: [readyGeneration] }, expected),
+    /native backend became ready/,
   );
 });

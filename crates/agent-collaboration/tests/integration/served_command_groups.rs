@@ -1,9 +1,9 @@
-//! Compiled CLI journal and native command groups over the served API.
+//! Compiled CLI native command groups over the served API.
 
 use collaboration_mcp::test_support::ServedCollaborationApi;
 use collaboration_service::ApplicationFixture;
 use serde_json::{Value, json};
-use std::{os::unix::fs::PermissionsExt, path::Path, sync::Arc};
+use std::{os::unix::fs::PermissionsExt, path::Path};
 
 const SERVICE_ID: &str = "00000000-0000-4000-8000-000000000301";
 const SERVICE_EPOCH: &str = "00000000-0000-4000-8000-000000000302";
@@ -12,7 +12,6 @@ const CALLER_SESSION_ID: &str = "served-command-caller";
 struct ServedFixture {
     directory: tempfile::TempDir,
     served: ServedCollaborationApi,
-    journal: Arc<lifecycle_observation::LifecycleStore>,
 }
 
 impl ServedFixture {
@@ -20,21 +19,11 @@ impl ServedFixture {
         clippy::expect_used,
         reason = "Invalid test fixtures must fail immediately instead of masking the failed setup."
     )]
-    /// An application with a lifecycle journal and a declared Codex endpoint.
-    async fn start() -> Self {
+    /// An application with a declared Codex endpoint.
+    fn start() -> Self {
         let directory = tempfile::tempdir_in("/tmp").expect("service directory");
         std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
             .expect("private service directory");
-        let journal = lifecycle_observation::ObservationJournal::open(
-            &directory.path().join("session-registry.sqlite"),
-            "00000000-0000-4000-8000-000000000303"
-                .to_owned()
-                .try_into()
-                .expect("journal identity"),
-        )
-        .await
-        .expect("journal");
-        let journal = Arc::new(lifecycle_observation::LifecycleStore::new(journal));
         let description = serde_json::from_value(json!({
             "endpoint":codex_endpoint(),"label":"Codex fixture",
             "availability":{"state":"available","observedAt":"2026-10-08T00:00:00Z"},
@@ -45,15 +34,10 @@ impl ServedFixture {
         let identity = ApplicationFixture::new(SERVICE_ID, SERVICE_EPOCH)
             .expect("service identity")
             .with_endpoints(vec![description])
-            .expect("endpoint inventory")
-            .with_journal(Arc::clone(&journal));
+            .expect("endpoint inventory");
         let served = ServedCollaborationApi::start(directory.path(), (identity).build())
             .expect("served collaboration API");
-        Self {
-            directory,
-            served,
-            journal,
-        }
+        Self { directory, served }
     }
 
     fn path(&self) -> &Path {
@@ -66,9 +50,6 @@ impl ServedFixture {
     )]
     async fn finish(self) {
         self.served.stop().await.expect("collaboration API stops");
-        if let Ok(journal) = Arc::try_unwrap(self.journal) {
-            journal.close().await;
-        }
     }
 }
 
@@ -134,19 +115,8 @@ async fn run_json(directory: &Path, arguments: &[&str]) -> (Option<i32>, Value) 
 }
 
 #[tokio::test]
-async fn journal_reads_through_the_served_api() {
-    let fixture = ServedFixture::start().await;
-
-    let (status, journal) = run_finite(fixture.path(), &["journal", "status"]).await;
-    assert_eq!(status, Some(0), "{journal}");
-    assert_eq!(journal["kind"], "result", "{journal}");
-
-    fixture.finish().await;
-}
-
-#[tokio::test]
 async fn native_session_commands_refuse_an_endpoint_without_a_native_route() {
-    let fixture = ServedFixture::start().await;
+    let fixture = ServedFixture::start();
 
     let (status, renamed) = run_finite(
         fixture.path(),

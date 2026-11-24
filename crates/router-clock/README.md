@@ -4,7 +4,7 @@ One injected object supplies UTC timestamps, elapsed deadlines and waiting. Host
 composition creates it once and passes it to its owners. Consumers that only read
 UTC milliseconds use the same object as `runtime_primitives::Clock`.
 
-This leaf owns time below both collaboration-runtime and lifecycle-observation,
+This leaf owns time below collaboration-runtime,
 so lifecycle retention does not need an upward dependency on collaboration-runtime.
 The upstream Clock contract stays unchanged.
 
