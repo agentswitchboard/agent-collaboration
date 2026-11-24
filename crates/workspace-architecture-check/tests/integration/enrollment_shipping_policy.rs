@@ -95,6 +95,7 @@ fn resolved_feature_set(name: &str) -> Option<&'static [&'static str]> {
             "tokio-macros",
             "windows-sys",
         ],
+        "tracing" => &["std"],
         "url" => &["default", "serde", "std"],
         "uuid" => &["default", "rng", "serde", "sha1", "std", "v5", "v7"],
         "zeroize" => &["alloc", "default"],

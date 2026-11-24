@@ -12,6 +12,60 @@ use crate::{
 
 use super::*;
 
+#[test]
+fn refused_flight_transition_logs_the_tags_and_still_rechecks() {
+    use std::{
+        io::{self, Write},
+        sync::{Arc, Mutex},
+    };
+
+    #[derive(Clone, Default)]
+    struct CapturedTrace(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for CapturedTrace {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0
+                .lock()
+                .map_err(|_| io::Error::other("trace buffer lock poisoned"))?
+                .write(bytes)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let captured = CapturedTrace::default();
+    let subscriber = tracing_subscriber::fmt()
+        .json()
+        .without_time()
+        .with_max_level(tracing::Level::TRACE)
+        .with_writer({
+            let captured = captured.clone();
+            move || captured.clone()
+        })
+        .finish();
+
+    let (fenced, refused) = tracing::subscriber::with_default(subscriber, || {
+        (
+            advance_flight(
+                FlightPhase::Dispatch,
+                RenewalEvent::DispatchChecked { fenced: true },
+            ),
+            advance_flight(FlightPhase::Dispatch, RenewalEvent::RetryElapsed),
+        )
+    });
+
+    assert_eq!(fenced, FlightPhase::Finished(FlightOutcome::Recheck));
+    assert_eq!(refused, FlightPhase::Finished(FlightOutcome::Recheck));
+    let logged = captured.0.lock().unwrap();
+    let event: serde_json::Value =
+        serde_json::from_slice(&logged).expect("only the refused transition should emit an event");
+    assert_eq!(event["level"], "ERROR");
+    assert_eq!(event["fields"]["state"], "dispatch");
+    assert_eq!(event["fields"]["event"], "retryElapsed");
+}
+
 const OLD: &str = "019a0000-0000-7000-8000-000000000002";
 const OTHER: &str = "019a0000-0000-7000-8000-000000000004";
 

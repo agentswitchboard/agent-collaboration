@@ -376,10 +376,18 @@ fn reconcile(
 }
 
 pub(super) fn advance_flight(phase: FlightPhase, event: RenewalEvent<'_>) -> FlightPhase {
-    match RenewalMachine::transition(&RenewalState::Flight(phase), event) {
+    let state = RenewalState::Flight(phase);
+    match RenewalMachine::transition(&state, event) {
         Ok((RenewalState::Flight(next), _)) => next,
         // The driver feeds only the event declared for each phase.
-        Ok((RenewalState::Owner(_), _)) | Err(_) => FlightPhase::Finished(FlightOutcome::Recheck),
+        Ok((RenewalState::Owner(_), _)) | Err(_) => {
+            tracing::error!(
+                state = state.state_tag(),
+                event = event.event_tag(),
+                "unexpected renewal flight transition"
+            );
+            FlightPhase::Finished(FlightOutcome::Recheck)
+        }
     }
 }
 
