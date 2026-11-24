@@ -445,6 +445,7 @@ async fn terminal_refresh_responses_leave_only_the_idempotent_ending() {
             generation: active.generation.successor().expect("terminal generation"),
             why,
             key: key.clone(),
+            deployment: active.context.deployment.clone(),
         };
         // This exact variant carries only the identity, generation and reason.
         assert_eq!(store.snapshot(), marker);

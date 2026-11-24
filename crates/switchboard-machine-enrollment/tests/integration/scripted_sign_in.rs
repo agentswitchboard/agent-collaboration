@@ -412,8 +412,14 @@ impl CredentialStore for ScriptStore {
         expected: BindingGeneration,
         why: EnrollmentEnd,
     ) -> impl Future<Output = Result<ConditionalWrite, CredentialStoreError>> + Send {
-        let snapshot = self.snapshot();
-        let Some((key, generation)) = snapshot.key().zip(expected.successor()) else {
+        let (key, deployment) = match self.snapshot() {
+            StoredEnrollment::Active(binding) => (binding.key(), binding.context.deployment),
+            StoredEnrollment::Ended {
+                key, deployment, ..
+            } => (key, deployment),
+            StoredEnrollment::Empty => return ready(Ok(ConditionalWrite::Superseded)),
+        };
+        let Some(generation) = expected.successor() else {
             return ready(Ok(ConditionalWrite::Superseded));
         };
         ready(Ok(self.write(
@@ -422,6 +428,7 @@ impl CredentialStore for ScriptStore {
                 generation,
                 key,
                 why,
+                deployment,
             },
         )))
     }

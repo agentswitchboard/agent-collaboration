@@ -138,6 +138,7 @@ pub enum StoredEnrollment {
         generation: BindingGeneration,
         why: EnrollmentEnd,
         key: EnrollmentKey,
+        deployment: SignInDeployment,
     },
 }
 
@@ -190,6 +191,7 @@ impl From<StoredEnrollment> for EnrollmentMetadata {
                 key,
                 why,
                 generation,
+                deployment: _,
             } => Self::Ended {
                 key,
                 why,

@@ -12,6 +12,10 @@ pub enum CredentialStoreError {
     Read,
     #[error("the enrollment credential could not be replaced")]
     Replace,
+    #[error(
+        "this machine is enrolled for another organization or sign-in deployment; remove the machine first"
+    )]
+    EnrollmentScopeMismatch,
     #[error("the enrollment credential could not be removed")]
     Remove,
     #[error("the enrollment cleanup deadline elapsed")]
@@ -76,6 +80,7 @@ pub trait CredentialStore: Send + Sync {
     ) -> impl Future<Output = Result<EnrollmentMetadata, CredentialStoreError>> + Send;
 
     /// Atomically commits the complete binding at expected + 1 if expected is current.
+    /// An existing enrollment, including an ending, retains its organization and sign-in deployment.
     fn replace(
         &self,
         expected: BindingGeneration,
