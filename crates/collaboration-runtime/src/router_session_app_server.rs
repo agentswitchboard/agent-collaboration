@@ -133,6 +133,10 @@ enum ThreadMethodError {
     UnavailableThreadOrdering { reason: &'static str },
     #[error("provider session is busy")]
     Busy,
+    #[error("previous turn settlement is unresolved for operation {}", .operation.as_str())]
+    PreviousTurnSettlementUnresolved {
+        operation: collaboration_protocol::OperationId,
+    },
     #[error("invalid thread parameters")]
     InvalidParams,
     #[error("setting context changed")]

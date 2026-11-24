@@ -881,8 +881,13 @@ impl OwnerTransition {
         match self.next.turn() {
             SessionTurn::Idle => Ok(()),
             SessionTurn::Running { turn } | SessionTurn::Cancelling { turn } => {
-                self.end_turn_locally(turn)
+                self.end_turn_locally(turn)?;
+                if let SessionTurn::Settling(settlement) = self.next.turn() {
+                    self.retire_settlement(settlement)?;
+                }
+                Ok(())
             }
+            SessionTurn::Settling(settlement) => self.retire_settlement(settlement),
         }
     }
 

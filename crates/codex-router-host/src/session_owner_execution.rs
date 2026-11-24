@@ -48,6 +48,7 @@ pub struct SessionOwnerExecution {
     publisher: SessionOwnerPublisher,
     calls: Arc<SessionOwnerCalls>,
     tasks: TaskTracker,
+    owner_stopped: CancellationToken,
     opens: Arc<Mutex<HashMap<LoadAttempt, OpenedRestore>>>,
     routes: BTreeMap<SessionGeneration, OwnerRun>,
     created: Option<OwnerOpenedSession>,
@@ -98,6 +99,7 @@ impl SessionOwnerExecution {
             publisher,
             calls,
             tasks,
+            owner_stopped: CancellationToken::new(),
             work_roots,
             opens: Arc::default(),
             routes: BTreeMap::new(),
@@ -533,6 +535,16 @@ impl SessionOwnerPorts for SessionOwnerExecution {
                 Ok(None)
             }
             OwnerEffect::Store(request) => self.storage.execute(owner, request, completions),
+            OwnerEffect::ObserveTurnAdmission { run, settlement } => {
+                self.storage.observe_turn_admission(
+                    owner,
+                    run,
+                    settlement,
+                    completions.clone(),
+                    self.owner_stopped.clone(),
+                )?;
+                Ok(None)
+            }
             OwnerEffect::Wire(SessionWireRequest::Restore { run, via }) => {
                 let result = self.restore(owner, run, via, completions);
                 #[cfg(any(test, feature = "test-support"))]
@@ -818,6 +830,7 @@ impl SessionOwnerPorts for SessionOwnerExecution {
 
 impl Drop for SessionOwnerExecution {
     fn drop(&mut self) {
+        self.owner_stopped.cancel();
         self.storage.stop_dispatch_waits();
         for route in self.routes.values() {
             route.cancel.cancel();

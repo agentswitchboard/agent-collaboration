@@ -290,3 +290,7 @@ mod startup_failure_tests;
 #[cfg(test)]
 #[path = "collaboration_runtime/shutdown_ownership_test.rs"]
 mod shutdown_ownership_tests;
+
+#[cfg(test)]
+#[path = "collaboration_runtime/session_turn_settling_test.rs"]
+mod session_turn_settling_tests;

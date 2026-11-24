@@ -67,7 +67,8 @@ fn report_typed_failure(failure: &ConversationOperationFailure, json_output: boo
         | ConversationOperationFailureKind::ProviderSessionNotFound
         | ConversationOperationFailureKind::ProviderRejected
         | ConversationOperationFailureKind::CannotSteer => 4,
-        ConversationOperationFailureKind::OutcomeUnknown => 5,
+        ConversationOperationFailureKind::OutcomeUnknown
+        | ConversationOperationFailureKind::PreviousTurnSettlementUnresolved => 5,
     };
     let rendered = if json_output {
         serde_json::json!({"kind":"error","error":failure}).to_string()

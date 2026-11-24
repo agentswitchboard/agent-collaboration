@@ -156,6 +156,21 @@ impl Mailbox {
                     }))
             }
             OwnerEffect::Store(request) => self.observe_store(request),
+            OwnerEffect::ObserveTurnAdmission { run, settlement } => {
+                use crate::session_turn_machine::TurnRecordDisposition;
+                self.arrivals.extend(
+                    [
+                        super::TurnAdmissionEvidence::Clear(TurnRecordDisposition::Saved),
+                        super::TurnAdmissionEvidence::Clear(TurnRecordDisposition::AppliedUnsaved),
+                        super::TurnAdmissionEvidence::Fenced(TurnRecordDisposition::Uncertain),
+                    ]
+                    .map(|evidence| OwnerEvent::TurnAdmissionSettled {
+                        run,
+                        settlement,
+                        evidence,
+                    }),
+                );
+            }
             OwnerEffect::DrainCancel(authorization) => {
                 self.arrivals
                     .push(OwnerEvent::Dispatch(DispatchResult::CancelDrainFinished(

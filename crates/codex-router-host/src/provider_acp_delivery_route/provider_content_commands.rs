@@ -24,6 +24,8 @@ pub enum ProviderQueueAdmissionError {
     UnsupportedContent { content_type: &'static str },
     #[error("provider queue is full")]
     Busy,
+    #[error("previous turn settlement is unresolved for operation {operation}")]
+    PreviousTurnSettlementUnresolved { operation: uuid::Uuid },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -95,7 +97,19 @@ impl ProviderAcpDeliveryRoute {
         if !self.serves(&target) {
             return Err(ProviderQueueAdmissionError::SessionNotFound.into());
         }
-        let start_owner = self.supervisor.observe_prompt_start_owner(&target);
+        let operation_id = OperationId::generate();
+        let mut start_owner = self.supervisor.observe_prompt_start_owner(&target);
+        self.supervisor
+            .await_prompt_start_owner(&target, &operation_id, &mut start_owner)
+            .await
+            .map_err(|block| match block {
+                crate::external_provider_supervisor::PromptStartBlock::Fenced(operation) => {
+                    ProviderQueueAdmissionError::PreviousTurnSettlementUnresolved { operation }
+                }
+                crate::external_provider_supervisor::PromptStartBlock::OwnerStopped => {
+                    ProviderQueueAdmissionError::Unavailable
+                }
+            })?;
         match self.claim.claim(&target).await.into_claim() {
             RouteClaim::Holds | RouteClaim::CanLoad => {}
             RouteClaim::Rejected { .. } | RouteClaim::LiveElsewhere { .. } => {
@@ -184,7 +198,7 @@ impl ProviderAcpDeliveryRoute {
         }
         self.supervisor
             .prompt_contents(ProviderPromptContentsRequest {
-                operation_id: OperationId::generate(),
+                operation_id,
                 input_id,
                 target,
                 requested_by: actor,

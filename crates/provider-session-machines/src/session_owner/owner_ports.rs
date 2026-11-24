@@ -7,6 +7,7 @@ use super::{
 use crate::provider_settings_catalog::ProviderSettingsUpdate;
 use crate::session_lifecycle_machine::{CloseAttempt, LoadAttempt};
 use crate::session_setting_machine::{SettingApplication, SettingValueId};
+use crate::session_turn_machine::{TurnRecordDisposition, TurnSettlement};
 use crate::{ProviderSettingKind, ProviderSettingsCatalog};
 use session_event_model::{
     CapabilityReport, SessionEvent, SessionItem, SessionSettings, SessionState, SkillView,
@@ -68,10 +69,29 @@ pub enum OwnerEvent {
         turn: TurnId,
         outcome: session_event_model::TurnOutcome,
     },
+    TurnAdmissionSettled {
+        run: SessionGeneration,
+        settlement: TurnSettlement,
+        evidence: TurnAdmissionEvidence,
+    },
     OutputLimit {
         run: SessionGeneration,
         turn: TurnId,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TurnAdmissionEvidence {
+    Clear(TurnRecordDisposition),
+    Fenced(TurnRecordDisposition),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PromptStartDisposition {
+    Proceed,
+    Hold,
+    Fenced(TurnSettlement),
+    YieldNotice(OwnerInput),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -116,6 +136,7 @@ pub enum RevokeReason {
     EarlierSendInFlight { operation: Uuid },
     RestoreDidNotActivate,
     NotLoaded,
+    NoticeYieldedToPrompt,
     QueueCancelled,
     QueueClosed,
     QueueConnectionLost,
@@ -152,6 +173,7 @@ impl RevokeReason {
                 "the restore did not activate; load or resume this session and retry the input"
             }
             Self::NotLoaded => "session is not loaded; load it or resume it",
+            Self::NoticeYieldedToPrompt => "the session was busy",
             Self::QueueCancelled => "not sent: cancelled from the queue",
             Self::QueueClosed => "not sent: session closed",
             Self::QueueConnectionLost => "not sent: provider connection closed",
@@ -545,6 +567,8 @@ pub struct SessionSnapshot {
     pub owner: OwnerAddress,
     pub lifecycle: SessionLifecycle,
     pub turn: SessionTurn,
+    pub turn_start_fences: Vec<TurnSettlement>,
+    pub unstarted_notice: Option<UnstartedNotice>,
     pub foreground: Option<OwnerInput>,
     pub recent_steer: Option<OwnerInput>,
     pub settings: BTreeMap<ProviderSettingKind, SettingEvidence>,
@@ -558,6 +582,46 @@ pub struct SessionSnapshot {
     pub provider_started_turn: Option<OwnerInput>,
     pub projection: SessionProjection,
     pub queue: Vec<QueueEntrySnapshot>,
+}
+
+impl SessionSnapshot {
+    #[must_use]
+    pub fn prompt_start_disposition(
+        &self,
+        operation: Uuid,
+        direct: bool,
+    ) -> PromptStartDisposition {
+        if self
+            .turn_start_fences
+            .iter()
+            .any(|fence| fence.operation == operation)
+            || matches!(self.turn, SessionTurn::Settling(current) if current.operation == operation)
+        {
+            // An exact retry may replay its own operation through normal admission.
+            return PromptStartDisposition::Proceed;
+        }
+        if let Some(fence) = self.turn_start_fences.first() {
+            return PromptStartDisposition::Fenced(*fence);
+        }
+        if direct && let Some(notice) = &self.unstarted_notice {
+            return match notice {
+                UnstartedNotice::Owned(input) => PromptStartDisposition::YieldNotice(input.clone()),
+                UnstartedNotice::Withdrawing => PromptStartDisposition::Hold,
+            };
+        }
+        match self.turn {
+            SessionTurn::Settling(_) => PromptStartDisposition::Hold,
+            SessionTurn::Idle | SessionTurn::Running { .. } | SessionTurn::Cancelling { .. } => {
+                PromptStartDisposition::Proceed
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum UnstartedNotice {
+    Owned(OwnerInput),
+    Withdrawing,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -638,12 +702,20 @@ pub enum OwnerDeadline {
     RestoreMode(RunAttempt<LoadAttempt>),
     RestoreFastOff(RunAttempt<LoadAttempt>),
     HostPrepare(RunAttempt<LoadAttempt>),
-    DispatchMark { input: OwnerInput },
-    UndoStore { input: OwnerInput },
+    DispatchMark {
+        input: OwnerInput,
+    },
+    UndoStore {
+        input: OwnerInput,
+    },
     Close(RunAttempt<CloseAttempt>),
     SettingWire(OwnerSetting),
     SettingStore(OwnerSetting),
     TerminalStore(TerminalWriteId),
+    SettleTurn {
+        run: SessionGeneration,
+        settlement: TurnSettlement,
+    },
     Enqueue(DispatchAuthorization),
     CancelDrain(DispatchAuthorization),
     CancelConfirmation(DispatchAuthorization),
@@ -683,6 +755,10 @@ pub enum OwnerEffect {
     },
     CallbackMembership(TurnMembership),
     Store(SessionStoreRequest),
+    ObserveTurnAdmission {
+        run: SessionGeneration,
+        settlement: TurnSettlement,
+    },
     PrepareHost {
         run: RunAttempt<LoadAttempt>,
         catalogue: Arc<ProviderSettingsCatalog>,
@@ -776,6 +852,8 @@ pub(in crate::session_owner) struct PendingPorts {
     pub router_auto_requested: bool,
     pub mode_reason: Option<PermissionModeReason>,
     pub last_live_turn: Option<LastLiveTurn>,
+    pub settling_witness: Option<LastLiveTurn>,
+    pub turn_admission: BTreeMap<Uuid, super::owner_reducer::PendingTurnAdmission>,
     pub projection: super::owner_reducer::OwnerProjection,
     pub restore_dependents: BTreeMap<Uuid, RunAttempt<LoadAttempt>>,
     pub create: Option<Uuid>,
@@ -822,6 +900,8 @@ impl PendingPorts {
             router_auto_requested: false,
             mode_reason: None,
             last_live_turn: None,
+            settling_witness: None,
+            turn_admission: BTreeMap::new(),
             projection: super::owner_reducer::OwnerProjection::default(),
             restore_dependents: BTreeMap::new(),
             create: None,

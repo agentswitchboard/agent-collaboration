@@ -261,6 +261,64 @@ fn place_prompt(
 }
 
 #[test]
+fn a_witnessed_turn_leaves_prompt_admission_but_keeps_its_write_custody() {
+    let binding = binding();
+    let session = target(&binding, "scope");
+    let first = OperationId::generate();
+    let second = OperationId::generate();
+    let entry = &prompt_entries(uuid::Uuid::now_v7())[0];
+    let mut index = LiveOperations::default();
+    let holder = place_prompt(&mut index, &binding, &session, &first, entry);
+    holder.admitted();
+    holder.dispatch_marked();
+    let prompt = prompt_request(&second, &session, entry.mode);
+    let load = AdmissionRequest {
+        kind: ProviderOperationKind::ConversationLoad,
+        mode: AdmissionMode::HANDOFF,
+        ..prompt
+    };
+    assert_eq!(
+        index.admission_blockers(&binding, prompt),
+        std::slice::from_ref(&first)
+    );
+    assert_eq!(
+        index.lane_mark_blocker(&binding, prompt),
+        Some(first.clone())
+    );
+
+    assert_eq!(
+        index.turn_record_after_admission_release(&first, &binding.generation, &session),
+        None
+    );
+
+    assert!(index.holds_custody_of(&first));
+    assert!(index.admission_blockers(&binding, prompt).is_empty());
+    assert_eq!(index.lane_mark_blocker(&binding, prompt), None);
+    assert_eq!(
+        index.admission_blockers(&binding, load),
+        std::slice::from_ref(&first)
+    );
+    assert_eq!(index.lane_mark_blocker(&binding, load), Some(first.clone()));
+
+    holder.finish_write(CustodyEnd::Written);
+    LiveOperations::note_turn_record(
+        &holder,
+        &Ok(
+            collaboration_protocol::ConversationOperationSettlement::PromptCompleted {
+                target: session.clone(),
+                stop_reason: collaboration_protocol::ProviderPromptStopReason::EndTurn,
+                response: None,
+            },
+        ),
+    );
+    let _concurrent_result_reader = holder.result.try_lock().expect("hold public result read");
+    assert_eq!(
+        index.turn_record_after_admission_release(&first, &binding.generation, &session),
+        Some(provider_session_machines::session_turn_machine::TurnRecordDisposition::Saved)
+    );
+}
+
+#[test]
 fn the_reservation_class_table_keeps_admission_and_dispatch_holds_distinct() {
     let binding = binding();
     let session = target(&binding, "scope");

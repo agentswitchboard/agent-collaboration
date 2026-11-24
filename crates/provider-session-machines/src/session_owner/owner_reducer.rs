@@ -14,6 +14,7 @@ mod delivery_evidence_effects;
 mod dispatch_effects;
 mod input_effects;
 mod lifecycle_effects;
+mod notice_effects;
 mod provider_started_turn;
 mod queued_dispatch;
 pub(super) use provider_started_turn::PreviousPromptSettlement;
@@ -21,6 +22,8 @@ mod publication_effects;
 mod publication_projection;
 pub(super) use publication_projection::OwnerProjection;
 mod registry_effects;
+mod settlement_effects;
+pub(super) use settlement_effects::PendingTurnAdmission;
 mod setting_effects;
 mod store_effects;
 mod tool_effects;
@@ -46,7 +49,10 @@ impl SessionOwnerState {
         let incarnation_local = event.owner.incarnation == self.ports.address.incarnation
             && matches!(
                 &event.event,
-                OwnerEvent::Store(_) | OwnerEvent::Publication(_) | OwnerEvent::Deadline(_)
+                OwnerEvent::Store(_)
+                    | OwnerEvent::Publication(_)
+                    | OwnerEvent::Deadline(_)
+                    | OwnerEvent::TurnAdmissionSettled { .. }
             );
         if event.owner != self.ports.address && !attaching && !incarnation_local {
             return Err(OwnerRejection::IgnoredLate);
@@ -129,6 +135,11 @@ impl OwnerTransition {
             OwnerEvent::ObservedTurnEnded { run, turn, outcome } => {
                 self.observed_turn_ended(run, turn, outcome)
             }
+            OwnerEvent::TurnAdmissionSettled {
+                run,
+                settlement,
+                evidence,
+            } => self.turn_admission_settled(run, settlement, evidence),
             OwnerEvent::OutputLimit { run, turn } => self.cancel_turn(run, turn),
         }
     }
@@ -151,9 +162,13 @@ impl OwnerTransition {
             SessionOwnerCommand::DependOnRestore { operation, run } => {
                 self.depend_on_restore(operation, run)
             }
-            SessionOwnerCommand::WarmPrompt(input) | SessionOwnerCommand::NoticePrompt(input) => {
-                self.admit_idle_prompt(input)
+            SessionOwnerCommand::WarmPrompt(input) => {
+                self.admit_idle_prompt(input, super::PromptAdmission::Direct)
             }
+            SessionOwnerCommand::NoticePrompt(input) => {
+                self.admit_idle_prompt(input, super::PromptAdmission::Notice)
+            }
+            SessionOwnerCommand::YieldNoticeBeforePrompt(input) => self.yield_notice(input),
             SessionOwnerCommand::Prompt { input, admission } => self.admit_prompt(input, admission),
             SessionOwnerCommand::PromptWithSkills {
                 input,
@@ -326,6 +341,7 @@ impl OwnerTransition {
                     super::SessionTurn::Running { turn }
                     | super::SessionTurn::Cancelling { turn } => Some(turn),
                     super::SessionTurn::Idle => None,
+                    super::SessionTurn::Settling(_) => return,
                 };
                 self.effects.push(OwnerEffect::ForwardTool {
                     run: generation,

@@ -32,6 +32,7 @@ pub use switchboard_harness_contracts::OwnerSetting;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PromptAdmission {
     Direct,
+    Notice,
     Queue,
     Auto { steering_supported: bool },
     DeliveryAuto { steering_supported: bool },
@@ -68,6 +69,7 @@ pub enum SessionOwnerCommand {
     },
     WarmPrompt(OwnerInput),
     NoticePrompt(OwnerInput),
+    YieldNoticeBeforePrompt(OwnerInput),
     Prompt {
         input: OwnerInput,
         admission: PromptAdmission,
@@ -571,6 +573,8 @@ pub enum SessionOwnerRefusal {
     SettingsUnresolved,
     SettingContextChanged,
     InputAlreadyAdmitted,
+    PromptStartHeld,
+    PreviousTurnSettlementUnresolved(crate::session_turn_machine::TurnSettlement),
     EffectInProgress(EffectInProgress),
     SettingEffectInProgress(SettingEffectInProgress),
     CancelTargetInactive,
@@ -649,6 +653,7 @@ pub(in crate::session_owner) enum PendingRestore {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::session_owner) struct PendingPrompt {
     input: OwnerInput,
+    admission: PromptAdmission,
     wait: InputWait,
     choose_steer_if_a_turn_starts: bool,
     queued: bool,

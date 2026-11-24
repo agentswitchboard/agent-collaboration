@@ -172,6 +172,15 @@ impl SessionOwnerPorts for ScenarioPorts {
                     outcome: EffectOutcome::Applied,
                 }))
             }
+            OwnerEffect::ObserveTurnAdmission { run, settlement } => {
+                Some(OwnerEvent::TurnAdmissionSettled {
+                    run,
+                    settlement,
+                    evidence: provider_session_machines::session_owner::TurnAdmissionEvidence::Clear(
+                        provider_session_machines::session_turn_machine::TurnRecordDisposition::Saved,
+                    ),
+                })
+            }
             OwnerEffect::Wire(SessionWireRequest::Restore { run, .. }) => {
                 Some(OwnerEvent::Wire(SessionWireResult::Restore {
                     run,

@@ -624,6 +624,17 @@ impl<P: InteractionPort> SessionOwnerPorts for FixturePorts<P> {
                     outcome: EffectOutcome::Applied,
                 },
             }))),
+            OwnerEffect::ObserveTurnAdmission { run, settlement } => {
+                use provider_session_machines::{
+                    session_owner::TurnAdmissionEvidence,
+                    session_turn_machine::TurnRecordDisposition,
+                };
+                Ok(Some(OwnerEvent::TurnAdmissionSettled {
+                    run,
+                    settlement,
+                    evidence: TurnAdmissionEvidence::Clear(TurnRecordDisposition::Saved),
+                }))
+            }
             OwnerEffect::PrepareRoute(run) => {
                 let pending = lock(&self.restores);
                 let opened = pending

@@ -16,6 +16,7 @@ mod provider_owner_delivery;
 pub use provider_owner_delivery::ManagedClaudeNoticeAdapter;
 mod provider_owner_operations;
 mod provider_owner_prompt;
+pub(crate) use provider_owner_prompt::PromptStartBlock;
 pub(crate) use provider_owner_prompt::{SessionQueuePlan, WarmRun};
 mod provider_prompt_contents;
 pub use provider_prompt_contents::{PromptBusyPolicy, ProviderPromptContentsRequest};
@@ -401,6 +402,7 @@ impl ExternalProviderSupervisor {
             let operations = Arc::downgrade(&live_operations);
             let dispatch_operations = operations.clone();
             let repair_operations = operations.clone();
+            let settling_operations = operations.clone();
             let wake_retention = Arc::clone(&on_custody_end);
             let permit_for_release = Arc::downgrade(&permit);
             let on_custody_end: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
@@ -451,6 +453,20 @@ impl ExternalProviderSupervisor {
                         mode: AdmissionMode::deferred(AdmissionClass::Independent),
                     };
                     index.lane_mark_blocker(&dispatch_binding, request)
+                })
+            });
+            let settling_generation = binding.identity.generation.clone();
+            permit.turn_admission.get_or_init(|| {
+                Arc::new(move |operation, target| {
+                    let index = settling_operations.upgrade()?;
+                    let index = index
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    index.turn_record_after_admission_release(
+                        operation,
+                        &settling_generation,
+                        target,
+                    )
                 })
             });
             owners.install_binding_permit(permit);
@@ -755,10 +771,13 @@ impl SupervisorInner {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             operations.retain_result(operation_id, retention);
+            // Admission evidence must remain readable during an API result read.
+            LiveOperations::note_turn_record(live, &result);
             *result_slot = Some(result);
         }
         drop(result_slot);
         live.changed.notify_waiters();
+        self.wake_operation_eligibility(live);
         self.completions
             .send_modify(|revision| *revision = revision.wrapping_add(1));
         #[cfg(test)]

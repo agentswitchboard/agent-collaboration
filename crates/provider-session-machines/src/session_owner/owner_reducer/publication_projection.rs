@@ -166,7 +166,7 @@ impl OwnerTransition {
                 SessionTurn::Running { turn } | SessionTurn::Cancelling { turn } => {
                     turn != expected
                 }
-                SessionTurn::Idle => true,
+                SessionTurn::Idle | SessionTurn::Settling(_) => true,
             })
         {
             return Err(OwnerRejection::IgnoredLate);

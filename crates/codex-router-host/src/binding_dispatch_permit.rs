@@ -23,12 +23,19 @@ pub(crate) struct BindingUncertainty {
     pub(crate) lane_custody: std::sync::OnceLock<Arc<LaneCustodyLookup>>,
     pub(crate) late_prompt_repair: std::sync::OnceLock<Arc<LatePromptRepairLookup>>,
     pub(crate) live_dispatch_blocker: std::sync::OnceLock<Arc<LiveDispatchBlocker>>,
+    pub(crate) turn_admission: std::sync::OnceLock<Arc<TurnAdmissionProbe>>,
     eligibility: watch::Sender<u64>,
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fixture: crate::binding_store_fixture::BindingStoreFixture,
 }
 
 type LiveDispatchBlocker = dyn Fn(&OperationId, &SessionRef) -> Option<OperationId> + Send + Sync;
+type TurnAdmissionProbe = dyn Fn(
+        &OperationId,
+        &SessionRef,
+    ) -> Option<provider_session_machines::session_turn_machine::TurnRecordDisposition>
+    + Send
+    + Sync;
 
 impl Default for BindingUncertainty {
     fn default() -> Self {
@@ -38,6 +45,7 @@ impl Default for BindingUncertainty {
             lane_custody: Default::default(),
             late_prompt_repair: Default::default(),
             live_dispatch_blocker: Default::default(),
+            turn_admission: Default::default(),
             eligibility: watch::channel(0).0,
             #[cfg(any(test, feature = "test-support"))]
             fixture: Default::default(),

@@ -6,6 +6,13 @@ fn turn(id: u128) -> TurnId {
     TurnId(uuid::Uuid::from_u128(id))
 }
 
+fn settlement(turn: TurnId) -> TurnSettlement {
+    TurnSettlement {
+        turn,
+        operation: turn.0,
+    }
+}
+
 /// Oracle: design note §3.5 and §12.4 (M2).
 #[test]
 fn every_state_event_pair_reaches_exactly_the_declared_edges() {
@@ -14,6 +21,7 @@ fn every_state_event_pair_reaches_exactly_the_declared_edges() {
         SessionTurn::Idle,
         SessionTurn::Running { turn: turn(1) },
         SessionTurn::Cancelling { turn: turn(1) },
+        SessionTurn::Settling(settlement(turn(1))),
     ];
     let events = [
         SessionTurnEvent::PromptStarted { turn: turn(2) },
@@ -24,6 +32,27 @@ fn every_state_event_pair_reaches_exactly_the_declared_edges() {
         SessionTurnEvent::CancelRequested,
         SessionTurnEvent::TurnEnded { turn: turn(1) },
         SessionTurnEvent::TurnEnded { turn: turn(9) },
+        SessionTurnEvent::ProviderEnded(settlement(turn(1))),
+        SessionTurnEvent::ProviderEnded(settlement(turn(9))),
+        SessionTurnEvent::SettlementCleared {
+            settlement: settlement(turn(1)),
+            record: TurnRecordDisposition::Saved,
+        },
+        SessionTurnEvent::SettlementCleared {
+            settlement: settlement(turn(1)),
+            record: TurnRecordDisposition::AppliedUnsaved,
+        },
+        SessionTurnEvent::SettlementCleared {
+            settlement: settlement(turn(1)),
+            record: TurnRecordDisposition::Uncertain,
+        },
+        SessionTurnEvent::SettleDeadlineReached(settlement(turn(1))),
+        SessionTurnEvent::CloseWhileSettling(settlement(turn(1))),
+        SessionTurnEvent::SettlementRetired(settlement(turn(1))),
+        SessionTurnEvent::ProviderStartedSuccessor {
+            previous: settlement(turn(1)),
+            turn: turn(2),
+        },
     ];
     let cases = states
         .into_iter()
@@ -88,7 +117,12 @@ fn any_event_order_ends_each_turn_once(case: hegel::TestCase) {
     let mut ended: Vec<TurnId> = Vec::new();
     let mut minted: u128 = 100;
     for _ in 0..case.draw(gs::integers::<u8>().min_value(1).max_value(60)) {
-        let event = match case.draw(gs::integers::<u8>().max_value(3)) {
+        let current = match state {
+            SessionTurn::Running { turn } | SessionTurn::Cancelling { turn } => settlement(turn),
+            SessionTurn::Settling(current) => current,
+            SessionTurn::Idle => settlement(turn(1)),
+        };
+        let event = match case.draw(gs::integers::<u8>().max_value(10)) {
             0 => {
                 minted += 1;
                 SessionTurnEvent::PromptStarted { turn: turn(minted) }
@@ -97,28 +131,52 @@ fn any_event_order_ends_each_turn_once(case: hegel::TestCase) {
                 agent_steers: case.draw(gs::booleans()),
             },
             2 => SessionTurnEvent::CancelRequested,
-            _ => {
+            3 => {
                 let pick = usize::from(case.draw(gs::integers::<u8>().max_value(8)));
                 SessionTurnEvent::TurnEnded {
                     turn: started.get(pick).copied().unwrap_or(turn(1)),
                 }
             }
+            4 => SessionTurnEvent::ProviderEnded(current),
+            5 => SessionTurnEvent::SettlementCleared {
+                settlement: current,
+                record: TurnRecordDisposition::Saved,
+            },
+            6 => SessionTurnEvent::SettleDeadlineReached(current),
+            7 => SessionTurnEvent::CloseWhileSettling(current),
+            8 => SessionTurnEvent::SettlementRetired(current),
+            9 => {
+                minted += 1;
+                SessionTurnEvent::ProviderStartedSuccessor {
+                    previous: current,
+                    turn: turn(minted),
+                }
+            }
+            _ => SessionTurnEvent::SettlementCleared {
+                settlement: settlement(turn(1)),
+                record: TurnRecordDisposition::Uncertain,
+            },
         };
         let before = state;
         let Ok((next, effects)) = SessionTurnMachine::transition(&state, event) else {
             continue;
         };
-        if let SessionTurnEvent::PromptStarted { turn } = event {
+        if let SessionTurnEvent::PromptStarted { turn }
+        | SessionTurnEvent::ProviderStartedSuccessor { turn, .. } = event
+        {
             started.push(turn);
         }
         for effect in effects {
             match effect {
                 SessionTurnEffect::PublishTurnEnded { turn } => {
-                    assert!(matches!(
-                        before,
-                        SessionTurn::Running { turn: running } | SessionTurn::Cancelling { turn: running }
-                            if running == turn
-                    ));
+                    let ending = match before {
+                        SessionTurn::Running { turn } | SessionTurn::Cancelling { turn } => {
+                            Some(turn)
+                        }
+                        SessionTurn::Settling(settlement) => Some(settlement.turn),
+                        SessionTurn::Idle => None,
+                    };
+                    assert_eq!(ending, Some(turn));
                     assert!(!ended.contains(&turn), "a turn's end was published twice");
                     ended.push(turn);
                 }

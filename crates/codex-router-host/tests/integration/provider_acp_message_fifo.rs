@@ -251,7 +251,7 @@ async fn cursor_queue_drains_after_control_prompt_settles() {
         collaboration_protocol::ConversationPromptRequest {
             delivery: collaboration_protocol::MessageDelivery::Auto,
             input_id: None,
-            operation_id: first_operation_id,
+            operation_id: first_operation_id.clone(),
             target: target.clone(),
             generation: Some(binding.generation.clone()),
             requested_by: (target.clone()).into(),
@@ -313,9 +313,6 @@ async fn cursor_queue_drains_after_control_prompt_settles() {
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].input_id, queued_input_id);
     assert_eq!(listed[0].preview, expected_push_preview);
-    let dispatch_observed =
-        supervisor.observe_queued_dispatch_fixture(&target, &queued_operation_id);
-
     first_event
         .write_all(b"x")
         .await
@@ -323,10 +320,15 @@ async fn cursor_queue_drains_after_control_prompt_settles() {
     terminal_waiting
         .await
         .expect("Control prompt reached its terminal write");
+    assert!(supervisor.queued_during_turn_settlement_fixture(
+        &target,
+        &first_operation_id,
+        &queued_operation_id,
+    ));
     tokio::select! {
         biased;
         early = listener.accept() => panic!("queued delivery reached the wire before the Control settlement: {early:?}"),
-        observed = dispatch_observed => observed.expect("queued delivery offered its mark behind the held terminal write"),
+        () = std::future::ready(()) => {},
     }
     assert!(
         store

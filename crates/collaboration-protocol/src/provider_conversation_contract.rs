@@ -808,6 +808,7 @@ pub enum ConversationOperationFailureKind {
     ProviderRejected,
     ProtocolViolation,
     OutcomeUnknown,
+    PreviousTurnSettlementUnresolved,
     /// The session is in a turn and its agent can't take input mid-turn: the
     /// prompt was not sent, and the caller chooses to queue it or interrupt
     /// the turn (D1 R12).
@@ -821,6 +822,7 @@ pub struct ConversationOperationFailure {
     pub stage: ConversationOperationFailureStage,
     pub effect: ProviderOperationEffect,
     pub message: NonEmptyText,
+    /// For `PreviousTurnSettlementUnresolved`, this identifies the predecessor.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operation_id: Option<OperationId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

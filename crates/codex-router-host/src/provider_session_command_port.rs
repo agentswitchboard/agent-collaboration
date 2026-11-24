@@ -268,6 +268,30 @@ impl SessionCommandPort for HostSessionCommandPort {
         })
     }
 
+    fn before_turn_start(&self, command: SessionTargetCommand) -> CommandFuture<'_, ()> {
+        Box::pin(async move {
+            let target = protocol_session(&command.target)?;
+            let _actor = provider_actor(&command.actor)?;
+            let operation = OperationId::generate();
+            let mut owner = self.supervisor.observe_prompt_start_owner(&target);
+            self.supervisor
+                .await_prompt_start_owner(&target, &operation, &mut owner)
+                .await
+                .map_err(|block| match block {
+                    crate::external_provider_supervisor::PromptStartBlock::Fenced(operation) => {
+                        map_admission_failure(
+                            ProviderQueueAdmissionError::PreviousTurnSettlementUnresolved {
+                                operation,
+                            },
+                        )
+                    }
+                    crate::external_provider_supervisor::PromptStartBlock::OwnerStopped => {
+                        CommandFailure::ProviderFailure
+                    }
+                })
+        })
+    }
+
     fn prompt(&self, command: PromptSessionCommand) -> CommandFuture<'_, SessionTurnHandle> {
         Box::pin(async move {
             let attachment = self
@@ -611,6 +635,11 @@ fn map_admission_failure(error: ProviderQueueAdmissionError) -> CommandFailure {
             CommandFailure::UnsupportedContent(content_type)
         }
         ProviderQueueAdmissionError::Busy => CommandFailure::Busy,
+        ProviderQueueAdmissionError::PreviousTurnSettlementUnresolved { operation } => {
+            OperationId::try_from(operation.to_string())
+                .map(|operation| CommandFailure::PreviousTurnSettlementUnresolved { operation })
+                .unwrap_or(CommandFailure::ProviderFailure)
+        }
         _ => CommandFailure::ProviderFailure,
     }
 }

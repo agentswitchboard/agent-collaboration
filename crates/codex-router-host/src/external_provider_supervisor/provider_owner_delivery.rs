@@ -181,6 +181,9 @@ impl IdleClaudeRun for IdleManagedClaude {
                 return NoticeWriteOutcome::Written { taken_at };
             }
             match accepted {
+                Ok(InputAcceptance::Unsent {
+                    reason: Some(provider_session_machines::session_owner::RevokeReason::NoticeYieldedToPrompt),
+                }) => NoticeWriteOutcome::DefinitelyNotWritten(Busy),
                 Ok(InputAcceptance::Unsent { .. }) => {
                     NoticeWriteOutcome::DefinitelyNotWritten(RejectedBeforeTake)
                 }

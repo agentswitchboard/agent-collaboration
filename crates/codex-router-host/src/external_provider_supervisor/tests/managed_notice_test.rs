@@ -328,7 +328,7 @@ async fn a_taken_notice_turn_gets_the_ordinary_running_refusal_for_a_human_promp
     rig.supervisor.shutdown().await.unwrap();
 }
 
-fn pause_before_owner(
+pub(super) fn pause_before_owner(
     rig: &SteeringSession,
     operation: OperationId,
 ) -> (

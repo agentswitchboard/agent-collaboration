@@ -8,8 +8,9 @@ use provider_session_machines::{
         AuthorizedWork, ConnectionEpoch, CreateProgress, EffectOutcome, OwnerAddress, OwnerEffect,
         OwnerInput, PromptAdmission, PublicationBatch, PublicationResult, SessionOwnerCommand,
         SessionSnapshot, SessionStoreRequest, SessionStoreResult, SessionWireRequest,
+        TurnAdmissionEvidence,
     },
-    session_turn_machine::SessionTurn,
+    session_turn_machine::{SessionTurn, TurnRecordDisposition},
 };
 use session_event_model::{InputId, SessionState, TurnLostReason, TurnOutcome};
 
@@ -62,6 +63,13 @@ impl SessionOwnerPorts for PromptPorts {
                     write,
                     outcome: EffectOutcome::Applied,
                 }))
+            }
+            OwnerEffect::ObserveTurnAdmission { run, settlement } => {
+                Some(OwnerEvent::TurnAdmissionSettled {
+                    run,
+                    settlement,
+                    evidence: TurnAdmissionEvidence::Clear(TurnRecordDisposition::Saved),
+                })
             }
             _ => None,
         })

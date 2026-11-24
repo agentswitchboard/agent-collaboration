@@ -11,6 +11,8 @@ mod owner_history;
 mod owner_notice;
 #[path = "session_owner/owner_property_test.rs"]
 mod owner_property;
+#[path = "session_owner/owner_settlement_test.rs"]
+mod owner_settlement;
 
 fn uuid(number: u64) -> Uuid {
     // Deterministic UUIDv7 inputs keep clock reads out of the property.
@@ -42,21 +44,30 @@ fn decide(state: &SessionOwnerState, event: OwnerEvent) -> SessionOwnerDecision 
 
 fn apply(state: &mut SessionOwnerState, event: OwnerEvent) -> Vec<OwnerEffect> {
     let mut effects = apply_pending(state, event);
-    let writes: Vec<_> = effects
-        .iter()
-        .filter_map(|effect| match effect {
-            OwnerEffect::Store(SessionStoreRequest::RecordTerminal { write, .. }) => Some(*write),
+    let mut next = 0;
+    while let Some(effect) = effects.get(next) {
+        let receipt = match effect {
+            OwnerEffect::Store(SessionStoreRequest::RecordTerminal { write, .. }) => {
+                Some(OwnerEvent::Store(SessionStoreResult::Terminal {
+                    write: *write,
+                    outcome: EffectOutcome::Applied,
+                }))
+            }
+            OwnerEffect::ObserveTurnAdmission { run, settlement } => {
+                Some(OwnerEvent::TurnAdmissionSettled {
+                    run: *run,
+                    settlement: *settlement,
+                    evidence: TurnAdmissionEvidence::Clear(
+                        crate::session_turn_machine::TurnRecordDisposition::Saved,
+                    ),
+                })
+            }
             _ => None,
-        })
-        .collect();
-    for write in writes {
-        effects.extend(apply_pending(
-            state,
-            OwnerEvent::Store(SessionStoreResult::Terminal {
-                write,
-                outcome: EffectOutcome::Applied,
-            }),
-        ));
+        };
+        next += 1;
+        if let Some(receipt) = receipt {
+            effects.extend(apply_pending(state, receipt));
+        }
     }
     effects
 }

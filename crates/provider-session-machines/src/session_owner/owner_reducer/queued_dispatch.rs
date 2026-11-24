@@ -10,6 +10,12 @@ impl OwnerTransition {
             || self.prompt_in_progress()
             || self.next.cell.settings_held()
             || self.next.setting.is_some()
+            || self
+                .next
+                .ports
+                .turn_admission
+                .values()
+                .any(|pending| pending.start_fence().is_some())
         {
             return Ok(());
         }

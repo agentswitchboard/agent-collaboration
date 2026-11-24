@@ -10,13 +10,15 @@ use collaboration_protocol::{
     OperationId, ProviderOperationEffect, ProviderPromptStopReason, ProviderReconciliationState,
 };
 use provider_session_machines::{
-    ProviderSettingKind,
+    ProviderSettingKind, SessionGeneration,
     session_lifecycle_machine::LoadAttempt,
     session_owner::{
         EffectOutcome, OwnerAddress, OwnerEvent, OwnerInput, OwnerSetting, RemoteEffect,
         RestoreDisposition, SessionOwnerReply, SessionStoreRequest, SessionStoreResult,
+        TurnAdmissionEvidence,
     },
     session_setting_machine::SettingApplication,
+    session_turn_machine::TurnSettlement,
 };
 use session_event_model::StopReason;
 use std::{
@@ -38,6 +40,56 @@ pub struct SessionOwnerStorage {
 }
 
 impl SessionOwnerStorage {
+    pub(crate) fn observe_turn_admission(
+        &self,
+        owner: OwnerAddress,
+        run: SessionGeneration,
+        settlement: TurnSettlement,
+        completions: OwnerCompletionPort,
+        owner_stopped: CancellationToken,
+    ) -> Result<(), OwnerTaskError> {
+        if !self.lane.uses_turn_admission_probe() {
+            return Ok(());
+        }
+        let operation = operation_id(settlement.operation)?;
+        let Some(mut changes) = self.lane.subscribe_dispatch_eligibility() else {
+            return Ok(());
+        };
+        let lane = self.lane.clone();
+        // Give the index the owner's exact end witness before any successor
+        // publication, while retaining actual write custody for the probe.
+        let _ = lane.turn_admission_evidence(&operation);
+        self.tasks.spawn(async move {
+            let mut last = None;
+            loop {
+                changes.borrow_and_update();
+                if let Some(evidence) = lane.turn_admission_evidence(&operation)
+                    && last != Some(evidence)
+                {
+                    let event = OwnerEvent::TurnAdmissionSettled {
+                        run,
+                        settlement,
+                        evidence,
+                    };
+                    if completions
+                        .send_stream(owner, event, &owner_stopped)
+                        .await
+                        .is_err()
+                        || matches!(evidence, TurnAdmissionEvidence::Clear(_))
+                    {
+                        return;
+                    }
+                    last = Some(evidence);
+                }
+                tokio::select! {
+                    () = owner_stopped.cancelled() => return,
+                    changed = changes.changed() => if changed.is_err() { return; },
+                }
+            }
+        });
+        Ok(())
+    }
+
     pub fn new(lane: SessionStoreLane, tasks: TaskTracker) -> Self {
         Self {
             lane,
@@ -134,6 +186,12 @@ impl SessionOwnerStorage {
     pub(crate) fn notice_queued_setting(&self) {
         self.lane
             .notice_fixture_wait(crate::binding_store_fixture::BindingFixtureWait::ExplicitSetting);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn notice_turn_start_held(&self) {
+        self.lane
+            .notice_fixture_wait(crate::binding_store_fixture::BindingFixtureWait::TurnStartHeld);
     }
 
     pub fn execute(
@@ -259,13 +317,38 @@ impl SessionOwnerStorage {
                         outcome: EffectOutcome::Applied,
                     })));
                 };
+                #[cfg(any(test, feature = "test-support"))]
+                let fixture = if self.lane.uses_turn_admission_probe() {
+                    None
+                } else {
+                    match *reply {
+                        SessionOwnerReply::PromptCompleted { input, .. }
+                        | SessionOwnerReply::PromptFailed { input, .. }
+                        | SessionOwnerReply::InputFinished { input, .. } => {
+                            Some((input, completions.reserve(address)?))
+                        }
+                        _ => None,
+                    }
+                };
                 self.report(
                     address,
                     || self.lane.offer(owner, request),
                     completions,
-                    move |receipt| SessionStoreResult::Terminal {
-                        write,
-                        outcome: store_effect(receipt),
+                    move |receipt| {
+                        let outcome = store_effect(receipt);
+                        #[cfg(any(test, feature = "test-support"))]
+                        if outcome == EffectOutcome::Applied && let Some((input, completed)) = fixture {
+                            // A standalone fixture has no supervisor custody. Its
+                            // store receipt is the last holder's evidence.
+                            completed.send(OwnerEvent::TurnAdmissionSettled {
+                                run: input.generation,
+                                settlement: TurnSettlement { turn: input.turn, operation: input.operation },
+                                evidence: TurnAdmissionEvidence::Clear(
+                                    provider_session_machines::session_turn_machine::TurnRecordDisposition::Saved,
+                                ),
+                            });
+                        }
+                        SessionStoreResult::Terminal { write, outcome }
                     },
                 )
             }

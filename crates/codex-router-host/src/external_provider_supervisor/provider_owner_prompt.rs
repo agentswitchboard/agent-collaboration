@@ -55,6 +55,50 @@ pub(crate) struct WarmRun {
 }
 
 impl ExternalProviderSupervisor {
+    pub(crate) async fn await_prompt_start_owner(
+        &self,
+        _target: &SessionRef,
+        operation: &OperationId,
+        snapshots: &mut Option<
+            tokio::sync::watch::Receiver<provider_session_machines::session_owner::SessionSnapshot>,
+        >,
+    ) -> Result<(), PromptStartBlock> {
+        use provider_session_machines::session_owner::PromptStartDisposition;
+
+        let Some(owner) = snapshots else {
+            return Ok(());
+        };
+        let id = Uuid::parse_str(operation.as_str()).map_err(|_| PromptStartBlock::OwnerStopped)?;
+        loop {
+            let decision = owner
+                .borrow_and_update()
+                .prompt_start_disposition(id, false);
+            match decision {
+                PromptStartDisposition::Proceed | PromptStartDisposition::YieldNotice(_) => {
+                    return Ok(());
+                }
+                PromptStartDisposition::Fenced(fence) => {
+                    return Err(PromptStartBlock::Fenced(fence.operation));
+                }
+                PromptStartDisposition::Hold => {
+                    #[cfg(test)]
+                    self.inner
+                        .uncertainty
+                        .slot(&_target.endpoint)
+                        .fixture
+                        .waiting(
+                            _target,
+                            crate::binding_store_fixture::BindingFixtureWait::TurnStartHeld,
+                        );
+                    owner
+                        .changed()
+                        .await
+                        .map_err(|_| PromptStartBlock::OwnerStopped)?;
+                }
+            }
+        }
+    }
+
     pub(super) fn owner_prompt(
         &self,
         request: ProviderPromptContentsRequest,
@@ -77,7 +121,24 @@ impl ExternalProviderSupervisor {
                 &request.operation_id,
                 Some(target.clone()),
             )?;
-            let owner = backend.observe_prompt_start_owner(&target);
+            let mut owner = backend.observe_prompt_start_owner(&target);
+            // Placement joins the owner's queue without asking to start now.
+            if request.busy != PromptBusyPolicy::Send(MessageDelivery::Queue) {
+                backend
+                    .await_prompt_start_owner(&target, &request.operation_id, &mut owner)
+                    .await
+                    .map_err(|block| match block {
+                        PromptStartBlock::Fenced(previous) => previous_turn_fence(
+                            previous,
+                            request.operation_id.clone(),
+                            target.clone(),
+                        ),
+                        PromptStartBlock::OwnerStopped => super::unavailable_failure(
+                            request.operation_id.clone(),
+                            Some(target.clone()),
+                        ),
+                    })?;
+            }
             let snapshot = owner.map(|owner| owner.borrow().clone());
             let class = match request.busy {
                 PromptBusyPolicy::RefuseBusy => snapshot
@@ -312,6 +373,26 @@ impl ExternalProviderSupervisor {
                 }
             })
     }
+}
+
+pub(crate) enum PromptStartBlock {
+    Fenced(Uuid),
+    OwnerStopped,
+}
+
+pub(super) fn previous_turn_fence(
+    previous: Uuid,
+    current: OperationId,
+    target: SessionRef,
+) -> ConversationOperationFailure {
+    failure(
+        ConversationOperationFailureKind::PreviousTurnSettlementUnresolved,
+        ConversationOperationFailureStage::Admission,
+        ProviderOperationEffect::None,
+        &format!("previous turn settlement is unresolved for operation {previous}"),
+        OperationId::try_from(previous.to_string()).unwrap_or(current),
+        Some(target),
+    )
 }
 
 pub(super) async fn prompt_failure_answer(

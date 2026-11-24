@@ -51,6 +51,9 @@ impl SessionOwnerState {
                 self.setting == Some((*setting, SettingWait::Store))
             }
             OwnerDeadline::TerminalStore(write) => self.ports.pending_terminal.contains_key(write),
+            OwnerDeadline::SettleTurn { run, settlement } => {
+                self.settling_turn_is(*run, *settlement)
+            }
             OwnerDeadline::Enqueue(key) => self
                 .ports
                 .authorizations
@@ -109,6 +112,13 @@ impl SessionOwnerState {
             owner: self.ports.address,
             lifecycle: self.lifecycle(),
             turn,
+            turn_start_fences: self
+                .ports
+                .turn_admission
+                .values()
+                .filter_map(|pending| pending.start_fence())
+                .collect(),
+            unstarted_notice: self.unstarted_notice(),
             foreground: self
                 .prompts
                 .values()
@@ -193,6 +203,9 @@ impl OwnerTransition {
             }
             OwnerDeadline::TerminalStore(write) => {
                 self.terminal_recorded(write, super::super::EffectOutcome::Unknown)
+            }
+            OwnerDeadline::SettleTurn { run, settlement } => {
+                self.turn_settle_deadline(run, settlement)
             }
             OwnerDeadline::ReadSetup(run) => self.restore_deadline(run, RestoreWait::Setup),
             OwnerDeadline::RestoreWire(run) => self.restore_deadline(run, RestoreWait::Wire),

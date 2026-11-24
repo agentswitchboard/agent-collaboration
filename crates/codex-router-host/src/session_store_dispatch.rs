@@ -8,7 +8,9 @@ use crate::binding_dispatch_permit::{BindingOutcomes, PendingDispatch};
 use crate::binding_dispatch_permit::{BindingUncertainty, lock};
 use crate::provider_operation_custody::LaneWriteCustody;
 use collaboration_protocol::{OperationId, ProviderOperationStage};
-use provider_session_machines::session_owner::{OwnerIncarnation, OwnerInput};
+use provider_session_machines::session_owner::{
+    OwnerIncarnation, OwnerInput, TurnAdmissionEvidence,
+};
 use router_clock::RuntimeClock;
 use std::sync::Arc;
 use switchboard_session_store::ProviderOperationStoreError;
@@ -42,6 +44,29 @@ impl LaneDispatchWrite {
 }
 
 impl SessionStoreLane {
+    pub(crate) fn uses_turn_admission_probe(&self) -> bool {
+        self.inner
+            .binding
+            .get()
+            .is_some_and(|binding| binding.turn_admission.get().is_some())
+    }
+
+    pub(crate) fn turn_admission_evidence(
+        &self,
+        operation: &OperationId,
+    ) -> Option<TurnAdmissionEvidence> {
+        let binding = self.inner.binding.get()?;
+        let record = binding.turn_admission.get()?(operation, &self.inner.target)?;
+        let fenced = lock(binding.outcomes.get()?)
+            .blockers(Some(&self.inner.target), false)
+            .contains(operation);
+        Some(if fenced {
+            TurnAdmissionEvidence::Fenced(record)
+        } else {
+            TurnAdmissionEvidence::Clear(record)
+        })
+    }
+
     pub(crate) fn offer_dispatch(
         &self,
         owner: OwnerIncarnation,

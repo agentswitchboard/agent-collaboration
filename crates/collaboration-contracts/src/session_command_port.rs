@@ -120,6 +120,10 @@ pub enum CommandFailure {
     UnsupportedOperation { operation: &'static str },
     #[error("session is busy")]
     Busy,
+    #[error("previous turn settlement is unresolved for operation {}", .operation.as_str())]
+    PreviousTurnSettlementUnresolved {
+        operation: collaboration_protocol::OperationId,
+    },
     #[error("session has no active turn")]
     NoActiveTurn,
     #[error("session settings are unresolved")]
@@ -169,6 +173,12 @@ impl CommandFailure {
             Kind::Busy => Self::Busy,
             Kind::UnsupportedCapability => Self::Unsupported,
             Kind::SettingsUnresolved => Self::SettingsUnresolved,
+            Kind::PreviousTurnSettlementUnresolved => failure
+                .operation_id
+                .clone()
+                .map_or(Self::ProviderFailure, |operation| {
+                    Self::PreviousTurnSettlementUnresolved { operation }
+                }),
             Kind::InvalidSetting => match &failure.invalid_setting {
                 Some(detail) => Self::InvalidCreateSetting {
                     target: failure.target.clone(),
@@ -194,6 +204,11 @@ impl CommandFailure {
 /// Commands have distinct results and all carry the identity of the caller.
 /// Read-side history and live events belong to the session event hub.
 pub trait SessionCommandPort: Send + Sync {
+    /// Consult a resident turn owner before resolving provider-specific inputs.
+    fn before_turn_start(&self, _command: SessionTargetCommand) -> CommandFuture<'_, ()> {
+        Box::pin(async { Ok(()) })
+    }
+
     fn create(&self, command: CreateSessionCommand) -> CommandFuture<'_, SessionRef>;
     /// Activates a stored Session after resetting the hub's replay epoch.
     fn load_session(&self, command: SessionTargetCommand) -> CommandFuture<'_, ()>;

@@ -24,7 +24,7 @@ use crate::session_setting_machine::{
 };
 use crate::session_turn_machine::{
     SessionTurn, SessionTurnEffect, SessionTurnEvent, SessionTurnMachine, SessionTurnRefusal,
-    TurnId,
+    TurnId, TurnRecordDisposition, TurnSettlement,
 };
 use state_machine_core::{
     EventTag, RefusalTag, StateMachine, StateMachineResult, StateTag, Transition, TransitionError,
@@ -213,6 +213,20 @@ pub enum SessionCellEvent {
         turn: TurnId,
         outcome: SentOutcome,
     },
+    ProviderEnded {
+        settlement: TurnSettlement,
+        outcome: SentOutcome,
+    },
+    SettlementCleared {
+        settlement: TurnSettlement,
+        record: TurnRecordDisposition,
+    },
+    SettleDeadlineReached(TurnSettlement),
+    SettlementRetired(TurnSettlement),
+    ProviderStartedSuccessor {
+        previous: TurnSettlement,
+        turn: TurnId,
+    },
     #[cfg(test)]
     Stop,
     /// The provider connection ended: its lines end.
@@ -317,6 +331,11 @@ impl EventTag for SessionCellEvent {
             Self::SteerRequested { .. } => "steer_requested",
             Self::CancelTurn => "cancel_turn",
             Self::TurnEnded { .. } => "turn_ended",
+            Self::ProviderEnded { .. } => "provider_ended",
+            Self::SettlementCleared { .. } => "settlement_cleared",
+            Self::SettleDeadlineReached(_) => "settle_deadline_reached",
+            Self::SettlementRetired(_) => "settlement_retired",
+            Self::ProviderStartedSuccessor { .. } => "provider_started_successor",
             #[cfg(test)]
             Self::Stop => "stop",
             #[cfg(test)]
@@ -388,9 +407,15 @@ fn lifecycle_move(
                 end_line(&mut next, NotSentReason::SessionClosed, &mut effects)
             }
             SessionLifecycleEffect::CancelTurn { .. } => {
-                if let Ok((turn, more)) =
-                    SessionTurnMachine::transition(&next.turn, SessionTurnEvent::CancelRequested)
-                {
+                let cancel = match next.turn {
+                    SessionTurn::Settling(settlement) => {
+                        SessionTurnEvent::CloseWhileSettling(settlement)
+                    }
+                    SessionTurn::Idle
+                    | SessionTurn::Running { .. }
+                    | SessionTurn::Cancelling { .. } => SessionTurnEvent::CancelRequested,
+                };
+                if let Ok((turn, more)) = SessionTurnMachine::transition(&next.turn, cancel) {
                     next.turn = turn;
                     effects.extend(more.into_iter().map(SessionCellEffect::Turn));
                 }
@@ -494,43 +519,69 @@ fn turn_ended(
     turn: TurnId,
     outcome: SentOutcome,
 ) -> StateMachineResult<SessionCellMachine> {
-    let (idle, turn_effects) =
-        SessionTurnMachine::transition(&cell.turn, SessionTurnEvent::TurnEnded { turn })
-            .map_err(|refusal| lift(refusal, SessionCellRefusal::Turn))?;
+    let (mut next, mut effects) = move_turn(cell, SessionTurnEvent::TurnEnded { turn })?;
+    settle_turn_entry(&mut next, turn, outcome, &mut effects);
+    advance_close_after_turn(&mut next, &mut effects);
+    Ok((next, effects))
+}
+
+fn move_turn(
+    cell: &SessionCell,
+    event: SessionTurnEvent,
+) -> StateMachineResult<SessionCellMachine> {
+    let (turn, effects) = SessionTurnMachine::transition(&cell.turn, event)
+        .map_err(|refusal| lift(refusal, SessionCellRefusal::Turn))?;
+    let mut next = cell.clone();
+    next.turn = turn;
+    Ok((
+        next,
+        effects.into_iter().map(SessionCellEffect::Turn).collect(),
+    ))
+}
+
+fn finish_settling(
+    cell: &SessionCell,
+    event: SessionTurnEvent,
+) -> StateMachineResult<SessionCellMachine> {
+    let (mut next, mut effects) = move_turn(cell, event)?;
+    if next.turn == SessionTurn::Idle {
+        advance_close_after_turn(&mut next, &mut effects);
+    }
+    Ok((next, effects))
+}
+
+fn advance_close_after_turn(cell: &mut SessionCell, effects: &mut Vec<SessionCellEffect>) {
     let generation = match cell.lifecycle {
         SessionLifecycle::Closing { generation, .. }
         | SessionLifecycle::Live { generation }
         | SessionLifecycle::Loading { generation, .. }
         | SessionLifecycle::NotLoaded { last: generation } => generation,
     };
-    let mut next = cell.clone();
-    next.turn = idle;
-    let mut effects: Vec<SessionCellEffect> = turn_effects
-        .into_iter()
-        .map(SessionCellEffect::Turn)
-        .collect();
-    if let Some(sequence) = next
+    if let Ok((closing, more)) =
+        lifecycle_move(cell, SessionLifecycleEvent::TurnEnded { generation })
+    {
+        *cell = closing;
+        effects.extend(more);
+    }
+}
+
+fn settle_turn_entry(
+    cell: &mut SessionCell,
+    turn: TurnId,
+    outcome: SentOutcome,
+    effects: &mut Vec<SessionCellEffect>,
+) {
+    if let Some(sequence) = cell
         .entries
         .iter()
         .find(|(_, slot)| slot.turn == Some(turn))
         .map(|(sequence, _)| *sequence)
-        && let Ok((settled, more)) = entry_move(
-            &next,
-            sequence,
-            QueuedEntryEvent::TurnSettled(outcome),
-            None,
-        )
+        && let Ok((settled, more)) =
+            entry_move(cell, sequence, QueuedEntryEvent::TurnSettled(outcome), None)
     {
-        next = settled;
+        *cell = settled;
         effects.extend(more);
     }
-    if let Ok((closing, more)) =
-        lifecycle_move(&next, SessionLifecycleEvent::TurnEnded { generation })
-    {
-        next = closing;
-        effects.extend(more);
-    }
-    Ok((next, effects))
 }
 
 pub struct SessionCellMachine;
@@ -565,7 +616,9 @@ impl StateMachine for SessionCellMachine {
             V::CloseRequested { attempt } => {
                 let turn_running = matches!(
                     cell.turn,
-                    SessionTurn::Running { .. } | SessionTurn::Cancelling { .. }
+                    SessionTurn::Running { .. }
+                        | SessionTurn::Cancelling { .. }
+                        | SessionTurn::Settling(_)
                 );
                 lifecycle_move(
                     cell,
@@ -747,6 +800,29 @@ impl StateMachine for SessionCellMachine {
                 ))
             }
             V::TurnEnded { turn, outcome } => turn_ended(cell, turn, outcome),
+            V::ProviderEnded {
+                settlement,
+                outcome,
+            } => {
+                let (mut next, mut effects) =
+                    move_turn(cell, SessionTurnEvent::ProviderEnded(settlement))?;
+                settle_turn_entry(&mut next, settlement.turn, outcome, &mut effects);
+                Ok((next, effects))
+            }
+            V::SettlementCleared { settlement, record } => finish_settling(
+                cell,
+                SessionTurnEvent::SettlementCleared { settlement, record },
+            ),
+            V::SettleDeadlineReached(settlement) => {
+                finish_settling(cell, SessionTurnEvent::SettleDeadlineReached(settlement))
+            }
+            V::SettlementRetired(settlement) => {
+                finish_settling(cell, SessionTurnEvent::SettlementRetired(settlement))
+            }
+            V::ProviderStartedSuccessor { previous, turn } => finish_settling(
+                cell,
+                SessionTurnEvent::ProviderStartedSuccessor { previous, turn },
+            ),
             #[cfg(test)]
             V::Stop => {
                 let mut next = cell.clone();
