@@ -19,6 +19,7 @@ use switchboard_message_custody::{
     custody_link::{CustodyLink, CustodyLinkError},
     custody_status::CustodyRequestStatus,
     custody_submission::{Submission, SubmissionPayload, SubmitRefusal},
+    custody_task::CustodyTaskEvent,
     flush_marks::{FLUSH_JITTER_MILLIS, mark_in_window},
     outbox_dispatch::FlushReport,
     outbox_work::OutboxWork,
@@ -91,13 +92,13 @@ impl FaultCampaign {
                 inner: Box::new(inner),
                 plan: faults.clone(),
             }),
-            observed_clock.clone(),
+            clock.clone(),
         );
         let inbox = RecipientInbox::new(
             InboxStore::new(MachineLocalStore::open(&path).await.unwrap()),
             machine.clone(),
             Arc::new(KnownRecipient),
-            observed_clock.clone(),
+            clock.clone(),
         );
         let custody = CustodyLink::new(
             peer.clone(),
@@ -135,7 +136,7 @@ impl WorkerFaultCampaign {
         let fixture =
             FaultCampaign::start_with_clock(observed.manual.clone(), observed.clone()).await;
         let campaign = Self::from_fixture(fixture, observed.clone()).await;
-        observed.wait_after(0).await;
+        campaign.worker.wait_after(0).await;
         campaign
     }
 
@@ -274,7 +275,7 @@ impl WorkerFaultCampaign {
     async fn wait_for_worker_read(&mut self) -> Result<FlushReport, CustodyLinkError> {
         let before = self.worker.clock.checkpoint();
         self.pending().await;
-        self.worker.clock.wait_after(before).await;
+        self.worker.wait_after(before).await;
         self.worker.take_reports()
     }
 
@@ -331,13 +332,18 @@ impl WorkerFaultCampaign {
             self.faults.arm(site, stage);
             match site {
                 FaultSite::EarliestWaiting => {
-                    assert!(self.wait_for_worker_read().await.is_err());
+                    self.pending().await;
+                    assert!(matches!(
+                        self.worker.events.recv().await,
+                        Some(CustodyTaskEvent::Failed(_))
+                    ));
                 }
                 FaultSite::SentWithoutAnswer => {
-                    let before = self.worker.clock.checkpoint();
                     self.peer.admitted.send_replace(original_admission.clone());
-                    self.worker.clock.wait_after(before).await;
-                    assert!(self.worker.take_reports().is_err());
+                    assert!(matches!(
+                        self.worker.events.recv().await,
+                        Some(CustodyTaskEvent::Failed(_))
+                    ));
                 }
                 FaultSite::ReturnNotTransmitted => {
                     let report = self

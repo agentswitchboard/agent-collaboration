@@ -9,6 +9,7 @@ use runtime_primitives::SyncTime;
 use std::time::Duration;
 use switchboard_machine_core_store::{OutboxStorage, PendingWriteState};
 use switchboard_message_custody::{
+    custody_task::CustodyTaskEvent,
     outbox_dispatch::{BatchDispatchError, OutboxDispatcher},
     outbox_work::OutboxWork,
 };
@@ -179,8 +180,10 @@ async fn a_lone_sent_row_at_startup_is_replayed_after_a_restore_fault() {
         fixture.faults.arm(FaultSite::SentWithoutAnswer, stage);
         let mut campaign = WorkerFaultCampaign::from_fixture(fixture, clock.clone()).await;
         campaign.accept_seeded(&item, created_at_ms);
-        clock.wait_after(0).await;
-        assert!(campaign.worker.take_reports().is_err());
+        assert!(matches!(
+            campaign.worker.events.recv().await,
+            Some(CustodyTaskEvent::Failed(_))
+        ));
         assert_eq!(
             campaign.faults.fired(),
             [(FaultSite::SentWithoutAnswer, stage)]

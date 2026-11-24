@@ -11,7 +11,7 @@ use switchboard_message_custody::{
     custody_submission::{Submission, SubmissionPayload},
     custody_task::{CustodyTaskEvent, custody_task},
 };
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 use workspace_model::{
     Caller, ChangePosition, Timestamp,
     central_mail::{MessageBody, MessageRecord},
@@ -115,10 +115,8 @@ async fn offline_inbox_retention_prunes_only_healthy_confirmed_rows() {
         ),
     );
 
-    let (stop, stopped) = watch::channel(false);
     let (sender, mut observations) = mpsc::unbounded_channel();
-    let (_calls, worker) = custody_task(custody, stopped, Arc::new(ObserveTask(sender)));
-    let running = tokio::spawn(worker);
+    let (_calls, group) = custody_task(custody, Arc::new(ObserveTask(sender)));
     let eligible = ClockInstant::ZERO.after(Duration::from_millis(100));
     maintenance_progress(
         clock.not_due_check_now(eligible),
@@ -170,8 +168,8 @@ async fn offline_inbox_retention_prunes_only_healthy_confirmed_rows() {
         1
     );
     assert!(lane.batch_commands().is_empty());
-    stop.send_replace(true);
-    running.await.unwrap();
+    group.request_stop();
+    group.join().await.unwrap();
 }
 
 #[tokio::test]
@@ -223,10 +221,8 @@ async fn a_corrupt_owned_point_is_reported_without_leaking_it_to_other_callers()
         ),
     );
 
-    let (stop, stopped) = watch::channel(false);
     let (sender, mut observations) = mpsc::unbounded_channel();
-    let (calls, worker) = custody_task(custody, stopped, Arc::new(ObserveTask(sender)));
-    let running = tokio::spawn(worker);
+    let (calls, group) = custody_task(custody, Arc::new(ObserveTask(sender)));
     let query = RequestStatusQuery {
         request_id: damaged.request.clone(),
         scope: RequestScope::Workspace(original.workspace_id.clone().unwrap()),
@@ -281,6 +277,6 @@ async fn a_corrupt_owned_point_is_reported_without_leaking_it_to_other_callers()
         Some(CustodyTaskEvent::Flush(report))
             if matches!(report.answered.as_slice(), [answer] if answer.request == healthy.request))
     );
-    stop.send_replace(true);
-    running.await.unwrap();
+    group.request_stop();
+    group.join().await.unwrap();
 }

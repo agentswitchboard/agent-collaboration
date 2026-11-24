@@ -9,38 +9,48 @@ use chrono::{DateTime, Utc};
 use router_clock::{ClockInstant, ManualClock, RuntimeClock};
 use runtime_primitives::{Clock, SyncTime};
 use std::{
+    collections::BTreeMap,
     future::{Future, poll_fn},
     pin::{Pin, pin},
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
+    sync::{Arc, Mutex},
     time::Duration,
 };
 use switchboard_message_custody::{
     custody_link::{CustodyLink, CustodyLinkError},
-    custody_task::{CustodyTaskEvent, CustodyTaskHandle, custody_task},
+    custody_task::{CustodyRunGroup, CustodyTaskEvent, CustodyTaskHandle, custody_task},
     outbox_dispatch::FlushReport,
 };
-use tokio::{
-    sync::{mpsc, watch},
-    task::JoinHandle,
-};
+use tokio::sync::{mpsc, watch};
 
 use super::custody_task::ObserveTask;
 
-/// Tests use this clock decorator to observe a complete poll of the worker's select.
+/// Tests use this clock decorator to observe the worker parked with a timer armed.
 pub(super) struct WorkerClock {
     pub(super) manual: Arc<ManualClock>,
-    timers: AtomicUsize,
-    parked: watch::Sender<(usize, ClockInstant)>,
+    timers: Mutex<BTreeMap<ClockInstant, ArmedTimer>>,
+    parked: watch::Sender<usize>,
 }
 
-struct PendingTimer<'clock>(&'clock AtomicUsize);
+#[derive(Default)]
+struct ArmedTimer {
+    count: usize,
+    last_poll: Option<(usize, ClockInstant)>,
+}
+
+struct PendingTimer<'clock> {
+    clock: &'clock WorkerClock,
+    deadline: ClockInstant,
+}
 
 impl Drop for PendingTimer<'_> {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::Relaxed);
+        let mut timers = self.clock.timers.lock().unwrap();
+        if let Some(timer) = timers.get_mut(&self.deadline) {
+            timer.count -= 1;
+            if timer.count == 0 {
+                timers.remove(&self.deadline);
+            }
+        }
     }
 }
 
@@ -61,9 +71,28 @@ impl RuntimeClock for WorkerClock {
 
     fn sleep_until(&self, deadline: ClockInstant) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         Box::pin(async move {
-            self.timers.fetch_add(1, Ordering::Relaxed);
-            let _timer = PendingTimer(&self.timers);
-            self.manual.sleep_until(deadline).await;
+            let mut timer = pin!(self.manual.sleep_until(deadline));
+            let mut armed = None;
+            poll_fn(|context| {
+                let result = timer.as_mut().poll(context);
+                if result.is_pending() {
+                    self.parked.send_modify(|polls| {
+                        *polls += 1;
+                        let mut timers = self.timers.lock().unwrap();
+                        let current = timers.entry(deadline).or_default();
+                        current.last_poll = Some((*polls, self.monotonic_now()));
+                        if armed.is_none() {
+                            current.count += 1;
+                            armed = Some(PendingTimer {
+                                clock: self,
+                                deadline,
+                            });
+                        }
+                    });
+                }
+                result
+            })
+            .await;
         })
     }
 }
@@ -72,43 +101,34 @@ impl WorkerClock {
     pub(super) fn observing(manual: Arc<ManualClock>) -> Arc<Self> {
         Arc::new(Self {
             manual,
-            timers: AtomicUsize::new(0),
-            parked: watch::channel((0, ClockInstant::ZERO)).0,
+            timers: Mutex::new(BTreeMap::new()),
+            parked: watch::channel(0).0,
         })
     }
 
     pub(super) fn checkpoint(&self) -> usize {
-        self.parked.borrow().0
+        *self.parked.borrow()
     }
 
-    pub(super) async fn wait_after(&self, before: usize) {
+    pub(super) async fn wait_for_armed_timer(&self, before: usize, deadline: Option<ClockInstant>) {
         let now = self.monotonic_now();
         let mut parked = self.parked.subscribe();
-        assert!(
-            parked
-                .wait_for(|(polls, elapsed)| *polls > before && *elapsed >= now)
-                .await
-                .is_ok()
-        );
-    }
-
-    async fn observe(&self, worker: impl Future<Output = ()>) {
-        // Observe a complete select poll even when this test has already
-        // consumed Tokio's cooperative budget. Real SQLite awaits still park.
-        let mut worker = pin!(tokio::task::unconstrained(worker));
-        poll_fn(|context| {
-            let result = worker.as_mut().poll(context);
-            // The select drops its timer futures before entering any selected
-            // branch, including branches that then wait for SQLite.
-            if result.is_pending() && self.timers.load(Ordering::Relaxed) != 0 {
-                self.parked.send_modify(|(polls, elapsed)| {
-                    *polls += 1;
-                    *elapsed = self.monotonic_now();
-                });
+        let mut after = before;
+        loop {
+            let sequence = *parked.wait_for(|polls| *polls > after).await.unwrap();
+            // These fixtures use a current-thread runtime. The test can only
+            // observe this signal after the worker yields. A selected branch
+            // drops its timer before SQLite or any other operation can park.
+            if self.timers.lock().unwrap().iter().any(|(armed, timer)| {
+                deadline.is_none_or(|deadline| *armed == deadline)
+                    && timer
+                        .last_poll
+                        .is_some_and(|(poll, elapsed)| poll > before && elapsed >= now)
+            }) {
+                return;
             }
-            result
-        })
-        .await;
+            after = sequence;
+        }
     }
 }
 
@@ -117,24 +137,36 @@ pub(super) struct ObservedWorker {
     pub(super) calls: CustodyTaskHandle,
     pub(super) events: mpsc::UnboundedReceiver<CustodyTaskEvent>,
     pub(super) clock: Arc<WorkerClock>,
-    stop: watch::Sender<bool>,
-    task: JoinHandle<()>,
+    group: CustodyRunGroup,
 }
 
 impl ObservedWorker {
     pub(super) fn start(custody: CustodyLink, clock: Arc<WorkerClock>) -> Self {
-        let (stop, stopped) = watch::channel(false);
         let (events_sink, events) = mpsc::unbounded_channel();
-        let (calls, worker) = custody_task(custody, stopped, Arc::new(ObserveTask(events_sink)));
-        let worker = Box::pin(worker);
-        let worker_clock = clock.clone();
-        let task = tokio::spawn(async move { worker_clock.observe(worker).await });
+        let (calls, group) = custody_task(custody, Arc::new(ObserveTask(events_sink)));
         Self {
             calls,
             events,
             clock,
-            stop,
-            task,
+            group,
+        }
+    }
+
+    pub(super) async fn wait_after(&self, before: usize) {
+        self.wait_for_progress(self.clock.wait_for_armed_timer(before, None))
+            .await;
+    }
+
+    pub(super) async fn wait_for_timer(&self, before: usize, deadline: ClockInstant) {
+        self.wait_for_progress(self.clock.wait_for_armed_timer(before, Some(deadline)))
+            .await;
+    }
+
+    async fn wait_for_progress<T>(&self, witness: impl Future<Output = T>) -> T {
+        tokio::select! {
+            biased;
+            observation = witness => observation,
+            exit = self.group.join() => panic!("custody ended before the expected progress: {exit:?}"),
         }
     }
 
@@ -148,7 +180,7 @@ impl ObservedWorker {
         // worker in that case and asks it to reproject from the new instant.
         let caller = super::outbox_timing::thread_post(1).caller;
         self.calls.pending_writes(caller).await?;
-        self.clock.wait_after(before).await;
+        self.wait_after(before).await;
         self.take_reports()
     }
 
@@ -173,7 +205,7 @@ impl ObservedWorker {
     }
 
     pub(super) async fn stop(self) {
-        self.stop.send_replace(true);
-        self.task.await.unwrap();
+        self.group.request_stop();
+        self.group.join().await.unwrap();
     }
 }

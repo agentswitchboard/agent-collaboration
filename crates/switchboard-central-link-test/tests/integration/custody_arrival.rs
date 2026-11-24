@@ -165,10 +165,8 @@ async fn a_real_socket_offer_keeps_its_arrival_while_queued_behind_a_held_lookup
             clock.clone(),
         ),
     );
-    let (stop, stopped) = watch::channel(false);
     let (event_sender, mut events) = mpsc::unbounded_channel();
-    let (calls, worker) = custody_task(custody, stopped, Arc::new(RecordCustody(event_sender)));
-    let worker = tokio::spawn(worker);
+    let (calls, group) = custody_task(custody, Arc::new(RecordCustody(event_sender)));
     let registration = calls
         .submit(
             caller.clone(),
@@ -286,7 +284,114 @@ async fn a_real_socket_offer_keeps_its_arrival_while_queued_behind_a_held_lookup
         calls.message_status(caller, message_id).await.unwrap(),
         Some(MessageStatus::Delivered { arrived_at, .. }) if arrived_at.timestamp_millis() == accepted_at.timestamp_millis()
     ));
-    stop.send_replace(true);
-    worker.await.unwrap();
+    group.request_stop();
+    group.join().await.unwrap();
+    journey.close().await;
+}
+
+#[tokio::test]
+#[cfg(debug_assertions)]
+async fn custody_stop_waits_for_an_in_progress_inbox_commit() {
+    use central_link_client::ValidatedDeliveryOffer;
+    use central_link_protocol::DeliveryMessage;
+    use std::{future::poll_fn, pin::pin, task::Poll};
+    use switchboard_machine_core_store::InboxDecision;
+    use workspace_model::{
+        ResolvedSender,
+        central_mail::{MessageBody, MessageRecord},
+    };
+
+    let clock = Arc::new(ManualClock::new("2030-03-17T17:46:40Z".parse().unwrap()));
+    let journey = CustodyJourney::start(clock.clone()).await;
+    let session = SessionRef {
+        machine_id: MACHINE_LINK_FIXTURE_MACHINE.parse().unwrap(),
+        session_id: "held-inbox-commit".parse().unwrap(),
+    };
+    let database = journey.central.root_path().join("held-keep.sqlite");
+    let outbox = MachineLocalOutbox::new(MachineLocalStore::open(&database).await.unwrap());
+    let mut inbox = InboxStore::new(MachineLocalStore::open(&database).await.unwrap());
+    let mut reader = InboxStore::new(MachineLocalStore::open(&database).await.unwrap());
+    let mut commit = inbox.hold_next_commit();
+    let directory = Arc::new(FirstLookupGate::default());
+    let (queued, deliveries) = mpsc::channel(1);
+    let custody = CustodyLink::new(
+        Arc::new(QueueObservedLane {
+            driver: journey.lane.clone(),
+            deliveries: Mutex::new(deliveries),
+        }),
+        clock.clone(),
+        Arc::new(MachineFlushJitter::new(&session.machine_id)),
+        OutboxWork::new(Box::new(outbox), clock.clone()),
+        RecipientInbox::new(
+            inbox,
+            session.machine_id.clone(),
+            directory.clone(),
+            clock.clone(),
+        ),
+    );
+    let (events, _observations) = mpsc::unbounded_channel();
+    let (_calls, group) = custody_task(custody, Arc::new(RecordCustody(events)));
+    let message = "019f0000-0000-7000-8000-000000000155"
+        .parse::<MessageId>()
+        .unwrap();
+    let record = MessageRecord::queued_central(
+        message.clone(),
+        session,
+        MessageBody::Notice { items: Vec::new() },
+        clock.utc_now(),
+    );
+    let admitted = journey.lane.watch_admitted().borrow().clone().unwrap();
+    queued
+        .send(LinkLaneEvent::Deliver {
+            connection: admitted.connection,
+            arrived_at: clock.utc_now(),
+            offer: ValidatedDeliveryOffer::new(Box::new(DeliveryMessage::System(record)), None)
+                .unwrap(),
+            sender: ResolvedSender::Central {},
+        })
+        .await
+        .unwrap();
+    directory.held.notified().await;
+    directory.release.notify_one();
+    commit.until_held().await.unwrap();
+    assert!(
+        reader
+            .message_for(&message)
+            .await
+            .unwrap()
+            .healthy
+            .is_none()
+    );
+
+    group.request_stop();
+    let mut join = pin!(group.join());
+    assert!(
+        poll_fn(|context| Poll::Ready(join.as_mut().poll(context)))
+            .await
+            .is_pending()
+    );
+    commit.release();
+    assert_eq!(join.await, Ok(()));
+
+    assert_eq!(
+        reader
+            .message_for(&message)
+            .await
+            .unwrap()
+            .healthy
+            .unwrap()
+            .message_id,
+        message
+    );
+    assert_eq!(
+        reader
+            .receipt_for(&message)
+            .await
+            .unwrap()
+            .healthy
+            .unwrap()
+            .decision,
+        InboxDecision::Accepted
+    );
     journey.close().await;
 }
