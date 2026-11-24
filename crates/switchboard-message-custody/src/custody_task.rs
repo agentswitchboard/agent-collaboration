@@ -3,7 +3,7 @@
 use central_link_client::{
     CorrelatedReceiptResults, CorrelatedStatusReply, LinkLaneDisposition, WriteBatchDisposition,
 };
-use central_link_protocol::{MAX_LINK_REQUEST_BATCH_SIZE, RequestStatusQuery};
+use central_link_protocol::MAX_LINK_REQUEST_BATCH_SIZE;
 use router_clock::{ClockInstant, RuntimeClock};
 use std::{
     collections::BTreeSet,
@@ -12,28 +12,24 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use switchboard_machine_core_store::PendingWrite;
 use tokio::{
-    sync::{mpsc, oneshot, watch},
+    sync::{Mutex, mpsc, watch},
     task::JoinSet,
 };
-use workspace_ids::{MessageId, RequestId, SessionRef};
-use workspace_model::{
-    Caller,
-    central_mail::{MessageRecord, MessageStatus},
+use workspace_ids::RequestId;
+
+pub use crate::custody_admission::{
+    CustodyAdmission, CustodyQueueClosed, CustodyTaskHandle, PendingCustodyReply,
 };
+pub use crate::custody_run_group::{CustodyRunFailure, CustodyRunGroup};
 
 use crate::{
+    custody_admission::{CustodyCommand, command_queue, refuse_queued_commands},
     custody_link::{CustodyLink, CustodyLinkError},
     custody_operator::CustodyOperatorEvent,
-    custody_status::{
-        CustodyRequestStatus, MessageStatusError, PreparedRequestStatus, message_query,
-        message_status_reply, remote_status,
-    },
-    custody_submission::{
-        PreparedSubmission, Submission, SubmissionPayload, SubmissionRoute, SubmitRefusal,
-        choose_submission_route, settle_immediate_request, wire_scope,
-    },
+    custody_run_group::{CustodyRunState, CustodyStop, StopOnExit, retain_group, wait_for_stop},
+    custody_status::{PreparedRequestStatus, remote_status},
+    custody_submission::{PreparedSubmission, settle_immediate_request},
     offer_taker::{TakenEvent, run_offer_taker},
     orphan_recovery::OrphanProbe,
     outbox_dispatch::{FlushReport, PreparedWriteBatch},
@@ -55,151 +51,48 @@ pub trait CustodyEventSink: Send + Sync {
     fn record_event(&self, event: CustodyTaskEvent);
 }
 
-/// The custody task creates a handle so tools can submit while the link waits for a reply.
-#[derive(Clone)]
-pub struct CustodyTaskHandle {
-    commands: mpsc::Sender<CustodyCommand>,
-}
-
-enum CustodyCommand {
-    Submit {
-        caller: Caller,
-        payload: SubmissionPayload,
-        reply: oneshot::Sender<Submission>,
-    },
-    Status {
-        caller: Caller,
-        query: RequestStatusQuery,
-        reply: oneshot::Sender<CustodyRequestStatus>,
-    },
-    Pending {
-        caller: Caller,
-        reply: oneshot::Sender<Result<Vec<PendingWrite>, CustodyLinkError>>,
-    },
-    Waiting {
-        session: SessionRef,
-        reply: oneshot::Sender<Result<Vec<MessageRecord>, CustodyLinkError>>,
-    },
-}
-
-impl CustodyTaskHandle {
-    pub async fn submit(&self, caller: Caller, payload: SubmissionPayload) -> Submission {
-        let (reply, result) = oneshot::channel();
-        let (lost_reply, unavailable) = match choose_submission_route(payload.clone()) {
-            Ok(SubmissionRoute::Outbox { request, payload }) => (
-                Submission::Uncertain {
-                    request,
-                    scope: wire_scope(payload.request_scope()),
-                },
-                SubmitRefusal::OutboxUnavailable,
-            ),
-            Ok(SubmissionRoute::Immediate(wire)) => (
-                wire.write_request_id()
-                    .map_or(Submission::ReadAnswerLost, |request| {
-                        Submission::Uncertain {
-                            request: request.clone(),
-                            scope: wire.request_scope(),
-                        }
-                    }),
-                SubmitRefusal::CentralUnavailable,
-            ),
-            Err(refusal) => return Submission::Refused(refusal),
-        };
-        if self
-            .commands
-            .send(CustodyCommand::Submit {
-                caller,
-                payload,
-                reply,
-            })
-            .await
-            .is_err()
-        {
-            return Submission::Refused(unavailable);
-        }
-        result.await.unwrap_or(lost_reply)
-    }
-
-    pub async fn request_status(
-        &self,
-        caller: Caller,
-        query: RequestStatusQuery,
-    ) -> CustodyRequestStatus {
-        let (reply, result) = oneshot::channel();
-        if self
-            .commands
-            .send(CustodyCommand::Status {
-                caller,
-                query,
-                reply,
-            })
-            .await
-            .is_err()
-        {
-            return CustodyRequestStatus::StatusUnavailable;
-        }
-        result
-            .await
-            .unwrap_or(CustodyRequestStatus::StatusUnavailable)
-    }
-
-    pub async fn message_status(
-        &self,
-        caller: Caller,
-        message_id: MessageId,
-    ) -> Result<Option<MessageStatus>, MessageStatusError> {
-        let submission = self.submit(caller, message_query(message_id)?).await;
-        message_status_reply(submission)
-    }
-
-    pub async fn pending_writes(
-        &self,
-        caller: Caller,
-    ) -> Result<Vec<PendingWrite>, CustodyLinkError> {
-        let (reply, result) = oneshot::channel();
-        self.commands
-            .send(CustodyCommand::Pending { caller, reply })
-            .await
-            .map_err(|_| CustodyLinkError::TaskClosed)?;
-        result.await.map_err(|_| CustodyLinkError::TaskClosed)?
-    }
-
-    pub async fn waiting_for_session(
-        &self,
-        session: SessionRef,
-    ) -> Result<Vec<MessageRecord>, CustodyLinkError> {
-        let (reply, result) = oneshot::channel();
-        self.commands
-            .send(CustodyCommand::Waiting { session, reply })
-            .await
-            .map_err(|_| CustodyLinkError::TaskClosed)?;
-        result.await.map_err(|_| CustodyLinkError::TaskClosed)?
-    }
-}
-
-/// Return the tool handle and the future its Host owns and drains at shutdown.
+/// Start custody and return the handle and its retained join.
 pub fn custody_task(
     custody: CustodyLink,
-    stop: watch::Receiver<bool>,
     sink: Arc<dyn CustodyEventSink>,
-) -> (CustodyTaskHandle, impl Future<Output = ()> + Send) {
-    let (commands, receiver) = mpsc::channel(MAX_LINK_REQUEST_BATCH_SIZE);
-    let task = async move {
-        let (saved, offers) = mpsc::unbounded_channel();
-        let (stop_offers, offers_stopped) = watch::channel(false);
-        let (retry_offers, retries) = mpsc::channel(1);
-        let taking = tokio::spawn(run_offer_taker(
-            custody.lane.clone(),
-            custody.inbox.clone(),
-            offers_stopped,
-            retries,
-            saved,
-        ));
-        run_custody(custody, receiver, offers, retry_offers, stop, sink).await;
-        stop_offers.send_replace(true);
-        let _ = taking.await;
-    };
-    (CustodyTaskHandle { commands }, task)
+) -> (CustodyTaskHandle, CustodyRunGroup) {
+    let stop = CustodyStop::new();
+    let (calls, mut commands) = command_queue(
+        MAX_LINK_REQUEST_BATCH_SIZE,
+        StopOnExit::new(&stop, CustodyRunFailure::WorkerPanicked),
+    );
+    let (saved, offers) = mpsc::unbounded_channel();
+    let (retry_offers, retries) = mpsc::channel(1);
+    let offers_stopped = stop.0.subscribe();
+    let worker_stopped = stop.0.subscribe();
+    let offer_exit = StopOnExit::new(&stop, CustodyRunFailure::OfferTakerPanicked);
+    let lane = custody.lane.clone();
+    let inbox = custody.inbox.clone();
+    let offer_taker = tokio::spawn(async move {
+        let mut exit = offer_exit;
+        exit.run(run_offer_taker(lane, inbox, offers_stopped, retries, saved))
+            .await;
+    });
+    let remote_tools = Arc::new(Mutex::new(JoinSet::new()));
+    let worker_tools = remote_tools.clone();
+    let worker = tokio::spawn(async move {
+        let (exit, receiver) = commands.split();
+        let member = Box::pin(async move {
+            let mut tools = worker_tools.lock().await;
+            run_custody(
+                custody,
+                receiver,
+                offers,
+                retry_offers,
+                worker_stopped,
+                sink,
+                &mut tools,
+            )
+            .await;
+        });
+        exit.run(member).await;
+    });
+    (calls, retain_group(stop, worker, offer_taker, remote_tools))
 }
 
 type InFlight<T> = Pin<Box<dyn Future<Output = T> + Send>>;
@@ -259,11 +152,12 @@ const LOCAL_RECOVERY_RETRY: Duration = Duration::from_secs(1);
 
 async fn run_custody(
     mut custody: CustodyLink,
-    mut commands: mpsc::Receiver<CustodyCommand>,
+    commands: &mut mpsc::Receiver<CustodyCommand>,
     mut offers: mpsc::UnboundedReceiver<Result<TakenEvent, InboxCustodyError>>,
     retry_offers: mpsc::Sender<()>,
-    mut stop: watch::Receiver<bool>,
+    mut stop: watch::Receiver<CustodyRunState>,
     sink: Arc<dyn CustodyEventSink>,
+    tool_requests: &mut JoinSet<()>,
 ) {
     let clock = custody.clock.clone();
     let lane = custody.lane.clone();
@@ -272,7 +166,6 @@ async fn run_custody(
     let mut receipts: Option<InFlight<ReceiptReply>> = None;
     let mut receipt_mark = None;
     let mut intake_retry_at = None;
-    let mut tool_requests = JoinSet::new();
     let mut admission = lane.watch_admitted();
     let mut admission_open = true;
     let mut orphan_reply: Option<OutstandingOrphan> = None;
@@ -284,6 +177,9 @@ async fn run_custody(
     let mut retention_at = next_retention(&mut custody, &*sink).await;
 
     loop {
+        if stop.borrow().stopped {
+            break;
+        }
         let write_wake = match custody.refresh_flush_wake().await {
             Ok(write) => write,
             Err(error) => {
@@ -305,16 +201,20 @@ async fn run_custody(
         }
 
         tokio::select! {
-            () = async { let _ = stop.wait_for(|stop| *stop).await; } => break,
+            () = wait_for_stop(&mut stop) => break,
             changed = admission.changed(), if admission_open => {
                 admission_open = changed.is_ok();
                 deferred_orphans.clear();
                 retry_orphans_at = None;
                 orphan_scan_at = Some(clock.monotonic_now());
             },
-            command = commands.recv() => match command {
-                Some(command) => handle_tool(&mut custody, &mut tool_requests, command, &*sink).await,
-                None => break,
+            command = commands.recv() => {
+                let Some(command) = command else { break };
+                if stop.borrow().stopped {
+                    command.refuse_unstarted();
+                    break;
+                }
+                handle_tool(&mut custody, tool_requests, command, &*sink, &stop).await;
             },
             event = offers.recv(), if offer_stream_open => {
                 match event {
@@ -489,7 +389,7 @@ async fn run_custody(
             _ = tool_requests.join_next(), if !tool_requests.is_empty() => {}
         }
     }
-    tool_requests.shutdown().await;
+    refuse_queued_commands(commands);
 }
 
 async fn handle_tool(
@@ -497,12 +397,14 @@ async fn handle_tool(
     pending_requests: &mut JoinSet<()>,
     command: CustodyCommand,
     sink: &dyn CustodyEventSink,
+    stop: &watch::Receiver<CustodyRunState>,
 ) {
     match command {
         CustodyCommand::Submit {
             caller,
             payload,
             reply,
+            unavailable: _,
         } => {
             if reply.is_closed() {
                 return;
@@ -513,12 +415,17 @@ async fn handle_tool(
                 }
                 PreparedSubmission::Immediate(command) => {
                     let lane = custody.lane.clone();
+                    let mut stop = stop.clone();
                     pending_requests.spawn(async move {
                         if reply.is_closed() {
                             return;
                         }
                         let request = command.request.clone();
-                        let disposition = lane.submit_immediate_request(command).await;
+                        let disposition = tokio::select! {
+                            biased;
+                            () = wait_for_stop(&mut stop) => return,
+                            disposition = async { lane.submit_immediate_request(command).await } => disposition,
+                        };
                         let _ = reply.send(settle_immediate_request(&request, disposition));
                     });
                 }
@@ -542,12 +449,17 @@ async fn handle_tool(
                 }
                 PreparedRequestStatus::Remote(command) => {
                     let lane = custody.lane.clone();
+                    let mut stop = stop.clone();
                     pending_requests.spawn(async move {
                         if reply.is_closed() {
                             return;
                         }
                         let correlation = command.correlation_id.clone();
-                        let disposition = lane.request_status(command).await;
+                        let disposition = tokio::select! {
+                            biased;
+                            () = wait_for_stop(&mut stop) => return,
+                            disposition = async { lane.request_status(command).await } => disposition,
+                        };
                         let _ = reply.send(remote_status(&correlation, disposition));
                     });
                 }
