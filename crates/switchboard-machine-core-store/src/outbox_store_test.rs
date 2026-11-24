@@ -19,16 +19,16 @@ mod model;
 #[path = "outbox_orphan_reconcile_test.rs"]
 mod orphan_reconcile;
 #[path = "sender_outcome_store_test.rs"]
-mod sender_outcomes;
+pub(super) mod sender_outcomes;
 
 fn central_refusal() -> OutboxCentralRefusal {
     OutboxCentralRefusal::Workspace(RefusalReason::RequestIdReused)
 }
 
-const MARK: i64 = 1_763_380_800_000;
+pub(super) const MARK: i64 = 1_763_380_800_000;
 const RETENTION_MS: i64 = 60 * 24 * 60 * 60 * 1_000;
 
-fn uuid_v7(seed: u16) -> String {
+pub(super) fn uuid_v7(seed: u16) -> String {
     let mut random = [0_u8; 10];
     random[..2].copy_from_slice(&seed.to_be_bytes());
     uuid::Builder::from_unix_timestamp_millis(1_763_380_000_000 + u64::from(seed), &random)
@@ -78,7 +78,7 @@ fn accepted(write: &OutboxQueuedWrite) -> OutboxWriteOutcome {
     OutboxWriteOutcome::from_accepted(write, accepted_answer()).unwrap()
 }
 
-async fn open(root: &tempfile::TempDir) -> MachineLocalStore {
+pub(super) async fn open(root: &tempfile::TempDir) -> MachineLocalStore {
     MachineLocalStore::open(&root.path().join("machine_local.sqlite"))
         .await
         .unwrap()

@@ -14,25 +14,6 @@ pub(crate) fn expires_at_ms(created_at_ms: i64) -> i64 {
     created_at_ms.saturating_add(OUTBOX_WINDOW_MILLIS)
 }
 
-/// Whether an overdue write had already left the Mac, so central may hold it.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum DepartureAtDeadline {
-    /// The frame never left this Mac.
-    NeverLeft,
-    /// Sent with no answer back (on the wire, or the answer was lost).
-    MayHaveArrived,
-}
-
-/// How an overdue write ends.
-pub(crate) fn end_reason(departure: DepartureAtDeadline) -> crate::OutboxCancellation {
-    match departure {
-        DepartureAtDeadline::NeverLeft => crate::OutboxCancellation::NotSentWithin15Minutes,
-        DepartureAtDeadline::MayHaveArrived => {
-            crate::OutboxCancellation::NotConfirmedWithin15Minutes
-        }
-    }
-}
-
 #[cfg(test)]
 #[path = "outbox_deadline_test.rs"]
 mod tests;

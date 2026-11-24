@@ -1,5 +1,5 @@
 //! Bind listeners, prepare service owners and start the Host runtime.
-use super::message_startup::{HostCustodyEvents, HostMessageRoots};
+use super::message_startup::HostCustodyEvents;
 use super::{
     BackendPublication, BoundCollaborationApi, CancellationToken, CollaborationRuntime,
     CollaborationRuntimeInputs, EndpointId, EndpointRef, HostCollaborationInputs, JoinSet,
@@ -11,7 +11,7 @@ use std::sync::Arc;
 use switchboard_message_custody::recipient_sessions::{
     CombinedRecipientSessionDirectory, RecipientSessionSources,
 };
-use switchboard_message_unit::MessageRuntime;
+use switchboard_message_system::{MessageRoots, MessageSystem, MessageSystemEvents};
 
 #[cfg(test)]
 pub(crate) type BeforeProviderRetention = Box<dyn FnOnce(&CollaborationRuntime) + Send>;
@@ -130,7 +130,7 @@ impl CollaborationRuntime {
         router_proxy_endpoint: Option<SocketAddr>,
         prepared_exposure: Option<crate::tailscale_exposure::PreparedTailscaleExposure>,
         worker_clock: std::sync::Arc<dyn router_clock::RuntimeClock>,
-        message_roots: Option<HostMessageRoots>,
+        message_roots: Option<MessageRoots>,
     ) -> io::Result<Self> {
         let mut owner_human_id = inputs.owner_human_id.clone();
         let service_id = load_service_identity(&inputs.directory)?;
@@ -490,7 +490,7 @@ impl CollaborationRuntime {
                 router_proxy_endpoint,
             },
         )?;
-        let message_runtime = match message_roots {
+        let message_system = match message_roots {
             Some(roots) => {
                 let custody_events = Arc::new(HostCustodyEvents);
                 let recipient_directory = Arc::new(CombinedRecipientSessionDirectory::new(
@@ -519,11 +519,14 @@ impl CollaborationRuntime {
                         ),
                     },
                 ));
-                roots
-                    .start(worker_clock.clone(), recipient_directory, custody_events)
-                    .await
+                Some(MessageSystem::start(
+                    roots,
+                    worker_clock.clone(),
+                    recipient_directory,
+                    MessageSystemEvents::new(custody_events),
+                ))
             }
-            None => MessageRuntime::without_router_root(),
+            None => None,
         };
         let shutdown = CancellationToken::new();
         let collaboration_api =
@@ -564,7 +567,7 @@ impl CollaborationRuntime {
         });
         let mut runtime = Self {
             clock: worker_clock,
-            message_runtime,
+            message_system,
             installation_peer,
             owner_human_id,
             provider_store,

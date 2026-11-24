@@ -12,7 +12,8 @@ use crate::{
     enrollment_command::{
         EnrollArguments, EnrollBindings, EnrollCommandError, create_sign_in_client, run_enroll,
     },
-    enrollment_status::write_enrollment_status,
+    enrollment_status::{write_enrollment_status, write_router_link_status},
+    host_command::{operator_client::OperatorClientError, read_message_system_status},
 };
 
 #[path = "enrollment_root.rs"]
@@ -56,8 +57,15 @@ pub(crate) async fn enrollment_status_from_process(
     root: &Path,
     output: &mut (impl io::Write + Send),
 ) -> Result<(), EnrollCommandError> {
-    let root = ValidatedEnrollmentRoot::from_process(root)?;
-    let status = read_machine_enrollment_status(&root.database_path()?)
+    let stored_root = ValidatedEnrollmentRoot::from_process(root)?;
+    let database = stored_root.database_path()?;
+    match read_message_system_status(root).await {
+        Ok(status) => write_router_link_status(output, status),
+        Err(OperatorClientError::HostNotRunning) => writeln!(output, "Router not running"),
+        Err(error) => return Err(EnrollCommandError::HostStatusRead(error)),
+    }
+    .map_err(|_| EnrollCommandError::Output)?;
+    let status = read_machine_enrollment_status(&database)
         .await
         .map_err(EnrollCommandError::StatusRead)?;
     write_enrollment_status(output, &status).map_err(|_| EnrollCommandError::Output)

@@ -17,7 +17,7 @@ switchboard-machine-enrollment = { path = "../switchboard-machine-enrollment", v
 switchboard-machine-enrollment-store = { path = "../switchboard-machine-enrollment-store", version = "0.1.158", features = ["test-support"] }
 switchboard-machine-core-store = { workspace = true, features = ["test-support"] }
 switchboard-message-custody.workspace = true
-switchboard-message-unit = { workspace = true, features = ["test-support"] }
+switchboard-message-system = { workspace = true, features = ["test-support"] }
 collaboration-central-tokio = { workspace = true, features = ["test-support"] }
 collaboration-central-conformance = { workspace = true, features = ["signin-test-support"] }
 fleet-runtime = { workspace = true, features = ["test-support"] }
@@ -25,6 +25,7 @@ router-clock = { workspace = true, features = ["test-support"] }
 runtime-primitives.workspace = true
 reqwest.workspace = true
 serde_json.workspace = true
+tempfile = "3.27.0"
 tokio.workspace = true
 tungstenite = { version = "0.29", default-features = false }
 turmoil = "=0.7.2"

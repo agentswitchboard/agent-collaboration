@@ -38,7 +38,7 @@ collaboration-runtime = { version = "0.1.105", path = "../collaboration-runtime"
 switchboard-session-events.workspace = true
 switchboard-session-store.workspace = true
 switchboard-message-custody.workspace = true
-switchboard-message-unit.workspace = true
+switchboard-message-system.workspace = true
 collaboration-contracts = { version = "0.1.105", path = "../collaboration-contracts" }
 sqlx = { workspace = true, features = ["sqlite"] }
 runtime-primitives = { workspace = true, features = ["tokio"] }

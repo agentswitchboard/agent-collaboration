@@ -9,7 +9,7 @@ use std::{io, path::PathBuf, sync::Arc};
 pub(super) struct CollaborationLifecycle {
     owner_human_id: Option<message_board::HumanId>,
     directory: PathBuf,
-    message_roots: Option<crate::collaboration_runtime::HostMessageRoots>,
+    message_roots: Option<switchboard_message_system::MessageRoots>,
     codex_home: PathBuf,
     peer_registry_directory: Option<PathBuf>,
     backend_socket: PathBuf,
@@ -59,7 +59,7 @@ impl CollaborationLifecycle {
                 .router_root()
                 .zip(router_secret_root)
                 .map(|(root, secrets)| {
-                    crate::collaboration_runtime::HostMessageRoots::new(root.to_owned(), secrets)
+                    switchboard_message_system::MessageRoots::new(root.to_owned(), secrets)
                 }),
             codex_home: config
                 .collaboration_codex_home()
@@ -206,6 +206,12 @@ impl CollaborationLifecycle {
         self.runtime
             .as_ref()
             .map(CollaborationRuntime::mcp_listen_address)
+    }
+
+    pub(super) fn message_system_status(&self) -> Option<crate::MessageSystemStatus> {
+        self.runtime
+            .as_ref()
+            .and_then(CollaborationRuntime::message_status)
     }
 
     pub(super) async fn shutdown(&mut self) -> io::Result<()> {
