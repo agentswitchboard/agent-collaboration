@@ -5989,6 +5989,7 @@ dependencies = [
  "serde_json",
  "sqlite-storage-maintenance",
  "sqlx",
+ "state-machine-core",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",

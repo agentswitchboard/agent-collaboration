@@ -1,7 +1,5 @@
 //! The outbox row's `item_state`, validated in Rust (no SQL enum constraint):
 //! where a write stands, and for an ended write why it ended.
-use crate::OutboxCancellation;
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OutboxItemState {
     InOutbox,
@@ -48,28 +46,6 @@ impl OutboxItemState {
             "notSent" => Some(Self::NotSent),
             "unconfirmed" => Some(Self::Unconfirmed),
             _ => None,
-        }
-    }
-
-    /// The stored state for a write that ended at its deadline.
-    pub(crate) const fn ended(reason: OutboxCancellation) -> Self {
-        match reason {
-            OutboxCancellation::NotSentWithin15Minutes => Self::NotSent,
-            OutboxCancellation::NotConfirmedWithin15Minutes => Self::Unconfirmed,
-        }
-    }
-
-    /// Why a write in this ended state ended; None for any other state.
-    pub(crate) const fn end_reason(self) -> Option<OutboxCancellation> {
-        match self {
-            Self::NotSent => Some(OutboxCancellation::NotSentWithin15Minutes),
-            Self::Unconfirmed => Some(OutboxCancellation::NotConfirmedWithin15Minutes),
-            Self::InOutbox
-            | Self::SentAnswerLost
-            | Self::Sent
-            | Self::Resent
-            | Self::Answered
-            | Self::Refused => None,
         }
     }
 }

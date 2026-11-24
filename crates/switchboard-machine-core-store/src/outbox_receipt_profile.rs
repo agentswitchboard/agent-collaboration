@@ -3,7 +3,7 @@ use crate::{OutboxAccepted, OutboxRequestStatus, OutboxWriteTarget, StoredSender
 use serde::{Deserialize, Serialize};
 use workspace_ids::RequestId;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct AnsweredWrite {
     pub(crate) request_id: RequestId,
