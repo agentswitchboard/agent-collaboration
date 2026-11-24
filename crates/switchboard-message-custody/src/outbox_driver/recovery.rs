@@ -14,13 +14,40 @@ use switchboard_machine_core_store::{OutboxScope, UnansweredOutboxClaim};
 use workspace_ids::RequestId;
 use workspace_model::{WorkspaceReply, WorkspaceResult, central_mail::CentralMailResult};
 
-use crate::{
-    flush_report::{BatchDispatchError, FlushReport},
-    local_settlement::{AnswerAtCutoff, MemberReturn},
-    outbox_dispatch::OutboxDispatcher,
-    outbox_settlement_map::outcome_from_link_reply,
-    outbox_work::{OutboxWork, OutboxWorkError},
+use crate::outbox_settlement_map::outcome_from_link_reply;
+
+use super::{
+    batch::OutboxDispatcher,
+    report::{BatchDispatchError, FlushReport},
+    settlement::{AnswerAtCutoff, MemberReturn},
+    work::{OutboxWork, OutboxWorkError},
 };
+
+/// The outbox driver records whether the open mark still owes recovery of a local claim.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(super) enum ClaimRecovery {
+    Clear,
+    ScanOwed,
+    ParkedForScan,
+    ParkedForReturn,
+}
+
+impl ClaimRecovery {
+    pub(super) fn park_after_empty(self) -> Self {
+        match self {
+            Self::ScanOwed => Self::ParkedForScan,
+            other => other,
+        }
+    }
+
+    pub(super) fn after_scan(self, owes_local_return: bool) -> Self {
+        match (self, owes_local_return) {
+            (Self::Clear | Self::ParkedForReturn, _) => self,
+            (_, false) => Self::Clear,
+            (_, true) => Self::ParkedForReturn,
+        }
+    }
+}
 
 /// The store supplies a genuine orphan and custody prepares the exact owner's request-status read.
 pub(crate) struct OrphanProbe {

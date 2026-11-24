@@ -9,7 +9,7 @@ use central_link_protocol::{
 use runtime_primitives::SyncTime;
 use switchboard_machine_core_store::{
     NewOutboxItem, OutboxAccepted, OutboxInsert, OutboxQueuedWrite, OutboxRefusal,
-    OutboxRequestStatus, OutboxScope, OutboxStoreError,
+    OutboxRequestStatus, OutboxScope, OutboxStorage, OutboxStoreError,
 };
 use workspace_ids::RequestId;
 use workspace_model::{
@@ -21,10 +21,7 @@ use workspace_model::{
     },
 };
 
-use crate::{
-    outbox_wire::{fits_one_member, request_for_write},
-    outbox_work::OutboxWork,
-};
+use crate::outbox_wire::{fits_one_member, request_for_write};
 
 /// A tool supplies an unstamped send, a workspace operation or an immediate mail operation.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -151,7 +148,8 @@ pub(crate) fn choose_submission_route(
 }
 
 pub(crate) async fn submit_to_outbox(
-    work: &mut OutboxWork,
+    store: &mut dyn OutboxStorage,
+    now_ms: i64,
     caller: Caller,
     request: RequestId,
     payload: OutboxQueuedWrite,
@@ -159,7 +157,6 @@ pub(crate) async fn submit_to_outbox(
 ) -> QueuedWriteSubmission {
     use QueuedWriteSubmission::{ExistingOrRefused, PossiblyStored, Stored};
     let scope = wire_scope(payload.request_scope());
-    let now_ms = work.local_now_ms();
     let Some(sent_at) = Timestamp::from_timestamp_millis(now_ms) else {
         return ExistingOrRefused(Submission::Refused(SubmitRefusal::InvalidSendTime));
     };
@@ -182,7 +179,7 @@ pub(crate) async fn submit_to_outbox(
         payload,
         flush_at_ms: flush_at.unix_millis(),
     };
-    match work.outbox_storage().insert(&item, now_ms).await {
+    match store.insert(&item, now_ms).await {
         Ok(OutboxInsert::Stored) => Stored(OutboxReceipt {
             id: request,
             flush_at,

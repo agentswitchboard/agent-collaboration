@@ -6,7 +6,7 @@ use switchboard_machine_core_store::{EndedWrite, OutboxStoreError, StoredSenderO
 use workspace_ids::RequestId;
 use workspace_model::Caller;
 
-use crate::outbox_work::OutboxWorkError;
+use super::work::OutboxWorkError;
 
 /// A checked answer custody persisted for one member of its own flush.
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -2,12 +2,12 @@
 
 use central_link_client::{
     AdmittedConnection, CorrelatedReceiptResults, ImmediateRequestCommand, LinkLaneDisposition,
-    ReadyLinkLane, RequestStatusCommand, WelcomeClockAnchor,
+    ReadyLinkLane, RequestStatusCommand,
 };
 use central_link_protocol::{FreshCorrelationId, RequestStatusQuery};
 use router_clock::{ClockInstant, RuntimeClock};
 use runtime_primitives::SyncTime;
-use std::{collections::BTreeSet, future::pending, sync::Arc, time::Duration};
+use std::{future::pending, sync::Arc, time::Duration};
 use switchboard_machine_core_store::{
     OutboxStoreError, OutgoingWrite, PendingWrite, StoredSenderOutcome,
 };
@@ -26,22 +26,20 @@ use crate::{
     custody_submission::{
         PreparedSubmission, Submission, SubmissionPayload, SubmissionRoute, SubmitRefusal,
         choose_submission_route, prepare_immediate_request, settle_immediate_request,
-        submit_to_outbox,
     },
     flush_clock::{FlushJitter, shared_time_at, wake_for_mark},
     offer_taker::{SharedRecipientInbox, TakenEvent, admitted_for, take_event},
-    outbox_dispatch::{AppliedSenderNotice, BatchDispatchError, FlushReport, OutboxDispatcher},
-    outbox_flush::{
-        ClaimRecovery, FlushEffect, FlushEvent, FlushTransitionError, OutboxFlushState,
-        RebasedMarks, advance_schedule,
-    },
-    outbox_work::{OutboxWork, OutboxWorkError, WaitingCutoffSchedule},
     receipt_delivery::{ReceiptDeliveryError, ReceiptFrame, ReceiptFrameOutcome},
     recipient_inbox::{InboxCustodyError, RecipientInbox},
 };
 
+use self::outbox_driver::{
+    AppliedSenderNotice, BatchDispatchError, FlushReport, FlushTransitionError, OutboxDriver,
+    OutboxWork, OutboxWorkError,
+};
+
 #[path = "custody_outbox.rs"]
-mod custody_outbox;
+pub(crate) mod outbox_driver;
 
 const IMMEDIATE_COMMAND_WINDOW: Duration = Duration::from_secs(30);
 
@@ -68,20 +66,6 @@ pub enum CustodyLinkError {
         #[source]
         error: Box<Self>,
     },
-}
-
-fn finish_flush(
-    report: FlushReport,
-    result: Result<(), CustodyLinkError>,
-) -> Result<FlushReport, CustodyLinkError> {
-    match result {
-        Ok(()) => Ok(report),
-        Err(error) if report.is_empty() => Err(error),
-        Err(error) => Err(CustodyLinkError::InterruptedFlush {
-            completed: Box::new(report),
-            error: Box::new(error),
-        }),
-    }
 }
 
 /// Custody projects durable notices and keeps their inbox payloads until the sink accepts the reports.
@@ -132,18 +116,9 @@ pub struct CustodyLink {
     pub(crate) lane: Arc<dyn ReadyLinkLane>,
     pub(crate) clock: Arc<dyn RuntimeClock>,
     jitter: Arc<dyn FlushJitter>,
-    outbox: OutboxWork,
+    outbox_driver: OutboxDriver,
     pub(crate) inbox: SharedRecipientInbox,
     pub(crate) notice_port: Option<Arc<dyn crate::handover_notice::ManagedClaudeNoticePort>>,
-    dispatcher: OutboxDispatcher,
-    waiting_cutoffs: WaitingCutoffSchedule,
-    schedule: OutboxFlushState,
-    write_retry_at: Option<ClockInstant>,
-    claim_recovery: ClaimRecovery,
-    last_clock_anchor: Option<WelcomeClockAnchor>,
-    rebased_marks: Option<RebasedMarks>,
-    drain_connection: Option<central_link_client::ConnectionAttempt>,
-    startup_orphan_claims: Option<BTreeSet<RequestId>>,
 }
 
 impl CustodyLink {
@@ -159,18 +134,9 @@ impl CustodyLink {
             lane,
             clock,
             jitter,
-            outbox,
+            outbox_driver: OutboxDriver::new(outbox),
             inbox: Arc::new(tokio::sync::Mutex::new(inbox)),
             notice_port: None,
-            dispatcher: OutboxDispatcher::default(),
-            waiting_cutoffs: WaitingCutoffSchedule::default(),
-            schedule: OutboxFlushState::default(),
-            write_retry_at: None,
-            claim_recovery: ClaimRecovery::Clear,
-            last_clock_anchor: None,
-            rebased_marks: None,
-            drain_connection: None,
-            startup_orphan_claims: None,
         }
     }
 
@@ -212,26 +178,8 @@ impl CustodyLink {
         let admitted = self.admitted_connection();
         match route {
             SubmissionRoute::Outbox { request, payload } => {
-                let observed_at = self.clock.monotonic_now();
-                let now = match admitted {
-                    Some(ready) => self.observe_shared_clock(ready.clock_anchor, observed_at),
-                    None => self.prior_shared_time(observed_at),
-                };
-                let mark = self.schedule.receipt_mark(now);
-                let (submitted, new_request) =
-                    submit_to_outbox(&mut self.outbox, caller, request, payload, mark)
-                        .await
-                        .into_reply();
-                if let (Some(rebased), Some(request)) = (&mut self.rebased_marks, new_request) {
-                    rebased.remember_admission(request, mark);
-                }
-                if let Submission::InOutbox(receipt) = &submitted {
-                    // Stored always accepts an event; the next wake also reads the durable row.
-                    let _ = self.apply_flush_event(FlushEvent::Stored {
-                        flush_at: receipt.flush_at,
-                    });
-                }
-                PreparedSubmission::Complete(submitted)
+                self.queue_outbox_write(admitted, caller, request, payload)
+                    .await
             }
             SubmissionRoute::Immediate(payload) => {
                 let Some(admitted) = admitted else {
@@ -239,13 +187,16 @@ impl CustodyLink {
                         SubmitRefusal::CentralUnavailable,
                     ));
                 };
-                let request =
-                    match prepare_immediate_request(caller, payload, self.outbox.local_now_ms()) {
-                        Ok(request) => request,
-                        Err(refusal) => {
-                            return PreparedSubmission::Complete(Submission::Refused(refusal));
-                        }
-                    };
+                let request = match prepare_immediate_request(
+                    caller,
+                    payload,
+                    self.outbox_driver.work.local_now_ms(),
+                ) {
+                    Ok(request) => request,
+                    Err(refusal) => {
+                        return PreparedSubmission::Complete(Submission::Refused(refusal));
+                    }
+                };
                 PreparedSubmission::Immediate(ImmediateRequestCommand {
                     connection: admitted.connection,
                     send_before: self.clock.monotonic_now().after(IMMEDIATE_COMMAND_WINDOW),
@@ -276,7 +227,8 @@ impl CustodyLink {
         query: RequestStatusQuery,
     ) -> PreparedRequestStatus {
         let stored = self
-            .outbox
+            .outbox_driver
+            .work
             .outbox_storage()
             .scoped_request_status(&caller, &status_key(&query))
             .await;
@@ -287,14 +239,14 @@ impl CustodyLink {
                 }
             }
             Err(error) => {
-                self.outbox.report_point_read_error(&error);
+                self.outbox_driver.work.report_point_read_error(&error);
                 return PreparedRequestStatus::Complete(CustodyRequestStatus::StatusUnavailable);
             }
         }
         let Some(admitted) = self.admitted_connection() else {
             return PreparedRequestStatus::Complete(CustodyRequestStatus::StatusUnavailable);
         };
-        let correlation_id = FreshCorrelationId::mint_at(self.outbox.local_now_ms())
+        let correlation_id = FreshCorrelationId::mint_at(self.outbox_driver.work.local_now_ms())
             .wire_id()
             .clone();
         PreparedRequestStatus::Remote(RequestStatusCommand {
@@ -321,7 +273,12 @@ impl CustodyLink {
         &mut self,
         caller: &Caller,
     ) -> Result<Vec<PendingWrite>, CustodyLinkError> {
-        let result = self.outbox.outbox_storage().pending_for(caller).await;
+        let result = self
+            .outbox_driver
+            .work
+            .outbox_storage()
+            .pending_for(caller)
+            .await;
         self.report_outbox_read(result)
     }
 
@@ -332,7 +289,8 @@ impl CustodyLink {
         limit: u16,
     ) -> Result<Vec<OutgoingWrite>, CustodyLinkError> {
         let result = self
-            .outbox
+            .outbox_driver
+            .work
             .outbox_storage()
             .outgoing_for(caller, limit)
             .await;
@@ -346,7 +304,8 @@ impl CustodyLink {
         request: &RequestId,
     ) -> Result<Option<StoredSenderOutcome>, CustodyLinkError> {
         let result = self
-            .outbox
+            .outbox_driver
+            .work
             .outbox_storage()
             .sender_outcome(caller, request)
             .await;
@@ -358,13 +317,13 @@ impl CustodyLink {
         result: Result<Value, OutboxStoreError>,
     ) -> Result<Value, CustodyLinkError> {
         result.map_err(|error| {
-            self.outbox.report_point_read_error(&error);
+            self.outbox_driver.work.report_point_read_error(&error);
             OutboxWorkError::Store(error).into()
         })
     }
 
     pub(crate) fn take_outbox_operator_events(&mut self) -> Vec<CustodyOperatorEvent> {
-        self.outbox.take_operator_events()
+        self.outbox_driver.work.take_operator_events()
     }
 
     /// Drive one delivery using the same save-only path as the offer task.
@@ -398,7 +357,8 @@ impl CustodyLink {
                 self.observe_unavailable()?;
             }
             CustodyLinkObservation::ConnectionFaulted { connection, cause } => {
-                self.outbox
+                self.outbox_driver
+                    .work
                     .report_operator_event(CustodyOperatorEvent::LinkFaulted {
                         connection: connection.clone(),
                         cause: *cause,
@@ -480,8 +440,8 @@ impl CustodyLink {
         caller: &Caller,
         notice: &StoredSenderOutcome,
     ) -> Result<bool, OutboxStoreError> {
-        let now_ms = self.outbox.local_now_ms();
-        let store = self.outbox.outbox_storage();
+        let now_ms = self.outbox_driver.work.local_now_ms();
+        let store = self.outbox_driver.work.outbox_storage();
         match store.record_sender_delivery(caller, notice, now_ms).await {
             Ok(applied) => Ok(applied),
             Err(error) => match store.sender_outcome(caller, &notice.request_id).await {
@@ -570,7 +530,7 @@ impl CustodyLink {
     }
 
     pub(crate) fn local_retry_mark(&self) -> ClockInstant {
-        let now = self.outbox.local_now_ms();
+        let now = self.outbox_driver.work.local_now_ms();
         let next = crate::flush_marks::next_mark_after(SyncTime::from_unix_millis(now));
         let millis = next.unix_millis().saturating_sub(now);
         self.clock
@@ -605,16 +565,5 @@ impl CustodyLink {
         session: &SessionRef,
     ) -> Result<Vec<MessageRecord>, CustodyLinkError> {
         Ok(self.inbox.lock().await.waiting_for_session(session).await?)
-    }
-
-    fn apply_flush_event(
-        &mut self,
-        event: FlushEvent,
-    ) -> Result<Option<SyncTime>, FlushTransitionError> {
-        let effects = advance_schedule(&mut self.schedule, event)?;
-        Ok(effects.into_iter().find_map(|effect| match effect {
-            FlushEffect::SendBatch { mark } => Some(mark),
-            FlushEffect::WakeAt { .. } | FlushEffect::WakeAtLocalDeadline { .. } => None,
-        }))
     }
 }

@@ -25,13 +25,13 @@ pub use crate::custody_run_group::{CustodyRunFailure, CustodyRunGroup};
 
 use crate::{
     custody_admission::{CustodyCommand, command_queue, refuse_queued_commands},
+    custody_link::outbox_driver::OrphanProbe,
     custody_link::{CustodyLink, CustodyLinkError},
     custody_operator::CustodyOperatorEvent,
     custody_run_group::{CustodyRunState, CustodyStop, StopOnExit, retain_group, wait_for_stop},
     custody_status::{PreparedRequestStatus, remote_status},
     custody_submission::{PreparedSubmission, settle_immediate_request},
     offer_taker::{TakenEvent, run_offer_taker},
-    orphan_recovery::OrphanProbe,
     outbox_dispatch::{FlushReport, PreparedWriteBatch},
     receipt_delivery::{ReceiptFrame, ReceiptFrameOutcome},
     recipient_inbox::InboxCustodyError,

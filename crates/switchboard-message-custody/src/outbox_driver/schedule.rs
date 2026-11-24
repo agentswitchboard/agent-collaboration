@@ -1,78 +1,17 @@
-//! When the outbox flushes, as a pure reducer: `transition(state, event) ->
-//! (state, effects)`. The Mac outbox table is the only truth for what waits,
-//! is sent and is answered (Lead A, 2026-11-18: one owner per truth); this
-//! reducer holds no request ids. It decides only WHEN a batch may go: on a
-//! 1-minute mark (±3 s, the caller picks the jitter), at most one batch in
-//! flight, only on a connected link. On SendBatch the Host claims the next due
-//! rows from the store; a store error is not a link event, and the next mark
-//! retries from the store. A settled frame can continue the same open mark.
+//! The link, wake and single batch-slot lifecycle for outgoing minute marks.
+
 use crate::flush_marks::{earliest_open_mark, mark_in_window, next_mark_after};
 use runtime_primitives::SyncTime;
-use std::collections::{BTreeMap, BTreeSet};
-use workspace_ids::RequestId;
-
-/// Custody records whether the open mark still owes recovery of a local claim.
-#[derive(Clone, Copy, Eq, PartialEq)]
-pub(crate) enum ClaimRecovery {
-    Clear,
-    ScanOwed,
-    ParkedForScan,
-    ParkedForReturn,
-}
-
-impl ClaimRecovery {
-    pub(crate) fn park_after_empty(self) -> Self {
-        match self {
-            Self::ScanOwed => Self::ParkedForScan,
-            other => other,
-        }
-    }
-
-    pub(crate) fn after_scan(self, owes_local_return: bool) -> Self {
-        match (self, owes_local_return) {
-            (Self::Clear | Self::ParkedForReturn, _) => self,
-            (_, false) => Self::Clear,
-            (_, true) => Self::ParkedForReturn,
-        }
-    }
-}
-
-/// Custody remembers which new receipts must be honored during a backward Welcome rebase.
-pub(crate) struct RebasedMarks {
-    pub(crate) due_through: SyncTime,
-    fresh_receipts: BTreeMap<RequestId, SyncTime>,
-}
-
-impl RebasedMarks {
-    pub(crate) fn new(due_through: SyncTime) -> Self {
-        Self {
-            due_through,
-            fresh_receipts: BTreeMap::new(),
-        }
-    }
-
-    pub(crate) fn remember_admission(&mut self, request: RequestId, mark: SyncTime) {
-        self.fresh_receipts.entry(request).or_insert(mark);
-    }
-
-    pub(crate) fn defer_fresh_receipts(&self, mark: SyncTime) -> BTreeSet<RequestId> {
-        self.fresh_receipts
-            .iter()
-            .filter(|(_, receipt)| **receipt > mark && **receipt <= self.due_through)
-            .map(|(request, _)| request.clone())
-            .collect()
-    }
-
-    pub(crate) fn forget_completed(&mut self, request: &RequestId) {
-        self.fresh_receipts.remove(request);
-    }
-}
+use state_machine_core::{
+    EventTag, RefusalTag, StateMachine, StateMachineResult, StateTag, Transition, TransitionError,
+};
+use std::{collections::BTreeSet, sync::Arc};
 
 /// Minute-flush state advanced by custody from link and store observations.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct OutboxFlushState {
     link: LinkAvailability,
-    consumed_marks: BTreeSet<SyncTime>,
+    consumed_marks: Arc<BTreeSet<SyncTime>>,
     /// The mark of the batch on the wire, if any.
     in_flight: Option<SyncTime>,
     draining_mark: Option<SyncTime>,
@@ -86,15 +25,11 @@ enum LinkAvailability {
     Connected,
 }
 
-/// An observation custody supplies to the minute scheduler.
+/// An observation the outbox driver supplies to the minute scheduler.
 /// `earliest_due` is the store's earliest receipt mark among waiting writes,
 /// read by the Host just before the event; None when nothing waits.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FlushEvent {
-    /// The store changed the next waiting write's absolute expiry.
-    LocalDeadlineChanged {
-        deadline: Option<SyncTime>,
-    },
     /// The Host stored a write for this mark.
     Stored {
         flush_at: SyncTime,
@@ -109,6 +44,8 @@ pub enum FlushEvent {
         earliest_due: Option<SyncTime>,
     },
     LinkLost,
+    /// A replacement connection ends the previous connection's open drain.
+    DrainFenced,
     /// The batch for this flush ended: answered, returned to the store, or
     /// never sent because the claim found nothing or the store failed.
     BatchEnded {
@@ -120,8 +57,6 @@ pub enum FlushEvent {
 /// A request from the scheduler for custody to arm a wake or claim a batch.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FlushEffect {
-    /// Schedule local expiry on the exact clock time, regardless of the link.
-    WakeAtLocalDeadline { deadline: Option<SyncTime> },
     /// Claim the next due writes (up to the link frame limit) from the store and
     /// send them as one batch frame.
     SendBatch { mark: SyncTime },
@@ -162,7 +97,7 @@ impl OutboxFlushState {
         self.draining_mark
     }
 
-    pub(crate) fn stop_draining_mark(&mut self) {
+    fn stop_draining_mark(&mut self) {
         self.draining_mark = None;
     }
 
@@ -182,24 +117,192 @@ impl OutboxFlushState {
 }
 
 pub fn transition(
-    mut state: OutboxFlushState,
+    state: OutboxFlushState,
     event: FlushEvent,
 ) -> Result<(OutboxFlushState, Vec<FlushEffect>), FlushTransitionError> {
-    let effects = advance_schedule(&mut state, event)?;
-    Ok((state, effects))
+    OutboxSchedule::transition(&state, event).map_err(|_| FlushTransitionError::NoBatchInFlight)
 }
 
-pub(crate) fn advance_schedule(
+pub(super) fn advance_schedule(
+    state: &mut OutboxFlushState,
+    event: FlushEvent,
+) -> Result<Vec<FlushEffect>, FlushTransitionError> {
+    let (next, effects) = OutboxSchedule::transition(state, event)
+        .map_err(|_| FlushTransitionError::NoBatchInFlight)?;
+    *state = next;
+    Ok(effects)
+}
+
+struct OutboxSchedule;
+
+#[derive(Clone, Copy)]
+enum SchedulePhase {
+    Disconnected,
+    Idle,
+    WakeArmed,
+    DrainOpen,
+    DrainArmed,
+    SlotReserved,
+}
+
+impl SchedulePhase {
+    const fn tag(self) -> &'static str {
+        match self {
+            Self::Disconnected => "disconnected",
+            Self::Idle => "idle",
+            Self::WakeArmed => "wakeArmed",
+            Self::DrainOpen => "drainOpen",
+            Self::DrainArmed => "drainArmed",
+            Self::SlotReserved => "slotReserved",
+        }
+    }
+}
+
+impl StateTag for OutboxFlushState {
+    fn state_tag(&self) -> &'static str {
+        let phase = match (
+            self.link,
+            self.in_flight,
+            self.draining_mark,
+            self.armed_wake,
+        ) {
+            (LinkAvailability::Disconnected, _, _, _) => SchedulePhase::Disconnected,
+            (LinkAvailability::Connected, Some(_), _, _) => SchedulePhase::SlotReserved,
+            (LinkAvailability::Connected, None, None, None) => SchedulePhase::Idle,
+            (LinkAvailability::Connected, None, None, Some(_)) => SchedulePhase::WakeArmed,
+            (LinkAvailability::Connected, None, Some(_), None) => SchedulePhase::DrainOpen,
+            (LinkAvailability::Connected, None, Some(_), Some(_)) => SchedulePhase::DrainArmed,
+        };
+        phase.tag()
+    }
+
+    fn is_terminal(&self) -> bool {
+        false
+    }
+}
+
+const STORED: &str = "stored";
+const TICK: &str = "tick";
+const LINK_CONNECTED: &str = "linkConnected";
+const LINK_LOST: &str = "linkLost";
+const DRAIN_FENCED: &str = "drainFenced";
+const BATCH_ENDED: &str = "batchEnded";
+
+impl EventTag for FlushEvent {
+    fn event_tag(&self) -> &'static str {
+        match self {
+            Self::Stored { .. } => STORED,
+            Self::Tick { .. } => TICK,
+            Self::LinkConnected { .. } => LINK_CONNECTED,
+            Self::LinkLost => LINK_LOST,
+            Self::DrainFenced => DRAIN_FENCED,
+            Self::BatchEnded { .. } => BATCH_ENDED,
+        }
+    }
+}
+
+impl RefusalTag for FlushTransitionError {
+    fn refusal_tag(&self) -> &'static str {
+        match self {
+            Self::NoBatchInFlight => "noBatchInFlight",
+        }
+    }
+}
+
+const SCHEDULE_TRANSITIONS: &[Transition] = {
+    use SchedulePhase::{Disconnected, DrainArmed, DrainOpen, Idle, SlotReserved, WakeArmed};
+    &[
+        edge(Disconnected, STORED, Disconnected),
+        edge(Disconnected, TICK, Disconnected),
+        edge(Disconnected, LINK_CONNECTED, Idle),
+        edge(Disconnected, LINK_CONNECTED, WakeArmed),
+        edge(Disconnected, LINK_LOST, Disconnected),
+        edge(Disconnected, DRAIN_FENCED, Disconnected),
+        edge(Idle, STORED, WakeArmed),
+        edge(Idle, TICK, Idle),
+        edge(Idle, TICK, WakeArmed),
+        edge(Idle, TICK, SlotReserved),
+        edge(Idle, LINK_CONNECTED, Idle),
+        edge(Idle, LINK_CONNECTED, WakeArmed),
+        edge(Idle, LINK_LOST, Disconnected),
+        edge(Idle, DRAIN_FENCED, Idle),
+        edge(WakeArmed, STORED, WakeArmed),
+        edge(WakeArmed, TICK, Idle),
+        edge(WakeArmed, TICK, WakeArmed),
+        edge(WakeArmed, TICK, SlotReserved),
+        edge(WakeArmed, LINK_CONNECTED, Idle),
+        edge(WakeArmed, LINK_CONNECTED, WakeArmed),
+        edge(WakeArmed, LINK_LOST, Disconnected),
+        edge(WakeArmed, DRAIN_FENCED, WakeArmed),
+        edge(DrainOpen, STORED, DrainArmed),
+        edge(DrainOpen, TICK, Idle),
+        edge(DrainOpen, TICK, WakeArmed),
+        edge(DrainOpen, TICK, DrainOpen),
+        edge(DrainOpen, TICK, DrainArmed),
+        edge(DrainOpen, TICK, SlotReserved),
+        edge(DrainOpen, LINK_CONNECTED, Idle),
+        edge(DrainOpen, LINK_CONNECTED, WakeArmed),
+        edge(DrainOpen, LINK_CONNECTED, DrainOpen),
+        edge(DrainOpen, LINK_CONNECTED, DrainArmed),
+        edge(DrainOpen, LINK_LOST, Disconnected),
+        edge(DrainOpen, DRAIN_FENCED, Idle),
+        edge(DrainArmed, STORED, DrainArmed),
+        edge(DrainArmed, TICK, Idle),
+        edge(DrainArmed, TICK, WakeArmed),
+        edge(DrainArmed, TICK, DrainOpen),
+        edge(DrainArmed, TICK, DrainArmed),
+        edge(DrainArmed, TICK, SlotReserved),
+        edge(DrainArmed, LINK_CONNECTED, Idle),
+        edge(DrainArmed, LINK_CONNECTED, WakeArmed),
+        edge(DrainArmed, LINK_CONNECTED, DrainOpen),
+        edge(DrainArmed, LINK_CONNECTED, DrainArmed),
+        edge(DrainArmed, LINK_LOST, Disconnected),
+        edge(DrainArmed, DRAIN_FENCED, WakeArmed),
+        edge(SlotReserved, STORED, SlotReserved),
+        edge(SlotReserved, TICK, SlotReserved),
+        edge(SlotReserved, LINK_CONNECTED, SlotReserved),
+        edge(SlotReserved, LINK_LOST, Disconnected),
+        edge(SlotReserved, DRAIN_FENCED, SlotReserved),
+        edge(SlotReserved, BATCH_ENDED, Idle),
+        edge(SlotReserved, BATCH_ENDED, WakeArmed),
+        edge(SlotReserved, BATCH_ENDED, DrainOpen),
+        edge(SlotReserved, BATCH_ENDED, DrainArmed),
+    ]
+};
+
+const fn edge(from: SchedulePhase, event: &'static str, to: SchedulePhase) -> Transition {
+    Transition {
+        from: from.tag(),
+        event,
+        to: to.tag(),
+        terminal: false,
+    }
+}
+
+impl StateMachine for OutboxSchedule {
+    type State = OutboxFlushState;
+    type Event = FlushEvent;
+    type Effect = FlushEffect;
+    type Error = FlushTransitionError;
+
+    fn transition(state: &Self::State, event: Self::Event) -> StateMachineResult<Self> {
+        let mut next = state.clone();
+        let effects = apply_event(&mut next, event).map_err(TransitionError::Domain)?;
+        Ok((next, effects))
+    }
+
+    fn transitions() -> &'static [Transition] {
+        SCHEDULE_TRANSITIONS
+    }
+}
+
+fn apply_event(
     state: &mut OutboxFlushState,
     event: FlushEvent,
 ) -> Result<Vec<FlushEffect>, FlushTransitionError> {
     let mut effects = Vec::new();
     let mut tick_now = None;
     let earliest_due = match event {
-        FlushEvent::LocalDeadlineChanged { deadline } => {
-            effects.push(FlushEffect::WakeAtLocalDeadline { deadline });
-            return Ok(effects);
-        }
         FlushEvent::Stored { flush_at } => {
             // Something waits at least this early; keep an earlier armed wake.
             Some(
@@ -229,6 +332,10 @@ pub(crate) fn advance_schedule(
             state.stop_draining_mark();
             state.armed_wake = None;
             None
+        }
+        FlushEvent::DrainFenced => {
+            state.stop_draining_mark();
+            return Ok(effects);
         }
         FlushEvent::BatchEnded {
             earliest_due,
@@ -262,7 +369,9 @@ fn flush_on_mark(
     if !(open && ready && has_due) {
         return None;
     }
-    state.consumed_marks.insert(mark);
+    if !state.consumed_marks.contains(&mark) {
+        Arc::make_mut(&mut state.consumed_marks).insert(mark);
+    }
     state.draining_mark = Some(mark);
     state.in_flight = Some(mark);
     Some(mark)
@@ -303,5 +412,5 @@ fn rearm(
 }
 
 #[cfg(test)]
-#[path = "outbox_flush_test.rs"]
+#[path = "schedule_test.rs"]
 mod tests;

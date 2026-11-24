@@ -4,7 +4,11 @@ use central_link_client::WelcomeClockAnchor;
 use central_link_protocol::MAX_LINK_REQUEST_BATCH_SIZE;
 use router_clock::{ClockInstant, RuntimeClock};
 use runtime_primitives::SyncTime;
-use std::{collections::BTreeSet, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+    time::Duration,
+};
 use switchboard_machine_core_store::{
     ClaimedBatch, EndedWrite, OutboxStorage, OutboxStoreError, UnansweredOutboxClaim,
 };
@@ -18,6 +22,37 @@ use crate::{
 };
 
 const ORIGINAL_WRITE_WINDOW_MS: i64 = 15 * 60 * 1_000;
+
+/// Protects fresh receipt promises during a backward Welcome rebase.
+pub(super) struct RebasedMarks {
+    pub(super) due_through: SyncTime,
+    fresh_receipts: BTreeMap<RequestId, SyncTime>,
+}
+
+impl RebasedMarks {
+    pub(super) fn new(due_through: SyncTime) -> Self {
+        Self {
+            due_through,
+            fresh_receipts: BTreeMap::new(),
+        }
+    }
+
+    pub(super) fn remember_admission(&mut self, request: RequestId, mark: SyncTime) {
+        self.fresh_receipts.entry(request).or_insert(mark);
+    }
+
+    pub(super) fn defer_fresh_receipts(&self, mark: SyncTime) -> BTreeSet<RequestId> {
+        self.fresh_receipts
+            .iter()
+            .filter(|(_, receipt)| **receipt > mark && **receipt <= self.due_through)
+            .map(|(request, _)| request.clone())
+            .collect()
+    }
+
+    pub(super) fn forget_completed(&mut self, request: &RequestId) {
+        self.fresh_receipts.remove(request);
+    }
+}
 
 /// The result of asking the outbox to claim a batch on the selected shared mark.
 #[derive(Debug)]
