@@ -219,7 +219,7 @@ impl ProviderConversationBackend for ExternalProviderSupervisor {
                             },
                             configured_roots,
                         ).await.and_then(|setup| setup.settings_failure.map_or(Ok(setup.created), Err));
-                        match created {
+                        let completion = match created {
                             Ok(created) => {
                                 match SessionId::try_from(created.provider_session_id) {
                                     Ok(session_id) => {
@@ -352,7 +352,17 @@ impl ProviderConversationBackend for ExternalProviderSupervisor {
                                 None,
                                 error,
                             )),
+                        };
+                        let session = match &completion {
+                            ProviderOperationCompletion::Success { session_record: Some(record), .. }
+                            | ProviderOperationCompletion::FailureWithSession { session_record: record, .. } => Some(&record.target),
+                            _ => None,
+                        };
+                        if let Some(session) = session {
+                            let outcome = completion_inner.session_token_at_creation.request(session).await;
+                            tracing::debug!(?outcome, "session token at creation");
                         }
+                        completion
                     });
                     Ok(admitted_submission(snapshot))
                 }
@@ -767,3 +777,7 @@ impl ProviderConversationBackend for ExternalProviderSupervisor {
 #[cfg(test)]
 #[path = "provider_conversation_backend_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "session_token_at_creation_test.rs"]
+mod session_token_tests;
