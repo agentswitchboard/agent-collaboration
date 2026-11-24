@@ -157,16 +157,9 @@ impl Ledger {
                             workspace: fixture_project().workspace,
                         }
                     }
-                    Self::Abandoned(..) | Self::Ended(..) => {
-                        let settlement = effective.settlement().unwrap();
-                        if self
-                            .reservation()
-                            .is_none_or(|saved| saved.attempt != attempt)
-                        {
-                            *self = effective;
-                        }
-                        Reply::Settled { settlement }
-                    }
+                    Self::Abandoned(..) | Self::Ended(..) => Reply::Settled {
+                        settlement: effective.settlement().unwrap(),
+                    },
                 };
                 SessionReceipt::Create(reply)
             }

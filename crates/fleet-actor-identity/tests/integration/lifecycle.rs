@@ -500,17 +500,24 @@ async fn failure_after_actor_insert_rolls_back_before_retry() {
 }
 
 #[tokio::test]
-async fn equal_create_after_reservation_deadline_returns_projection_without_persisting_it() {
+async fn create_replays_after_rotation_return_expiry_without_changing_the_row() {
     use fleet_identity_protocol::{AbandonedSessionCause, SessionSettlement};
 
     let mut store = SessionStoreFixture::new().await;
-    let request = create(5, 1);
-    let (session_id, secret) = reservation(
+    let (session_id, first_secret) = reservation(
         store
-            .apply(Operation::Create(request.clone()), 0)
+            .apply(Operation::Create(create(5, 1)), 0)
             .await
             .unwrap(),
     );
+    let (rotated_session_id, rotated_secret) = reservation(
+        store
+            .apply(Operation::Create(create(5, 2)), 1)
+            .await
+            .unwrap(),
+    );
+    assert_eq!(rotated_session_id, session_id);
+    assert_ne!(rotated_secret, first_secret);
     let before = entire_session_row(&store).await;
     let expected = SessionSettlement::Abandoned {
         cause: AbandonedSessionCause::TimeRanOut {},
@@ -518,21 +525,23 @@ async fn equal_create_after_reservation_deadline_returns_projection_without_pers
     };
 
     for now in [600_000, 600_001] {
-        assert_eq!(
-            store
-                .apply(Operation::Create(request.clone()), now)
-                .await
-                .unwrap(),
-            Receipt::Create(SessionCallOutcome::Answered(
-                CreateFleetSessionReply::Settled {
-                    settlement: expected.clone(),
-                }
-            )),
-        );
-        assert!(
-            entire_session_row(&store).await == before,
-            "equal replay changed the stored session row"
-        );
+        for attempt in [1, 2, 3] {
+            assert_eq!(
+                store
+                    .apply(Operation::Create(create(5, attempt)), now)
+                    .await
+                    .unwrap(),
+                Receipt::Create(SessionCallOutcome::Answered(
+                    CreateFleetSessionReply::Settled {
+                        settlement: expected.clone(),
+                    }
+                )),
+            );
+            assert!(
+                entire_session_row(&store).await == before,
+                "Create replay of attempt {attempt} at {now} changed the stored session row"
+            );
+        }
     }
 
     assert_eq!(
@@ -541,7 +550,7 @@ async fn equal_create_after_reservation_deadline_returns_projection_without_pers
                 Operation::Bind(BindFleetSession {
                     session_id,
                     harness_session_id: "deadline-witness".parse().unwrap(),
-                    secret,
+                    secret: rotated_secret,
                 }),
                 600_002
             )

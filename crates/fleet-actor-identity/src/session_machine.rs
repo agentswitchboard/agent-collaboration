@@ -171,44 +171,25 @@ fn create(
                 address: address_of(&bound),
             }),
         ),
-        SessionState::Abandoned {
-            reserved,
-            cause,
-            at,
-        } => {
-            let settlement = SessionSettlement::Abandoned {
-                cause,
-                time: wire_time(at)?,
-            };
-            let next = if reserved.attempt == attempt {
-                state.clone()
-            } else {
-                state.read_at(now, enrollment_ended_at)
-            };
-            Ok((
-                next,
-                vec![SessionReceipt::Create(CreateFleetSessionReply::Settled {
-                    settlement,
-                })],
-            ))
-        }
-        SessionState::Ended { bound, cause, at } => {
-            let settlement = SessionSettlement::Ended {
-                cause,
-                time: wire_time(at)?,
-            };
-            let next = if bound.reserved.attempt == attempt {
-                state.clone()
-            } else {
-                state.read_at(now, enrollment_ended_at)
-            };
-            Ok((
-                next,
-                vec![SessionReceipt::Create(CreateFleetSessionReply::Settled {
-                    settlement,
-                })],
-            ))
-        }
+        // Create reports the projected settlement. Bind and End persist it.
+        SessionState::Abandoned { cause, at, .. } => unchanged(
+            state,
+            SessionReceipt::Create(CreateFleetSessionReply::Settled {
+                settlement: SessionSettlement::Abandoned {
+                    cause,
+                    time: wire_time(at)?,
+                },
+            }),
+        ),
+        SessionState::Ended { cause, at, .. } => unchanged(
+            state,
+            SessionReceipt::Create(CreateFleetSessionReply::Settled {
+                settlement: SessionSettlement::Ended {
+                    cause,
+                    time: wire_time(at)?,
+                },
+            }),
+        ),
     }
 }
 

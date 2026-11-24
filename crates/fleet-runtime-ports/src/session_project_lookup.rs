@@ -25,6 +25,10 @@ pub struct NamedProjectMembership {
 }
 
 impl SessionProjectLookup {
+    /// Issues a membership result through the host's workspace owner transport.
+    /// The two production hosts supply that transport when composing Central,
+    /// where they already hold the organization and workspace capabilities.
+    /// Ordinary callers use the composed runtime and cannot construct the private proof from raw data.
     pub async fn read_named(
         stores: &impl WorkspaceStores,
         workspace: &WorkspaceId,
