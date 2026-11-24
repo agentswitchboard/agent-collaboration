@@ -188,3 +188,99 @@ async fn uncertain_rotation_recovery_does_not_open_or_write_a_replacement_key() 
     fixture.store.close().await.unwrap();
     other_writer.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn ended_enrollment_without_a_deployment_is_corrupt() {
+    let fixture = Fixture::open().await;
+    let mut connection = fixture.connection().await;
+    let document = serde_json::json!({
+        "state": "ended", "organizationId": fixture::ORGANIZATION,
+        "enrollmentId": ENROLLMENT, "why": {"kind": "revoked"},
+    });
+    sqlx::query("UPDATE machine_identity SET enrollment_generation = 1, enrollment_json = ?")
+        .bind(document.to_string())
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    let before = row_columns(&mut connection).await;
+    let replacement = fixture.binding(2, ALTERNATE_ENROLLMENT, TOKEN);
+
+    assert!(matches!(
+        fixture.detail().await,
+        Err(ReadFailure::Corrupt(EnrollmentRowCorruption::Json))
+    ));
+    assert_eq!(
+        fixture.store.replace(generation(1), &replacement).await,
+        Err(CredentialStoreError::Replace)
+    );
+    assert_eq!(row_columns(&mut connection).await, before);
+}
+
+#[tokio::test]
+async fn ended_enrollment_refuses_a_noncanonical_stored_deployment() {
+    let fixture = Fixture::open().await;
+    let mut connection = fixture.connection().await;
+    let document = serde_json::json!({
+        "state": "ended", "organizationId": fixture::ORGANIZATION,
+        "deployment": "https://signin.example", "enrollmentId": ENROLLMENT,
+        "why": {"kind": "revoked"},
+    });
+    sqlx::query("UPDATE machine_identity SET enrollment_generation = 1, enrollment_json = ?")
+        .bind(document.to_string())
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    let before = row_columns(&mut connection).await;
+    let key = fixture.binding(2, ENROLLMENT, TOKEN).key();
+    let replacement = fixture.binding(2, ALTERNATE_ENROLLMENT, TOKEN);
+
+    assert!(matches!(
+        fixture.detail().await,
+        Err(ReadFailure::Corrupt(EnrollmentRowCorruption::Deployment))
+    ));
+    assert_eq!(
+        fixture.store.read_for_key(&key).await,
+        Err(CredentialStoreError::Read)
+    );
+    assert_eq!(
+        fixture.store.read_metadata().await,
+        Err(CredentialStoreError::Read)
+    );
+    assert_eq!(
+        fixture.store.replace(generation(1), &replacement).await,
+        Err(CredentialStoreError::Replace)
+    );
+    assert_eq!(row_columns(&mut connection).await, before);
+}
+
+#[tokio::test]
+async fn replace_compares_the_organization_in_the_locked_snapshot() {
+    const OTHER_ORGANIZATION: &str = "019a0000-0000-7000-8000-000000000004";
+    let fixture = Fixture::open().await;
+    fixture.install().await;
+    assert_eq!(
+        fixture
+            .store
+            .remove(generation(1), EnrollmentEnd::Revoked)
+            .await,
+        Ok(ConditionalWrite::Applied)
+    );
+    let replacement = fixture.binding(3, ALTERNATE_ENROLLMENT, TOKEN);
+    let (prepared, release) = fixture.faults.hold_prepared_replacement();
+    let mut replace = Box::pin(fixture.store.replace(generation(2), &replacement));
+    assert_queued(replace.as_mut());
+    prepared.await.unwrap();
+    let mut connection = fixture.connection().await;
+    sqlx::query("UPDATE machine_identity SET enrollment_json = json_set(enrollment_json, '$.organizationId', ?)")
+        .bind(OTHER_ORGANIZATION)
+        .execute(&mut connection).await.unwrap();
+    let changed_row = row_columns(&mut connection).await;
+    let changes = fixture.store.subscribe_enrollment_changes();
+
+    release.send(()).unwrap();
+    let result = replace.await;
+
+    assert_eq!(result, Err(CredentialStoreError::EnrollmentScopeMismatch));
+    assert_eq!(row_columns(&mut connection).await, changed_row);
+    assert!(!changes.has_changed().unwrap());
+}

@@ -154,6 +154,7 @@ impl CredentialStore for RowStore {
                 key: binding.key(),
                 generation,
                 why,
+                deployment: binding.context.deployment.clone(),
             };
             true
         });
@@ -444,6 +445,7 @@ async fn central_ended_cause_preserves_the_distinct_stored_reason() {
             key,
             generation: BindingGeneration::from_persisted(2).unwrap(),
             why: StoredEnding::EndedByCentral,
+            deployment: fixture.binding.context.deployment.clone(),
         }
     );
 }
@@ -552,6 +554,7 @@ async fn a_definitive_end_waiting_behind_a_stale_refusal_keeps_the_key_fenced() 
             key: key.clone(),
             generation: BindingGeneration::from_persisted(3).unwrap(),
             why: StoredEnding::Revoked,
+            deployment: fixture.binding.context.deployment.clone(),
         }
     );
     assert_eq!(
@@ -691,6 +694,7 @@ async fn a_delayed_lease_refused_callback_cannot_erase_a_new_owner_refusal() {
             key,
             generation: BindingGeneration::from_persisted(3).unwrap(),
             why: StoredEnding::RefreshRefused,
+            deployment: fixture.binding.context.deployment.clone(),
         }
     );
     assert!(fixture.refreshes.try_recv().is_err());

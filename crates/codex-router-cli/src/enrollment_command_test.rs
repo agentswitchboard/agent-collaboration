@@ -1,8 +1,22 @@
 use std::ffi::OsString;
 
-use switchboard_machine_enrollment::{DeviceInstructions, EnrollmentEnd, EnrollmentFailure};
+use switchboard_machine_enrollment::{
+    CredentialStoreError, DeviceInstructions, EnrollmentEnd, EnrollmentFailure,
+};
 
 use super::{EnrollArguments, EnrollCommandError, show_device_instructions};
+
+#[test]
+fn a_scope_refusal_tells_the_person_to_remove_the_machine() {
+    let error = EnrollCommandError::Enrollment(EnrollmentFailure::Store(
+        CredentialStoreError::EnrollmentScopeMismatch,
+    ));
+
+    assert_eq!(
+        error.to_string(),
+        "Remove this machine first, then enroll it in the new organization or sign-in deployment."
+    );
+}
 
 #[test]
 fn enrollment_arguments_take_the_organization_and_sign_in_origin() {

@@ -72,10 +72,10 @@ impl TestWriteFaults {
         self.next.lock().expect("test write fault").replace(fault);
     }
 
-    pub(crate) async fn apply(
+    pub(crate) async fn apply<Abort>(
         &self,
-        write: impl Future<Output = Result<EnrollmentRowWrite<()>, EnrollmentRowStoreError>>,
-    ) -> Result<EnrollmentRowWrite<()>, EnrollmentRowStoreError> {
+        write: impl Future<Output = Result<EnrollmentRowWrite<Abort>, EnrollmentRowStoreError>>,
+    ) -> Result<EnrollmentRowWrite<Abort>, EnrollmentRowStoreError> {
         let fault = self.next.lock().ok().and_then(|mut next| next.take());
         match fault {
             Some(TestWriteFault::BeforeCommit) => {
