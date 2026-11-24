@@ -1,10 +1,10 @@
 //! Typed calls over the active Tokio socket, using the owning link's send and close paths.
-use super::{LinkWrites, Runtime};
+use super::{LinkWrites, Runtime, link_io::write_central_text};
 use crate::machine_call_queue::{MacCallReceiver, QueuedMacCall};
-use axum::extract::ws::{Message, WebSocket, close_code};
+use axum::extract::ws::{WebSocket, close_code};
 use central_link_protocol::{
-    CentralCall, CorrelationId, DataFrame, FrameDirection, LinkFrame, MachineLinkCloseCode,
-    TypedCallResult, encode_text,
+    CentralCall, CorrelationId, DataFrame, LinkFrame, MachineLinkCloseCode, TypedCallResult,
+    encode_central_egress,
 };
 use collaboration_central_core::{
     TypedCallCarrier, ValidatedMachineConnection, is_approval_holder_call,
@@ -50,7 +50,9 @@ pub(super) async fn reply_to_typed_call(
     {
         Ok(dispatched) => dispatched,
         Err(_) => {
-            writes.close(socket, close_code::ERROR, "central unavailable");
+            writes
+                .close(socket, close_code::ERROR, "central unavailable")
+                .await;
             return false;
         }
     };
@@ -87,7 +89,10 @@ pub(super) async fn reply_to_fixture_probe(
             ) else {
                 return false;
             };
-            writes.send_text(socket, text).await
+            let Ok(encoded) = central_link_protocol::CentralEgress::from_fixture_text(text) else {
+                return false;
+            };
+            writes.send_prepared_text(socket, encoded).await
         }
         Ok(TypedCallResult::Refused { reason }) => {
             send_central_call_result(
@@ -99,7 +104,9 @@ pub(super) async fn reply_to_fixture_probe(
             .await
         }
         Err(_) => {
-            writes.close(socket, close_code::ERROR, "central unavailable");
+            writes
+                .close(socket, close_code::ERROR, "central unavailable")
+                .await;
             false
         }
     }
@@ -120,8 +127,9 @@ async fn send_central_call_result(
         result: Box::new(result),
     });
     if let Some(cause) = lapsed {
-        writes.attempt_terminal_refusal(socket, &reply).await;
-        writes.close_authority(socket, cause);
+        writes
+            .send_terminal_refusal_then_close(socket, Some(&reply), cause)
+            .await;
         return false;
     }
     writes.send(socket, &reply).await
@@ -154,14 +162,14 @@ pub(super) async fn offer_mac_call(
     #[cfg(feature = "test-support")]
     let is_notice = queued.approval_notice().is_some();
     let deadline = queued.deadline();
-    let Ok(text) = encode_text(&queued.frame(), FrameDirection::ToRouter) else {
-        return false;
+    let Ok(encoded) = encode_central_egress(&queued.frame()) else {
+        return true;
     };
     let prevented = queued.prewrite_cancellation();
     let attachment = connection.attachment();
     let waker = poll_fn(|context| Poll::Ready(context.waker().clone())).await;
     let outcome = 'write: {
-        let send = socket.send(Message::Text(text.into()));
+        let send = write_central_text(socket, encoded);
         tokio::pin!(send);
         // Keep the organization turn through the first poll. Backpressure after that
         // poll belongs to the socket, so subsequent polls do not hold the turn.
@@ -228,19 +236,23 @@ pub(super) async fn offer_mac_call(
     match outcome {
         WriteOutcome::Skipped | WriteOutcome::Finished(true) => true,
         WriteOutcome::Finished(false) => {
-            writes.close_if_authority_cancelled(socket);
+            writes.close_if_authority_cancelled(socket).await;
             false
         }
         WriteOutcome::LinkEnded => {
-            writes.close(socket, close_code::NORMAL, "machine link ended");
+            writes
+                .close(socket, close_code::NORMAL, "machine link ended")
+                .await;
             false
         }
         WriteOutcome::AuthorityLapsed(cause) => {
-            writes.close_authority(socket, cause);
+            writes.close_authority(socket, cause).await;
             false
         }
         WriteOutcome::Unavailable => {
-            writes.close(socket, close_code::ERROR, "central unavailable");
+            writes
+                .close(socket, close_code::ERROR, "central unavailable")
+                .await;
             false
         }
     }

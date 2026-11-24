@@ -1,4 +1,5 @@
 //! Physical carrier, enrollment and failure-boundary approval journeys.
+use crate::fixture_link_reader::read_fixture_frame;
 use crate::{
     ConformanceResult as Result,
     approval_link_scenarios::{
@@ -242,7 +243,6 @@ pub async fn corrupt_approval_charges_only_its_own_attempt(
 
 use approval_request_protocol::RegisterRunRequest;
 use central_link_protocol::{LinkCallRefusal, MachineLinkCloseCode, approval_rpc::RegisterRunRpc};
-use futures_util::StreamExt;
 use reqwest_websocket::{CloseCode, Message, WebSocket};
 use std::future::Future;
 pub async fn approval_authority_refusals_leave_store_unchanged(
@@ -307,7 +307,7 @@ pub async fn approval_authority_refusals_leave_store_unchanged(
         }
     );
     assert!(
-        matches!(socket.next().await, Some(Ok(Message::Close { code, .. })) if u16::from(code) == MachineLinkCloseCode::Revoked.code())
+        matches!(read_fixture_frame(&mut socket, "revoked close").await?, Some(Ok(Message::Close { code, .. })) if u16::from(code) == MachineLinkCloseCode::Revoked.code())
     );
     assert_eq!(snapshot(fixture).await?, before);
     Ok(())

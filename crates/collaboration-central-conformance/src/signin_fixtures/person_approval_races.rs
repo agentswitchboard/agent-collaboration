@@ -1,5 +1,6 @@
 //! Force each competitor through its production entrance while signed Decide is held.
 
+use crate::fixture_link_reader::read_fixture_frame;
 use std::future::Future;
 
 use approval_request_protocol::{
@@ -316,7 +317,7 @@ async fn require_inactive(socket: &mut WebSocket) -> Result<()> {
         None => {
             // A missing invalidation responds to this heartbeat instead of closing.
             let _ = socket.send(Message::Text("ping".into())).await;
-            socket.next().await
+            read_fixture_frame(socket, "Inactive authority close").await?
         }
     };
     if !matches!(frame, Some(Ok(Message::Close { code, .. }))

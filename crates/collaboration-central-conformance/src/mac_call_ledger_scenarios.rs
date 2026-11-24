@@ -11,16 +11,14 @@ use crate::approval_link_scenarios::{
     announce_mac_calls, answer_ending, exchange_direct_mail, next_ending, observe_received,
     require_owed,
 };
+use crate::fixture_link_reader::read_fixture_frame;
 use approval_request_protocol::{DeliverEndingReply, Raise};
 use central_link_protocol::{
     MAX_SOCKET_MAC_CALL_ITEMS, MacCallKind,
     approval_rpc::{ApprovalHolderTarget, ApprovalNoticeEnvelope},
 };
 use central_storage::SqlValue;
-use futures_util::{
-    StreamExt,
-    future::{Either, select},
-};
+use futures_util::future::{Either, select};
 use reqwest_websocket::{CloseCode, Message};
 use std::{future::Future, pin::pin};
 
@@ -159,7 +157,7 @@ pub async fn both_live_and_recovered_items_have_one_attempt(
     register(&mut empty, &holder).await?;
     heartbeat(&mut empty).await?;
     announce_mac_calls(&mut empty, vec![MacCallKind::DeliverEnding]).await?;
-    match empty.next().await {
+    match read_fixture_frame(&mut empty, "capability close").await? {
         Some(Ok(Message::Close { code, .. })) if u16::from(code) == duplicate_close => {}
         frame => {
             return Err(

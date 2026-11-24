@@ -6,6 +6,7 @@ use central_storage::{
     AlarmUpdate, BatchOutcome, GuardedStatement, RowExpectation, SqlValue, Statement,
     StatementBatch,
 };
+use collaboration_central_conformance::fixture_link_reader::read_fixture_frame;
 
 #[tokio::test]
 async fn a_real_link_answers_one_and_sixty_four_receipts_and_refuses_invalid_frames() -> Result<()>
@@ -50,7 +51,7 @@ async fn a_real_link_answers_one_and_sixty_four_receipts_and_refuses_invalid_fra
             let mut socket = fixture.connect().await?;
     receive(&mut socket).await?;
             socket.send(Message::Text(frame.to_string())).await?;
-            if !matches!(socket.next().await, Some(Ok(Message::Close { .. }))) {
+            if !matches!(read_fixture_frame(&mut socket, "receipt frames link frame").await?, Some(Ok(Message::Close { .. }))) {
                 return Err("malformed or old receipt frame must close without results".into());
             }
         }
@@ -142,7 +143,7 @@ async fn revoke_between_receipts(fixture: &Fixture) -> Result<()> {
     held.release();
     revoked?;
     loop {
-        let next = socket.next().await;
+        let next = read_fixture_frame(&mut socket, "link close").await?;
         match next {
             Some(Ok(Message::Close { .. })) => break,
             Some(Ok(Message::Text(text))) => {
@@ -469,7 +470,7 @@ async fn receipt_expiry_journey(fixture: &Fixture, enrollment: EnrollmentAtApply
     send(&mut socket, &LinkFrame::Data(receipt_frame)).await?;
     tokio::select! {
         () = hold.until_held() => {}
-        early = socket.next() => {
+        early = read_fixture_frame(&mut socket, "receipt frames link frame")=> {
             return Err(format!("receipt emitted a frame before the transaction barrier: {early:?}").into());
         }
     }
@@ -494,7 +495,7 @@ async fn receipt_expiry_journey(fixture: &Fixture, enrollment: EnrollmentAtApply
     .await;
     hold.release();
     applying?;
-    let reply = socket.next().await;
+    let reply = read_fixture_frame(&mut socket, "receipt frames link frame").await?;
     let expected_close = enrollment.expected_close();
     if !matches!(reply, Some(Ok(Message::Close { code, .. })) if MachineLinkCloseCode::from_code(code.into()) == Some(expected_close))
     {

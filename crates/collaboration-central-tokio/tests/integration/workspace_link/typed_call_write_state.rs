@@ -5,7 +5,9 @@ use super::typed_calls::{
 };
 use super::{Fixture, INSTALLATION, receive, send, start_fixture};
 use central_link_protocol::{DataFrame, LinkFrame, LinkRequest, test_calls::MacProbe};
-use collaboration_central_conformance::ConformanceResult as Result;
+use collaboration_central_conformance::{
+    ConformanceResult as Result, machine_link_boundary::expect_transport_pong,
+};
 use collaboration_central_core::TYPED_LINK_CALL_TIMEOUT;
 use fleet_rpc::CallFailure;
 use fleet_runtime::PausePoint;
@@ -38,7 +40,7 @@ async fn verify_before_write_expiry_and_cancel(fixture: &Fixture) -> Result<()> 
     }
     fixture.clock.advance(TYPED_LINK_CALL_TIMEOUT)?;
     expect_call_failure(expired.await, CallFailure::NeverReached)?;
-    socket_barrier(&mut socket).await?;
+    expect_transport_pong(&mut socket).await?;
 
     let mut cancelled = Box::pin(fixture.host.call_machine::<MacProbe>(
         &fixture.organization_id,
@@ -50,7 +52,7 @@ async fn verify_before_write_expiry_and_cancel(fixture: &Fixture) -> Result<()> 
         () = execution.until_admission_waiting(1) => {},
     }
     drop(cancelled);
-    socket_barrier(&mut socket).await?;
+    expect_transport_pong(&mut socket).await?;
     drop(turn);
 
     let retry = start_mac_call(fixture, &mut socket, 3).await?;

@@ -3,6 +3,7 @@ use super::receipt_frames::{EnrollmentAtApply, stored_ending_batch};
 use super::typed_calls::connect;
 use central_link_protocol::{LinkCallRefusal, MachineLinkCloseCode};
 use central_storage::{BatchOutcome, SqlValue};
+use collaboration_central_conformance::fixture_link_reader::read_fixture_frame;
 use collaboration_central_conformance::{
     ConformanceResult as Result,
     session_link_scenarios::{
@@ -98,7 +99,6 @@ async fn check_revoked_socket(fixture: &Fixture, stage: SessionLifecycleStage) -
 #[tokio::test]
 async fn rechecks_session_authority_after_outer_restore_on_tokio() -> Result<()> {
     use fleet_runtime::PausePoint;
-    use futures_util::StreamExt;
 
     for cause in [MachineLinkCloseCode::Expired, MachineLinkCloseCode::Revoked] {
         for stage in [
@@ -117,7 +117,7 @@ async fn rechecks_session_authority_after_outer_restore_on_tokio() -> Result<()>
                 let correlation = send_session_call(&mut socket, &fixture.organization_id, request).await?;
                 tokio::select! {
                     () = hold.until_held() => {},
-                    _ = socket.next() => return Err("call replied before the transaction barrier".into()),
+                    _ = read_fixture_frame(&mut socket, "session calls link frame")=> return Err("call replied before the transaction barrier".into()),
                 }
                 if cause == MachineLinkCloseCode::Expired {
                     fixture.clock.advance(std::time::Duration::from_secs(600))?;
@@ -174,7 +174,6 @@ async fn tokio_central_fault_rolls_back_create_and_keeps_the_link_open() -> Resu
 
 #[tokio::test]
 async fn tokio_wrong_target_refuses_before_the_failing_lender() -> Result<()> {
-    use futures_util::StreamExt;
     use reqwest_websocket::Message;
     let fixture = start_session_link_fixture(signed_clock()?).await?;
     let observed: Result<()> = async {
@@ -183,7 +182,7 @@ async fn tokio_wrong_target_refuses_before_the_failing_lender() -> Result<()> {
         owner.runtime().statement_host().fail_next_session_loan();
         expect_create_refusal(&mut socket, &OTHER_ORG.to_owned().try_into()?, LinkCallRefusal::WrongTarget).await?;
         send_session_call(&mut socket, &fixture.organization_id, collaboration_central_conformance::session_link_scenarios::SessionLinkCall::Create).await?;
-        if !matches!(socket.next().await, Some(Ok(Message::Close { code, .. })) if u16::from(code) == 1011) {
+        if !matches!(read_fixture_frame(&mut socket, "session calls link frame").await?, Some(Ok(Message::Close { code, .. })) if u16::from(code) == 1011) {
             return Err("matching target did not reach the still-armed transaction fault".into());
         }
         Ok(())

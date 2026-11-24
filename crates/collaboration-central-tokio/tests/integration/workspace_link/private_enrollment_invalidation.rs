@@ -7,6 +7,7 @@ use central_storage::{
     AlarmUpdate, BatchOutcome, GuardedStatement, RowExpectation, SqlValue, Statement,
     StatementBatch,
 };
+use collaboration_central_conformance::fixture_link_reader::read_fixture_frame;
 use collaboration_central_conformance::{ConformanceResult as Result, signin_fixtures as signed};
 use fleet_contracts::{DeviceLoginDecision, MachineTokenDecision, MachineTokenRefusal};
 use fleet_identity_protocol::EnrollmentId;
@@ -97,7 +98,7 @@ async fn delayed_invalidation(fixture: &Fixture) -> Result<()> {
     tokio::select! {
         () = barrier.until_held() => {},
         answer = &mut mint => return Err(format!("private idle mint answered before the invalidation hold: {answer:?}").into()),
-        frame = original.next() => return Err(format!("original socket produced a frame before invalidation: {frame:?}").into()),
+        frame = read_fixture_frame(&mut original, "private enrollment invalidation link frame")=> return Err(format!("original socket produced a frame before invalidation: {frame:?}").into()),
     }
     let replacement = dial_before_dispatch(fixture, &mut original).await;
     barrier.release();
@@ -187,7 +188,7 @@ async fn require_private_inactive_close(socket: &mut WebSocket) -> Result<()> {
             // A literal heartbeat bypasses authority restoration on both hosts.
             // If the invalidation is missing, the old link will answer pong.
             let _ = socket.send(Message::Text("ping".into())).await;
-            socket.next().await
+            read_fixture_frame(socket, "private enrollment invalidation link frame").await?
         }
     };
     if !matches!(frame, Some(Ok(Message::Close { code, .. }))

@@ -4,6 +4,7 @@ use central_link_protocol::{
     ReceiptResult,
 };
 use central_storage::{SqlValue, Statement};
+use collaboration_central_conformance::fixture_link_reader::read_fixture_frame;
 use reqwest_websocket::WebSocket;
 use workspace_ids::MessageId;
 use workspace_model::{
@@ -294,7 +295,10 @@ async fn send(socket: &mut WebSocket, frame: &LinkFrame) -> Result<()> {
 }
 
 async fn receive(socket: &mut WebSocket) -> Result<LinkFrame> {
-    let Some(Message::Text(encoded)) = socket.next().await.transpose()? else {
+    let Some(Message::Text(encoded)) = read_fixture_frame(socket, "deadline settlement link frame")
+        .await?
+        .transpose()?
+    else {
         return Err("expected a Central text frame".into());
     };
     Ok(central_link_protocol::decode_text(

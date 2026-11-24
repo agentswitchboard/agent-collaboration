@@ -4,7 +4,7 @@ use axum::{
     Router,
     extract::{
         Path, State, WebSocketUpgrade,
-        ws::{CloseFrame, Message, WebSocket, close_code},
+        ws::{WebSocket, close_code},
     },
     http::{HeaderMap, StatusCode, header::AUTHORIZATION},
     response::{IntoResponse, Response},
@@ -12,8 +12,8 @@ use axum::{
 };
 use central_link_protocol::{
     DataFrame, FrameDirection, LinkFrame, LinkRequest, MachineLinkCloseCode, ProtocolError,
-    ReceiptResult, ReplyPayload, RequestPayload, RequestRefusal, RequestStatusAnswer, TimeLeft,
-    TokenRenewalRefusal, TokenRenewalResult, decode_text, encode_text,
+    ReceiptResult, ReplyPayload, RequestPayload, RequestStatusAnswer, TokenRenewalRefusal,
+    TokenRenewalResult, decode_text,
 };
 use collaboration_central_core::{
     ApplyingRequestFailure, MachineLinkAdmission, MachineLinkRequestAuthority, RenewalTermination,
@@ -21,19 +21,19 @@ use collaboration_central_core::{
 };
 use collaboration_central_core::{ValidatedMachineConnection, WorkspaceCaller};
 use fleet_contracts::EnrollmentInvalidation;
-use fleet_contracts::mail_link::{
-    MailReceiptSettlement, WELCOME_PAGE_SIZE, WelcomeDeliveryPage, WindowedDeliveryDecision,
-};
+use fleet_contracts::mail_link::MailReceiptSettlement;
 use fleet_identity_protocol::OrganizationId;
-use futures_util::FutureExt;
-use router_clock::RuntimeClock;
-use std::future::Future;
-use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::sync::Arc;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
+#[path = "workspace_link_io.rs"]
+mod link_io;
 #[path = "workspace_typed_link.rs"]
 mod typed_link;
+use link_io::{
+    LinkWrites, close_link, configure_upgrade, handle_heartbeat, offer_windowed_delivery,
+    receive_text, send_authority_close, send_welcome_backlog,
+};
 use typed_link::{offer_mac_call, reply_to_typed_call};
 
 type Runtime = WorkspaceRuntime<ObjectStorage, TokioWorkspaceStores>;
@@ -90,6 +90,7 @@ async fn upgrade_link(
     headers: HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> Response {
+    let upgrade = configure_upgrade(upgrade);
     // Track admission as well as the upgraded connection, including failures.
     let task = state.tasks.token();
     if state.stop.is_cancelled() {
@@ -121,7 +122,7 @@ async fn upgrade_link(
                 })
                 .on_upgrade(move |mut socket| async move {
                     let _task = task;
-                    attempt_close(&mut socket, ended.cause.code(), "");
+                    send_authority_close(&mut socket, state.host.link_clock(), ended.cause).await;
                     close_ended_enrollment(&state, &organization, &ended);
                 })
                 .into_response();
@@ -190,7 +191,7 @@ async fn serve_link(
     let mut registration = match registration {
         Ok(Ok(registration)) => registration,
         Ok(Err(cause)) => {
-            close_link(&mut socket, &state.stop, cause.code(), "");
+            send_authority_close(&mut socket, state.host.link_clock(), cause).await;
             return;
         }
         Err(_) => {
@@ -209,30 +210,69 @@ async fn serve_link(
         authority_close: &registration.authority_close,
         clock: state.host.link_clock(),
         tasks: &state.tasks,
+        #[cfg(feature = "test-support")]
+        pauses: runtime.runtime().pause_points(),
     };
+    #[cfg(feature = "test-support")]
+    link_io::hold_welcome(
+        &runtime,
+        fleet_runtime::PausePoint::BeforeMachineLinkWelcome,
+    )
+    .await;
     if !writes.send(&mut socket, &welcome).await {
         return;
     }
-    if !send_welcome_backlog(&mut socket, &state, &writes, &runtime, &connection).await {
+    #[cfg(feature = "test-support")]
+    link_io::hold_welcome(&runtime, fleet_runtime::PausePoint::AfterMachineLinkWelcome).await;
+    let mut offers = central_link_protocol::SocketDirectMailOffers::default();
+    if !send_welcome_backlog(
+        &mut socket,
+        &writes,
+        &runtime,
+        &connection,
+        &mut offers,
+        false,
+    )
+    .await
+    {
         return;
     }
+    let mut retirement_observed = false;
     loop {
+        if offers.has_deferred()
+            && !link_io::resume_deferred_mail(
+                &mut socket,
+                &writes,
+                &runtime,
+                &connection,
+                &mut offers,
+                std::mem::take(&mut retirement_observed),
+            )
+            .await
+        {
+            return;
+        }
         let message = tokio::select! {
             biased;
             () = state.stop.cancelled() => {
-                writes.close_if_authority_cancelled(&mut socket);
+                writes.close_if_authority_cancelled(&mut socket).await;
                 return;
             }
             () = registration.replaced.cancelled() => {
-                writes.close(&mut socket, close_code::NORMAL, "machine link ended");
+                writes.close(&mut socket, close_code::NORMAL, "machine link ended").await;
                 return;
+            }
+            () = registration.claim_retired.notified() => {
+                retirement_observed = true;
+                continue;
             }
             message = socket.recv() => message,
             ready = registration.receiver.recv() => {
                 let Some(message_id) = ready else { return; };
-                if !offer_windowed_delivery(&mut socket, &state, &writes, &runtime, &connection, &message_id).await {
-                    return;
-                }
+                let open = offer_windowed_delivery(&mut socket, &writes, &runtime, &connection, &mut offers, &message_id).await;
+                #[cfg(feature = "test-support")]
+                runtime.runtime().pause_points().reached_central(fleet_runtime::PausePoint::AfterMachineMailOffer).await;
+                if !open { return; }
                 continue;
             }
             queued = registration.outbound_calls.recv() => {
@@ -243,19 +283,10 @@ async fn serve_link(
                 continue;
             }
         };
-        let Some(Ok(message)) = message else {
-            return;
-        };
-        let text = match message {
-            Message::Text(text) => text,
-            Message::Close(_) => return,
-            // axum handles RFC WebSocket control frames; application heartbeats
-            // are the protocol's literal text ping and pong.
-            Message::Ping(_) | Message::Pong(_) => continue,
-            Message::Binary(_) => {
-                writes.close(&mut socket, close_code::UNSUPPORTED, "text frames required");
-                return;
-            }
+        let text = match receive_text(&mut socket, &writes, message).await {
+            link_io::IncomingText::Text(text) => text,
+            link_io::IncomingText::Control => continue,
+            link_io::IncomingText::Ended => return,
         };
         let frame = match decode_text(&text, FrameDirection::ToCentral) {
             Ok(frame) => frame,
@@ -295,15 +326,19 @@ async fn serve_link(
                 continue;
             }
             Err(ProtocolError::WrongDirection) => {
-                writes.close(
-                    &mut socket,
-                    close_code::UNSUPPORTED,
-                    "unsupported link direction",
-                );
+                writes
+                    .close(
+                        &mut socket,
+                        close_code::UNSUPPORTED,
+                        "unsupported link direction",
+                    )
+                    .await;
                 return;
             }
             Err(_) => {
-                writes.close(&mut socket, close_code::PROTOCOL, "invalid link frame");
+                writes
+                    .close(&mut socket, close_code::PROTOCOL, "invalid link frame")
+                    .await;
                 return;
             }
         };
@@ -331,11 +366,13 @@ async fn serve_link(
                         }
                     }
                     Err(_) => {
-                        writes.close(
-                            &mut socket,
-                            close_code::PROTOCOL,
-                            "duplicate Mac capabilities",
-                        );
+                        writes
+                            .close(
+                                &mut socket,
+                                close_code::PROTOCOL,
+                                "duplicate Mac capabilities",
+                            )
+                            .await;
                         return;
                     }
                 }
@@ -367,7 +404,7 @@ async fn serve_link(
                     .answer(&correlation_id, *result, writes.clock);
             }
             LinkFrame::Ping => {
-                if !writes.send(&mut socket, &LinkFrame::Pong).await {
+                if !handle_heartbeat(&mut socket, &writes, &runtime, &connection).await {
                     return;
                 }
             }
@@ -377,7 +414,7 @@ async fn serve_link(
                 {
                     RequestOutcome::Replied => {}
                     RequestOutcome::AuthorityLapsed(cause) => {
-                        writes.close_authority(&mut socket, cause);
+                        writes.close_authority(&mut socket, cause).await;
                         return;
                     }
                     RequestOutcome::Stopped => return,
@@ -406,7 +443,7 @@ async fn serve_link(
                     }
                 }
                 if let Some(cause) = lapsed {
-                    writes.close_authority(&mut socket, cause);
+                    writes.close_authority(&mut socket, cause).await;
                     return;
                 }
             }
@@ -426,10 +463,13 @@ async fn serve_link(
                         && runtime.take_idle_renewal_send_failure();
                     #[cfg(not(feature = "test-support"))]
                     let fail_send = false;
-                    if !fail_send {
-                        writes.attempt_terminal_refusal(&mut socket, &answer).await;
-                    }
-                    writes.close_authority(&mut socket, termination.cause());
+                    writes
+                        .send_terminal_refusal_then_close(
+                            &mut socket,
+                            (!fail_send).then_some(&answer),
+                            termination.cause(),
+                        )
+                        .await;
                     if let RenewalTermination::EndEnrollment(ended) = termination {
                         #[cfg(feature = "test-support")]
                         runtime
@@ -456,28 +496,26 @@ async fn serve_link(
                 caller,
                 query,
             }) => {
-                let active = match runtime
+                let result = match runtime
                     .restore_machine_link_request(&connection.attachment())
                     .await
                 {
-                    Ok(MachineLinkRequestAuthority::Admitted(active)) => active,
+                    Ok(MachineLinkRequestAuthority::Admitted(active)) => {
+                        runtime.status_for_link_caller(active, caller, &query).await
+                    }
                     Ok(MachineLinkRequestAuthority::Refused(cause)) => {
-                        writes.close_authority(&mut socket, cause);
+                        writes.close_authority(&mut socket, cause).await;
                         return;
                     }
-                    Ok(MachineLinkRequestAuthority::TemporarilyUnavailable) | Err(_) => {
-                        writes.close(&mut socket, close_code::ERROR, "central unavailable");
-                        return;
+                    Ok(MachineLinkRequestAuthority::TemporarilyUnavailable) => {
+                        Ok(RequestStatusAnswer::CentralUnavailable {})
                     }
-                };
-                let result = match WorkspaceCaller::from_machine_link(active, caller) {
-                    Ok(caller) => runtime.request_status(&caller, &query).await,
-                    Err(reason) => Ok(RequestStatusAnswer::Refused(RequestRefusal::Workspace(
-                        reason,
-                    ))),
+                    Err(failure) => Err(failure),
                 };
                 let Ok(result) = result else {
-                    writes.close(&mut socket, close_code::ERROR, "central unavailable");
+                    writes
+                        .close(&mut socket, close_code::ERROR, "central unavailable")
+                        .await;
                     return;
                 };
                 let reply = LinkFrame::Data(DataFrame::RequestStatusReply {
@@ -503,14 +541,24 @@ async fn serve_link(
                         )
                         .await
                     {
-                        Ok(MailReceiptSettlement::Applied) => results.push(ReceiptResult::Recorded),
-                        Ok(MailReceiptSettlement::Stop(result)) => results.push(result),
+                        Ok(MailReceiptSettlement::Applied) => {
+                            offers.release(&receipt.message_id);
+                            results.push(ReceiptResult::Recorded);
+                        }
+                        Ok(MailReceiptSettlement::Stop(result)) => {
+                            if result != ReceiptResult::NotApplicable {
+                                offers.release(&receipt.message_id);
+                            }
+                            results.push(result);
+                        }
                         Ok(MailReceiptSettlement::AuthorityLapsed(cause)) => {
-                            writes.close_authority(&mut socket, cause);
+                            writes.close_authority(&mut socket, cause).await;
                             return;
                         }
                         Err(_) => {
-                            writes.close(&mut socket, close_code::ERROR, "central unavailable");
+                            writes
+                                .close(&mut socket, close_code::ERROR, "central unavailable")
+                                .await;
                             return;
                         }
                     }
@@ -525,120 +573,17 @@ async fn serve_link(
             }
             // Direction validation also rejects server-only frames here.
             _ => {
-                writes.close(
-                    &mut socket,
-                    close_code::UNSUPPORTED,
-                    "unsupported link operation",
-                );
+                writes
+                    .close(
+                        &mut socket,
+                        close_code::UNSUPPORTED,
+                        "unsupported link operation",
+                    )
+                    .await;
                 return;
             }
         }
     }
-}
-
-async fn send_welcome_backlog(
-    socket: &mut WebSocket,
-    state: &LinkState,
-    writes: &LinkWrites<'_>,
-    runtime: &Runtime,
-    connection: &ValidatedMachineConnection,
-) -> bool {
-    let attachment = connection.attachment();
-    let mut cursor = None;
-    loop {
-        let page = tokio::select! {
-            biased;
-            () = state.stop.cancelled() => { writes.close_if_authority_cancelled(socket); return false; }
-            () = writes.replaced.cancelled() => { writes.close_if_authority_cancelled(socket); return false; }
-            page = runtime.windowed_welcome_page(&attachment, cursor.as_ref()) => page,
-        };
-        let rows = match page {
-            Ok(WelcomeDeliveryPage::Ready(rows)) => rows,
-            Ok(WelcomeDeliveryPage::AuthorityLapsed(cause)) => {
-                writes.close_authority(socket, cause);
-                return false;
-            }
-            Err(_) => return false,
-        };
-        cursor = rows
-            .last()
-            .map(fleet_contracts::mail_link::WindowedDelivery::cursor);
-        let count = rows.len();
-        for row in rows {
-            if !offer_windowed_delivery(
-                socket,
-                state,
-                writes,
-                runtime,
-                connection,
-                &row.message.message_id,
-            )
-            .await
-            {
-                return false;
-            }
-        }
-        if count < WELCOME_PAGE_SIZE {
-            return true;
-        }
-    }
-}
-
-async fn offer_windowed_delivery(
-    socket: &mut WebSocket,
-    state: &LinkState,
-    writes: &LinkWrites<'_>,
-    runtime: &Runtime,
-    connection: &ValidatedMachineConnection,
-    message_id: &workspace_ids::MessageId,
-) -> bool {
-    let attachment = connection.attachment();
-    let decision = tokio::select! {
-        biased;
-        () = state.stop.cancelled() => { writes.close_if_authority_cancelled(socket); return false; }
-        () = writes.replaced.cancelled() => { writes.close_if_authority_cancelled(socket); return false; }
-        decision = runtime.prepare_windowed_delivery(&attachment, message_id) => decision,
-    };
-    let delivery = match decision {
-        Ok(WindowedDeliveryDecision::Ready(delivery)) => delivery,
-        Ok(WindowedDeliveryDecision::Ineligible) => {
-            return true;
-        }
-        Ok(WindowedDeliveryDecision::AuthorityLapsed(cause)) => {
-            writes.close_authority(socket, cause);
-            return false;
-        }
-        Err(_) => return false,
-    };
-    let Some(now) =
-        chrono::DateTime::from_timestamp_millis(state.host.current_time().unix_millis())
-    else {
-        return false;
-    };
-    if now >= delivery.expires_at {
-        return true;
-    }
-    let time_left = if matches!(
-        delivery.message.body,
-        workspace_model::central_mail::MessageBody::Direct { .. }
-    ) {
-        let Some(time_left) =
-            TimeLeft::at_handoff(delivery.message.created_at, delivery.expires_at, now)
-        else {
-            return true;
-        };
-        Some(time_left)
-    } else {
-        None
-    };
-    let frame = LinkFrame::Data(DataFrame::Deliver {
-        message: Box::new(central_link_protocol::DeliveryMessage::from(
-            *delivery.message,
-        )),
-        sender: delivery.sender,
-        time_left,
-    });
-    writes.send(socket, &frame).await
 }
 
 /// R40/V32 renewal on the open connection: a renewed connection replaces the
@@ -724,7 +669,9 @@ async fn reply_to_request(
             Ok(ReplyPayload::central_unavailable(request.payload()))
         }
         Ok(MachineLinkRequestAuthority::TemporarilyUnavailable) | Err(_) => {
-            writes.close(socket, close_code::ERROR, "central unavailable");
+            writes
+                .close(socket, close_code::ERROR, "central unavailable")
+                .await;
             return RequestOutcome::Stopped;
         }
     };
@@ -735,7 +682,9 @@ async fn reply_to_request(
             RequestOutcome::AuthorityLapsed(cause),
         ),
         Err(ApplyingRequestFailure::Store(_)) => {
-            writes.close(socket, close_code::ERROR, "central unavailable");
+            writes
+                .close(socket, close_code::ERROR, "central unavailable")
+                .await;
             return RequestOutcome::Stopped;
         }
     };
@@ -775,102 +724,4 @@ async fn dispatch_request(
             .await
             .map(ReplyPayload::Mail),
     }
-}
-
-struct LinkWrites<'a> {
-    stop: &'a CancellationToken,
-    replaced: &'a CancellationToken,
-    authority_close: &'a OnceLock<MachineLinkCloseCode>,
-    clock: &'a dyn RuntimeClock,
-    tasks: &'a TaskTracker,
-}
-
-impl LinkWrites<'_> {
-    fn schedule_completion(&self, completion: collaboration_central_core::LinkCallCompletion) {
-        let stop = self.stop.clone();
-        let replaced = self.replaced.clone();
-        self.tasks.spawn(async move {
-            tokio::select! {
-                biased;
-                () = stop.cancelled() => {}
-                () = replaced.cancelled() => {}
-                () = completion => {}
-            }
-        });
-    }
-
-    async fn send(&self, socket: &mut WebSocket, frame: &LinkFrame) -> bool {
-        let Ok(text) = encode_text(frame, FrameDirection::ToRouter) else {
-            return false;
-        };
-        self.send_text(socket, text).await
-    }
-
-    async fn send_text(&self, socket: &mut WebSocket, text: String) -> bool {
-        let sent = self
-            .send_until_stopped(async { socket.send(Message::Text(text.into())).await.is_ok() })
-            .await;
-        if !sent {
-            self.close_if_authority_cancelled(socket);
-        }
-        sent
-    }
-
-    async fn send_until_stopped(&self, send: impl Future<Output = bool>) -> bool {
-        tokio::select! {
-            biased;
-            () = self.stop.cancelled() => false,
-            () = self.replaced.cancelled() => false,
-            sent = send => sent,
-        }
-    }
-
-    fn close_if_authority_cancelled(&self, socket: &mut WebSocket) {
-        if let Some(cause) = self.authority_close.get() {
-            self.close_authority(socket, *cause);
-        }
-    }
-
-    async fn attempt_terminal_refusal(&self, socket: &mut WebSocket, frame: &LinkFrame) {
-        const REFUSAL_SEND_BUDGET: Duration = Duration::from_millis(250);
-        let Ok(text) = encode_text(frame, FrameDirection::ToRouter) else {
-            return;
-        };
-        tokio::select! {
-            biased;
-            () = self.stop.cancelled() => {}
-            _ = router_clock::timeout(self.clock, REFUSAL_SEND_BUDGET, socket.send(Message::Text(text.into()))) => {}
-        }
-    }
-
-    fn close_authority(&self, socket: &mut WebSocket, cause: MachineLinkCloseCode) {
-        let cause = self.authority_close.get().copied().unwrap_or(cause);
-        attempt_close(socket, cause.code(), "");
-    }
-
-    fn close(&self, socket: &mut WebSocket, code: u16, reason: &'static str) {
-        if let Some(cause) = self.authority_close.get() {
-            self.close_authority(socket, *cause);
-        } else if self.replaced.is_cancelled() {
-            close_link(socket, self.stop, close_code::NORMAL, "machine link ended");
-        } else {
-            close_link(socket, self.stop, code, reason);
-        }
-    }
-}
-
-fn close_link(socket: &mut WebSocket, stop: &CancellationToken, code: u16, reason: &'static str) {
-    if !stop.is_cancelled() {
-        attempt_close(socket, code, reason);
-    }
-}
-
-fn attempt_close(socket: &mut WebSocket, code: u16, reason: &'static str) {
-    // Once polled on a writable socket the transport can deliver the typed reason.
-    let _ = socket
-        .send(Message::Close(Some(CloseFrame {
-            code,
-            reason: reason.into(),
-        })))
-        .now_or_never();
 }

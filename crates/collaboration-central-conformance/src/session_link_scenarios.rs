@@ -1,5 +1,6 @@
 //! Shared socket scenarios for Central's production session-call dispatcher.
 use crate::ConformanceResult as Result;
+use crate::fixture_link_reader::read_fixture_frame;
 use central_link_protocol::{
     CentralCallReply, CentralLinkRpc, CorrelationId, DataFrame, FrameDirection, LinkCallRefusal,
     LinkFrame, MachineLinkCloseCode, TypedCallResult, decode_text, encode_text,
@@ -12,7 +13,7 @@ use fleet_identity_protocol::{
     OrganizationId, RouterEndCause, SessionCreator, SessionSecret,
 };
 use fleet_rpc::Envelope;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::SinkExt;
 use reqwest_websocket::{Message, WebSocket};
 use workspace_ids::CentralSessionId;
 
@@ -180,7 +181,7 @@ pub async fn expect_lapsed_session_call(
         read_reply(socket, correlation).await?,
         LinkCallRefusal::AuthorityLapsed { cause },
     )?;
-    if !matches!(socket.next().await, Some(Ok(Message::Close { code, .. }))
+    if !matches!(read_fixture_frame(socket, "session link close").await?, Some(Ok(Message::Close { code, .. }))
         if MachineLinkCloseCode::from_code(code.into()) == Some(cause))
     {
         return Err(format!("expected the original session socket to close with {cause:?}").into());
@@ -258,7 +259,9 @@ async fn read_reply(
     socket: &mut WebSocket,
     expected: &CorrelationId,
 ) -> Result<TypedCallResult<CentralCallReply>> {
-    let Some(Ok(Message::Text(text))) = socket.next().await else {
+    let Some(Ok(Message::Text(text))) =
+        read_fixture_frame(socket, "session application frame").await?
+    else {
         return Err("expected a typed reply on the original socket".into());
     };
     let LinkFrame::Data(DataFrame::CentralCallReply {

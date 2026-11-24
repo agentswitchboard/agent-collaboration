@@ -1,4 +1,5 @@
 use super::*;
+use collaboration_central_conformance::fixture_link_reader::read_fixture_frame;
 use fleet_contracts::MachinePrincipal;
 use serde_json::json;
 
@@ -23,14 +24,15 @@ async fn revocation_journey(fixture: &Fixture) -> Result<()> {
     let enrollment = fixture.enrollment.as_str();
     revocation.check_refusals(&mut owner, enrollment).await?;
     link.socket.send(Message::Text("ping".into())).await?;
-    if !matches!(link.socket.next().await, Some(Ok(Message::Text(value))) if value == "pong") {
+    if !matches!(read_fixture_frame(&mut link.socket, "revocation link frame").await?, Some(Ok(Message::Text(value))) if value == "pong")
+    {
         return Err("a refused revocation must leave the original link open".into());
     }
 
     revocation
         .expect(&owner, enrollment, json!({"result":"revoked"}))
         .await?;
-    if !matches!(link.socket.next().await, Some(Ok(Message::Close { code, .. }))
+    if !matches!(read_fixture_frame(&mut link.socket, "revocation link frame").await?, Some(Ok(Message::Close { code, .. }))
         if central_link_protocol::MachineLinkCloseCode::from_code(code.into())
             == Some(central_link_protocol::MachineLinkCloseCode::Revoked))
     {
@@ -48,7 +50,7 @@ async fn revocation_journey(fixture: &Fixture) -> Result<()> {
         .await?
         .into_websocket()
         .await?;
-    let frame = rejected.next().await;
+    let frame = read_fixture_frame(&mut rejected, "revocation link frame").await?;
     if !matches!(frame, Some(Ok(Message::Close { code, .. })) if
         central_link_protocol::MachineLinkCloseCode::from_code(code.into()) ==
         Some(central_link_protocol::MachineLinkCloseCode::Revoked))
@@ -162,10 +164,12 @@ async fn revoke_with_unread_reply(fixture: &Fixture) -> Result<()> {
             json!({"result":"revoked"}),
         )
         .await?;
-    let Some(Ok(Message::Text(_))) = link.socket.next().await else {
+    let Some(Ok(Message::Text(_))) =
+        read_fixture_frame(&mut link.socket, "revocation link frame").await?
+    else {
         return Err("the socket did not retain its pre-revocation reply".into());
     };
-    if !matches!(link.socket.next().await, Some(Ok(Message::Close { code, .. }))
+    if !matches!(read_fixture_frame(&mut link.socket, "revocation link frame").await?, Some(Ok(Message::Close { code, .. }))
         if central_link_protocol::MachineLinkCloseCode::from_code(code.into())
             == Some(central_link_protocol::MachineLinkCloseCode::Revoked))
     {

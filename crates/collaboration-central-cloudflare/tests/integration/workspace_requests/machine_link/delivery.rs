@@ -1,5 +1,6 @@
 use super::*;
 use central_link_protocol::RequestPayload;
+use collaboration_central_conformance::fixture_link_reader::read_fixture_frame;
 use serde_json::json;
 use workspace_model::{
     ResolvedSender, central_mail::CentralMailAnswer, central_mail::CentralMailResult,
@@ -81,7 +82,8 @@ async fn delivery_journey(fixture: &Fixture) -> Result<()> {
     )
     .await?;
     wrong_machine.send(Message::Text("ping".to_owned())).await?;
-    if !matches!(wrong_machine.next().await, Some(Ok(Message::Text(pong))) if pong=="pong") {
+    if !matches!(read_fixture_frame(&mut wrong_machine, "delivery link frame").await?, Some(Ok(Message::Text(pong))) if pong=="pong")
+    {
         return Err("a wrong-machine receipt must keep the socket open".into());
     }
     wrong_machine
@@ -289,14 +291,18 @@ async fn zero_time_offer_journey(fixture: &Fixture) -> Result<()> {
         matches!(fixture::receive(&mut live.socket).await?, DataFrame::Deliver { message, time_left: Some(time_left), .. } if message.message_id() == message_id && u32::from(time_left) == 900_000)
     );
     live.socket.send(Message::Text("ping".into())).await?;
-    assert!(matches!(live.socket.next().await, Some(Ok(Message::Text(pong))) if pong=="pong"));
+    assert!(
+        matches!(read_fixture_frame(&mut live.socket, "delivery link frame").await?, Some(Ok(Message::Text(pong))) if pong=="pong")
+    );
 
     let mut reopened = ConnectedLink::open(fixture).await?;
     assert!(
         matches!(fixture::receive(&mut reopened.socket).await?, DataFrame::Deliver { message, time_left: Some(time_left), .. } if message.message_id() == message_id && u32::from(time_left) == 900_000)
     );
     reopened.socket.send(Message::Text("ping".into())).await?;
-    assert!(matches!(reopened.socket.next().await, Some(Ok(Message::Text(pong))) if pong=="pong"));
+    assert!(
+        matches!(read_fixture_frame(&mut reopened.socket, "delivery link frame").await?, Some(Ok(Message::Text(pong))) if pong=="pong")
+    );
     fixture.clock.set_utc(mark);
     fixture
         .host
@@ -379,9 +385,17 @@ async fn backlog_page_journey(fixture: &Fixture) -> Result<()> {
     }
     super::renewal::advance(fixture, 62).await?;
     let mut reopened = ConnectedLink::open(fixture).await?;
+    use collaboration_central_conformance::machine_link_boundary::{
+        acknowledge_delivered_mail, mail_fixture_correlation,
+    };
+    let arrived_at = sent_at + chrono::TimeDelta::seconds(62);
     let mut offered = std::collections::BTreeSet::new();
+    let mut receipt_ids = Vec::new();
+    let mut receipt_batch = 0x32000_u32;
     for _ in 0..=page_size {
-        let Some(Ok(Message::Text(offer_text))) = reopened.socket.next().await else {
+        let Some(Ok(Message::Text(offer_text))) =
+            read_fixture_frame(&mut reopened.socket, "direct delivery").await?
+        else {
             return Err("expected a direct offer as raw socket text".into());
         };
         let offer_json: serde_json::Value = serde_json::from_str(&offer_text)?;
@@ -424,12 +438,24 @@ async fn backlog_page_journey(fixture: &Fixture) -> Result<()> {
         if u32::from(time_left) != 838_000 || !offered.insert(message.message_id().clone()) {
             return Err("a backlog offer had stale time left or repeated a message".into());
         }
+        receipt_ids.push(message.message_id().clone());
+        if receipt_ids.len() == central_link_protocol::SOCKET_DIRECT_MAIL_LIMIT {
+            acknowledge_delivered_mail(
+                &mut reopened.socket,
+                mail_fixture_correlation(receipt_batch)?,
+                std::mem::take(&mut receipt_ids),
+                arrived_at,
+            )
+            .await?;
+            receipt_batch += 1;
+        }
     }
     if !offered.contains(message_id) {
         return Err("backlog omitted its original queued message".into());
     }
     reopened.socket.send(Message::Text("ping".into())).await?;
-    if !matches!(reopened.socket.next().await, Some(Ok(Message::Text(pong))) if pong=="pong") {
+    if !matches!(read_fixture_frame(&mut reopened.socket, "delivery link frame").await?, Some(Ok(Message::Text(pong))) if pong=="pong")
+    {
         return Err("a second backlog page repeated an offer".into());
     }
     Ok(())

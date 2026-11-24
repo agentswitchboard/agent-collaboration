@@ -24,6 +24,8 @@ pub enum RequestStatusAnswer {
     Answered(ReplyPayload),
     Refused(RequestRefusal),
     NotFound,
+    /// The query is inconclusive. The retained decision, if any, was not changed.
+    CentralUnavailable {},
 }
 
 /// A domain refusal recorded in the request log.
@@ -42,3 +44,7 @@ pub enum RequestRefusal {
 #[cfg(test)]
 #[path = "request_status_test.rs"]
 mod tests;
+
+#[cfg(all(test, feature = "wire-export", not(target_arch = "wasm32")))]
+#[path = "request_status_typescript_test.rs"]
+mod typescript_tests;

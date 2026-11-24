@@ -16,7 +16,7 @@ use workspace_model::{Caller, ResolvedSender, Timestamp, central_mail::MessageBo
 use crate::{ConnectionAttempt, ReplyExpectation};
 
 /// The usable UTF-8 payload budget for a client frame after its longest masked header.
-pub const LINK_LANE_FRAME_BYTES: usize = 1024 * 1024 - 14;
+pub const LINK_LANE_FRAME_BYTES: usize = central_link_protocol::LINK_MAX_EGRESS_TEXT_BYTES;
 
 const FRAME_WRITE_LIMIT: Duration = Duration::from_secs(5);
 const FRAME_ANSWER_LIMIT: Duration = Duration::from_secs(30);

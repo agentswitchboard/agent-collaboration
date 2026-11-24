@@ -298,8 +298,14 @@ where
             )
             .await?
             {
-                AppliedTransition::Changed(ready) => Ok(DirectWriteOutcome::with_alarm_recompute(
-                    ApplyReceipt::Applied { ready },
+                AppliedTransition::Changed {
+                    ready,
+                    retired_recipient,
+                } => Ok(DirectWriteOutcome::with_alarm_recompute(
+                    ApplyReceipt::Applied {
+                        ready,
+                        retired_recipient,
+                    },
                 )),
                 AppliedTransition::Missing => Ok(DirectWriteOutcome::without_alarm_recompute(
                     ApplyReceipt::Stop(ReceiptResult::NoSuchMessage),
@@ -329,7 +335,10 @@ impl central_engine_model::IdSource for ReducerIds<'_> {
 }
 
 pub(super) enum AppliedTransition {
-    Changed(Option<MailDeliveryReady>),
+    Changed {
+        ready: Option<MailDeliveryReady>,
+        retired_recipient: Option<fleet_contracts::MailClaimRetired>,
+    },
     Missing,
     Covered,
     Settled,
@@ -447,7 +456,20 @@ where
         None => DueTableChange::RemoveItem(key),
     };
     apply_due_table_change(tx, &due, now).await?;
-    Ok(AppliedTransition::Changed(ready))
+    let retired_recipient = (matches!(
+        state.lifecycle,
+        crate::direct_message::DirectLifecycle::Queued
+    ) && (!matches!(
+        next.lifecycle,
+        crate::direct_message::DirectLifecycle::Queued
+    ) || next.deadline_settled_at.is_some()))
+    .then_some(fleet_contracts::MailClaimRetired {
+        machine_id: state.subject.recipient,
+    });
+    Ok(AppliedTransition::Changed {
+        ready,
+        retired_recipient,
+    })
 }
 
 fn due_key(kind: DueKind, id: &MessageId) -> DueItemKey {

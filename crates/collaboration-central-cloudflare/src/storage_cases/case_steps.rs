@@ -132,6 +132,8 @@ pub(crate) enum CasePausePoint {
     BeforeTimerCommit,
     BeforeWakeRequestCommit,
     BeforeReceiptTransaction,
+    BeforeMachineLinkWelcome,
+    AfterMachineLinkWelcome,
     BeforeSessionTransaction,
     BeforeApprovalCommit,
     ApprovalEndingNeverReached,
@@ -167,6 +169,9 @@ pub(crate) enum CasePausePoint {
     BeforeControlClear,
     BeforeDriveGuard,
     BeforeRenewalApplyingSample,
+    BeforeMachineAuthorityCloseWrite,
+    AfterMachineFrameHandled,
+    AfterMachineMailOffer,
     BeforeSignInSample,
     AfterSignInSample,
 }
@@ -185,6 +190,8 @@ impl From<CasePausePoint> for PausePoint {
             CasePausePoint::BeforeTimerCommit => Self::BeforeTimerCommit,
             CasePausePoint::BeforeWakeRequestCommit => Self::BeforeWakeRequestCommit,
             CasePausePoint::BeforeReceiptTransaction => Self::BeforeReceiptTransaction,
+            CasePausePoint::BeforeMachineLinkWelcome => Self::BeforeMachineLinkWelcome,
+            CasePausePoint::AfterMachineLinkWelcome => Self::AfterMachineLinkWelcome,
             CasePausePoint::BeforeSessionTransaction => Self::BeforeSessionTransaction,
             CasePausePoint::BeforeApprovalCommit => Self::BeforeApprovalCommit,
             CasePausePoint::ApprovalEndingNeverReached => Self::ApprovalEndingNeverReached,
@@ -228,6 +235,11 @@ impl From<CasePausePoint> for PausePoint {
             CasePausePoint::BeforeControlClear => Self::BeforeControlClear,
             CasePausePoint::BeforeDriveGuard => Self::BeforeDriveGuard,
             CasePausePoint::BeforeRenewalApplyingSample => Self::BeforeRenewalApplyingSample,
+            CasePausePoint::BeforeMachineAuthorityCloseWrite => {
+                Self::BeforeMachineAuthorityCloseWrite
+            }
+            CasePausePoint::AfterMachineFrameHandled => Self::AfterMachineFrameHandled,
+            CasePausePoint::AfterMachineMailOffer => Self::AfterMachineMailOffer,
             CasePausePoint::BeforeSignInSample => Self::BeforeSignInSample,
             CasePausePoint::AfterSignInSample => Self::AfterSignInSample,
         }
@@ -247,6 +259,8 @@ impl From<PausePoint> for CasePausePoint {
             PausePoint::BeforeTimerCommit => Self::BeforeTimerCommit,
             PausePoint::BeforeWakeRequestCommit => Self::BeforeWakeRequestCommit,
             PausePoint::BeforeReceiptTransaction => Self::BeforeReceiptTransaction,
+            PausePoint::BeforeMachineLinkWelcome => Self::BeforeMachineLinkWelcome,
+            PausePoint::AfterMachineLinkWelcome => Self::AfterMachineLinkWelcome,
             PausePoint::BeforeSessionTransaction => Self::BeforeSessionTransaction,
             PausePoint::BeforeApprovalCommit => Self::BeforeApprovalCommit,
             PausePoint::ApprovalEndingNeverReached => Self::ApprovalEndingNeverReached,
@@ -288,6 +302,9 @@ impl From<PausePoint> for CasePausePoint {
             PausePoint::BeforeControlClear => Self::BeforeControlClear,
             PausePoint::BeforeDriveGuard => Self::BeforeDriveGuard,
             PausePoint::BeforeRenewalApplyingSample => Self::BeforeRenewalApplyingSample,
+            PausePoint::BeforeMachineAuthorityCloseWrite => Self::BeforeMachineAuthorityCloseWrite,
+            PausePoint::AfterMachineFrameHandled => Self::AfterMachineFrameHandled,
+            PausePoint::AfterMachineMailOffer => Self::AfterMachineMailOffer,
             PausePoint::BeforeSignInSample => Self::BeforeSignInSample,
             PausePoint::AfterSignInSample => Self::AfterSignInSample,
         }

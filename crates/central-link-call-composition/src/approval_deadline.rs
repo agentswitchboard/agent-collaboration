@@ -100,7 +100,10 @@ where
                         .release(&proof)
                         .map_err(|_| CheckedDueFailure::AnswerLost)?;
                     return Ok(AppliedApprovalDeadline {
-                        outcome: CheckedDueUnit::Applied { ready: None },
+                        outcome: CheckedDueUnit::Applied {
+                            ready: None,
+                            retired_recipient: None,
+                        },
                         completion: self.after_reply(offers, None),
                     });
                 }

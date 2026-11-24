@@ -20,21 +20,54 @@ pub async fn check_signed_holder_delivery(
     fixture: &impl ApprovalLinkFixture,
     post: impl AsyncFn(&str, &Value, Vec<(&'static str, String)>) -> ConformanceResult<(u16, Vec<u8>)>,
 ) -> ConformanceResult<()> {
-    check_delivery(fixture, post, async || Ok(()), InitialReply::Saved).await
+    check_delivery(
+        fixture,
+        post,
+        async || Ok(()),
+        InitialReply::Saved,
+        async |socket, target, request, ending| {
+            receive_decision(fixture, socket, target, request, ending).await
+        },
+    )
+    .await
 }
 
 pub async fn check_signed_holder_delivery_after_publication_failure(
     fixture: &impl ApprovalLinkFixture,
     post: impl AsyncFn(&str, &Value, Vec<(&'static str, String)>) -> ConformanceResult<(u16, Vec<u8>)>,
     arm_publication_failure: impl AsyncFnOnce() -> ConformanceResult<()>,
+    observe_ending: impl EndingObserver,
 ) -> ConformanceResult<()> {
     check_delivery(
         fixture,
         post,
         arm_publication_failure,
         InitialReply::PublicationFailed,
+        observe_ending,
     )
     .await
+}
+
+type HolderTarget = central_link_protocol::approval_rpc::ApprovalHolderTarget;
+
+pub trait EndingObserver:
+    for<'socket, 'request> AsyncFnOnce(
+    &'socket mut reqwest_websocket::WebSocket,
+    HolderTarget,
+    &'request approval_request_protocol::Raise,
+    Ending,
+) -> ConformanceResult<()>
+{
+}
+
+impl<Observer> EndingObserver for Observer where
+    Observer: for<'socket, 'request> AsyncFnOnce(
+        &'socket mut reqwest_websocket::WebSocket,
+        HolderTarget,
+        &'request approval_request_protocol::Raise,
+        Ending,
+    ) -> ConformanceResult<()>
+{
 }
 
 enum InitialReply {
@@ -47,6 +80,7 @@ async fn check_delivery(
     post: impl AsyncFn(&str, &Value, Vec<(&'static str, String)>) -> ConformanceResult<(u16, Vec<u8>)>,
     before_decide: impl AsyncFnOnce() -> ConformanceResult<()>,
     initial_reply: InitialReply,
+    observe_ending: impl EndingObserver,
 ) -> ConformanceResult<()> {
     let (target, mut socket, request) = registered_waiting_request(fixture).await?;
     let organization = target.organization_id.as_str();
@@ -86,8 +120,7 @@ async fn check_delivery(
     }
 
     // The first call must have released the ending. Do not retry to prompt delivery.
-    receive_decision(
-        fixture,
+    observe_ending(
         &mut socket,
         target,
         &request,

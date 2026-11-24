@@ -9,7 +9,8 @@ use super::{baseline, correlation, create_area, workspace_reply};
 use central_link_protocol::{DataFrame, ReplyPayload, RequestPayload};
 use central_storage::{SqlValue, Statement};
 use collaboration_central_conformance::ConformanceResult as Result;
-use futures_util::{SinkExt, StreamExt};
+use collaboration_central_conformance::fixture_link_reader::read_fixture_frame;
+use futures_util::SinkExt;
 use reqwest_websocket::Message;
 use std::{io::Write, path::PathBuf};
 use workspace_model::central_mail::{
@@ -225,7 +226,7 @@ async fn batch_journey(fixture: &Fixture, held_callback: usize) -> Result<BatchH
     let mut heartbeat_events = Vec::new();
     for _ in 0..3 {
         link.socket.send(Message::Text("ping".into())).await?;
-        match link.socket.next().await {
+        match read_fixture_frame(&mut link.socket, "batch link frame").await? {
             Some(Ok(Message::Text(text))) if text == "pong" => {}
             _ => return Err("batch journey did not receive literal platform pong".into()),
         }

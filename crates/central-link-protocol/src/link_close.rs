@@ -1,4 +1,8 @@
 //! Private WebSocket codes for machine authority loss.
+//!
+//! Native application ping checks live authority. Workerd answers ping in
+//! the hibernation platform to keep idle objects asleep. On Workerd a ping
+//! alone cannot detect lapse; the next handled input or attempted write does.
 
 #[derive(
     Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize, schemars::JsonSchema,
