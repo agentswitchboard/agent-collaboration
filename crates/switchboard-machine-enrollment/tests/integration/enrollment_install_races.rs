@@ -210,6 +210,7 @@ async fn the_command_reports_generation_exhaustion_before_starting_device_login(
         generation: generation(last),
         key: prior.key(),
         why: EnrollmentEnd::Revoked,
+        deployment: prior.context.deployment,
     };
     let store = ScriptStore::default().with_saved(saved.clone());
     let machine = machine_id();

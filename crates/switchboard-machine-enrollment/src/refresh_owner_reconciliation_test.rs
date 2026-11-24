@@ -120,6 +120,7 @@ fn ending_recovers_remove_before_trying_the_marker() {
             generation: generation(2),
             key: key.clone(),
             why: EnrollmentEnd::Revoked,
+            deployment: binding(1, 0).context.deployment,
         }
     );
 }
@@ -173,6 +174,7 @@ fn maximum_active_generation_can_end_without_spending_another_refresh() {
             generation: generation(last_active + 1),
             key,
             why: EnrollmentEnd::Revoked,
+            deployment: binding(last_active, 0).context.deployment,
         }
     );
 }

@@ -9,6 +9,8 @@ fn a_durable_ending_keeps_its_generation_and_never_wraps() {
     let ended = StoredEnrollment::Ended {
         generation: last,
         why: EnrollmentEnd::Revoked,
+        deployment: SignInDeployment::new("https://signin.example/".parse().expect("fixture URL"))
+            .expect("fixture deployment"),
         key: EnrollmentKey {
             organization_id: "019a0000-0000-7000-8000-000000000001"
                 .parse()

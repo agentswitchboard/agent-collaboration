@@ -78,7 +78,13 @@ impl FakeStore {
         if snapshot.generation() != expected {
             return ConditionalWrite::Superseded;
         }
-        let key = snapshot.key().expect("ending requires an enrollment");
+        let (key, deployment) = match snapshot {
+            StoredEnrollment::Active(binding) => (binding.key(), binding.context.deployment),
+            StoredEnrollment::Ended {
+                key, deployment, ..
+            } => (key, deployment),
+            StoredEnrollment::Empty => panic!("ending requires an enrollment"),
+        };
         let generation = expected.successor().expect("fixture generation");
         self.write(
             expected,
@@ -86,6 +92,7 @@ impl FakeStore {
                 generation,
                 why,
                 key,
+                deployment,
             },
         )
     }

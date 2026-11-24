@@ -20,6 +20,7 @@ pub enum StoredEnrollmentRow {
     Ended {
         generation: i64,
         organization_id: String,
+        deployment: String,
         enrollment_id: String,
         why: StoredEnrollmentEnd,
     },
@@ -89,12 +90,14 @@ impl StoredEnrollmentRow {
             ),
             Self::Ended {
                 organization_id,
+                deployment,
                 enrollment_id,
                 why,
                 ..
             } => (
                 EnrollmentMetadata::Ended {
                     organization_id: organization_id.as_str().into(),
+                    deployment: deployment.as_str().into(),
                     enrollment_id: enrollment_id.as_str().into(),
                     why: *why,
                 },
@@ -139,6 +142,7 @@ impl StoredEnrollmentRow {
             (
                 StoredEnrollmentRowMetadata::Ended {
                     organization_id,
+                    deployment,
                     enrollment_id,
                     why,
                     ..
@@ -147,6 +151,7 @@ impl StoredEnrollmentRow {
             ) => Ok(Self::Ended {
                 generation,
                 organization_id,
+                deployment,
                 enrollment_id,
                 why,
             }),
@@ -168,6 +173,7 @@ pub enum StoredEnrollmentRowMetadata {
     Ended {
         generation: i64,
         organization_id: String,
+        deployment: String,
         enrollment_id: String,
         why: StoredEnrollmentEnd,
     },
@@ -218,6 +224,7 @@ impl StoredEnrollmentRowMetadata {
             }
             EnrollmentMetadata::Ended {
                 organization_id,
+                deployment,
                 enrollment_id,
                 why,
             } => {
@@ -225,6 +232,7 @@ impl StoredEnrollmentRowMetadata {
                 Ok(Self::Ended {
                     generation,
                     organization_id: organization_id.into_owned(),
+                    deployment: deployment.into_owned(),
                     enrollment_id: enrollment_id.into_owned(),
                     why,
                 })
@@ -263,6 +271,7 @@ enum EnrollmentMetadata<'row> {
     },
     Ended {
         organization_id: std::borrow::Cow<'row, str>,
+        deployment: std::borrow::Cow<'row, str>,
         enrollment_id: std::borrow::Cow<'row, str>,
         why: StoredEnrollmentEnd,
     },
