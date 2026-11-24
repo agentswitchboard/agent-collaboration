@@ -125,8 +125,9 @@ impl MacOutbox<'_> {
                 if excluded_request_ids.contains(&row.request) {
                     continue;
                 }
-                if row.deadline_ms <= now_ms {
-                    collect_ending(&mut transaction, &row, now_ms, &mut ended).await?;
+                // The claim limit and mark gate apply only to rows that can still be sent.
+                if let Some(ending) = end_due_row(&mut transaction, &row, now_ms).await? {
+                    ended.push(ending);
                 } else if writes.len() < usize::from(limit)
                     && let Some(write) = claim_row(
                         &mut transaction,
@@ -297,7 +298,9 @@ impl MacOutbox<'_> {
             corrupt_rows,
         } = waiting_rows(&mut transaction).await?;
         for row in healthy {
-            collect_ending(&mut transaction, &row, now_ms, &mut ended).await?;
+            if let Some(ending) = end_due_row(&mut transaction, &row, now_ms).await? {
+                ended.push(ending);
+            }
         }
         transaction.commit().await?;
         Ok(StoreScan {
@@ -323,7 +326,9 @@ impl MacOutbox<'_> {
             .into_iter()
             .filter(|row| !live_request_ids.contains(&row.request))
         {
-            collect_ending(&mut transaction, &row, now_ms, &mut ended).await?;
+            if let Some(ending) = end_due_row(&mut transaction, &row, now_ms).await? {
+                ended.push(ending);
+            }
         }
         transaction.commit().await?;
         Ok(StoreScan {
@@ -380,21 +385,24 @@ async fn claim_row(
     }))
 }
 
-async fn collect_ending(
+async fn end_due_row(
     connection: &mut sqlx::SqliteConnection,
     row: &OutboxRowState,
     now_ms: i64,
-    ended: &mut Vec<EndedWrite>,
-) -> Result<(), OutboxStoreError> {
-    if let RowTransition::Ended(ending) = apply_row_event(
+) -> Result<Option<EndedWrite>, OutboxStoreError> {
+    let result = apply_row_event(
         connection,
         row,
         OutboxRowEvent::EndDue { now_ms },
         "waiting or sent",
     )
-    .await?
-    {
-        ended.push(ending);
+    .await?;
+    match result {
+        RowTransition::Ended(ending) => Ok(Some(ending)),
+        RowTransition::NotDue => Ok(None),
+        RowTransition::Applied
+        | RowTransition::NoChange
+        | RowTransition::NoticeUnchanged(_)
+        | RowTransition::Removed(_) => Err(unexpected(&row.request, "waiting or sent")),
     }
-    Ok(())
 }

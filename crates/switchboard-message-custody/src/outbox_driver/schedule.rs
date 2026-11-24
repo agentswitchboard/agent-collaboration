@@ -287,74 +287,64 @@ impl StateMachine for OutboxSchedule {
 
     fn transition(state: &Self::State, event: Self::Event) -> StateMachineResult<Self> {
         let mut next = state.clone();
-        let effects = apply_event(&mut next, event).map_err(TransitionError::Domain)?;
+        let mut effects = Vec::new();
+        let mut tick_now = None;
+        let earliest_due = match event {
+            FlushEvent::Stored { flush_at } => {
+                // Keep an earlier wake when a new write is queued.
+                Some(
+                    next.armed_wake
+                        .map_or(flush_at, |armed| armed.min(flush_at)),
+                )
+            }
+            FlushEvent::Tick { now, earliest_due } => {
+                tick_now = Some(now);
+                discard_closed_drain(&mut next, now);
+                next.armed_wake = None;
+                if let Some(mark) = flush_on_mark(&mut next, now, earliest_due) {
+                    effects.push(FlushEffect::SendBatch { mark });
+                }
+                earliest_due
+            }
+            FlushEvent::LinkConnected { now, earliest_due } => {
+                next.link = LinkAvailability::Connected;
+                discard_closed_drain(&mut next, now);
+                tick_now = Some(now);
+                earliest_due
+            }
+            FlushEvent::LinkLost => {
+                next.link = LinkAvailability::Disconnected;
+                next.in_flight = None;
+                next.stop_draining_mark();
+                next.armed_wake = None;
+                None
+            }
+            FlushEvent::DrainFenced => {
+                next.stop_draining_mark();
+                return Ok((next, effects));
+            }
+            FlushEvent::BatchEnded {
+                earliest_due,
+                continue_mark,
+            } => {
+                next.in_flight.take().ok_or(TransitionError::Domain(
+                    FlushTransitionError::NoBatchInFlight,
+                ))?;
+                if !continue_mark {
+                    next.stop_draining_mark();
+                }
+                earliest_due
+            }
+        };
+        if let Some(mark) = rearm(&mut next, earliest_due, tick_now) {
+            effects.push(FlushEffect::WakeAt { mark });
+        }
         Ok((next, effects))
     }
 
     fn transitions() -> &'static [Transition] {
         SCHEDULE_TRANSITIONS
     }
-}
-
-fn apply_event(
-    state: &mut OutboxFlushState,
-    event: FlushEvent,
-) -> Result<Vec<FlushEffect>, FlushTransitionError> {
-    let mut effects = Vec::new();
-    let mut tick_now = None;
-    let earliest_due = match event {
-        FlushEvent::Stored { flush_at } => {
-            // Something waits at least this early; keep an earlier armed wake.
-            Some(
-                state
-                    .armed_wake
-                    .map_or(flush_at, |armed| armed.min(flush_at)),
-            )
-        }
-        FlushEvent::Tick { now, earliest_due } => {
-            tick_now = Some(now);
-            discard_closed_drain(state, now);
-            state.armed_wake = None;
-            if let Some(mark) = flush_on_mark(state, now, earliest_due) {
-                effects.push(FlushEffect::SendBatch { mark });
-            }
-            earliest_due
-        }
-        FlushEvent::LinkConnected { now, earliest_due } => {
-            state.link = LinkAvailability::Connected;
-            discard_closed_drain(state, now);
-            tick_now = Some(now);
-            earliest_due
-        }
-        FlushEvent::LinkLost => {
-            state.link = LinkAvailability::Disconnected;
-            state.in_flight = None;
-            state.stop_draining_mark();
-            state.armed_wake = None;
-            None
-        }
-        FlushEvent::DrainFenced => {
-            state.stop_draining_mark();
-            return Ok(effects);
-        }
-        FlushEvent::BatchEnded {
-            earliest_due,
-            continue_mark,
-        } => {
-            state
-                .in_flight
-                .take()
-                .ok_or(FlushTransitionError::NoBatchInFlight)?;
-            if !continue_mark {
-                state.stop_draining_mark();
-            }
-            earliest_due
-        }
-    };
-    if let Some(mark) = rearm(state, earliest_due, tick_now) {
-        effects.push(FlushEffect::WakeAt { mark });
-    }
-    Ok(effects)
 }
 
 fn flush_on_mark(

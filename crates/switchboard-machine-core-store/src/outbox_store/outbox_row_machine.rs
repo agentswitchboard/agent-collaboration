@@ -97,7 +97,7 @@ const TRANSITIONS: &[Transition] = {
         // read leaves it alone, so the store receives no event.
         edge(Sent, RETURN_UNANSWERED, SentAnswerLost),
         edge(Resent, RETURN_UNANSWERED, SentAnswerLost),
-        // Includes a lane-held ticket whose fence reached the write's cutoff.
+        // At or past cutoff, unanswered claims whose frame may have reached Central end unconfirmed.
         edge(Sent, RETURN_UNANSWERED, Unconfirmed),
         edge(Resent, RETURN_UNANSWERED, Unconfirmed),
         edge(InOutbox, END_DUE, NotSent),
@@ -166,9 +166,7 @@ impl RefusalTag for OutboxRowRefusal {
 }
 
 impl OutboxRowMachine {
-    pub(super) const fn initial_tag() -> OutboxItemState {
-        OutboxItemState::InOutbox
-    }
+    pub(super) const INITIAL_STATE: OutboxItemState = OutboxItemState::InOutbox;
 
     pub(super) fn replay_insert(
         state: &OutboxRowState,

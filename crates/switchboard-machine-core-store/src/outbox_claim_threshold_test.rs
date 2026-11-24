@@ -177,6 +177,59 @@ async fn claim_threshold_equal_to_now_keeps_normal_claim_and_expiry_boundaries()
 }
 
 #[tokio::test]
+async fn zero_claim_capacity_still_ends_due_rows_and_respects_exclusions() {
+    let (_directory, mut store) = open().await;
+    let expired = item(113, "expired at a later mark", MARK + 60_000);
+    let excluded = item(114, "expired but excluded", MARK);
+    let live = item(115, "eligible once capacity returns", MARK);
+    for write in [&expired, &excluded] {
+        store
+            .insert(write, MARK - FIFTEEN_MINUTES_MS)
+            .await
+            .unwrap();
+    }
+    store
+        .insert(&live, MARK - FIFTEEN_MINUTES_MS + 1)
+        .await
+        .unwrap();
+
+    let exclusions = BTreeSet::from([excluded.request.clone()]);
+    let batch = store
+        .claim_next_batch(MARK, 0, MARK, MARK, &exclusions)
+        .await
+        .unwrap()
+        .expect_clean();
+
+    assert!(batch.writes.is_empty());
+    assert!(matches!(batch.ended.as_slice(), [ending]
+        if ending.request_id == expired.request
+            && ending.reason == OutboxCancellation::NotSentWithin15Minutes));
+    assert_eq!(
+        store
+            .request_status(&expired.caller, &expired.request)
+            .await
+            .unwrap(),
+        OutboxRequestStatus::Ended {
+            reason: OutboxCancellation::NotSentWithin15Minutes
+        },
+    );
+    assert_eq!(
+        store
+            .request_status(&excluded.caller, &excluded.request)
+            .await
+            .unwrap(),
+        OutboxRequestStatus::InOutbox { flush_at_ms: MARK },
+    );
+    let next = store
+        .claim_next_batch(MARK, 1, MARK, MARK, &exclusions)
+        .await
+        .unwrap()
+        .expect_clean();
+    assert!(next.ended.is_empty());
+    assert!(matches!(next.writes.as_slice(), [write] if write.request == live.request));
+}
+
+#[tokio::test]
 async fn invalid_claim_threshold_returns_typed_error_before_any_expiry_or_claim() {
     let (_directory, mut store) = open().await;
     let expired = item(111, "expiry still pending", MARK);

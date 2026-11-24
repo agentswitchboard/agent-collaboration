@@ -1,7 +1,7 @@
 //! Validated permanent outcomes for claimed writes.
 use crate::{
     LocalOutboxRefusal, OutboxAccepted, OutboxCentralRefusal, OutboxQueuedWrite, OutboxRefusal,
-    OutboxRequestStatus, OutboxScope, OutboxWriteTarget,
+    OutboxScope, OutboxWriteTarget,
 };
 use serde::{Deserialize, Serialize};
 use workspace_ids::RequestId;
@@ -26,15 +26,6 @@ pub struct OutboxWriteOutcome {
 pub(crate) enum SettledWrite {
     Answered(OutboxAccepted),
     Refused(OutboxRefusal),
-}
-
-impl SettledWrite {
-    pub(crate) fn into_request_status(self) -> OutboxRequestStatus {
-        match self {
-            Self::Answered(accepted) => OutboxRequestStatus::Answered(accepted),
-            Self::Refused(refusal) => OutboxRequestStatus::Refused(refusal),
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]

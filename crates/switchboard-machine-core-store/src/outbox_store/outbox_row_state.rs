@@ -93,15 +93,20 @@ impl OutboxRowState {
                 }
             }
             OutboxPhase::Sent(_) | OutboxPhase::Resent(_) => OutboxRequestStatus::Sent,
-            OutboxPhase::Answered(_, reply) => OutboxRequestStatus::Answered(reply.clone()),
-            OutboxPhase::Refused(_, reason) => OutboxRequestStatus::Refused(reason.clone()),
+            OutboxPhase::Answered(_, reply)
+            | OutboxPhase::Unconfirmed(_, Some(SettledWrite::Answered(reply))) => {
+                OutboxRequestStatus::Answered(reply.clone())
+            }
+            OutboxPhase::Refused(_, reason)
+            | OutboxPhase::Unconfirmed(_, Some(SettledWrite::Refused(reason))) => {
+                OutboxRequestStatus::Refused(reason.clone())
+            }
             OutboxPhase::NotSent(_) => OutboxRequestStatus::Ended {
                 reason: OutboxCancellation::NotSentWithin15Minutes,
             },
             OutboxPhase::Unconfirmed(_, None) => OutboxRequestStatus::Ended {
                 reason: OutboxCancellation::NotConfirmedWithin15Minutes,
             },
-            OutboxPhase::Unconfirmed(_, Some(outcome)) => outcome.clone().into_request_status(),
         }
     }
 }
