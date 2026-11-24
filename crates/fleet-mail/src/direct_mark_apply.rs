@@ -157,7 +157,15 @@ where
     )
     .await;
     let rejection = match applied {
-        Ok(AppliedTransition::Changed(ready)) => return Ok(ApplyMark::Applied { ready }),
+        Ok(AppliedTransition::Changed {
+            ready,
+            retired_recipient,
+        }) => {
+            return Ok(ApplyMark::Applied {
+                ready,
+                retired_recipient,
+            });
+        }
         Ok(
             AppliedTransition::Missing | AppliedTransition::Covered | AppliedTransition::Settled,
         ) => {

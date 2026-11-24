@@ -11,9 +11,9 @@ use central_storage::{
     AlarmUpdate, BatchOutcome, GuardedStatement, RowExpectation, SqlValue, Statement,
     StatementBatch,
 };
+use collaboration_central_conformance::fixture_link_reader::read_fixture_frame;
 use collaboration_central_conformance::{ConformanceResult as Result, signin_fixtures as signed};
 use collaboration_central_tokio::ObjectStorage;
-use futures_util::StreamExt;
 use reqwest_websocket::{CloseCode, Message};
 use serde_json::json;
 use std::{collections::BTreeMap, sync::Arc};
@@ -238,6 +238,49 @@ async fn lost_reply_after_commit_replays_one_durable_write_on_a_new_correlation(
             ))),
         })
     );
+    use collaboration_central_conformance::machine_link_boundary::{
+        expect_pong, oversized_retained_refusal, retained_answer_read,
+    };
+    let (refusal, seed) = oversized_retained_refusal(&query.request_id)?;
+    assert!(matches!(
+        store.run_batch(seed).await?,
+        BatchOutcome::Applied { .. }
+    ));
+    for ordinal in [0xd306_u32, 0xd307] {
+        let correlation_id: CorrelationId =
+            format!("019f0000-0000-7000-8000-{ordinal:012x}").parse()?;
+        if ordinal == 0xd306 {
+            fixture
+                .host
+                .central(&fixture.organization_id)
+                .await?
+                .fail_machine_restore_after(0, central_storage::StoreFailure::Unavailable);
+        }
+        send(
+            &mut socket,
+            &LinkFrame::Data(DataFrame::RequestStatus {
+                correlation_id: correlation_id.clone(),
+                caller: caller()?,
+                query: query.clone(),
+            }),
+        )
+        .await?;
+        assert_eq!(
+            receive(&mut socket).await?,
+            LinkFrame::Data(DataFrame::RequestStatusReply {
+                correlation_id,
+                result: Box::new(RequestStatusAnswer::CentralUnavailable {}),
+            })
+        );
+    }
+    expect_pong(&mut socket).await?;
+    assert_eq!(
+        store
+            .read(retained_answer_read(&query.request_id))
+            .await?
+            .rows,
+        vec![vec![SqlValue::Text(refusal)]],
+    );
     let altered = store
         .run_batch(StatementBatch {
             statements: vec![GuardedStatement {
@@ -264,7 +307,7 @@ async fn lost_reply_after_commit_replays_one_durable_write_on_a_new_correlation(
         }),
     )
     .await?;
-    let closed = socket.next().await;
+    let closed = read_fixture_frame(&mut socket, "link close").await?;
     assert!(
         matches!(
             &closed,

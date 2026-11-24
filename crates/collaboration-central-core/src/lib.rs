@@ -67,6 +67,7 @@ mod central_timer_plans;
 mod central_timers;
 mod direct_send_requests;
 mod mail_delivery_authority;
+pub use mail_delivery_authority::PreparedMailOffer;
 mod notice_mailbox;
 mod workspace_drain;
 pub use workspace_drain::DrainResult;

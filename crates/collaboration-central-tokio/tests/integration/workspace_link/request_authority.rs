@@ -5,6 +5,7 @@ use central_link_protocol::{
     DataFrame, LinkFrame, LinkRequest, MachineLinkCloseCode, ReplyPayload,
 };
 use central_storage::{BatchOutcome, SqlValue, Statement};
+use collaboration_central_conformance::fixture_link_reader::read_fixture_frame;
 use collaboration_central_conformance::{ConformanceResult as Result, signin_fixtures as signed};
 use fleet_runtime::PausePoint;
 use futures_util::{FutureExt, StreamExt};
@@ -107,7 +108,7 @@ async fn check_request_refusal(
             send(&mut socket, &message).await?;
             tokio::select! {
                 () = hold.until_held() => {}
-                early = socket.next() => return Err(format!("request returned before the applying barrier: {early:?}").into()),
+                early = read_fixture_frame(&mut socket, "request authority link frame")=> return Err(format!("request returned before the applying barrier: {early:?}").into()),
             }
             lapse_authority().await?;
             if socket.next().now_or_never().is_some() {
@@ -125,7 +126,7 @@ async fn check_request_refusal(
             format!("{expected_close:?} requires {expected_reply:?}, got {reply:?}").into(),
         );
     }
-    let closed = socket.next().await;
+    let closed = read_fixture_frame(&mut socket, "link close").await?;
     if !matches!(closed, Some(Ok(Message::Close { code, .. }))
         if MachineLinkCloseCode::from_code(code.into()) == Some(expected_close))
     {

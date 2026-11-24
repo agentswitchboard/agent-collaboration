@@ -34,6 +34,7 @@ workspace-ids.workspace = true
 fleet-identity-protocol = {path="../fleet-identity-protocol",version="0.1.149"}
 serde_json.workspace = true
 axum = { workspace = true, features = ["http1", "tokio", "ws", "json"] }
+tokio-tungstenite.workspace = true
 tokio-util.workspace = true
 tokio.workspace = true
 reqwest.workspace = true

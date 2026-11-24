@@ -102,7 +102,10 @@ pub enum CheckedAttempt {
 
 /// Result of a due write on a checked owning transaction.
 pub enum CheckedDueUnit<Rejected> {
-    Applied { ready: Option<MailDeliveryReady> },
+    Applied {
+        ready: Option<MailDeliveryReady>,
+        retired_recipient: Option<fleet_contracts::MailClaimRetired>,
+    },
     Stale,
     Failed(FailureRecord),
     Rejected(Rejected),

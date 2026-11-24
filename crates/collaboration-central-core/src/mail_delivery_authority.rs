@@ -1,5 +1,9 @@
 //! Central turns and authority for the job's mailbox operations.
 use crate::{WorkspaceCaller, WorkspaceRuntime};
+use central_link_protocol::{
+    DataFrame, DeliveryMessage, LinkFrame, NotOffered, SocketDirectMailOffers, TimeLeft,
+    encode_central_egress,
+};
 use central_storage::StoreFailure;
 use fleet_contracts::{
     MachineConnectionAttachment,
@@ -11,9 +15,15 @@ use fleet_contracts::{
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
 use workspace_ids::{MessageId, SessionRef};
 use workspace_model::{
-    RefusalReason,
-    central_mail::{MessageStatus, ReceiptKind, SessionQueue},
+    RefusalReason, Timestamp,
+    central_mail::{MessageBody, MessageStatus, ReceiptKind, SessionQueue},
 };
+
+pub enum PreparedMailOffer {
+    Ready(central_link_protocol::CentralEgress),
+    NotOffered(NotOffered),
+    AuthorityLapsed(MachineLinkCloseCode),
+}
 
 impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores> {
     pub async fn apply_delivery_receipt(
@@ -79,7 +89,13 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             .await
             .map_err(StoreFailure::from)?;
         Ok(match applied {
-            fleet_mail::ApplyReceipt::Applied { ready } => {
+            fleet_mail::ApplyReceipt::Applied {
+                ready,
+                retired_recipient,
+            } => {
+                if let Some(machine) = retired_recipient {
+                    (self.mail_claim_retired)(machine);
+                }
                 if let Some(ready) = ready {
                     (self.mail_delivery_ready)(ready);
                 }
@@ -99,6 +115,15 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         cursor: Option<&WelcomeDeliveryCursor>,
     ) -> Result<WelcomeDeliveryPage, StoreFailure> {
         let _turn = self.execution.take_central_turn().await;
+        self.windowed_welcome_page_in_held_turn(attachment, cursor)
+            .await
+    }
+
+    pub async fn windowed_welcome_page_in_held_turn(
+        &self,
+        attachment: &MachineConnectionAttachment,
+        cursor: Option<&WelcomeDeliveryCursor>,
+    ) -> Result<WelcomeDeliveryPage, StoreFailure> {
         if let Err(refusal) = self.restore_live_authority_held(attachment).await? {
             return Ok(WelcomeDeliveryPage::AuthorityLapsed(refusal.close));
         }
@@ -115,35 +140,150 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         Ok(WelcomeDeliveryPage::Ready(page))
     }
 
-    /// Re-observe the durable row at push time, including after a page was listed.
+    /// Prepare the exact bytes, then claim the direct row. The caller owns this
+    /// socket until its first write attempt in the same organization turn.
+    pub async fn prepare_mail_offer_in_held_turn(
+        &self,
+        attachment: &MachineConnectionAttachment,
+        message_id: &MessageId,
+        offers: &mut SocketDirectMailOffers,
+    ) -> Result<PreparedMailOffer, StoreFailure> {
+        let decision = match self
+            .read_mail_offer_in_held_turn(attachment, message_id, self.execution.now()?)
+            .await
+        {
+            Err(StoreFailure::Unavailable | StoreFailure::AnswerLost) => {
+                self.read_mail_offer_in_held_turn(attachment, message_id, self.execution.now()?)
+                    .await?
+            }
+            result => result?,
+        };
+        let delivery = match decision {
+            WindowedDeliveryDecision::Ready(delivery) => delivery,
+            WindowedDeliveryDecision::Ineligible => {
+                return Ok(PreparedMailOffer::NotOffered(NotOffered::NoLongerQueued));
+            }
+            WindowedDeliveryDecision::AuthorityLapsed(cause) => {
+                return Ok(PreparedMailOffer::AuthorityLapsed(cause));
+            }
+        };
+        let now = self.execution.now()?;
+        let time_left = if matches!(delivery.message.body, MessageBody::Direct { .. }) {
+            let Some(time_left) =
+                TimeLeft::at_handoff(delivery.message.created_at, delivery.expires_at, now)
+            else {
+                return Ok(PreparedMailOffer::NotOffered(NotOffered::NoLongerQueued));
+            };
+            Some(time_left)
+        } else {
+            if now >= delivery.expires_at {
+                return Ok(PreparedMailOffer::NotOffered(NotOffered::NoLongerQueued));
+            }
+            None
+        };
+        let encoded = encode_central_egress(&LinkFrame::Data(DataFrame::Deliver {
+            message: Box::new(DeliveryMessage::from(*delivery.message)),
+            sender: delivery.sender,
+            time_left,
+        }))
+        .map_err(|_| StoreFailure::Unavailable)?;
+        if self.execution.now()?.timestamp() >= attachment.effective_expires_at().0 {
+            return Ok(PreparedMailOffer::AuthorityLapsed(
+                MachineLinkCloseCode::Expired,
+            ));
+        }
+        if time_left.is_some()
+            && let Err(reason) = offers.claim(message_id, delivery.expires_at)
+        {
+            return Ok(PreparedMailOffer::NotOffered(reason));
+        }
+        Ok(PreparedMailOffer::Ready(encoded))
+    }
+
+    /// A passed wall-clock cutoff can move back into the future. Recheck a
+    /// claim at a timestamp inside its original window, so only durable
+    /// settlement or removal can make the offer lookup absent.
+    pub async fn refill_deferred_mail_in_held_turn(
+        &self,
+        attachment: &MachineConnectionAttachment,
+        offers: &mut SocketDirectMailOffers,
+        retirement_observed: bool,
+    ) -> Result<bool, StoreFailure> {
+        if offers.take_deferred() {
+            return Ok(true);
+        }
+        let now = self.execution.now()?;
+        let elapsed = offers
+            .retirement_candidates(now, retirement_observed)
+            .map(|(message, cutoff)| (message.clone(), cutoff))
+            .collect::<Vec<_>>();
+        for (message, cutoff) in elapsed {
+            let Some(inside_window) = cutoff.checked_sub_signed(chrono::TimeDelta::milliseconds(1))
+            else {
+                continue;
+            };
+            let queued = self
+                .direct_messages
+                .read_offer(fleet_mail::DirectOfferLookup {
+                    message_id: message.clone(),
+                    recipient: attachment.machine_id().clone(),
+                    now: inside_window,
+                })
+                .await
+                .map_err(StoreFailure::from)?;
+            if queued.is_none() {
+                offers.release(&message);
+            }
+        }
+        Ok(offers.take_deferred())
+    }
+
+    /// Re-observe the durable row, including after a page was listed.
     pub async fn prepare_windowed_delivery(
         &self,
         attachment: &MachineConnectionAttachment,
         message_id: &MessageId,
     ) -> Result<WindowedDeliveryDecision, StoreFailure> {
         let _turn = self.execution.take_central_turn().await;
+        self.read_mail_offer_in_held_turn(attachment, message_id, self.execution.now()?)
+            .await
+    }
+
+    async fn read_mail_offer_in_held_turn(
+        &self,
+        attachment: &MachineConnectionAttachment,
+        message_id: &MessageId,
+        now: Timestamp,
+    ) -> Result<WindowedDeliveryDecision, StoreFailure> {
         if let Err(refusal) = self.restore_live_authority_held(attachment).await? {
             return Ok(WindowedDeliveryDecision::AuthorityLapsed(refusal.close));
+        }
+        #[cfg(feature = "test-support")]
+        if self
+            .mail_offer_read_failure
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
+        {
+            return Err(StoreFailure::Unavailable);
         }
         let offer = self
             .direct_messages
             .read_offer(fleet_mail::DirectOfferLookup {
                 message_id: message_id.clone(),
                 recipient: attachment.machine_id().clone(),
-                now: self.execution.now()?,
+                now,
             })
             .await
             .map_err(StoreFailure::from)?;
-        if let Some(offer) = offer {
-            return Ok(WindowedDeliveryDecision::Ready(
-                fleet_contracts::mail_link::ResolvedMailDelivery {
+        Ok(match offer {
+            Some(offer) => {
+                WindowedDeliveryDecision::Ready(fleet_contracts::mail_link::ResolvedMailDelivery {
                     message: Box::new(offer.message),
                     sender: offer.sender,
                     expires_at: offer.cutoff,
-                },
-            ));
-        }
-        Ok(WindowedDeliveryDecision::Ineligible)
+                })
+            }
+            None => WindowedDeliveryDecision::Ineligible,
+        })
     }
 
     pub(crate) async fn direct_message_status(
@@ -177,6 +317,9 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             })
             .await
             .map_err(StoreFailure::from)?;
+        if let Some(machine) = applied.retired_recipient {
+            (self.mail_claim_retired)(machine);
+        }
         if let Some(ready) = applied.ready {
             (self.mail_delivery_ready)(ready);
         }

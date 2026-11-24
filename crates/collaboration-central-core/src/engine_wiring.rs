@@ -38,6 +38,9 @@ impl<H: CentralStore, S: WorkspaceStores> EngineHost for WorkspaceRuntime<H, S> 
     fn offer_ready_mail(&self, delivery: MailDeliveryReady) {
         (self.mail_delivery_ready)(delivery);
     }
+    fn direct_claim_retired(&self, machine: fleet_contracts::MailClaimRetired) {
+        (self.mail_claim_retired)(machine);
+    }
     async fn organization_is_provisioned(&self) -> Result<bool, StoreFailure> {
         self.alarm_organization_is_provisioned().await
     }

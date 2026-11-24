@@ -7,8 +7,8 @@ use central_storage::{
     StatementBatch,
 };
 use collaboration_central_conformance::ConformanceResult as Result;
+use collaboration_central_conformance::fixture_link_reader::read_fixture_frame;
 use fleet_rpc::Envelope;
-use futures_util::StreamExt;
 use reqwest_websocket::{CloseCode, Message};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -131,8 +131,14 @@ async fn query_journey(fixture: &Fixture) -> Result<()> {
     let armed: bool = runtime.control("lose-read", &()).await?;
     assert!(armed);
     let scope = RequestScope::Workspace(workspace.clone());
-    let frame = status_frame(&workspace_request, scope.clone(), 0x17)?;
-    assert_link_store_failure(&mut link, &frame).await?;
+    check_status(
+        &mut link,
+        &workspace_request,
+        scope.clone(),
+        0x17,
+        RequestStatusAnswer::CentralUnavailable {},
+    )
+    .await?;
     assert_eq!(
         workspace_storage_state(fixture, workspace)
             .await?
@@ -140,7 +146,6 @@ async fn query_journey(fixture: &Fixture) -> Result<()> {
         typed + 3,
         "the receiving object must dispatch the attempt whose answer was lost"
     );
-    let mut link = ConnectedLink::open(fixture).await?;
     check_status(
         &mut link,
         &workspace_request,
@@ -163,6 +168,41 @@ async fn query_journey(fixture: &Fixture) -> Result<()> {
         legacy
     );
     assert_eq!(stored_state(fixture, workspace).await?, before_rows);
+
+    use collaboration_central_conformance::machine_link_boundary::{
+        expect_pong, oversized_retained_refusal, retained_answer_read,
+    };
+    let (refusal, seed) = oversized_retained_refusal(&workspace_request)?;
+    assert!(matches!(
+        runtime.workspace_batch(workspace, seed).await?,
+        BatchOutcome::Applied { .. }
+    ));
+    assert!(
+        runtime
+            .control::<bool>(
+                "machine-restore-failure",
+                &(0, central_storage::StoreFailure::Unavailable)
+            )
+            .await?
+    );
+    for correlation in [0x20, 0x21] {
+        check_status(
+            &mut link,
+            &workspace_request,
+            RequestScope::Workspace(workspace.clone()),
+            correlation,
+            RequestStatusAnswer::CentralUnavailable {},
+        )
+        .await?;
+    }
+    expect_pong(&mut link.socket).await?;
+    assert_eq!(
+        runtime
+            .inspect_workspace(workspace, retained_answer_read(&workspace_request))
+            .await?
+            .rows,
+        vec![vec![SqlValue::Text(refusal)]],
+    );
     check_corruption(fixture, &mut link, workspace, &workspace_request).await
 }
 
@@ -418,7 +458,7 @@ async fn check_corruption(
 
 async fn assert_link_store_failure(link: &mut ConnectedLink, frame: &DataFrame) -> Result<()> {
     send(&mut link.socket, frame).await?;
-    let close = link.socket.next().await;
+    let close = read_fixture_frame(&mut link.socket, "link close").await?;
     assert!(
         matches!(
             &close,

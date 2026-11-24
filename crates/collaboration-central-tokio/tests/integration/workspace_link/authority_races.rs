@@ -7,10 +7,10 @@ use central_storage::{
     AlarmUpdate, BatchOutcome, GuardedStatement, RowExpectation, SqlValue, Statement,
     StatementBatch,
 };
+use collaboration_central_conformance::fixture_link_reader::read_fixture_frame;
 use collaboration_central_conformance::{ConformanceResult as Result, signin_fixtures as signed};
 use collaboration_central_core::{MachineLoginControl, machine_login_control};
 use fleet_runtime::PausePoint;
-use futures_util::StreamExt;
 use reqwest_websocket::{Message, WebSocket};
 use serde_json::json;
 use workspace_model::{Caller, RefusalReason, WorkspaceAnswer, WorkspaceReply, WorkspaceResult};
@@ -305,7 +305,7 @@ async fn revocation_committing_while_request_waits_for_applying_turn_prevents_wr
 }
 
 async fn require_revoked_close(socket: &mut WebSocket) -> Result<()> {
-    let close = socket.next().await;
+    let close = read_fixture_frame(socket, "link close").await?;
     if !matches!(close, Some(Ok(Message::Close { code, .. }))
         if MachineLinkCloseCode::from_code(code.into()) == Some(MachineLinkCloseCode::Revoked))
     {
