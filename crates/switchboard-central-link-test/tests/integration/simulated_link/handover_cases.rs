@@ -153,7 +153,9 @@ fn a_kept_message_yields_one_managed_notice_and_an_owned_seen_status_at_central(
 fn recovered_writing_is_suppressed_and_only_an_admitted_read_owes_seen() {
     use super::MACHINE_LINK_FIXTURE_MACHINE;
     use switchboard_machine_core_store::{InboxDecision, InboxOfferExpiry, MachineLocalStore};
-    use switchboard_message_custody::inbox_read::{AdmittedLocalSession, InboxReadError};
+    use switchboard_message_custody::inbox_read::{
+        AdmittedLocalSession, InboxReadError, RecipientInboxRead,
+    };
     use workspace_model::{
         PostText,
         central_mail::{MessageBody, MessageDelivery, MessageRecord},
@@ -237,42 +239,75 @@ fn recovered_writing_is_suppressed_and_only_an_admitted_read_owes_seen() {
             .await;
         assert_eq!(takes.load(Ordering::SeqCst), 0);
 
-        let admitted = AdmittedLocalSession::new(recipient.clone());
+        let admitted = AdmittedLocalSession::admitted_by_local_session_directory(recipient.clone());
         let mut other = recipient;
         other.session_id = "another-managed-session".parse().unwrap();
-        let another = AdmittedLocalSession::new(other);
+        let another = AdmittedLocalSession::admitted_by_local_session_directory(other);
         assert!(
             case.calls
-                .read_inbox(another.clone())
+                .read_inbox(another.clone(), 20)
                 .await
                 .unwrap()
                 .messages()
                 .is_empty()
         );
-        let read = case.calls.read_inbox(admitted.clone()).await.unwrap();
-        assert_eq!(read.messages(), [message]);
+        let read = case.calls.read_inbox(admitted.clone(), 20).await.unwrap();
+        assert_eq!(read.messages(), std::slice::from_ref(&message));
         assert!(matches!(
             case.calls
-                .record_inbox_read(another, read.into_acknowledgment())
+                .record_inbox_read(another.clone(), read.into_acknowledgment())
                 .await,
             Err(InboxReadError::RecipientChanged)
         ));
-        let read = case.calls.read_inbox(admitted.clone()).await.unwrap();
+        let copied = RecipientInboxRead::for_session(&another, vec![message.message_id.clone()]);
+        assert!(matches!(
+            case.calls.record_inbox_read(another, copied).await,
+            Err(InboxReadError::MessageNotKept)
+        ));
+        let mixed = RecipientInboxRead::for_session(
+            &admitted,
+            vec![
+                message.message_id.clone(),
+                "019f0000-0000-7000-8000-000000000089".parse().unwrap(),
+            ],
+        );
+        assert!(matches!(
+            case.calls.record_inbox_read(admitted.clone(), mixed).await,
+            Err(InboxReadError::MessageNotKept)
+        ));
         assert_eq!(
             case.inbox.scan_direct_handoffs().await.unwrap().healthy[0].handoff,
             DirectHandoff::NotKnown
         );
         let taken_at = case.link.clock.utc_now();
-        case.calls
-            .record_inbox_read(admitted, read.into_acknowledgment())
+        let receipt = RecipientInboxRead::for_session(&admitted, vec![message.message_id.clone()]);
+        let recorded = case
+            .calls
+            .record_inbox_read(admitted.clone(), receipt)
             .await
             .unwrap();
+        assert_eq!((recorded.changed, recorded.unchanged), (1, 0));
         assert_eq!(
             case.inbox.scan_direct_handoffs().await.unwrap().healthy[0].handoff,
             DirectHandoff::Seen {
                 completed_at: taken_at,
                 receipt: SeenReceiptState::Owed
             }
+        );
+        let repeated = RecipientInboxRead::for_session(&admitted, vec![message.message_id.clone()]);
+        let recorded = case
+            .calls
+            .record_inbox_read(admitted.clone(), repeated)
+            .await
+            .unwrap();
+        assert_eq!((recorded.changed, recorded.unchanged), (0, 1));
+        assert_eq!(
+            case.calls
+                .read_inbox(admitted, 20)
+                .await
+                .unwrap()
+                .messages(),
+            [message]
         );
         case.close().await;
     });

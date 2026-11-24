@@ -165,16 +165,34 @@ impl StoredDelivery {
 }
 
 impl InboxStore {
+    /// Lists the newest kept direct messages whose delivery window is still open.
     pub async fn direct_inbox_messages(
         &mut self,
         target: &SessionRef,
+        now: Timestamp,
+        limit: usize,
     ) -> Result<StoreScan<Vec<workspace_model::central_mail::MessageRecord>>, InboxStoreError> {
         Ok(self.scan_direct_rows().await?.map_healthy(|rows| {
             rows.into_iter()
+                .rev()
+                .filter(|row| row.expires_at.is_some_and(|expiry| now < expiry))
                 .filter_map(|row| row.message)
                 .filter(|message| &message.target == target)
+                .take(limit)
                 .collect()
         }))
+    }
+
+    /// Resolves an exact kept direct message for the recipient of an inbox acknowledgment.
+    pub async fn direct_handoff_for_recipient(
+        &mut self,
+        target: &SessionRef,
+        message_id: &MessageId,
+    ) -> Result<Option<DirectHandoffRow>, InboxStoreError> {
+        Ok(read_delivery(&mut self.store.connection, message_id)
+            .await?
+            .and_then(StoredDelivery::into_direct_handoff)
+            .filter(|row| &row.target == target))
     }
 
     pub async fn has_seen_receipt_owed(&mut self) -> Result<bool, InboxStoreError> {
@@ -193,6 +211,36 @@ impl InboxStore {
         &mut self,
     ) -> Result<StoreScan<Vec<DirectHandoffRow>>, InboxStoreError> {
         Ok(self.scan_direct_rows().await?.map_healthy(|rows| {
+            rows.into_iter()
+                .filter_map(StoredDelivery::into_direct_handoff)
+                .collect()
+        }))
+    }
+
+    /// Selects kept direct rows that can owe an automatic notice at the next mark.
+    pub async fn scan_waiting_notice_handoffs(
+        &mut self,
+    ) -> Result<StoreScan<Vec<DirectHandoffRow>>, InboxStoreError> {
+        let rows = select_inbox_rows!(
+            "message_json",
+            r#"WHERE CASE WHEN json_valid(delivery_state_json) THEN
+                    json_extract(delivery_state_json, '$.family') IS NOT 'system' AND
+                    CASE WHEN json_extract(delivery_state_json, '$.handoff.kind') = 'direct' THEN
+                        COALESCE(json_extract(delivery_state_json, '$.handoff.state.kind')
+                            NOT IN ('writing', 'notKnown', 'notSeen', 'seen'), 1)
+                    ELSE COALESCE(json_extract(delivery_state_json, '$.handoff.kind')
+                            NOT IN ('completed', 'notRequired'), 1) END
+                    ELSE 1 END
+                 AND CASE WHEN json_valid(message_json) THEN
+                    json_extract(message_json, '$.body.delivery') IS NOT 'queue' AND
+                    json_extract(message_json, '$.body.delivery') IS NOT 'steer'
+                    ELSE 1 END
+                 ORDER BY created_at, message_id"#,
+        )
+        .fetch_all(&mut self.store.connection)
+        .await?;
+        let scan: StoreScan<Vec<_>> = rows.into_iter().map(InboxRow::decode).collect();
+        Ok(scan.map_healthy(|rows| {
             rows.into_iter()
                 .filter_map(StoredDelivery::into_direct_handoff)
                 .collect()

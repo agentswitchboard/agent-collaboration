@@ -1,31 +1,34 @@
-//! The recipient page and its exact, single-use read acknowledgment.
+//! The inbox worker's recipient page and exact acknowledgment.
 
+pub use workspace_ids::AdmittedLocalSession;
 use workspace_ids::{MessageId, SessionRef};
 use workspace_model::central_mail::MessageRecord;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdmittedLocalSession(SessionRef);
-
-impl AdmittedLocalSession {
-    /// Only the session-admission seam may call this constructor. D29's v0
-    /// admission stub is today's only caller.
-    pub fn new(session: SessionRef) -> Self {
-        Self(session)
-    }
-
-    pub(crate) fn session(&self) -> &SessionRef {
-        &self.0
-    }
-}
-
+/// The inbox worker returns these messages to one admitted recipient.
 pub struct RecipientInboxPage {
     messages: Vec<MessageRecord>,
     acknowledgment: RecipientInboxRead,
 }
 
+/// The inbox adapter reconstructs the exact IDs that an admitted recipient acknowledges.
 pub struct RecipientInboxRead {
     pub(crate) target: SessionRef,
     pub(crate) returned: Vec<MessageId>,
+}
+
+impl RecipientInboxRead {
+    pub fn for_session(session: &AdmittedLocalSession, returned: Vec<MessageId>) -> Self {
+        Self {
+            target: session.address().clone(),
+            returned,
+        }
+    }
+}
+
+/// The inbox worker reports the number of acknowledged IDs whose handover state changed.
+pub struct InboxReadSettlement {
+    pub changed: usize,
+    pub unchanged: usize,
 }
 
 impl RecipientInboxPage {
@@ -44,18 +47,25 @@ impl RecipientInboxPage {
         &self.messages
     }
 
+    pub fn into_messages(self) -> Vec<MessageRecord> {
+        self.messages
+    }
+
     /// Return the record for the exact page after its tool reply completes.
     pub fn into_acknowledgment(self) -> RecipientInboxRead {
         self.acknowledgment
     }
 }
 
+/// The inbox worker reports why it could not read a page or acknowledge its exact IDs.
 #[derive(Debug, thiserror::Error)]
 pub enum InboxReadError {
     #[error("the custody task is closed")]
     Closed,
     #[error("the read acknowledgment belongs to a different admitted session")]
     RecipientChanged,
+    #[error("an acknowledgment id is duplicated or is not a kept direct message of this session")]
+    MessageNotKept,
     #[error("the inbox state changed before the read could be acknowledged")]
     ChangedSinceRead,
     #[error("the inbox read could not be applied")]

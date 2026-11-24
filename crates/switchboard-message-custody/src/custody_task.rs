@@ -499,8 +499,12 @@ async fn handle_tool(
         CustodyCommand::Waiting { session, reply } => {
             let _ = reply.send(custody.waiting_for_session(&session).await);
         }
-        CustodyCommand::ReadInbox { session, reply } => {
-            let _ = reply.send(custody.inbox.lock().await.read_inbox(&session).await);
+        CustodyCommand::ReadInbox {
+            session,
+            limit,
+            reply,
+        } => {
+            let _ = reply.send(custody.inbox.lock().await.read_inbox(&session, limit).await);
         }
         CustodyCommand::RecordInboxRead {
             session,

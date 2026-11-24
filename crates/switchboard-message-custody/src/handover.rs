@@ -81,7 +81,7 @@ pub enum HandoffEvent {
         now: Timestamp,
     },
     RecoverWriting,
-    InboxRead {
+    ReadAcknowledged {
         completed_at: Timestamp,
     },
 }
@@ -93,7 +93,7 @@ impl EventTag for HandoffEvent {
             Self::Cutoff { .. } => "Cutoff",
             Self::WriteFinished { .. } => "WriteFinished",
             Self::RecoverWriting => "RecoverWriting",
-            Self::InboxRead { .. } => "InboxRead",
+            Self::ReadAcknowledged { .. } => "ReadAcknowledged",
         }
     }
 }
@@ -145,7 +145,9 @@ impl StateMachine for DirectHandoffMachine {
 
     fn transition(state: &Handoff, event: HandoffEvent) -> StateMachineResult<Self> {
         use DirectHandoff::{NotKnown, NotSeen, Seen, Waiting, Writing};
-        use HandoffEvent::{Cutoff, EligibleAtMark, InboxRead, RecoverWriting, WriteFinished};
+        use HandoffEvent::{
+            Cutoff, EligibleAtMark, ReadAcknowledged, RecoverWriting, WriteFinished,
+        };
 
         let (phase, effects) = match (state.phase, event) {
             (Waiting, EligibleAtMark { attempt, now }) if now < state.expires_at => {
@@ -187,16 +189,16 @@ impl StateMachine for DirectHandoffMachine {
                 }
             }
             (Writing { .. }, RecoverWriting) => (NotKnown, vec![]),
-            (NotKnown, InboxRead { completed_at }) => seen(completed_at),
+            (NotKnown, ReadAcknowledged { completed_at }) => seen(completed_at),
             (Waiting | NotKnown | NotSeen | Seen { .. }, WriteFinished { .. }) => {
                 return Err(TransitionError::Stale);
             }
-            (Waiting, RecoverWriting | InboxRead { .. })
-            | (Writing { .. }, EligibleAtMark { .. } | InboxRead { .. })
+            (Waiting, RecoverWriting | ReadAcknowledged { .. })
+            | (Writing { .. }, EligibleAtMark { .. } | ReadAcknowledged { .. })
             | (NotKnown, EligibleAtMark { .. } | Cutoff { .. } | RecoverWriting)
             | (
                 NotSeen | Seen { .. },
-                EligibleAtMark { .. } | Cutoff { .. } | RecoverWriting | InboxRead { .. },
+                EligibleAtMark { .. } | Cutoff { .. } | RecoverWriting | ReadAcknowledged { .. },
             ) => {
                 return Err(TransitionError::NotAllowed {
                     state: state.state_tag(),
@@ -218,7 +220,7 @@ impl StateMachine for DirectHandoffMachine {
             edge("Writing", "WriteFinished", "Seen", true),
             edge("Writing", "WriteFinished", "NotKnown", false),
             edge("Writing", "RecoverWriting", "NotKnown", false),
-            edge("NotKnown", "InboxRead", "Seen", true),
+            edge("NotKnown", "ReadAcknowledged", "Seen", true),
         ];
         TRANSITIONS
     }

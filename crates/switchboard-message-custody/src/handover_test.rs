@@ -75,7 +75,7 @@ fn events(active: NoticeAttemptId, stale: NoticeAttemptId) -> [HandoffEvent; 13]
             now: after,
         },
         HandoffEvent::RecoverWriting,
-        HandoffEvent::InboxRead {
+        HandoffEvent::ReadAcknowledged {
             completed_at: after,
         },
     ]
@@ -195,7 +195,7 @@ impl NoticeHistory {
                 }
                 self.cannot_offer_again = true;
             }
-            HandoffEvent::InboxRead { completed_at } => {
+            HandoffEvent::ReadAcknowledged { completed_at } => {
                 if !self.cannot_offer_again || self.confirmed_at.is_some() {
                     return Err(ExpectedFailure::Inapplicable);
                 }
