@@ -45,6 +45,7 @@ use collaboration_contracts::ProviderConversationBackend;
 use collaboration_contracts::ProviderConversationFuture;
 use collaboration_contracts::ProviderSessionInspectFuture;
 use collaboration_contracts::ProviderSettingsFuture;
+use collaboration_contracts::SessionTokenAtCreation;
 use collaboration_protocol::{
     ConversationAdmissionState, ConversationBindingIdentity, ConversationCancelRequest,
     ConversationCloseRequest, ConversationCreateRequest, ConversationLoadRequest,
@@ -90,6 +91,7 @@ struct SupervisorInner {
     bindings: HashMap<EndpointRef, RuntimeBinding>,
     store: Arc<Mutex<ProviderOperationStore>>,
     clock: Arc<dyn router_clock::RuntimeClock>,
+    session_token_at_creation: Arc<dyn SessionTokenAtCreation>,
     live_operations: Arc<StdMutex<LiveOperations>>,
     operation_tasks: TaskTracker,
     operation_cleanup_cancel: tokio_util::sync::CancellationToken,
@@ -319,12 +321,31 @@ impl ExternalProviderSupervisor {
         Self::new_with_hub(bindings, store, None, None, clock)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn new_with_hub(
         bindings: Vec<ExternalProviderBinding>,
         store: Arc<Mutex<ProviderOperationStore>>,
         hub: Option<Arc<switchboard_session_events::ProviderSessionEventHub>>,
         scratch_root: Option<PathBuf>,
         clock: Arc<dyn router_clock::RuntimeClock>,
+    ) -> Result<Self, &'static str> {
+        Self::new_with_session_tokens(
+            bindings,
+            store,
+            hub,
+            scratch_root,
+            clock,
+            Arc::new(collaboration_contracts::V0SessionTokenIssuer),
+        )
+    }
+
+    pub(crate) fn new_with_session_tokens(
+        bindings: Vec<ExternalProviderBinding>,
+        store: Arc<Mutex<ProviderOperationStore>>,
+        hub: Option<Arc<switchboard_session_events::ProviderSessionEventHub>>,
+        scratch_root: Option<PathBuf>,
+        clock: Arc<dyn router_clock::RuntimeClock>,
+        session_token_at_creation: Arc<dyn SessionTokenAtCreation>,
     ) -> Result<Self, &'static str> {
         let started_at_ms = clock.utc_now().timestamp_millis();
         let queued_operations = ProviderQueueOperationRegistry::new(clock.clone());
@@ -433,6 +454,7 @@ impl ExternalProviderSupervisor {
                 bindings: runtimes,
                 store,
                 clock,
+                session_token_at_creation,
                 live_operations,
                 operation_tasks: TaskTracker::new(),
                 operation_cleanup_cancel: tokio_util::sync::CancellationToken::new(),
