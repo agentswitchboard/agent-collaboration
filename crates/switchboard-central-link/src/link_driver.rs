@@ -409,19 +409,20 @@ where
         Err(reason)
     }
 
-    async fn drive_socket(
+    async fn drive_socket<Socket>(
         &mut self,
-        mut socket: (
-            impl Stream<Item = Result<Message, WebSocketError>>
-            + Sink<Message, Error = WebSocketError>
-            + Unpin
-        ),
+        mut socket: Socket,
         attempt: &ConnectionAttempt,
         binding: &Binding,
         timing: SocketAttemptTiming<'_>,
         control: &mut Control<'_, Binding>,
         lane_owner: &mut LinkLaneOwner,
-    ) -> Result<(), Interrupted> {
+    ) -> Result<(), Interrupted>
+    where
+        Socket: Stream<Item = Result<Message, WebSocketError>>
+            + Sink<Message, Error = WebSocketError>
+            + Unpin,
+    {
         let writes = timing.writes;
         let done = self
             .open_socket(&mut socket, attempt, binding, timing, control, lane_owner)
