@@ -30,10 +30,14 @@ impl Mailbox {
         let fences = sent_settings(&self.owner);
         let restore_fences = self.owner.ports.restore_setting_fences.clone();
         if let Ok(commit) = decide(&self.owner, event.clone()) {
+            let continuation = commit.effects.continue_after_turn_settlement;
             self.owner = commit.next;
             assert_live_commit(before, self.owner.snapshot().lifecycle, &event);
             for effect in commit.effects.effects {
                 self.observe(effect);
+            }
+            if let Some(settlement) = continuation {
+                self.deliver(OwnerEvent::ContinueAfterTurnSettlement(settlement));
             }
         }
         let remaining = self.pending();

@@ -450,6 +450,7 @@ fn assert_outbox_wake_order(
                 .into_iter()
                 .chain([OwnerEffect::RetireRoute(generation)])
                 .collect(),
+            continue_after_turn_settlement: None,
         },
         Some(accepted),
         &mut ports,
@@ -585,7 +586,8 @@ fn failed_effect_returns_prepared_caller_to_recovery_without_publishing() {
                         outcome: CreateOutcome::Adopted(generation)
                     },
                     OwnerEffect::RetireRoute(generation),
-                ]
+                ],
+                continue_after_turn_settlement: None,
             },
             Some(acknowledge),
             &mut ports,

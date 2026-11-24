@@ -24,7 +24,7 @@ pub enum ProviderQueueAdmissionError {
     UnsupportedContent { content_type: &'static str },
     #[error("provider queue is full")]
     Busy,
-    #[error("previous turn settlement is unresolved for operation {operation}")]
+    #[error("{}", collaboration_protocol::PREVIOUS_TURN_SETTLEMENT_GUIDANCE)]
     PreviousTurnSettlementUnresolved { operation: uuid::Uuid },
 }
 

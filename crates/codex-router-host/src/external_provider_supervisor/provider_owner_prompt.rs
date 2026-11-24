@@ -389,7 +389,7 @@ pub(super) fn previous_turn_fence(
         ConversationOperationFailureKind::PreviousTurnSettlementUnresolved,
         ConversationOperationFailureStage::Admission,
         ProviderOperationEffect::None,
-        &format!("previous turn settlement is unresolved for operation {previous}"),
+        collaboration_protocol::PREVIOUS_TURN_SETTLEMENT_GUIDANCE,
         OperationId::try_from(previous.to_string()).unwrap_or(current),
         Some(target),
     )

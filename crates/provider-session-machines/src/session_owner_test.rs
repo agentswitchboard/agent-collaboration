@@ -75,7 +75,14 @@ fn apply(state: &mut SessionOwnerState, event: OwnerEvent) -> Vec<OwnerEffect> {
 fn apply_pending(state: &mut SessionOwnerState, event: OwnerEvent) -> Vec<OwnerEffect> {
     let decision = decide(state, event).expect("fixture event is current and permitted");
     *state = decision.next;
-    decision.effects.effects
+    let mut effects = decision.effects.effects;
+    if let Some(settlement) = decision.effects.continue_after_turn_settlement {
+        let next = decide(state, OwnerEvent::ContinueAfterTurnSettlement(settlement))
+            .expect("fixture settlement continuation is permitted");
+        *state = next.next;
+        effects.extend(next.effects.effects);
+    }
+    effects
 }
 
 fn command(state: &mut SessionOwnerState, command: SessionOwnerCommand) -> Vec<OwnerEffect> {

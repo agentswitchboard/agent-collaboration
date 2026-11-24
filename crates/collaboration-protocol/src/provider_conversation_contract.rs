@@ -815,6 +815,8 @@ pub enum ConversationOperationFailureKind {
     CannotSteer,
 }
 
+pub const PREVIOUS_TURN_SETTLEMENT_GUIDANCE: &str = "The last turn on this session ended, but the Router could not confirm it was recorded. This session takes no new turn until that is confirmed; start a new session to continue.";
+
 #[derive(Clone, Debug, JsonSchema, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConversationOperationFailure {

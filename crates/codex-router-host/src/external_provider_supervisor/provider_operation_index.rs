@@ -372,8 +372,9 @@ impl LiveOperations {
         target: &SessionRef,
     ) -> Option<TurnRecordDisposition> {
         let Some(live) = self.operations.get(operation) else {
-            // An evicted result holds no live admission. The binding cell
-            // still owns any durable uncertainty for the same operation.
+            // Eviction requires released custody and a published result.
+            // The binding cell still owns durable uncertainty for this ID.
+            // Waiting for a new index entry here would strand a fence.
             return Some(TurnRecordDisposition::Uncertain);
         };
         if !live.matches_lane_binding(generation, target) {

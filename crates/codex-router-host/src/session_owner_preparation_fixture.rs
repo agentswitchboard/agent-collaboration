@@ -15,6 +15,8 @@ pub(crate) struct PreparationFixture {
     #[cfg(test)]
     recovery_pause: Mutex<Option<PreparationPause>>,
     #[cfg(test)]
+    notice_untaken: Mutex<Option<oneshot::Sender<()>>>,
+    #[cfg(test)]
     refuse_replacement: AtomicBool,
     restore_fault: AtomicBool,
 }
@@ -71,6 +73,30 @@ impl DeliveryAckPause {
 }
 
 impl PreparationFixture {
+    #[cfg(test)]
+    pub(crate) fn observe_untaken_notice_offer(&self) -> oneshot::Receiver<()> {
+        let (offered, seen) = oneshot::channel();
+        let previous = self
+            .notice_untaken
+            .lock()
+            .expect("notice observation")
+            .replace(offered);
+        assert!(previous.is_none(), "prior notice observation is pending");
+        seen
+    }
+
+    #[cfg(test)]
+    pub(crate) fn notice_offer_left_untaken(&self) {
+        if let Some(offered) = self
+            .notice_untaken
+            .lock()
+            .expect("notice observation")
+            .take()
+        {
+            let _ = offered.send(());
+        }
+    }
+
     pub(crate) fn pause_delivery_ack(&self, lose_ack: bool) -> DeliveryAckControl {
         let (entered, reached) = oneshot::channel();
         let (release, released) = oneshot::channel();

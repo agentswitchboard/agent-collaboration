@@ -419,9 +419,12 @@ impl SessionOwnerExecution {
             )));
         }
         if let Some(notice) = notice {
-            return Ok(notice
-                .take(&authorization, &self.wire)
-                .map(OwnerEvent::Dispatch));
+            let taken = notice.take(&authorization, &self.wire);
+            #[cfg(test)]
+            if taken.is_none() {
+                self.preparation_fixture.notice_offer_left_untaken();
+            }
+            return Ok(taken.map(OwnerEvent::Dispatch));
         }
         Ok(self
             .wire
@@ -518,6 +521,20 @@ impl SessionOwnerExecution {
 }
 
 impl SessionOwnerPorts for SessionOwnerExecution {
+    fn turn_settlement_continuation_refused(
+        &mut self,
+        settlement: provider_session_machines::session_turn_machine::TurnSettlement,
+        reason: &provider_session_machines::session_owner::SessionOwnerRejection,
+    ) {
+        tracing::warn!(
+            session = %String::from(self.target.session_id.clone()),
+            endpoint = %String::from(self.target.endpoint.endpoint_id.clone()),
+            turn = %settlement.turn.0,
+            ?reason,
+            "session owner refused turn settlement continuation"
+        );
+    }
+
     fn execute(
         &mut self,
         owner: OwnerAddress,

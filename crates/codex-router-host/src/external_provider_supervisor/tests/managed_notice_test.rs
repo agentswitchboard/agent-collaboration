@@ -301,6 +301,33 @@ async fn a_reserved_human_prompt_refuses_notice_even_before_the_owner_command() 
 }
 
 #[tokio::test]
+async fn a_human_prompt_revokes_the_exact_notice_offered_to_a_full_writer() {
+    let clock = Arc::new(ManualClock::new(chrono::DateTime::UNIX_EPOCH));
+    let rig = idle_claude_fixture(clock.clone(), Some(HUMAN_TEXT)).await;
+    let (adapter, recipient, notice) =
+        prepare_notice(&rig, &clock, Arc::new(NoticeAuthority::new()));
+    let attempt = notice.attempt();
+    let owner = rig.supervisor.session_owner_for(&rig.target).unwrap();
+    let runtime = rig.supervisor.runtime_for(&rig.target.endpoint).unwrap();
+    let offered = runtime.preparation_fixture.observe_untaken_notice_offer();
+    let capacity = owner.hold_provider_writer_capacity();
+    let offer = adapter.ready(&recipient).await.unwrap().offer(notice);
+    tokio::pin!(offer);
+    tokio::select! {
+        offered = offered => offered.expect("owner holds the offered authorization after the real take refused capacity"),
+        result = &mut offer => panic!("notice finished before the writer opened: {result:?}"),
+    }
+    drop(capacity);
+    let operation = OperationId::generate();
+    rig.supervisor
+        .prompt_contents(human_prompt(&rig, operation, PromptBusyPolicy::RefuseBusy))
+        .await
+        .expect("the human prompt takes the slot after exact notice undo");
+    assert_waiting_then_eligible(&rig, &clock, recipient, attempt, offer.await).await;
+    rig.supervisor.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn a_taken_notice_turn_gets_the_ordinary_running_refusal_for_a_human_prompt() {
     let clock = Arc::new(ManualClock::new(chrono::DateTime::UNIX_EPOCH));
     let rig = idle_claude_fixture(clock.clone(), Some(NOTICE_TEXT)).await;

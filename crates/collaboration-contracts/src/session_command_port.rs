@@ -120,7 +120,7 @@ pub enum CommandFailure {
     UnsupportedOperation { operation: &'static str },
     #[error("session is busy")]
     Busy,
-    #[error("previous turn settlement is unresolved for operation {}", .operation.as_str())]
+    #[error("{}", collaboration_protocol::PREVIOUS_TURN_SETTLEMENT_GUIDANCE)]
     PreviousTurnSettlementUnresolved {
         operation: collaboration_protocol::OperationId,
     },

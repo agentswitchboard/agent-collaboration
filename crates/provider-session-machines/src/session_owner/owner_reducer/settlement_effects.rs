@@ -179,8 +179,8 @@ impl OwnerTransition {
                 SessionCellEvent::SettlementCleared { settlement, record },
             )?;
         }
-        self.continue_close()?;
-        self.drive_prompt_line()
+        self.continue_after_turn_settlement = Some(settlement);
+        Ok(())
     }
 
     pub(super) fn turn_settle_deadline(
@@ -200,6 +200,11 @@ impl OwnerTransition {
             settlement,
             SessionCellEvent::SettleDeadlineReached(settlement),
         )?;
+        self.continue_after_turn_settlement = Some(settlement);
+        Ok(())
+    }
+
+    pub(super) fn continue_after_turn_settlement(&mut self) -> OwnerResult {
         self.continue_close()?;
         self.drive_prompt_line()
     }

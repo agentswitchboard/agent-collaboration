@@ -98,6 +98,10 @@ async fn start_observed_before_settling(advance_deadline: bool) {
             ConversationOperationFailureKind::PreviousTurnSettlementUnresolved
         );
         assert_eq!(failure.operation_id, Some(first));
+        assert_eq!(
+            String::from(failure.message),
+            "The last turn on this session ended, but the Router could not confirm it was recorded. This session takes no new turn until that is confirmed; start a new session to continue."
+        );
         assert_eq!(recorded_requests(&rig.receipt, "session/prompt"), 1);
         release_writer.send(()).unwrap();
     } else {

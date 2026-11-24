@@ -53,6 +53,7 @@ impl SessionOwnerState {
                     | OwnerEvent::Publication(_)
                     | OwnerEvent::Deadline(_)
                     | OwnerEvent::TurnAdmissionSettled { .. }
+                    | OwnerEvent::ContinueAfterTurnSettlement(_)
             );
         if event.owner != self.ports.address && !attaching && !incarnation_local {
             return Err(OwnerRejection::IgnoredLate);
@@ -62,6 +63,7 @@ impl SessionOwnerState {
             effects: Vec::new(),
             observed_at_ms,
             completing_prompt: None,
+            continue_after_turn_settlement: None,
         };
         if transition.next.ports.latest_batch.is_none() {
             transition.offer_rebase()?;
@@ -78,6 +80,7 @@ impl SessionOwnerState {
             effects: OwnerOutbox {
                 owner,
                 effects: transition.effects,
+                continue_after_turn_settlement: transition.continue_after_turn_settlement,
             },
         })
     }
@@ -87,6 +90,7 @@ struct OwnerTransition {
     next: SessionOwnerState,
     effects: Vec<OwnerEffect>,
     observed_at_ms: i64,
+    continue_after_turn_settlement: Option<crate::session_turn_machine::TurnSettlement>,
     completing_prompt: Option<(
         super::InputId,
         Result<super::PromptCompletion, super::ProviderWireFailure>,
@@ -140,6 +144,7 @@ impl OwnerTransition {
                 settlement,
                 evidence,
             } => self.turn_admission_settled(run, settlement, evidence),
+            OwnerEvent::ContinueAfterTurnSettlement(_) => self.continue_after_turn_settlement(),
             OwnerEvent::OutputLimit { run, turn } => self.cancel_turn(run, turn),
         }
     }

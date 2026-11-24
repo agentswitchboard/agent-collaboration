@@ -26,14 +26,15 @@ pub use provider_conversation_contract::{
     ConversationOperationWaitResult, ConversationOutputUnavailableReason,
     ConversationPromptRequest, ConversationResumeRequest, EffectiveProviderSettings,
     FailedProviderSetting, FastSetting, FastState, InvalidProviderSetting,
-    InvalidSettingSessionDisposition, NotAppliedProviderSetting, ProviderAuthenticationState,
-    ProviderAutoRealization, ProviderBindingId, ProviderBindingIdentity, ProviderCapabilities,
-    ProviderCapability, ProviderCapabilityEvidence, ProviderCapabilityName,
-    ProviderCapabilityStatus, ProviderKind, ProviderModeReason, ProviderOperationEffect,
-    ProviderOperationKind, ProviderOperationStage, ProviderPermissionOutcome,
-    ProviderPromptStopReason, ProviderReconciliationState, ProviderRequestedPolicy,
-    ProviderRequestedSettings, ProviderRuntimeIdentity, ProviderSettingName,
-    ProviderSettingsMappingStatus, ProviderTransport, ProviderWorkingDirectory,
+    InvalidSettingSessionDisposition, NotAppliedProviderSetting, PREVIOUS_TURN_SETTLEMENT_GUIDANCE,
+    ProviderAuthenticationState, ProviderAutoRealization, ProviderBindingId,
+    ProviderBindingIdentity, ProviderCapabilities, ProviderCapability, ProviderCapabilityEvidence,
+    ProviderCapabilityName, ProviderCapabilityStatus, ProviderKind, ProviderModeReason,
+    ProviderOperationEffect, ProviderOperationKind, ProviderOperationStage,
+    ProviderPermissionOutcome, ProviderPromptStopReason, ProviderReconciliationState,
+    ProviderRequestedPolicy, ProviderRequestedSettings, ProviderRuntimeIdentity,
+    ProviderSettingName, ProviderSettingsMappingStatus, ProviderTransport,
+    ProviderWorkingDirectory,
 };
 pub use provider_identity::ProviderIdentity;
 pub use provider_settings_contract::{

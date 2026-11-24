@@ -74,6 +74,7 @@ pub enum OwnerEvent {
         settlement: TurnSettlement,
         evidence: TurnAdmissionEvidence,
     },
+    ContinueAfterTurnSettlement(TurnSettlement),
     OutputLimit {
         run: SessionGeneration,
         turn: TurnId,
@@ -828,6 +829,7 @@ pub(in crate::session_owner) enum DeliveryEvidenceState {
 pub struct OwnerOutbox {
     pub owner: OwnerAddress,
     pub effects: Vec<OwnerEffect>,
+    pub continue_after_turn_settlement: Option<TurnSettlement>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
