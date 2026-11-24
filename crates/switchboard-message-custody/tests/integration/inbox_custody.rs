@@ -30,7 +30,7 @@ use switchboard_message_custody::{
     recipient_inbox::{InboxOfferResult, RecipientInbox},
     recipient_sessions::{RecipientSessionAnswer, RecipientSessionDirectory},
 };
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 use workspace_ids::{MachineId, SessionId, SessionRef};
 use workspace_model::central_mail::{MessageDelivery, MessageRefusal, MessageSender, MessageState};
 use workspace_model::{PostText, ResolvedSender};
@@ -76,10 +76,8 @@ async fn a_queued_admitted_offer_is_kept_after_its_connection_closes() {
             "the lane's queued offer retains its admission across connection turnover"
         );
         let sent = lane.watch_receipt_commands();
-        let (stop, stopped) = watch::channel(false);
         let (observed, mut events) = mpsc::unbounded_channel();
-        let (calls, task) = custody_task(custody, stopped, Arc::new(ObserveTask(observed)));
-        let worker = tokio::spawn(task);
+        let (calls, group) = custody_task(custody, Arc::new(ObserveTask(observed)));
         assert_eq!(calls.waiting_for_session(session).await.unwrap().len(), 1);
         assert!(sent.borrow().is_empty());
         lane.admitted.send_replace(Some(replacement.clone()));
@@ -117,8 +115,8 @@ async fn a_queued_admitted_offer_is_kept_after_its_connection_closes() {
                 .is_empty()
         );
         assert_eq!(reopened.pending_handoffs().await.unwrap().healthy.len(), 1);
-        stop.send_replace(true);
-        worker.await.unwrap();
+        group.request_stop();
+        group.join().await.unwrap();
     }
 }
 
