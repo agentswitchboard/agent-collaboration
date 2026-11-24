@@ -262,7 +262,11 @@ impl CustodyLink {
         if let Some(cause) = cause {
             if let Some(settled) = self
                 .dispatcher
-                .return_unsubmitted(&mut self.outbox, batch, cause)
+                .settle_batch(
+                    &mut self.outbox,
+                    batch,
+                    WriteBatchDisposition::NotReached { cause },
+                )
                 .await
             {
                 report.append(settled);

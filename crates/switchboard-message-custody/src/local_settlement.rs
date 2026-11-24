@@ -264,14 +264,13 @@ impl LocalSettlements {
 pub(crate) enum MemberReturn {
     NotTransmitted,
     MayHaveTransmitted,
-    DriverHeldAtCutoff,
 }
 
 impl MemberReturn {
     fn into_evidence(self) -> MemberEvidence {
         match self {
             Self::NotTransmitted => MemberEvidence::NotTransmitted,
-            Self::MayHaveTransmitted | Self::DriverHeldAtCutoff => MemberEvidence::Unanswered,
+            Self::MayHaveTransmitted => MemberEvidence::Unanswered,
         }
     }
 }
