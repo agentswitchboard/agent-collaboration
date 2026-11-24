@@ -13,6 +13,9 @@ use session_event_model::SessionEvent;
 #[path = "provider_prompt_wire_test.rs"]
 mod provider_prompt_wire;
 
+#[path = "managed_notice_test.rs"]
+mod managed_notice;
+
 #[path = "cancel_after_turn_test.rs"]
 mod cancel_after_turn_tests;
 
@@ -22,6 +25,7 @@ async fn create_test_session(
     supervisor: &ExternalProviderSupervisor,
     expected: &SessionRef,
     cwd: &std::path::Path,
+    mode: &str,
 ) {
     let operation_id = OperationId::generate();
     supervisor
@@ -37,7 +41,7 @@ async fn create_test_session(
                 access: RouterAccess::WriteRestricted,
             },
             settings: Some(collaboration_protocol::ProviderRequestedSettings {
-                mode: Some("auto".to_owned()),
+                mode: Some(mode.to_owned()),
                 ..Default::default()
             }),
             work_roots: Vec::new(),
@@ -110,10 +114,24 @@ async fn steering_session_on_clock(
     arguments: impl FnOnce(&std::path::Path) -> Vec<String>,
     clock: Arc<dyn router_clock::RuntimeClock>,
 ) -> SteeringSession {
+    steering_session_for_binding(program, session_id, arguments, clock, binding()).await
+}
+
+async fn steering_session_for_binding(
+    program: &str,
+    session_id: &str,
+    arguments: impl FnOnce(&std::path::Path) -> Vec<String>,
+    clock: Arc<dyn router_clock::RuntimeClock>,
+    identity: ProviderBindingIdentity,
+) -> SteeringSession {
+    let mode = match identity.runtime.provider {
+        collaboration_protocol::ProviderKind::ClaudeCode => "agent",
+        collaboration_protocol::ProviderKind::Cursor => "auto",
+    };
     let root = tempfile::tempdir().expect("fixture root");
     let receipt = root.path().join("wire.json");
     let target = SessionRef {
-        endpoint: endpoint(),
+        endpoint: identity.endpoint.clone(),
         session_id: SessionId::try_from(session_id.to_owned()).expect("session"),
     };
     let store = Arc::new(Mutex::new(
@@ -145,10 +163,7 @@ async fn steering_session_on_clock(
     .expect("fixture provider");
     let supervisor = Arc::new(
         ExternalProviderSupervisor::new_with_hub(
-            vec![ExternalProviderBinding {
-                identity: binding(),
-                runtime,
-            }],
+            vec![ExternalProviderBinding { identity, runtime }],
             Arc::clone(&store),
             Some(hub.clone()),
             None,
@@ -156,7 +171,7 @@ async fn steering_session_on_clock(
         )
         .expect("supervisor"),
     );
-    create_test_session(&supervisor, &target, root.path()).await;
+    create_test_session(&supervisor, &target, root.path(), mode).await;
     SteeringSession {
         _root: root,
         receipt,

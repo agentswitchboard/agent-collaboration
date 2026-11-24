@@ -10,15 +10,27 @@ use super::{
     provider_prompt_contents::ProviderPromptContentsRequest,
     runtime_failure,
 };
-use crate::session_owner_delivery_evidence::{
-    OwnerDeliveryEvidence, ProviderDeliveryEvidence, placement_evidence,
+use crate::{
+    session_owner_calls::InputAcceptance,
+    session_owner_delivery_evidence::{
+        OwnerDeliveryEvidence, ProviderDeliveryEvidence, placement_evidence,
+    },
+    session_owner_execution::NoticeWriterTake,
 };
 use collaboration_contracts::AttemptEvidenceSink;
-use collaboration_protocol::MessageDelivery;
+use collaboration_protocol::{EndpointRef, MessageDelivery, OperationId, ProviderKind, SessionRef};
 use provider_session_machines::{
     session_lifecycle_machine::SessionLifecycle,
     session_owner::{OwnerInput, PromptAdmission, SessionOwnerReply},
     session_turn_machine::{SessionTurn, TurnId},
+};
+use std::sync::Arc;
+use switchboard_message_custody::{
+    handover::{NoticePreTakeRefusal, NoticeUncertainty, NoticeWriteOutcome},
+    handover_notice::{
+        ClaimedNotice, IdleClaudeRun, MachineId, ManagedClaudeNoticePort, NoticeDeferred,
+        NoticeFuture, SessionRef as MailSessionRef,
+    },
 };
 use uuid::Uuid;
 
@@ -30,6 +42,162 @@ enum DeliveryAdmission {
     SteerExisting(TurnId),
     QueueOnRun(SessionQueuePlan),
     Warm(WarmRun),
+    Notice(WarmRun),
+}
+
+/// Resolves only the configured managed Claude endpoint and its current owner.
+pub struct ManagedClaudeNoticeAdapter {
+    supervisor: Arc<ExternalProviderSupervisor>,
+    machine: MachineId,
+    endpoint: EndpointRef,
+}
+
+impl ManagedClaudeNoticeAdapter {
+    pub fn new(
+        supervisor: Arc<ExternalProviderSupervisor>,
+        machine: MachineId,
+        endpoint: EndpointRef,
+    ) -> Self {
+        Self {
+            supervisor,
+            machine,
+            endpoint,
+        }
+    }
+}
+
+impl ManagedClaudeNoticePort for ManagedClaudeNoticeAdapter {
+    fn ready<'a>(
+        &'a self,
+        target: &'a MailSessionRef,
+    ) -> NoticeFuture<'a, Result<Box<dyn IdleClaudeRun>, NoticeDeferred>> {
+        Box::pin(async move {
+            if target.machine_id != self.machine {
+                return Err(NoticeDeferred::UnprovedRecipient);
+            }
+            let binding = self
+                .supervisor
+                .inner
+                .bindings
+                .get(&self.endpoint)
+                .ok_or(NoticeDeferred::UnsupportedProgram)?;
+            if binding.identity.runtime.provider != ProviderKind::ClaudeCode {
+                return Err(NoticeDeferred::UnsupportedProgram);
+            }
+            let local_target = SessionRef {
+                endpoint: self.endpoint.clone(),
+                session_id: collaboration_protocol::SessionId::try_from(
+                    target.session_id.as_str().to_owned(),
+                )
+                .map_err(|_| NoticeDeferred::UnprovedRecipient)?,
+            };
+            let snapshot = self
+                .supervisor
+                .owner_session_snapshot(&local_target)
+                .ok_or(NoticeDeferred::NotOpen)?;
+            let SessionLifecycle::Live { generation } = snapshot.lifecycle else {
+                return Err(NoticeDeferred::NotOpen);
+            };
+            if snapshot.turn != SessionTurn::Idle {
+                return Err(NoticeDeferred::Busy);
+            }
+            Ok(Box::new(IdleManagedClaude {
+                supervisor: self.supervisor.clone(),
+                target: target.clone(),
+                local_target,
+                run: WarmRun {
+                    owner: snapshot.owner,
+                    generation,
+                },
+                clock: binding.runtime.owner_clock(),
+            }) as Box<dyn IdleClaudeRun>)
+        })
+    }
+}
+
+struct IdleManagedClaude {
+    supervisor: Arc<ExternalProviderSupervisor>,
+    target: MailSessionRef,
+    local_target: SessionRef,
+    run: WarmRun,
+    clock: Arc<dyn router_clock::RuntimeClock>,
+}
+
+impl IdleClaudeRun for IdleManagedClaude {
+    fn offer(self: Box<Self>, notice: ClaimedNotice) -> NoticeFuture<'static, NoticeWriteOutcome> {
+        Box::pin(async move {
+            use NoticePreTakeRefusal::{Busy, Expired, RejectedBeforeTake, RunChanged};
+            if notice.target() != &self.target {
+                return NoticeWriteOutcome::DefinitelyNotWritten(RunChanged);
+            }
+            if self.clock.monotonic_now() >= notice.not_after() {
+                return NoticeWriteOutcome::DefinitelyNotWritten(Expired);
+            }
+            let record = match self
+                .supervisor
+                .inner
+                .store
+                .lock()
+                .await
+                .session_record(&self.local_target)
+                .await
+            {
+                Ok(Some(record)) => record,
+                Ok(None) | Err(_) => {
+                    return NoticeWriteOutcome::DefinitelyNotWritten(RejectedBeforeTake);
+                }
+            };
+            let Ok(content) = session_event_model::PromptContent::text(notice.text()) else {
+                return NoticeWriteOutcome::DefinitelyNotWritten(RejectedBeforeTake);
+            };
+            let request = ProviderPromptContentsRequest {
+                operation_id: OperationId::generate(),
+                input_id: session_event_model::InputId::generate(),
+                target: self.local_target,
+                requested_by: record.created_by,
+                approver: record.approver,
+                input: acp_client_runtime::ProviderTurnInput::Prompt(
+                    session_event_model::ProviderSubmission::plain(vec![content]),
+                ),
+                busy: super::PromptBusyPolicy::RefuseBusy,
+            };
+            let take = NoticeWriterTake::new(notice, self.clock);
+            let accepted = self
+                .supervisor
+                .submit_owner_delivery_with_notice(
+                    request,
+                    DeliveryAdmission::Notice(self.run),
+                    None,
+                    Some(take.clone()),
+                )
+                .await;
+            if let Some(taken_at) = take.taken_at() {
+                return NoticeWriteOutcome::Written { taken_at };
+            }
+            match accepted {
+                Ok(InputAcceptance::Unsent { .. }) => {
+                    NoticeWriteOutcome::DefinitelyNotWritten(RejectedBeforeTake)
+                }
+                Err(error) if error.effect == ProviderOperationEffect::None => {
+                    let reason = if error.kind == ConversationOperationFailureKind::Busy {
+                        Busy
+                    } else {
+                        RejectedBeforeTake
+                    };
+                    NoticeWriteOutcome::DefinitelyNotWritten(reason)
+                }
+                Ok(
+                    InputAcceptance::Started
+                    | InputAcceptance::Unknown
+                    | InputAcceptance::QueuePlanChanged
+                    | InputAcceptance::Queued
+                    | InputAcceptance::ProviderStarted
+                    | InputAcceptance::Steered { .. },
+                )
+                | Err(_) => NoticeWriteOutcome::NotKnown(NoticeUncertainty::WriterOutcomeLost),
+            }
+        })
+    }
 }
 
 impl ExternalProviderSupervisor {
@@ -129,6 +297,22 @@ impl ExternalProviderSupervisor {
         evidence: Option<(&dyn AttemptEvidenceSink, ProviderDeliveryEvidence)>,
     ) -> Result<crate::session_owner_calls::InputAcceptance, super::ConversationOperationFailure>
     {
+        self.submit_owner_delivery_with_notice(request, admission, evidence, None)
+            .await
+    }
+
+    #[expect(
+        clippy::result_large_err,
+        reason = "Retains a typed conversation failure for delivery."
+    )]
+    async fn submit_owner_delivery_with_notice(
+        &self,
+        request: ProviderPromptContentsRequest,
+        admission: DeliveryAdmission,
+        evidence: Option<(&dyn AttemptEvidenceSink, ProviderDeliveryEvidence)>,
+        notice: Option<NoticeWriterTake>,
+    ) -> Result<crate::session_owner_calls::InputAcceptance, super::ConversationOperationFailure>
+    {
         use crate::session_owner_calls::InputAcceptance;
         use provider_session_machines::session_owner::SessionOwnerCommand;
 
@@ -137,9 +321,20 @@ impl ExternalProviderSupervisor {
         let operation = request.operation_id.clone();
         let (binding, runtime) =
             self.runtime_binding(&target.endpoint, &operation, Some(target.clone()))?;
-        let owner = self
-            .session_owner_for(&target)
-            .map_err(|error| owner_failure(operation.clone(), target.clone(), error))?;
+        let owner = if matches!(admission, DeliveryAdmission::Notice(_)) {
+            let Some(owner) = self
+                .owner_door(&target.endpoint)
+                .and_then(|door| door.existing(&target))
+            else {
+                return Ok(InputAcceptance::Unsent {
+                    reason: Some(provider_session_machines::session_owner::RevokeReason::NotLoaded),
+                });
+            };
+            owner
+        } else {
+            self.session_owner_for(&target)
+                .map_err(|error| owner_failure(operation.clone(), target.clone(), error))?
+        };
         let snapshot = owner.snapshots().borrow().clone();
         let (generation, cold_restore) = match (admission, snapshot.lifecycle) {
             (_, SessionLifecycle::Live { generation })
@@ -175,7 +370,7 @@ impl ExternalProviderSupervisor {
         {
             return Ok(InputAcceptance::QueuePlanChanged);
         }
-        if let DeliveryAdmission::Warm(run) = admission
+        if let DeliveryAdmission::Warm(run) | DeliveryAdmission::Notice(run) = admission
             && (snapshot.owner != run.owner || generation != run.generation)
         {
             return Ok(InputAcceptance::Unsent { reason: None });
@@ -294,6 +489,7 @@ impl ExternalProviderSupervisor {
                 admission: PromptAdmission::Direct,
             },
             DeliveryAdmission::Warm(_) => SessionOwnerCommand::WarmPrompt(input.clone()),
+            DeliveryAdmission::Notice(_) => SessionOwnerCommand::NoticePrompt(input.clone()),
         };
         let (writer, intake) = if let Some((sink, effect)) = &evidence {
             let (offer, intake) = tokio::sync::oneshot::channel();
@@ -327,6 +523,9 @@ impl ExternalProviderSupervisor {
             {
                 Err(crate::session_owner_door::OwnerDoorError::Unavailable)
             } else {
+                if let Some(notice) = notice {
+                    owner.remember_notice(input.input.clone(), notice);
+                }
                 owner.remember_approval(
                     input.input.clone(),
                     crate::ExternalProviderApprovalContext {

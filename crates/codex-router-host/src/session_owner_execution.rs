@@ -32,8 +32,9 @@ use provider_session_machines::{
 use std::{
     collections::{BTreeMap, HashMap},
     path::PathBuf,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, Mutex, MutexGuard, OnceLock},
 };
+use switchboard_message_custody::handover_notice::ClaimedNotice;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 pub struct SessionOwnerExecution {
@@ -73,6 +74,56 @@ struct ActiveTurnApproval {
     approver: ProviderIdentity,
     _lease:
         acp_client_runtime::OwnerApprovalLease<crate::acp_interaction_port::HostInteractionPort>,
+}
+
+#[derive(Clone)]
+pub(crate) struct NoticeWriterTake {
+    notice: Arc<ClaimedNotice>,
+    clock: Arc<dyn router_clock::RuntimeClock>,
+    taken_at: Arc<OnceLock<chrono::DateTime<chrono::Utc>>>,
+}
+
+impl NoticeWriterTake {
+    pub(crate) fn new(notice: ClaimedNotice, clock: Arc<dyn router_clock::RuntimeClock>) -> Self {
+        Self {
+            notice: Arc::new(notice),
+            clock,
+            taken_at: Arc::new(OnceLock::new()),
+        }
+    }
+
+    pub(crate) fn taken_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.taken_at.get().copied()
+    }
+
+    fn take(
+        &self,
+        authorization: &DispatchAuthorization,
+        wire: &OwnerAcpWire,
+    ) -> Option<DispatchResult> {
+        let mut checked_at = None;
+        let result = self.notice.while_live(|| {
+            wire.take_when(authorization, || {
+                let taken_at = self.clock.utc_now();
+                if self.clock.monotonic_now() >= self.notice.not_after() {
+                    return false;
+                }
+                checked_at = Some(taken_at);
+                true
+            })
+        });
+        let result = match result {
+            Some(result) => result,
+            None => wire.take_when(authorization, || false),
+        }
+        .ok()?;
+        if matches!(result, DispatchResult::Taken(_))
+            && let Some(taken_at) = checked_at
+        {
+            let _ = self.taken_at.set(taken_at);
+        }
+        Some(result)
+    }
 }
 
 impl SessionOwnerExecution {
@@ -334,6 +385,12 @@ impl SessionOwnerExecution {
         completions: &OwnerCompletionPort,
     ) -> Result<Option<OwnerEvent>, OwnerTaskError> {
         let provider_id = self.session_id();
+        let notice = match &work {
+            AuthorizedWork::Prompt(input) => self.calls.notice(&input.input),
+            AuthorizedWork::Cancel(_)
+            | AuthorizedWork::Steer(_)
+            | AuthorizedWork::Setting { .. } => None,
+        };
         let setting_operation = match &work {
             AuthorizedWork::Setting { setting, .. } => Some(setting.change.attempt.0),
             _ => None,
@@ -409,6 +466,11 @@ impl SessionOwnerExecution {
             return Ok(Some(OwnerEvent::Dispatch(
                 DispatchResult::DefinitelyUnsent(authorization),
             )));
+        }
+        if let Some(notice) = notice {
+            return Ok(notice
+                .take(&authorization, &self.wire)
+                .map(OwnerEvent::Dispatch));
         }
         Ok(self
             .wire

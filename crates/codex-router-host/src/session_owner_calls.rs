@@ -25,6 +25,7 @@ use uuid::Uuid;
 #[derive(Default)]
 pub struct SessionOwnerCalls {
     content: Mutex<BTreeMap<InputId, ProviderPromptContent>>,
+    notices: Mutex<BTreeMap<InputId, crate::session_owner_execution::NoticeWriterTake>>,
     outstanding: Mutex<BTreeMap<InputId, OwnerInput>>,
     approvals: Mutex<BTreeMap<InputId, crate::ExternalProviderApprovalContext>>,
     acceptance: Mutex<BTreeMap<Uuid, oneshot::Sender<InputAcceptance>>>,
@@ -133,6 +134,7 @@ impl SessionOwnerCalls {
 
     pub fn release_input(&self, input: &InputId) {
         lock(&self.content).remove(input);
+        lock(&self.notices).remove(input);
         lock(&self.outstanding).remove(input);
         lock(&self.approvals).remove(input);
     }
@@ -152,12 +154,28 @@ impl SessionOwnerCalls {
         self.reply_changed.notify_waiters();
         lock(&self.dependent_restores).clear();
         lock(&self.content).clear();
+        lock(&self.notices).clear();
         lock(&self.outstanding).clear();
         lock(&self.approvals).clear();
         lock(&self.acceptance).clear();
         lock(&self.delivery_evidence).clear();
         lock(&self.active_turns).clear();
         lock(&self.steer_targets).clear();
+    }
+
+    pub(crate) fn remember_notice(
+        &self,
+        input: InputId,
+        notice: crate::session_owner_execution::NoticeWriterTake,
+    ) {
+        lock(&self.notices).insert(input, notice);
+    }
+
+    pub(crate) fn notice(
+        &self,
+        input: &InputId,
+    ) -> Option<crate::session_owner_execution::NoticeWriterTake> {
+        lock(&self.notices).get(input).cloned()
     }
 
     pub(crate) async fn wait_for_replies(&self) {
