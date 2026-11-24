@@ -137,10 +137,23 @@ export const workerdClockAcknowledgementSchema = z.literal(true);
 
 const gatewaySource = `export default { async fetch(request, env) {
   const url = new URL(request.url);
-  const binding = url.pathname.startsWith("/public/") ? env.PUBLIC_CENTRAL
+  const binding = url.pathname.startsWith("/public/") ? env.CENTRAL_LINK
     : url.pathname.startsWith("/private/") ? env.PRIVATE_LINK : undefined;
   if (binding === undefined) return new Response("unknown verification transport", {status: 404});
   url.pathname = url.pathname.slice(url.pathname.indexOf("/", 1));
+  if (request.method === "GET" && request.headers.get("upgrade")?.toLowerCase() === "websocket"
+    && url.pathname.endsWith("/person-link")) {
+    // Replay the request Sign-in builds at CENTRAL_LINK, without transport or client headers.
+    const headers = new Headers({ connection: "Upgrade", upgrade: "websocket" });
+    for (const name of ["authorization", "sec-websocket-key", "sec-websocket-version",
+      "sec-websocket-protocol", "sec-websocket-extensions"]) {
+      const value = request.headers.get(name);
+      if (value !== null) headers.set(name, value);
+    }
+    return binding.fetch(new Request(new URL(url.pathname, "http://central.invalid"), {
+      headers, redirect: "manual",
+    }));
+  }
   return binding.fetch(new Request(url, request));
 } };`;
 
@@ -313,7 +326,7 @@ export class WorkerdStorage {
           modules: true,
           script: gatewaySource,
           serviceBindings: {
-            PUBLIC_CENTRAL: "verification-central",
+            CENTRAL_LINK: "verification-central",
             PRIVATE_LINK: "verification-private-link",
           },
           outboundService: (): never => {
