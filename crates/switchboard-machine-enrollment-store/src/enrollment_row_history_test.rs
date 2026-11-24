@@ -1,9 +1,12 @@
 use hegel::{TestCase, generators as gs};
+use sqlx::Connection;
 use switchboard_machine_enrollment::{
     ConditionalWrite, CredentialStore, CredentialStoreError, EnrollmentEnd, StoredEnrollment,
 };
 
-use super::{ALTERNATE_ENROLLMENT, ENROLLMENT, Fixture, TOKEN, TestWriteFault, generation};
+use super::{
+    ALTERNATE_ENROLLMENT, ENROLLMENT, Fixture, TOKEN, TestWriteFault, generation, row_columns,
+};
 
 #[hegel::test(test_cases = 25)]
 fn generated_histories_reopen_each_committed_enrollment_row(tc: TestCase) {
@@ -22,13 +25,23 @@ fn generated_histories_reopen_each_committed_enrollment_row(tc: TestCase) {
             let expected = u64::try_from(offset).unwrap();
             if expected == 2 {
                 let active = fixture.binding(2, ENROLLMENT, TOKEN);
+                let mut database = fixture.connection().await;
+                let before = row_columns(&mut database).await;
+                assert_eq!(before.0, 2);
                 assert_eq!(
                     fixture
                         .store
                         .remove(generation(1), EnrollmentEnd::Revoked)
                         .await,
-                    Ok(ConditionalWrite::Superseded)
+                    Ok(ConditionalWrite::Superseded),
+                    "an ending one generation behind the locked active row is stale"
                 );
+                assert_eq!(
+                    row_columns(&mut database).await,
+                    before,
+                    "stale ending changed a stored column"
+                );
+                database.close().await.unwrap();
                 if lose_acknowledgement {
                     fixture.faults.arm(TestWriteFault::LoseAcknowledgement);
                 }

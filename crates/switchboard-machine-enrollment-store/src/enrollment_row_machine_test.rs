@@ -3,7 +3,7 @@ use state_machine_core::{
     TransitionCheckError, check_declared_transitions, check_state_machine_transitions,
 };
 use switchboard_machine_core_store::{MachineLocalStore, StoredEnrollmentEnd};
-use switchboard_machine_enrollment::{EnrollmentKey, MachineId, SignInDeployment};
+use switchboard_machine_enrollment::{EnrollmentKey, InvalidReason, MachineId, SignInDeployment};
 
 use super::*;
 use crate::enrollment_row_mapping::enrollment_metadata;
@@ -13,6 +13,63 @@ const ORGANIZATION: &str = "019a0000-0000-7000-8000-000000000001";
 const ENROLLMENT: &str = "019a0000-0000-7000-8000-000000000002";
 const REENROLLMENT: &str = "019a0000-0000-7000-8000-000000000004";
 const DEPLOYMENT: &str = "https://signin.example/";
+const REVOKED_JSON: &str = r#"{"kind":"revoked"}"#;
+
+/// Stored reason objects at 0cbd66054. Keep these independent of the codec.
+const ENDING_JSON: [(EnrollmentEnd, &str); 16] = [
+    (EnrollmentEnd::Denied, r#"{"kind":"denied"}"#),
+    (EnrollmentEnd::Expired, r#"{"kind":"expired"}"#),
+    (
+        EnrollmentEnd::RefreshRefused,
+        r#"{"kind":"refreshRefused"}"#,
+    ),
+    (
+        EnrollmentEnd::RefreshClientDisabled,
+        r#"{"kind":"refreshClientDisabled"}"#,
+    ),
+    (
+        EnrollmentEnd::EndedByCentral,
+        r#"{"kind":"endedByCentral"}"#,
+    ),
+    (
+        EnrollmentEnd::LocalCredentialLost,
+        r#"{"kind":"localCredentialLost"}"#,
+    ),
+    (EnrollmentEnd::Revoked, REVOKED_JSON),
+    (EnrollmentEnd::Inactive, r#"{"kind":"inactive"}"#),
+    (
+        EnrollmentEnd::Invalid(InvalidReason::GrantRefused),
+        r#"{"kind":"invalid","reason":"grantRefused"}"#,
+    ),
+    (
+        EnrollmentEnd::Invalid(InvalidReason::InvalidClient),
+        r#"{"kind":"invalid","reason":"invalidClient"}"#,
+    ),
+    (
+        EnrollmentEnd::Invalid(InvalidReason::InvalidRequest),
+        r#"{"kind":"invalid","reason":"invalidRequest"}"#,
+    ),
+    (
+        EnrollmentEnd::Invalid(InvalidReason::UnknownError),
+        r#"{"kind":"invalid","reason":"unknownError"}"#,
+    ),
+    (
+        EnrollmentEnd::Invalid(InvalidReason::MalformedAnswer),
+        r#"{"kind":"invalid","reason":"malformedAnswer"}"#,
+    ),
+    (
+        EnrollmentEnd::Invalid(InvalidReason::UnexpectedStatus),
+        r#"{"kind":"invalid","reason":"unexpectedStatus"}"#,
+    ),
+    (
+        EnrollmentEnd::Invalid(InvalidReason::WrongEnrollment),
+        r#"{"kind":"invalid","reason":"wrongEnrollment"}"#,
+    ),
+    (
+        EnrollmentEnd::Invalid(InvalidReason::OversizedAnswer),
+        r#"{"kind":"invalid","reason":"oversizedAnswer"}"#,
+    ),
+];
 
 fn context() -> EnrollmentContext {
     EnrollmentContext {
@@ -165,13 +222,14 @@ enum Write {
     },
     End {
         expected: i64,
+        why: EnrollmentEnd,
     },
 }
 
 impl Write {
     fn expected(&self) -> i64 {
         match self {
-            Self::Replace { expected, .. } | Self::End { expected } => *expected,
+            Self::Replace { expected, .. } | Self::End { expected, .. } => *expected,
         }
     }
 }
@@ -179,7 +237,7 @@ impl Write {
 fn main_replace(
     locked: Result<EnrollmentSnapshot, EnrollmentRowCorruption>,
     context: &EnrollmentContext,
-    prepared: PreparedReplacement,
+    prepared: Option<Box<PreparedReplacement>>,
 ) -> EnrollmentRowChange<CredentialStoreError> {
     // The locked writer at 0cbd66054 checks scope, then the complete witness.
     let locked = match locked {
@@ -198,15 +256,17 @@ fn main_replace(
     if !in_scope {
         return EnrollmentRowChange::Abort(CredentialStoreError::EnrollmentScopeMismatch);
     }
-    if locked == prepared.witness {
-        EnrollmentRowChange::Write(prepared.row)
-    } else {
-        EnrollmentRowChange::Abort(CredentialStoreError::Replace)
+    match prepared {
+        Some(replacement) if locked == replacement.witness => {
+            EnrollmentRowChange::Write(replacement.row)
+        }
+        _ => EnrollmentRowChange::Abort(CredentialStoreError::Replace),
     }
 }
 
 fn main_end(
     locked: Result<EnrollmentMetadata, EnrollmentRowCorruption>,
+    why: EnrollmentEnd,
 ) -> EnrollmentRowChange<CredentialStoreError> {
     // The metadata-only writer at 0cbd66054 builds the ending without opening the sealed field.
     let locked = match locked {
@@ -232,7 +292,7 @@ fn main_end(
         organization_id: key.organization_id.to_string(),
         deployment: deployment.origin().as_str().to_owned(),
         enrollment_id: key.enrollment_id.to_string(),
-        why: StoredEnrollmentEnd::Revoked {},
+        why: stored_end(why),
     })
 }
 
@@ -269,19 +329,19 @@ async fn apply_write(
                             Some(Box::new(prepared)),
                         )
                     } else {
-                        main_replace(locked, context, prepared)
+                        main_replace(locked, context, Some(Box::new(prepared)))
                     }
                 })
                 .await
         }
-        Write::End { .. } => {
+        Write::End { why, .. } => {
             store
                 .write_enrollment_ending(machine_id, expected, now, |row| {
                     let locked = enrollment_metadata(row, machine_id);
                     if machine {
-                        end_locked(locked, binding_generation(expected), EnrollmentEnd::Revoked)
+                        end_locked(locked, binding_generation(expected), *why)
                     } else {
-                        main_end(locked)
+                        main_end(locked, *why)
                     }
                 })
                 .await
@@ -322,7 +382,14 @@ async fn each_machine_write_matches_main_columns_and_json_bytes() {
             ENROLLMENT,
             "active",
         ),
-        (Write::End { expected: 2 }, ENROLLMENT, "ended"),
+        (
+            Write::End {
+                expected: 2,
+                why: EnrollmentEnd::Revoked,
+            },
+            ENROLLMENT,
+            "ended",
+        ),
         (
             Write::Replace {
                 expected: 3,
@@ -344,7 +411,12 @@ async fn each_machine_write_matches_main_columns_and_json_bytes() {
         let row = bytes(&actual_database).await;
         assert_eq!(row, bytes(&reference_database).await);
         assert_eq!(row.3, operation.expected() + 1);
-        assert_json(&row, state, enrollment);
+        assert_json(
+            &row,
+            state,
+            enrollment,
+            (state == "ended").then_some(REVOKED_JSON),
+        );
     }
 
     // A valid active row may rotate into MAX-1, and its ending consumes MAX.
@@ -371,6 +443,7 @@ async fn each_machine_write_matches_main_columns_and_json_bytes() {
         (
             Write::End {
                 expected: i64::MAX - 1,
+                why: EnrollmentEnd::Revoked,
             },
             "ended",
         ),
@@ -387,10 +460,18 @@ async fn each_machine_write_matches_main_columns_and_json_bytes() {
         let row = bytes(&actual_database).await;
         assert_eq!(row, bytes(&reference_database).await);
         assert_eq!(row.3, operation.expected() + 1);
-        assert_json(&row, state, REENROLLMENT);
+        assert_json(
+            &row,
+            state,
+            REENROLLMENT,
+            (state == "ended").then_some(REVOKED_JSON),
+        );
     }
     let at_max = bytes(&actual_database).await;
-    let repeated_end = Write::End { expected: i64::MAX };
+    let repeated_end = Write::End {
+        expected: i64::MAX,
+        why: EnrollmentEnd::Revoked,
+    };
     for (store, machine) in [(&mut actual, true), (&mut reference, false)] {
         assert!(matches!(
             apply_write(store, &context, &repeated_end, machine, now + 1).await,
@@ -403,12 +484,52 @@ async fn each_machine_write_matches_main_columns_and_json_bytes() {
     reference.close().await.unwrap();
 }
 
-fn assert_json(row: &RowColumns, state: &str, enrollment: &str) {
-    let why = if state == "ended" {
-        r#","why":{"kind":"revoked"}"#
-    } else {
-        ""
-    };
+#[tokio::test]
+async fn every_ending_reason_matches_main_columns_and_pinned_json_bytes() {
+    use switchboard_machine_core_store::EnrollmentRowWrite;
+
+    let directory = tempfile::tempdir().unwrap();
+    let actual_database = directory.path().join("machine.sqlite");
+    let reference_database = directory.path().join("main.sqlite");
+    let mut actual = seeded(&actual_database).await;
+    let mut reference = seeded(&reference_database).await;
+    let context = context();
+
+    for (index, (why, why_json)) in ENDING_JSON.into_iter().enumerate() {
+        let expected = i64::try_from(index).unwrap() * 2;
+        let replace = Write::Replace {
+            expected,
+            enrollment: ENROLLMENT,
+        };
+        let end = Write::End {
+            expected: expected + 1,
+            why,
+        };
+        for (store, machine) in [(&mut actual, true), (&mut reference, false)] {
+            assert!(matches!(
+                apply_write(store, &context, &replace, machine, NOW + expected + 1).await,
+                Ok(EnrollmentRowWrite::Applied)
+            ));
+            assert!(
+                matches!(
+                    apply_write(store, &context, &end, machine, NOW + expected + 2).await,
+                    Ok(EnrollmentRowWrite::Applied)
+                ),
+                "end {why:?}"
+            );
+        }
+        let row = bytes(&actual_database).await;
+        assert_eq!(row, bytes(&reference_database).await, "end {why:?}");
+        assert_eq!(row.3, expected + 2);
+        assert!(row.5.is_none());
+        assert_json(&row, "ended", ENROLLMENT, Some(why_json));
+    }
+    actual.close().await.unwrap();
+    reference.close().await.unwrap();
+}
+
+fn assert_json(row: &RowColumns, state: &str, enrollment: &str, why_json: Option<&str>) {
+    let why = why_json.map_or_else(String::new, |json| format!(r#","why":{json}"#));
     let pinned = format!(
         r#"{{"state":"{state}","organizationId":"{ORGANIZATION}","deployment":"{DEPLOYMENT}","enrollmentId":"{enrollment}"{why}}}"#
     );
