@@ -6043,6 +6043,7 @@ dependencies = [
  "hegeltest",
  "router-clock",
  "runtime-primitives",
+ "state-machine-core",
  "switchboard-machine-core-store",
  "tempfile",
  "thiserror 2.0.18",
