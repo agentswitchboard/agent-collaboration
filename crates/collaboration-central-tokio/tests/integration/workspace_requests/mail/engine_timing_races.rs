@@ -335,7 +335,12 @@ async fn another_valid_stamp_refuses_every_event_and_touches_nothing() {
 
 #[tokio::test]
 async fn a_future_text_key_cannot_mask_a_corrupt_legacy_deadline() {
-    for notices in [true, false] {
+    let malformed = ["now", "2050-02-30T15:00:00.000Z", "2050-02-25T15:00:00.000"];
+    for (notices, corrupt_deadline) in [true, false].into_iter().flat_map(|notices| {
+        malformed
+            .into_iter()
+            .map(move |deadline| (notices, deadline))
+    }) {
         let fixture = Fixture::new().await;
         let runtime = runtime(&fixture).await;
         let start = fixture.clock.utc_now();
@@ -348,7 +353,7 @@ async fn a_future_text_key_cannot_mask_a_corrupt_legacy_deadline() {
                 "INSERT INTO mail_notification_windows VALUES (?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?)",
                 vec![
                     text(healthy), text(probe_id(43854)), stamp(start), stamp(future), stamp(start), stamp(start),
-                    text(invalid), text(probe_id(43855)), stamp(start), text("now"), stamp(start), stamp(start),
+                    text(invalid), text(probe_id(43855)), stamp(start), text(corrupt_deadline), stamp(start), stamp(start),
                 ],
             ).await;
             (
@@ -370,7 +375,7 @@ async fn a_future_text_key_cannot_mask_a_corrupt_legacy_deadline() {
                     stamp(start),
                     stamp(start),
                     text(invalid),
-                    text("now"),
+                    text(corrupt_deadline),
                     stamp(start),
                     stamp(start),
                 ],
@@ -406,7 +411,7 @@ async fn a_future_text_key_cannot_mask_a_corrupt_legacy_deadline() {
             .rows;
         assert_eq!(
             stored,
-            vec![vec![stamp(future)], vec![text("now")]],
+            vec![vec![stamp(future)], vec![text(corrupt_deadline)]],
             "{work_kind}"
         );
         due_batch_at(&fixture, &runtime, at(start, 4, 59, 0)).await;
