@@ -352,3 +352,44 @@ async fn worker_closes_an_expired_attachment_before_an_outbound_mail_offer() -> 
     fixture.close().await?;
     observed
 }
+
+#[tokio::test]
+async fn workerd_expiry_alarm_refills_deferred_mail_on_a_heartbeat_only_socket() -> Result<()> {
+    use collaboration_central_conformance::machine_link_boundary::{
+        fill_early_mail_claims, renew_mail_test_link,
+    };
+    let fixture = Fixture::new().await?;
+    let observed = async {
+        let (mut target, mut source, recipient, sender) = open_mail_sockets(&fixture).await?;
+        let early =
+            chrono::DateTime::from_timestamp(signed::NOW_SECONDS, 0).ok_or("fixture time")?;
+        fill_early_mail_claims(&mut target, &mut source, &sender, &recipient, early).await?;
+        super::renewal::advance(&fixture, 500).await?;
+        let checkpoint = arm_mail_frame(&fixture, 0x33100).await?;
+        let late = queue_direct_mail(
+            &mut source,
+            &sender,
+            &recipient,
+            0x33100,
+            early + chrono::TimeDelta::seconds(500),
+        )
+        .await?;
+        wait_handled_frame(&fixture, checkpoint).await?;
+        super::renewal::advance(&fixture, 50).await?;
+        renew_mail_test_link(&mut target, super::renewal::fresh(&fixture, 550, 1150)?).await?;
+        expect_pong(&mut target).await?;
+        super::renewal::advance(&fixture, 550).await?;
+        if fixture.runtime().dispatch_due_alarm().await?.is_none() {
+            return Err("the Workerd direct-message expiry alarm did not fire".into());
+        }
+        if offered_message(&mut target).await? != late {
+            return Err(
+                "recipient missed the deferred message released by the Workerd alarm".into(),
+            );
+        }
+        expect_pong(&mut target).await
+    }
+    .await;
+    fixture.close().await?;
+    observed
+}

@@ -12,8 +12,8 @@ use axum::{
 };
 use central_link_protocol::{
     DataFrame, FrameDirection, LinkFrame, LinkRequest, MachineLinkCloseCode, ProtocolError,
-    ReceiptResult, ReplyPayload, RequestPayload, RequestRefusal, RequestStatusAnswer,
-    TokenRenewalRefusal, TokenRenewalResult, decode_text,
+    ReceiptResult, ReplyPayload, RequestPayload, RequestStatusAnswer, TokenRenewalRefusal,
+    TokenRenewalResult, decode_text,
 };
 use collaboration_central_core::{
     ApplyingRequestFailure, MachineLinkAdmission, MachineLinkRequestAuthority, RenewalTermination,
@@ -237,6 +237,7 @@ async fn serve_link(
     {
         return;
     }
+    let mut retirement_observed = false;
     loop {
         if offers.has_deferred()
             && !link_io::resume_deferred_mail(
@@ -245,6 +246,7 @@ async fn serve_link(
                 &runtime,
                 &connection,
                 &mut offers,
+                std::mem::take(&mut retirement_observed),
             )
             .await
         {
@@ -259,6 +261,10 @@ async fn serve_link(
             () = registration.replaced.cancelled() => {
                 writes.close(&mut socket, close_code::NORMAL, "machine link ended").await;
                 return;
+            }
+            () = registration.claim_retired.notified() => {
+                retirement_observed = true;
+                continue;
             }
             message = socket.recv() => message,
             ready = registration.receiver.recv() => {
@@ -490,27 +496,20 @@ async fn serve_link(
                 caller,
                 query,
             }) => {
-                let active = match runtime
+                let result = match runtime
                     .restore_machine_link_request(&connection.attachment())
                     .await
                 {
-                    Ok(MachineLinkRequestAuthority::Admitted(active)) => active,
+                    Ok(MachineLinkRequestAuthority::Admitted(active)) => {
+                        runtime.status_for_link_caller(active, caller, &query).await
+                    }
                     Ok(MachineLinkRequestAuthority::Refused(cause)) => {
                         writes.close_authority(&mut socket, cause).await;
                         return;
                     }
                     Ok(MachineLinkRequestAuthority::TemporarilyUnavailable) | Err(_) => {
-                        writes
-                            .close(&mut socket, close_code::ERROR, "central unavailable")
-                            .await;
-                        return;
+                        Ok(RequestStatusAnswer::CentralUnavailable {})
                     }
-                };
-                let result = match WorkspaceCaller::from_machine_link(active, caller) {
-                    Ok(caller) => runtime.request_status(&caller, &query).await,
-                    Err(reason) => Ok(RequestStatusAnswer::Refused(RequestRefusal::Workspace(
-                        reason,
-                    ))),
                 };
                 let Ok(result) = result else {
                     writes

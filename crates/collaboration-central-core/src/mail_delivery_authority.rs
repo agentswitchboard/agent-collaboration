@@ -20,7 +20,7 @@ use workspace_model::{
 };
 
 pub enum PreparedMailOffer {
-    Ready(String),
+    Ready(central_link_protocol::CentralEgress),
     NotOffered(NotOffered),
     AuthorityLapsed(MachineLinkCloseCode),
 }
@@ -89,7 +89,13 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             .await
             .map_err(StoreFailure::from)?;
         Ok(match applied {
-            fleet_mail::ApplyReceipt::Applied { ready } => {
+            fleet_mail::ApplyReceipt::Applied {
+                ready,
+                retired_recipient,
+            } => {
+                if let Some(machine) = retired_recipient {
+                    (self.mail_claim_retired)(machine);
+                }
                 if let Some(ready) = ready {
                     (self.mail_delivery_ready)(ready);
                 }
@@ -191,7 +197,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         {
             return Ok(PreparedMailOffer::NotOffered(reason));
         }
-        Ok(PreparedMailOffer::Ready(encoded.text))
+        Ok(PreparedMailOffer::Ready(encoded))
     }
 
     /// A passed wall-clock cutoff can move back into the future. Recheck a
@@ -201,9 +207,14 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         &self,
         attachment: &MachineConnectionAttachment,
         offers: &mut SocketDirectMailOffers,
+        retirement_observed: bool,
     ) -> Result<bool, StoreFailure> {
+        if offers.take_deferred() {
+            return Ok(true);
+        }
+        let now = self.execution.now()?;
         let elapsed = offers
-            .elapsed_claims(self.execution.now()?)
+            .retirement_candidates(now, retirement_observed)
             .map(|(message, cutoff)| (message.clone(), cutoff))
             .collect::<Vec<_>>();
         for (message, cutoff) in elapsed {
@@ -306,6 +317,9 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             })
             .await
             .map_err(StoreFailure::from)?;
+        if let Some(machine) = applied.retired_recipient {
+            (self.mail_claim_retired)(machine);
+        }
         if let Some(ready) = applied.ready {
             (self.mail_delivery_ready)(ready);
         }

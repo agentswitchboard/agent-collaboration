@@ -597,3 +597,35 @@ mod person_approval_races;
 
 #[path = "approval_capability_calls.rs"]
 mod approval_capability_calls;
+
+#[tokio::test]
+async fn workerd_expired_holder_closes_before_the_ending_write_and_keeps_it_owed() -> Result<()> {
+    use collaboration_central_conformance::machine_link_boundary::{
+        expect_close, expect_pong, send_pong_checkpoint,
+    };
+    let fixture = Fixture::with_production_dispatcher().await?;
+    let observed = async {
+        let (_, mut socket, request) = registered_waiting_request(&fixture).await?;
+        super::renewal::advance(&fixture, 660).await?;
+        expect_pong(&mut socket).await?;
+        let runtime = fixture.runtime();
+        let point = "afterMacEndingOffer";
+        if !runtime.control::<bool>("hold-central", &point).await? {
+            return Err("could not arm the ending-attempt checkpoint".into());
+        }
+        decide_fixture_request(&fixture, request.request_id().as_str()).await?;
+        if !runtime
+            .control::<bool>("until-held-central", &point)
+            .await?
+            || !runtime.control::<bool>("release-central", &point).await?
+        {
+            return Err("ending attempt did not reach the fixture checkpoint".into());
+        }
+        let _ = send_pong_checkpoint(&mut socket).await;
+        expect_close(&mut socket, 4102).await?;
+        require_owed(&fixture, &request).await
+    }
+    .await;
+    fixture.close().await?;
+    observed
+}

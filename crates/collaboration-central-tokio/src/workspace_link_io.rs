@@ -6,8 +6,8 @@ use axum::extract::{
     ws::{CloseFrame, Message, Utf8Bytes, WebSocket, close_code},
 };
 use central_link_protocol::{
-    LINK_MAX_TEXT_BYTES, LinkFrame, LinkSizeRefusal, LiveOfferOutcome, MachineLinkCloseCode,
-    SocketDirectMailOffers, check_central_egress_length, encode_central_egress,
+    CentralEgress, LINK_MAX_TEXT_BYTES, LinkFrame, LinkSizeRefusal, LiveOfferOutcome,
+    MachineLinkCloseCode, SocketDirectMailOffers, encode_central_egress,
 };
 use collaboration_central_core::{
     MachineLinkRequestAuthority, PreparedMailOffer, ValidatedMachineConnection,
@@ -176,13 +176,14 @@ pub(super) async fn resume_deferred_mail(
     runtime: &Runtime,
     connection: &ValidatedMachineConnection,
     offers: &mut SocketDirectMailOffers,
+    retirement_observed: bool,
 ) -> bool {
     let attachment = connection.attachment();
     let ready = writes
         .until_stopped(async {
             let _turn = runtime.runtime().take_central_turn_for_admission().await;
             runtime
-                .refill_deferred_mail_in_held_turn(&attachment, offers)
+                .refill_deferred_mail_in_held_turn(&attachment, offers, retirement_observed)
                 .await
         })
         .await;
@@ -229,8 +230,8 @@ pub(super) async fn offer_windowed_delivery(
             writes.close_if_authority_cancelled(socket).await;
             return false;
         };
-        let text = match prepared {
-            Ok(PreparedMailOffer::Ready(text)) => text,
+        let encoded = match prepared {
+            Ok(PreparedMailOffer::Ready(encoded)) => encoded,
             Ok(PreparedMailOffer::NotOffered(reason)) => {
                 break 'offer LiveOfferOutcome::DefinitivelyNotOffered(reason);
             }
@@ -253,7 +254,7 @@ pub(super) async fn offer_windowed_delivery(
             if runtime.take_mail_offer_write_failure() {
                 return false;
             }
-            socket.send(Message::Text(text.into())).await.is_ok()
+            write_central_text(socket, encoded).await.is_ok()
         };
         tokio::pin!(send);
         let first = send.as_mut().poll(&mut Context::from_waker(&waker));
@@ -315,18 +316,16 @@ impl LinkWrites<'_> {
         let Ok(encoded) = encode_central_egress(frame) else {
             return false;
         };
-        if let Some(bytes) = encoded.oversized_reply_bytes {
-            tracing::warn!(bytes, "central substituted an oversized link reply");
-        }
-        self.send_text(socket, encoded.text).await
+        self.send_prepared_text(socket, encoded).await
     }
 
-    pub(super) async fn send_text(&self, socket: &mut WebSocket, text: String) -> bool {
-        if check_central_egress_length(text.len()).is_err() {
-            return false;
-        }
+    pub(super) async fn send_prepared_text(
+        &self,
+        socket: &mut WebSocket,
+        encoded: CentralEgress,
+    ) -> bool {
         let sent = self
-            .send_until_stopped(async { socket.send(Message::Text(text.into())).await.is_ok() })
+            .send_until_stopped(async { write_central_text(socket, encoded).await.is_ok() })
             .await;
         if !sent {
             self.close_if_authority_cancelled(socket).await;
@@ -370,7 +369,7 @@ impl LinkWrites<'_> {
             tokio::select! {
                 biased;
                 () = self.stop.cancelled() => {}
-                _ = router_clock::timeout_at(self.clock, deadline, socket.send(Message::Text(encoded.text.into()))) => {}
+                _ = router_clock::timeout_at(self.clock, deadline, write_central_text(socket, encoded)) => {}
             }
         }
         self.close_authority_until(socket, cause, deadline).await;
@@ -454,4 +453,15 @@ fn attempt_close(socket: &mut WebSocket, code: u16, reason: &'static str) {
             reason: reason.into(),
         })))
         .now_or_never();
+}
+
+pub(super) async fn write_central_text(
+    socket: &mut WebSocket,
+    encoded: CentralEgress,
+) -> Result<(), axum::Error> {
+    let (text, substituted_bytes) = encoded.into_parts();
+    if let Some(bytes) = substituted_bytes {
+        tracing::warn!(bytes, "central substituted an oversized link reply");
+    }
+    socket.send(Message::Text(text.into())).await
 }

@@ -349,15 +349,8 @@ pub async fn receive_decision(
     request: &Raise,
     expected: approval_request_protocol::Ending,
 ) -> Result<()> {
-    receive_decision_before(
-        fixture,
-        socket,
-        target,
-        request,
-        expected,
-        std::future::pending(),
-    )
-    .await
+    let offer = next_ending(socket, &target).await?;
+    accept_fixture_decision(fixture, socket, target, request, expected, offer).await
 }
 
 pub async fn receive_decision_before(
@@ -368,7 +361,18 @@ pub async fn receive_decision_before(
     expected: approval_request_protocol::Ending,
     unavailable: impl Future<Output = Result<()>>,
 ) -> Result<()> {
-    let (correlation, offered) = next_ending_before(socket, &target, unavailable).await?;
+    let offer = next_ending_before(socket, &target, unavailable).await?;
+    accept_fixture_decision(fixture, socket, target, request, expected, offer).await
+}
+
+async fn accept_fixture_decision(
+    fixture: &impl ApprovalLinkFixture,
+    socket: &mut WebSocket,
+    target: ApprovalHolderTarget,
+    request: &Raise,
+    expected: approval_request_protocol::Ending,
+    (correlation, offered): (CorrelationId, DeliverEndingRequest),
+) -> Result<()> {
     assert_eq!(offered.request_id(), request.request_id());
     assert_eq!(offered.contents_digest(), &request.contents_digest()?);
     assert_eq!(offered.into_ending(), expected);
@@ -465,7 +469,8 @@ pub async fn next_ending(
     socket: &mut WebSocket,
     expected: &ApprovalHolderTarget,
 ) -> Result<(CorrelationId, DeliverEndingRequest)> {
-    next_ending_before(socket, expected, std::future::pending()).await
+    let frame = receive_expected_text(socket, "holder ending offer").await?;
+    ending_frame(frame, expected)
 }
 
 async fn next_ending_before(

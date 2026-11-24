@@ -443,7 +443,9 @@ async fn a_recovered_orphan_uses_the_scoped_status_answer_without_retransmission
             RequestStatusAnswer::Refused(_) => {
                 assert!(matches!(status, CustodyRequestStatus::Refused(_)))
             }
-            RequestStatusAnswer::NotFound => panic!("the peer must know a result"),
+            RequestStatusAnswer::NotFound | RequestStatusAnswer::CentralUnavailable {} => {
+                panic!("the peer must know a result")
+            }
         }
         assert!(matches!(peer.take_calls().as_slice(),
             [ScriptedCommand::RequestStatus(call)] if call.caller == item.caller && call.query == query));
@@ -599,6 +601,91 @@ async fn a_known_member_settles_locally_while_the_other_member_replays() {
         assert!(
             peer.take_calls().is_empty(),
             "live evidence needs no startup status probe"
+        );
+        stop.send_replace(true);
+        running.await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn inconclusive_orphan_status_defers_without_surrendering_its_claim_or_deadline() {
+    for resolves_at_retry in [true, false] {
+        let campaign = FaultCampaign::start().await;
+        let item = thread_post(609);
+        let age_ms = if resolves_at_retry { 870_000 } else { 895_000 };
+        seed_orphan(&campaign, &item, START_MS - age_ms).await;
+        let query = scoped_query(&item);
+        let clock = campaign.clock.clone();
+        let peer = campaign.peer.clone();
+        peer.script_status_answer(
+            item.caller.clone(),
+            query.clone(),
+            RequestStatusAnswer::CentralUnavailable {},
+        );
+        let first_probe = peer.hold_next_status();
+        let (calls, stop, mut events, running) = start_worker(campaign.custody);
+        first_probe.entered.notified().await;
+        first_probe.accepted.send_replace(Some(ClockInstant::ZERO));
+
+        let retry = ClockInstant::ZERO.after(Duration::from_secs(20));
+        clock.not_due_check_now(retry).await;
+        assert!(
+            matches!(peer.take_calls().as_slice(), [ScriptedCommand::RequestStatus(call)] if call.query == query)
+        );
+        assert_eq!(
+            calls
+                .request_status(item.caller.clone(), query.clone())
+                .await,
+            CustodyRequestStatus::Sent
+        );
+        let before_next_event_ms = if resolves_at_retry { 19_999 } else { 4_999 };
+        clock
+            .advance(Duration::from_millis(before_next_event_ms))
+            .unwrap();
+        let next_event = if resolves_at_retry {
+            retry
+        } else {
+            ClockInstant::ZERO.after(Duration::from_secs(5))
+        };
+        clock.not_due_check_now(next_event).await;
+        assert!(
+            peer.take_calls().is_empty(),
+            "an inconclusive answer must wait for the existing retry"
+        );
+        assert!(peer.admitted.borrow().is_some());
+
+        if resolves_at_retry {
+            let answer = post_created(99);
+            peer.script_status_answer(
+                item.caller.clone(),
+                query.clone(),
+                RequestStatusAnswer::Answered(answer.clone()),
+            );
+            clock.advance(Duration::from_millis(1)).unwrap();
+            let report = flush_event(&mut events, "one recovered status answer").await;
+            assert!(
+                matches!(report.answered.as_slice(), [settled] if settled.request == item.request)
+            );
+            assert_eq!(
+                calls
+                    .request_status(item.caller.clone(), query.clone())
+                    .await,
+                CustodyRequestStatus::Answered(answer)
+            );
+            assert!(
+                matches!(peer.take_calls().as_slice(), [ScriptedCommand::RequestStatus(call)] if call.query == query)
+            );
+        } else {
+            clock.advance(Duration::from_millis(1)).unwrap();
+            let report = flush_event(&mut events, "the original 15-minute ending").await;
+            assert!(
+                matches!(report.ended.as_slice(), [ended] if ended.request_id == item.request
+                && ended.reason == OutboxCancellation::NotConfirmedWithin15Minutes)
+            );
+        }
+        assert!(
+            peer.batch_commands().is_empty(),
+            "the inconclusive status must never allow retransmission"
         );
         stop.send_replace(true);
         running.await.unwrap();

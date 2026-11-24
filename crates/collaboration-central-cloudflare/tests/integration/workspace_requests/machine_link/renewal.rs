@@ -5,8 +5,8 @@ use super::fixture::{self, Fixture, MACHINE_ID, ORGANIZATION};
 use super::{baseline, create_area};
 use central_link_protocol::RequestPayload;
 use central_link_protocol::{DataFrame, TokenRenewalRefusal, TokenRenewalResult};
+use collaboration_central_conformance::fixture_link_reader::read_fixture_frame;
 use collaboration_central_conformance::{ConformanceResult as Result, signin_fixtures as signed};
-use futures_util::StreamExt;
 use reqwest_websocket::Message;
 use runtime_primitives::Clock;
 use std::time::Duration;
@@ -157,7 +157,7 @@ pub(super) async fn advance(fixture: &Fixture, seconds: u64) -> Result<()> {
 }
 
 /// A fresh token for the fixture's enrollment, decided at `now` with a grant to `until`.
-fn fresh(fixture: &Fixture, now: i64, until: i64) -> Result<String> {
+pub(super) fn fresh(fixture: &Fixture, now: i64, until: i64) -> Result<String> {
     signed::machine_token(
         ORGANIZATION,
         MACHINE_ID,
@@ -174,7 +174,7 @@ fn retryable_expiry() -> TokenRenewalResult {
 }
 
 async fn expect_expired_close(link: &mut super::ConnectedLink) -> Result<()> {
-    let close = link.socket.next().await;
+    let close = read_fixture_frame(&mut link.socket, "link close").await?;
     if !matches!(close, Some(Ok(Message::Close { code, .. }))
         if central_link_protocol::MachineLinkCloseCode::from_code(code.into()) ==
             Some(central_link_protocol::MachineLinkCloseCode::Expired))
@@ -352,7 +352,7 @@ async fn refusals_journey(fixture: &Fixture) -> Result<()> {
                 return Err("verified renewal did not reach the applying pause".into());
             }
         }
-        early = link.socket.next() => {
+        early = read_fixture_frame(&mut link.socket, "renewal link frame")=> {
             return Err(format!("renewal settled before its applying sample: {early:?}").into());
         }
     }
@@ -460,7 +460,7 @@ async fn superseded_journey(fixture: &Fixture) -> Result<()> {
     if answer != connection_enrollment_ended() {
         return Err(format!("a stored ending wins over the old deadline: {answer:?}").into());
     }
-    let close = link.socket.next().await;
+    let close = read_fixture_frame(&mut link.socket, "link close").await?;
     if !matches!(close, Some(Ok(Message::Close { code, .. }))
         if central_link_protocol::MachineLinkCloseCode::from_code(code.into()) ==
             Some(central_link_protocol::MachineLinkCloseCode::Inactive))
@@ -497,7 +497,7 @@ async fn lapsed_batch_journey(fixture: &Fixture) -> Result<()> {
             )?),
         ])
         .await?;
-    let closed = link.socket.next().await;
+    let closed = read_fixture_frame(&mut link.socket, "link close").await?;
 
     for reply in &replies {
         let refused = matches!(

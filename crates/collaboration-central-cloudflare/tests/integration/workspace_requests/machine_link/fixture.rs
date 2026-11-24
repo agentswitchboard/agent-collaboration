@@ -7,13 +7,14 @@ use central_storage::{
     AlarmUpdate, BatchOutcome, GuardedStatement, RowExpectation, SqlValue, Statement,
     StatementBatch,
 };
+use collaboration_central_conformance::fixture_link_reader::read_fixture_frame;
 use collaboration_central_conformance::{ConformanceResult as Result, signin_fixtures as signed};
 use fleet_contracts::{
     DecideDeviceLogin, DecideMachineToken, DeviceLoginDecision, MachineTokenDecision,
 };
 use fleet_contracts::{ProvisionOrganization, ProvisionOrganizationResult};
 use fleet_identity_protocol::{EnrollmentId, OrganizationId};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::SinkExt;
 use reqwest_websocket::{CloseCode, Message, RequestBuilderExt, WebSocket};
 use router_clock::ManualClock;
 use runtime_primitives::SyncTime;
@@ -377,9 +378,8 @@ pub(super) async fn send(socket: &mut WebSocket, frame: &DataFrame) -> Result<()
 }
 
 pub(super) async fn receive(socket: &mut WebSocket) -> Result<DataFrame> {
-    let message = socket
-        .next()
-        .await
+    let message = read_fixture_frame(socket, "fixture link frame")
+        .await?
         .ok_or("machine link ended before Reply")??;
     let Message::Text(text) = message else {
         return Err("machine link returned a non-text frame".into());

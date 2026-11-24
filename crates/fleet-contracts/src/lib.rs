@@ -40,7 +40,7 @@ pub use engine_attempts::{
     AttemptGuard, ControlGate, EngineSubject, FailureOutcome, ObservedControl, SubjectVersion,
 };
 pub use legacy_units::LegacyUnitOutcome;
-pub use mail_delivery_ready::MailDeliveryReady;
+pub use mail_delivery_ready::{MailClaimRetired, MailDeliveryReady};
 pub use workspace_description::MAXIMUM_DESCRIPTION_BYTES;
 pub use workspace_directory::{DirectoryWorkspace, WorkspaceDirectory, WorkspaceView};
 pub use workspace_rpc::{

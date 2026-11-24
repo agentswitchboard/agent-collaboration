@@ -307,6 +307,8 @@ impl TokioWorkspaceHost {
             None => central,
         };
         let registry = self.push_registry.clone();
+        let retirement_registry = registry.clone();
+        let retirement_organization = organization.clone();
         let organization_key = organization.clone();
         let revocation_registry = self.push_registry.clone();
         let revocation_org = organization.clone();
@@ -318,6 +320,10 @@ impl TokioWorkspaceHost {
                 }))
                 .with_mail_delivery_observer(Arc::new(move |delivery| {
                     registry.offer(&organization_key, &delivery.machine_id, delivery.message_id);
+                }))
+                .with_mail_retirement_observer(Arc::new(move |machine| {
+                    retirement_registry
+                        .mail_claim_retired(&retirement_organization, machine.machine_id);
                 }))
                 .with_enrollment_invalidation_observer(Arc::new(move |invalidation| {
                     revocation_registry.invalidate_enrollment(&revocation_org, &invalidation);

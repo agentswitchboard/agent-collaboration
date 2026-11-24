@@ -6,6 +6,7 @@ use central_link_protocol::{
 use central_storage::{
     AlarmUpdate, GuardedStatement, RowExpectation, SqlValue, Statement, StatementBatch,
 };
+use collaboration_central_conformance::fixture_link_reader::read_fixture_frame;
 use collaboration_central_conformance::{ConformanceResult as Result, signin_fixtures as signed};
 use futures_util::{FutureExt, SinkExt, StreamExt};
 use reqwest_websocket::{Message, RequestBuilderExt, WebSocket};
@@ -143,7 +144,7 @@ async fn renew_and_receive(
 }
 
 async fn require_inactive_close(socket: &mut WebSocket) -> Result<()> {
-    let frame = socket.next().await;
+    let frame = read_fixture_frame(socket, "idle expiry link frame").await?;
     if !matches!(frame, Some(Ok(Message::Close { code, .. })) if MachineLinkCloseCode::from_code(code.into()) == Some(MachineLinkCloseCode::Inactive))
     {
         return Err(format!("expected Inactive close, got {frame:?}").into());
@@ -178,7 +179,7 @@ async fn idle_renewal_commits_before_its_correlated_inactive_reply_and_close() -
                     return Err("idle expiry did not commit".into());
                 }
             }
-            early = connection.socket.next() => {
+            early = read_fixture_frame(&mut connection.socket, "idle expiry link frame")=> {
                 return Err(format!("renewal emitted a frame before reaching the idle commit: {early:?}").into());
             }
         }
@@ -350,7 +351,7 @@ async fn idle_reply_send_failure_still_closes_only_the_ended_enrollment() -> Res
         }
         require_inactive_close(&mut connect(&fixture).await?).await?;
         replacement.send(Message::Text("ping".into())).await?;
-        if !matches!(replacement.next().await, Some(Ok(Message::Text(text))) if text == "pong") {
+        if !matches!(read_fixture_frame(&mut replacement, "idle expiry link frame").await?, Some(Ok(Message::Text(text))) if text == "pong") {
             return Err("ended enrollment cleanup affected the replacement".into());
         }
         Ok(())
@@ -395,7 +396,7 @@ async fn idle_renewal_send_after_peer_close(fixture: &Fixture) -> Result<()> {
                     return Err("idle terminalization did not commit".into());
                 }
             }
-            early = original.next() => {
+            early = read_fixture_frame(&mut original, "idle expiry link frame")=> {
                 return Err(format!("the Worker emitted a frame ahead of the idle commit hold: {early:?}").into());
             }
         }
@@ -411,7 +412,7 @@ async fn idle_renewal_send_after_peer_close(fixture: &Fixture) -> Result<()> {
                 reason: "renewal caller closed".into(),
             })
             .await?;
-        let ack = original.next().await;
+        let ack = read_fixture_frame(&mut original, "idle expiry link frame").await?;
         if !matches!(&ack, Some(Ok(Message::Close { code: reqwest_websocket::CloseCode::Normal, reason })) if reason == "closed") {
             return Err(format!("the peer must receive the Workerd close callback's reply: {ack:?}").into());
         }

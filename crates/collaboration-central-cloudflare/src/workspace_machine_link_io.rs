@@ -1,6 +1,7 @@
 //! Physical Workerd socket I/O shared by backlog and live delivery.
 
-use central_link_protocol::{DataFrame, LinkSizeRefusal, LiveOfferOutcome, ReceiptResult};
+use super::workspace_link_text::write_central_text;
+use central_link_protocol::{LinkSizeRefusal, LiveOfferOutcome, ReceiptResult};
 use collaboration_central_core::{PreparedMailOffer, RenewalTermination, project_renewal_refusal};
 use fleet_contracts::MachineConnectionAttachment;
 use fleet_contracts::mail_link::{WELCOME_PAGE_SIZE, WelcomeDeliveryPage, WindowedDelivery};
@@ -147,6 +148,20 @@ impl CentralObject {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner),
         );
+        let retired = std::mem::take(
+            &mut *self
+                .mail_retirements
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+        for machine in retired {
+            for socket in self.state.get_websockets_with_tag(machine.as_str()) {
+                if let Err(error) = self.resume_deferred_mail(runtime, &socket, true).await {
+                    worker::console_warn!("central delivery refill failed: {error}");
+                    let _ = self.close_machine_link(&socket, 1011, Some("central unavailable"));
+                }
+            }
+        }
         for message in ready {
             for socket in self
                 .state
@@ -159,7 +174,7 @@ impl CentralObject {
                     .offer_windowed_mail(runtime, &socket, &message.message_id)
                     .await;
                 let result = match offered {
-                    Ok(true) => self.resume_deferred_mail(runtime, &socket).await,
+                    Ok(true) => self.resume_deferred_mail(runtime, &socket, false).await,
                     Ok(false) => continue,
                     Err(error) => Err(error),
                 };
@@ -193,6 +208,7 @@ impl CentralObject {
         &self,
         runtime: &OrgRuntime,
         socket: &WebSocket,
+        retirement_observed: bool,
     ) -> Result<()> {
         if !socket_open(socket) {
             return Ok(());
@@ -209,6 +225,7 @@ impl CentralObject {
                 .refill_deferred_mail_in_held_turn(
                     &attachment.authority,
                     &mut attachment.mail_offers,
+                    retirement_observed,
                 )
                 .await;
             let needs_scan = match checked {
@@ -282,7 +299,7 @@ impl CentralObject {
             break (current, prepared);
         };
         let outcome = match prepared {
-            Ok(PreparedMailOffer::Ready(text)) => {
+            Ok(PreparedMailOffer::Ready(encoded)) => {
                 if let Err(error) = current.save(socket) {
                     worker::console_warn!("central could not save the socket mail claims: {error}");
                     self.close_machine_link(socket, 1011, Some("central unavailable"))?;
@@ -293,7 +310,9 @@ impl CentralObject {
                 #[cfg(not(feature = "test-support"))]
                 let fail_send = false;
                 LiveOfferOutcome::from_write(
-                    !fail_send && socket_open(socket) && socket.send_with_str(&text).is_ok(),
+                    !fail_send
+                        && socket_open(socket)
+                        && write_central_text(socket, encoded).is_ok(),
                 )
             }
             Ok(PreparedMailOffer::NotOffered(reason)) => {
@@ -327,20 +346,6 @@ pub(super) async fn hold_welcome(runtime: &OrgRuntime, point: fleet_runtime::Pau
         .pause_points()
         .reached_central(point)
         .await;
-}
-
-pub(super) fn send(socket: &WebSocket, frame: DataFrame) -> Result<()> {
-    let encoded = central_link_protocol::encode_central_egress(
-        &central_link_protocol::LinkFrame::Data(frame),
-    )
-    .map_err(|failure| worker::Error::RustError(failure.to_string()))?;
-    if let Some(bytes) = encoded.oversized_reply_bytes {
-        worker::console_warn!(
-            "central substituted an oversized link reply ({} bytes)",
-            bytes
-        );
-    }
-    socket.send_with_str(&encoded.text)
 }
 
 /// R40/V32 renewal on the open hibernating socket. A renewed connection's

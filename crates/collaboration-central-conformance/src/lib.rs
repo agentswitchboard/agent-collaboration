@@ -23,3 +23,6 @@ pub type ConformanceResult<TValue> = Result<TValue, Box<dyn std::error::Error + 
 
 #[cfg(feature = "session-link-test-support")]
 pub mod machine_link_boundary;
+
+#[cfg(feature = "session-link-test-support")]
+pub mod fixture_link_reader;

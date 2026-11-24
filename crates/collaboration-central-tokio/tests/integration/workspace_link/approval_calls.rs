@@ -627,3 +627,45 @@ mod person_approval_races;
 
 #[path = "approval_capability_calls.rs"]
 mod approval_capability_calls;
+
+#[tokio::test]
+async fn native_silent_approval_and_application_readers_name_the_missing_frame() -> Result<()> {
+    use collaboration_central_conformance::{
+        approval_link_scenarios::{next_ending, receive_decision},
+        fixture_link_reader::require_withheld_frame,
+        machine_link_boundary::{
+            assert_welcome, expect_close, offered_message, read_pong_checkpoint,
+        },
+    };
+    let fixture = NativeApprovalFixture {
+        link: start_session_link_fixture(signed_clock()?).await?,
+        before_alarm: Cell::new(0),
+        delivery_answer: RefCell::default(),
+        before_write: RefCell::default(),
+        notice_recovery: RefCell::default(),
+    };
+    let observed = async {
+        let (target, mut socket, request) = registered_waiting_request(&fixture).await?;
+        require_withheld_frame("application frame", receive_frame(&mut socket)).await?;
+        require_withheld_frame("Welcome", assert_welcome(&mut socket)).await?;
+        require_withheld_frame("direct delivery", offered_message(&mut socket)).await?;
+        require_withheld_frame("application Pong", read_pong_checkpoint(&mut socket)).await?;
+        require_withheld_frame("link close", expect_close(&mut socket, 4102)).await?;
+        require_withheld_frame("holder ending offer", next_ending(&mut socket, &target)).await?;
+        require_withheld_frame(
+            "holder ending offer",
+            receive_decision(
+                &fixture,
+                &mut socket,
+                target,
+                &request,
+                serde_json::from_value(json!({"kind":"timedOut"}))?,
+            ),
+        )
+        .await?;
+        heartbeat(&mut socket).await
+    }
+    .await;
+    fixture.link.close().await?;
+    observed
+}

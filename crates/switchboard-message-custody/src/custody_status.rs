@@ -93,6 +93,7 @@ pub(crate) fn remote_status(
         RequestStatusAnswer::Refused(reason) => {
             CustodyRequestStatus::Refused(central_status_reason(reason))
         }
+        RequestStatusAnswer::CentralUnavailable {} => CustodyRequestStatus::StatusUnavailable,
         RequestStatusAnswer::NotFound => CustodyRequestStatus::NotFound,
     }
 }

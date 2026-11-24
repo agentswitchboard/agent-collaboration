@@ -1,3 +1,6 @@
+use collaboration_central_conformance::fixture_link_reader::{
+    read_fixture_frame, require_withheld_frame,
+};
 use std::time::Duration;
 
 use super::{
@@ -117,7 +120,7 @@ async fn observe_welcome_mail(order: WelcomeInterleaving) -> Result<()> {
 )]
 #[tokio::test]
 async fn native_fragmented_text_checks_the_reassembled_byte_limit() -> Result<()> {
-    use futures_util::{SinkExt, StreamExt};
+    use futures_util::SinkExt;
     use tokio_tungstenite::tungstenite::{
         Message,
         client::IntoClientRequest,
@@ -138,7 +141,9 @@ async fn native_fragmented_text_checks_the_reassembled_byte_limit() -> Result<()
             format!("Bearer {}", fixture.token).parse()?,
         );
         let (mut socket, _) = tokio_tungstenite::connect_async(request).await?;
-        let first = socket.next().await.ok_or("expected Welcome")??;
+        let first = read_fixture_frame(&mut socket, "Welcome")
+            .await?
+            .ok_or("expected Welcome")??;
         assert!(first.to_text()?.starts_with("{\"kind\":\"welcome\""));
         let (_, mut text) =
             collaboration_central_conformance::machine_link_boundary::text_at_input_limit(
@@ -156,6 +161,10 @@ async fn native_fragmented_text_checks_the_reassembled_byte_limit() -> Result<()
                 false,
             )))
             .await?;
+        require_withheld_frame("fragmented-message close 1009", async {
+            read_fixture_frame(&mut socket, "fragmented-message close 1009").await
+        })
+        .await?;
         socket
             .send(Message::Frame(Frame::message(
                 trailing,
@@ -163,9 +172,8 @@ async fn native_fragmented_text_checks_the_reassembled_byte_limit() -> Result<()
                 true,
             )))
             .await?;
-        let close = socket
-            .next()
-            .await
+        let close = read_fixture_frame(&mut socket, "fragmented-message close 1009")
+            .await?
             .ok_or("expected fragmented-message close 1009")??;
         assert!(matches!(close, Message::Close(Some(frame)) if u16::from(frame.code) == 1009));
         Ok(())
@@ -178,7 +186,7 @@ async fn native_fragmented_text_checks_the_reassembled_byte_limit() -> Result<()
 #[tokio::test]
 async fn native_awaits_an_authority_close_held_during_its_first_poll() -> Result<()> {
     use collaboration_central_conformance::machine_link_boundary::expect_close;
-    use futures_util::{SinkExt, StreamExt};
+    use futures_util::SinkExt;
     let fixture = start_fixture().await?;
     let observed = async {
         let mut socket = fixture.connect().await?;
@@ -189,8 +197,9 @@ async fn native_awaits_an_authority_close_held_during_its_first_poll() -> Result
         socket.send(reqwest_websocket::Message::Text("ping".into())).await?;
         tokio::select! {
             () = hold.until_held() => {}
-            early = socket.next() => return Err(format!("expected close to be pending, got {early:?}").into()),
+            early = read_fixture_frame(&mut socket, "pending authority close 4102") => return Err(format!("expected close to be pending, got {early:?}").into()),
         }
+        require_withheld_frame("link close", expect_close(&mut socket, 4102)).await?;
         hold.release();
         expect_close(&mut socket, 4102).await
     }.await;
@@ -285,4 +294,42 @@ async fn open_mail_sockets(
     let mut source = connect_other_machine(fixture).await?;
     register_mail_session(&mut source, &sender, 0xcc12).await?;
     Ok((target, source, recipient, sender))
+}
+
+#[tokio::test]
+async fn native_expiry_alarm_refills_a_deferred_offer_without_recipient_input() -> Result<()> {
+    use collaboration_central_conformance::machine_link_boundary::{
+        fill_early_mail_claims, renew_mail_test_link,
+    };
+    let fixture = start_fixture().await?;
+    let observed = async {
+        let (mut target, mut source, recipient, sender) = open_mail_sockets(&fixture).await?;
+        let early = chrono::DateTime::from_timestamp(signin_fixtures::NOW_SECONDS, 0)
+            .ok_or("fixture time")?;
+        fill_early_mail_claims(&mut target, &mut source, &sender, &recipient, early).await?;
+        fixture.clock.advance(Duration::from_secs(500))?;
+        let late = queue_direct_mail(
+            &mut source,
+            &sender,
+            &recipient,
+            0x33100,
+            early + chrono::TimeDelta::seconds(500),
+        )
+        .await?;
+        fixture.clock.advance(Duration::from_secs(50))?;
+        renew_mail_test_link(&mut target, fixture.mint_machine_token().await?).await?;
+        expect_pong(&mut target).await?;
+        // The first cutoff is +900 and its five-minute alarm falls at +1100.
+        // The recipient makes no request while that alarm runs.
+        fixture.clock.advance(Duration::from_secs(550))?;
+        if offered_message(&mut target).await? != late {
+            return Err(
+                "recipient missed the deferred message released by the expiry alarm".into(),
+            );
+        }
+        expect_pong(&mut target).await
+    }
+    .await;
+    fixture.close().await?;
+    observed
 }

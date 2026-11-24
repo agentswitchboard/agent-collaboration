@@ -1,12 +1,12 @@
 //! Hibernating machine connections dispatch independent requests through the owning core.
-use super::workspace_machine_link_io::{renew, send};
 use super::workspace_pending_mac_calls::PendingMacCalls;
 use super::workspace_socket_attachment::{SOCKET_TAG_PREFIX, SocketAttachment};
 use super::{CentralObject, OrgRuntime, OrganizationId};
+use super::{workspace_link_text::send, workspace_machine_link_io::renew};
 use central_link_protocol::{
     CentralCall, CorrelationId, DataFrame, FrameDirection, LinkFrame, LinkRequest,
     LinkRequestBatch, ProtocolError, ReceiptBatch, ReceiptResult, ReplyPayload, RequestPayload,
-    RequestRefusal, RequestStatusAnswer, RequestStatusQuery,
+    RequestStatusAnswer, RequestStatusQuery,
 };
 use collaboration_central_core::WorkspaceCaller;
 use collaboration_central_core::{
@@ -284,7 +284,7 @@ impl CentralObject {
             .await;
         self.flush_ready_mail(&runtime).await;
         let result = match result {
-            Ok(()) => self.resume_deferred_mail(&runtime, socket).await,
+            Ok(()) => self.resume_deferred_mail(&runtime, socket, false).await,
             Err(error) => Err(error),
         };
         #[cfg(feature = "test-support")]
@@ -399,20 +399,16 @@ impl CentralObject {
                 caller,
                 query,
             } => {
-                let active = match runtime.restore_machine_link_request(&attachment).await {
-                    Ok(MachineLinkRequestAuthority::Admitted(active)) => active,
+                let result = match runtime.restore_machine_link_request(&attachment).await {
+                    Ok(MachineLinkRequestAuthority::Admitted(active)) => {
+                        runtime.status_for_link_caller(active, caller, &query).await
+                    }
                     Ok(MachineLinkRequestAuthority::Refused(cause)) => {
                         return self.close_machine_authority(&socket, cause);
                     }
                     Ok(MachineLinkRequestAuthority::TemporarilyUnavailable) | Err(_) => {
-                        return self.close_machine_link(&socket, 1011, Some("central unavailable"));
+                        Ok(RequestStatusAnswer::CentralUnavailable {})
                     }
-                };
-                let result = match WorkspaceCaller::from_machine_link(active, caller) {
-                    Ok(caller) => runtime.request_status(&caller, &query).await,
-                    Err(reason) => Ok(RequestStatusAnswer::Refused(RequestRefusal::Workspace(
-                        reason,
-                    ))),
                 };
                 let Ok(result) = result else {
                     return self.close_machine_link(&socket, 1011, Some("central unavailable"));

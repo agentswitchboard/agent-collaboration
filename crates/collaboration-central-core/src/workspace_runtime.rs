@@ -13,6 +13,7 @@ pub struct WorkspaceRuntime<Host: CentralStore, Stores: WorkspaceStores> {
     pub(crate) direct_messages: Arc<dyn fleet_mail::DirectMessageStore>,
     pub(crate) execution: FleetRuntime<Host, Stores>,
     pub(crate) stamp_store: Arc<dyn fleet_signin::stamp_store::StampStore>,
+    pub(crate) mail_claim_retired: Arc<dyn Fn(fleet_contracts::MailClaimRetired) + Send + Sync>,
     pub(crate) mail_delivery_ready: Arc<dyn Fn(MailDeliveryReady) + Send + Sync>,
     pub(crate) enrollment_invalidated:
         Arc<dyn Fn(fleet_contracts::EnrollmentInvalidation) + Send + Sync>,
@@ -50,6 +51,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             signin_authority: Default::default(),
             person_approval_transactions: None,
             mail_delivery_ready: Arc::new(|_| {}),
+            mail_claim_retired: Arc::new(|_| {}),
             enrollment_invalidated: Arc::new(|_| {}),
             #[cfg(feature = "test-support")]
             machine_restore_failure: Default::default(),
@@ -115,6 +117,14 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         self.mail_delivery_ready = observer;
         self
     }
+    pub fn with_mail_retirement_observer(
+        mut self,
+        observer: Arc<dyn Fn(fleet_contracts::MailClaimRetired) + Send + Sync>,
+    ) -> Self {
+        self.mail_claim_retired = observer;
+        self
+    }
+
     pub fn with_enrollment_invalidation_observer(
         mut self,
         observer: Arc<dyn Fn(fleet_contracts::EnrollmentInvalidation) + Send + Sync>,

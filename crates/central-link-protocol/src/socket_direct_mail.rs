@@ -46,10 +46,14 @@ impl LiveOfferOutcome {
 impl SocketDirectMailOffers {
     /// Past-cutoff claims are candidates for a durable retirement check. A
     /// wall-clock sample alone cannot prove that an offer stayed ineligible.
-    pub fn elapsed_claims(&self, now: Timestamp) -> impl Iterator<Item = (&MessageId, Timestamp)> {
-        self.claimed
-            .iter()
-            .filter_map(move |(message, cutoff)| (*cutoff <= now).then_some((message, *cutoff)))
+    pub fn retirement_candidates(
+        &self,
+        now: Timestamp,
+        retirement_observed: bool,
+    ) -> impl Iterator<Item = (&MessageId, Timestamp)> {
+        self.claimed.iter().filter_map(move |(message, cutoff)| {
+            (retirement_observed || *cutoff <= now).then_some((message, *cutoff))
+        })
     }
 
     pub fn has_deferred(&self) -> bool {

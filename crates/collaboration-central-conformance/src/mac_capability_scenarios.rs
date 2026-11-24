@@ -5,12 +5,12 @@ use super::{
     raise, receive_frame, register_run, require_owed, require_receipt, send_frame,
 };
 use crate::ConformanceResult as Result;
+use crate::fixture_link_reader::read_fixture_frame;
 use approval_request_protocol::{DeliverEndingReply, RegisterRunReply};
 use central_link_protocol::{
     DataFrame, HandledMacCalls, LinkFrame, LinkRequest, MacCallKind, MacCapabilities, Receipt,
     ReceiptBatch, ReceiptKind, ReceiptResult, ReplyPayload, RequestPayload,
 };
-use futures_util::StreamExt;
 use reqwest_websocket::{CloseCode, Message, WebSocket};
 use serde_json::json;
 use workspace_ids::{MachineId, SessionRef};
@@ -32,7 +32,7 @@ pub async fn announce_mac_calls(socket: &mut WebSocket, kinds: Vec<MacCallKind>)
 
 pub async fn require_duplicate_capabilities_close(socket: &mut WebSocket, code: u16) -> Result<()> {
     announce_mac_calls(socket, vec![]).await?;
-    match socket.next().await {
+    match read_fixture_frame(socket, "duplicate-capabilities close").await? {
         Some(Ok(Message::Close { code: observed, .. })) if u16::from(observed) == code => Ok(()),
         response => {
             Err(format!("expected duplicate announcement close {code}, got {response:?}").into())

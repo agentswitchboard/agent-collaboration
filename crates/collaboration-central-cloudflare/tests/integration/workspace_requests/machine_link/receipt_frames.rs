@@ -6,6 +6,7 @@ use central_storage::{
     AlarmUpdate, BatchOutcome, GuardedStatement, RowExpectation, SqlValue, Statement,
     StatementBatch,
 };
+use collaboration_central_conformance::fixture_link_reader::read_fixture_frame;
 
 #[tokio::test]
 async fn a_real_link_answers_one_and_sixty_four_receipts_and_refuses_invalid_frames() -> Result<()>
@@ -48,7 +49,7 @@ async fn a_real_link_answers_one_and_sixty_four_receipts_and_refuses_invalid_fra
         for frame in invalid {
             let mut link = ConnectedLink::open(&fixture).await?;
             link.socket.send(Message::Text(frame.to_string())).await?;
-            if !matches!(link.socket.next().await, Some(Ok(Message::Close { .. }))) {
+            if !matches!(read_fixture_frame(&mut link.socket, "receipt frames link frame").await?, Some(Ok(Message::Close { .. }))) {
                 return Err("malformed or old receipt frame must close without results".into());
             }
         }
@@ -149,7 +150,7 @@ async fn revoke_between_receipts(fixture: &Fixture) -> Result<()> {
     central.release_engine(hold).await;
     revoked?;
     loop {
-        let next = link.socket.next().await;
+        let next = read_fixture_frame(&mut link.socket, "link close").await?;
         match next {
             Some(Ok(Message::Close { .. })) => break,
             Some(Ok(Message::Text(text))) => {
@@ -461,7 +462,7 @@ async fn receipt_expiry_journey(fixture: &Fixture, enrollment: EnrollmentAtApply
                 return Err("receipt did not enter the applying barrier".into());
             }
         }
-        early = socket.socket.next() => {
+        early = read_fixture_frame(&mut socket.socket, "receipt frames link frame")=> {
             return Err(format!("receipt emitted a frame before the transaction barrier: {early:?}").into());
         }
     }
@@ -489,7 +490,7 @@ async fn receipt_expiry_journey(fixture: &Fixture, enrollment: EnrollmentAtApply
     if !released {
         return Err("receipt barrier was not released".into());
     }
-    let reply = socket.socket.next().await;
+    let reply = read_fixture_frame(&mut socket.socket, "receipt frames link frame").await?;
     let expected_close = enrollment.expected_close();
     if !matches!(reply, Some(Ok(Message::Close { code, .. })) if MachineLinkCloseCode::from_code(code.into()) == Some(expected_close))
     {

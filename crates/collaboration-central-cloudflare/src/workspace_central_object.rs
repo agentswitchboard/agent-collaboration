@@ -236,6 +236,7 @@ pub struct CentralObject {
     link_ids: Arc<ClockIds<WorkspaceClock>>,
     pending_mac_calls: workspace_pending_mac_calls::PendingMacCalls,
     due_batches: Arc<fleet_runtime::DueBatchState>,
+    mail_retirements: Arc<std::sync::Mutex<std::collections::BTreeSet<workspace_ids::MachineId>>>,
     mail_pushes: Arc<std::sync::Mutex<Vec<fleet_contracts::MailDeliveryReady>>>,
     mail_offers: workspace_machine_link_io::WorkerMailOffers,
     #[cfg(feature = "test-support")]
@@ -406,6 +407,7 @@ impl CentralObject {
             Ok(None) | Err(_) => central,
         };
         let mail_pushes = self.mail_pushes.clone();
+        let mail_retirements = self.mail_retirements.clone();
         let state_for_revocation = self.state.clone();
         let calls_for_revocation = self.pending_mac_calls.clone();
         let deadline_state = self.state.clone();
@@ -419,6 +421,12 @@ impl CentralObject {
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .push(message);
+                }))
+                .with_mail_retirement_observer(Arc::new(move |machine| {
+                    mail_retirements
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(machine.machine_id);
                 }))
                 .with_enrollment_invalidation_observer(Arc::new(move |invalidation| {
                     workspace_machine_link::close_enrollment_sockets(
@@ -451,6 +459,7 @@ impl DurableObject for CentralObject {
             pending_mac_calls: workspace_pending_mac_calls::PendingMacCalls::default(),
             due_batches: Arc::new(fleet_runtime::DueBatchState::default()),
             mail_pushes: Default::default(),
+            mail_retirements: Default::default(),
             mail_offers: Default::default(),
             #[cfg(feature = "test-support")]
             controls: workspace_cases::Controls::default(),
@@ -602,3 +611,6 @@ mod workspace_alarm_owner;
 #[cfg(feature = "test-support")]
 use workspace_alarm_owner::AlarmFailure;
 use workspace_alarm_owner::ColdAlarmStart;
+
+#[path = "workspace_link_text.rs"]
+mod workspace_link_text;

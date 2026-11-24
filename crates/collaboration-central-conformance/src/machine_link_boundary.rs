@@ -1,5 +1,6 @@
 //! Real socket controls for the shared Central link boundary cases.
 
+use crate::fixture_link_reader::read_fixture_frame;
 use central_link_protocol::{
     CorrelationId, DataFrame, FrameDirection, LINK_MAX_TEXT_BYTES, LinkFrame, LinkRequest,
     MachineLinkCloseCode, RequestPayload, encode_text,
@@ -36,7 +37,9 @@ async fn send_transport_checkpoint(socket: &mut WebSocket) -> Result<()> {
 }
 
 async fn read_transport_checkpoint(socket: &mut WebSocket) -> Result<()> {
-    let observed = socket.next().await.transpose()?;
+    let observed = read_fixture_frame(socket, "transport Pong")
+        .await?
+        .transpose()?;
     if !matches!(&observed, Some(Message::Pong(marker)) if marker.as_ref() == TRANSPORT_CHECKPOINT)
     {
         return Err(format!("expected the transport Pong checkpoint, got {observed:?}").into());
@@ -118,7 +121,7 @@ pub async fn check_input_sizes(
     // finished its payload. Observe the close independently of that write.
     let (mut write, mut read) = (&mut *socket).split();
     let frame = match futures_util::future::select(
-        std::pin::pin!(read.next()),
+        std::pin::pin!(read_fixture_frame(&mut read, "oversized-input close 1009")),
         std::pin::pin!(write.send(Message::Text(text))),
     )
     .await
@@ -126,12 +129,17 @@ pub async fn check_input_sizes(
         futures_util::future::Either::Left((frame, _)) => frame,
         futures_util::future::Either::Right((_, pending_close)) => pending_close.await,
     };
-    assert_close(frame.transpose()?, 1009);
+    assert_close(frame?.transpose()?, 1009);
     expect_pong(other).await
 }
 
 pub async fn expect_close(socket: &mut WebSocket, expected: u16) -> Result<()> {
-    assert_close(socket.next().await.transpose()?, expected);
+    assert_close(
+        read_fixture_frame(socket, "link close")
+            .await?
+            .transpose()?,
+        expected,
+    );
     Ok(())
 }
 
@@ -359,6 +367,93 @@ pub async fn acknowledge_delivered_mail(
     let actual = receive_frame(socket).await?;
     if actual != expected {
         return Err(format!("expected recorded delivery receipts, got {actual:?}").into());
+    }
+    Ok(())
+}
+
+pub fn oversized_retained_refusal(
+    request: &workspace_ids::RequestId,
+) -> Result<(String, central_storage::StatementBatch)> {
+    use central_storage::{
+        AlarmUpdate, GuardedStatement, RowExpectation, SqlValue, Statement, StatementBatch,
+    };
+    use workspace_model::{
+        Blocker, BlockerStatus, ItemRef, RefusalReason, WorkStatus, WorkspaceResult,
+    };
+    let blockers = (0..6_400)
+        .map(|index| {
+            Ok(Blocker {
+                item: ItemRef::Project(format!("019f0000-0000-7000-8000-{index:012x}").parse()?),
+                title: format!("Open project {index:04} {}", "é".repeat(45)),
+                status: BlockerStatus::Work(WorkStatus::OnHold),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let refusal = serde_json::to_string(&WorkspaceResult::Refused(
+        RefusalReason::ChildrenNotClosed { blockers },
+    ))?;
+    if refusal.len() <= central_link_protocol::LINK_MAX_EGRESS_TEXT_BYTES {
+        return Err("fixture refusal must exceed the physical text budget".into());
+    }
+    let seed = StatementBatch {
+        statements: vec![GuardedStatement {
+            statement: Statement {
+                sql: "UPDATE workspace_request_log SET answer=? WHERE request_id=?",
+                args: vec![
+                    SqlValue::Text(refusal.clone()),
+                    SqlValue::Text(request.to_string()),
+                ],
+            },
+            expect: RowExpectation::Exactly(1),
+        }],
+        alarm: AlarmUpdate::Unchanged,
+    };
+    Ok((refusal, seed))
+}
+
+pub fn retained_answer_read(request: &workspace_ids::RequestId) -> central_storage::Statement {
+    central_storage::Statement {
+        sql: "SELECT answer FROM workspace_request_log WHERE request_id=?",
+        args: vec![central_storage::SqlValue::Text(request.to_string())],
+    }
+}
+
+pub async fn fill_early_mail_claims(
+    target: &mut WebSocket,
+    source: &mut WebSocket,
+    sender: &workspace_ids::SessionRef,
+    recipient: &workspace_ids::SessionRef,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<()> {
+    for index in 0..u32::try_from(central_link_protocol::SOCKET_DIRECT_MAIL_LIMIT)? {
+        let offered = queue_direct_mail(source, sender, recipient, 0x33000 + index, now).await?;
+        let actual = offered_message(target).await?;
+        if actual != offered {
+            return Err(format!("expected claimed message {offered}, observed {actual}").into());
+        }
+    }
+    Ok(())
+}
+
+pub async fn renew_mail_test_link(socket: &mut WebSocket, token: String) -> Result<()> {
+    use central_link_protocol::TokenRenewalResult;
+    let correlation_id = mail_fixture_correlation(0x33101)?;
+    crate::approval_link_scenarios::send_frame(
+        socket,
+        LinkFrame::Data(DataFrame::RenewMachineToken {
+            correlation_id: correlation_id.clone(),
+            token: token.try_into()?,
+        }),
+    )
+    .await?;
+    let frame = receive_expected_text(socket, "renewed token").await?;
+    if !matches!(frame, LinkFrame::Data(DataFrame::MachineTokenRenewal {
+        correlation_id: ref settled, result: TokenRenewalResult::Renewed { .. }
+    }) if settled == &correlation_id)
+    {
+        return Err(
+            format!("expected correlated renewal before the expiry alarm, got {frame:?}").into(),
+        );
     }
     Ok(())
 }

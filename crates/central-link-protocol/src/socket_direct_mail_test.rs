@@ -33,10 +33,10 @@ fn saturation_and_competing_claims_survive_attachment_round_trip() {
     assert_eq!(reawakened.claim(&waiting, cutoff), Ok(()));
 
     assert_eq!(
-        reawakened.elapsed_claims(cutoff).count(),
+        reawakened.retirement_candidates(cutoff, false).count(),
         SOCKET_DIRECT_MAIL_LIMIT
     );
-    assert_eq!(reawakened.elapsed_claims(now).count(), 0);
+    assert_eq!(reawakened.retirement_candidates(now, false).count(), 0);
     assert_eq!(
         reawakened.claim(&waiting, cutoff),
         Err(NotOffered::AlreadyOffered)

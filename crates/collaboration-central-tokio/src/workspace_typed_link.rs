@@ -1,7 +1,7 @@
 //! Typed calls over the active Tokio socket, using the owning link's send and close paths.
-use super::{LinkWrites, Runtime};
+use super::{LinkWrites, Runtime, link_io::write_central_text};
 use crate::machine_call_queue::{MacCallReceiver, QueuedMacCall};
-use axum::extract::ws::{Message, WebSocket, close_code};
+use axum::extract::ws::{WebSocket, close_code};
 use central_link_protocol::{
     CentralCall, CorrelationId, DataFrame, LinkFrame, MachineLinkCloseCode, TypedCallResult,
     encode_central_egress,
@@ -89,7 +89,10 @@ pub(super) async fn reply_to_fixture_probe(
             ) else {
                 return false;
             };
-            writes.send_text(socket, text).await
+            let Ok(encoded) = central_link_protocol::CentralEgress::from_fixture_text(text) else {
+                return false;
+            };
+            writes.send_prepared_text(socket, encoded).await
         }
         Ok(TypedCallResult::Refused { reason }) => {
             send_central_call_result(
@@ -166,7 +169,7 @@ pub(super) async fn offer_mac_call(
     let attachment = connection.attachment();
     let waker = poll_fn(|context| Poll::Ready(context.waker().clone())).await;
     let outcome = 'write: {
-        let send = socket.send(Message::Text(encoded.text.into()));
+        let send = write_central_text(socket, encoded);
         tokio::pin!(send);
         // Keep the organization turn through the first poll. Backpressure after that
         // poll belongs to the socket, so subsequent polls do not hold the turn.

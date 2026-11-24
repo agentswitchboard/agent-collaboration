@@ -28,12 +28,13 @@ fn oversized_workspace_page_gets_a_small_fault_with_the_same_correlation() {
     assert!(original.len() > LINK_MAX_EGRESS_TEXT_BYTES);
 
     let checked = encode_central_egress(&frame).unwrap();
-    assert_eq!(checked.oversized_reply_bytes, Some(original.len()));
-    assert!(checked.text.len() < 1024);
+    let (text, original_bytes) = checked.into_parts();
+    assert_eq!(original_bytes, Some(original.len()));
+    assert!(text.len() < 1024);
     let LinkFrame::Data(DataFrame::Reply {
         correlation_id,
         result,
-    }) = crate::decode_text(&checked.text, FrameDirection::ToRouter).unwrap()
+    }) = crate::decode_text(&text, FrameDirection::ToRouter).unwrap()
     else {
         panic!("expected the existing workspace reply shape");
     };

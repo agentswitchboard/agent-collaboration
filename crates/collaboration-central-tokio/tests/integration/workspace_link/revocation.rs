@@ -1,5 +1,6 @@
 use super::*;
 use central_storage::{SqlValue, Statement};
+use collaboration_central_conformance::fixture_link_reader::read_fixture_frame;
 use fleet_contracts::MachinePrincipal;
 
 #[tokio::test]
@@ -39,7 +40,7 @@ async fn revocation_journey(fixture: &Fixture) -> Result<()> {
     revocation
         .expect(&owner, enrollment, json!({"result":"revoked"}))
         .await?;
-    if !matches!(socket.next().await, Some(Ok(Message::Close { code, .. }))
+    if !matches!(read_fixture_frame(&mut socket, "revocation link frame").await?, Some(Ok(Message::Close { code, .. }))
         if central_link_protocol::MachineLinkCloseCode::from_code(code.into())
             == Some(central_link_protocol::MachineLinkCloseCode::Revoked))
     {
@@ -57,7 +58,7 @@ async fn revocation_journey(fixture: &Fixture) -> Result<()> {
         .await?
         .into_websocket()
         .await?;
-    let frame = rejected.next().await;
+    let frame = read_fixture_frame(&mut rejected, "revocation link frame").await?;
     if !matches!(frame, Some(Ok(Message::Close { code, .. })) if
         central_link_protocol::MachineLinkCloseCode::from_code(code.into()) ==
         Some(central_link_protocol::MachineLinkCloseCode::Revoked))

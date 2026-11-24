@@ -344,7 +344,7 @@ async fn receipts_and_status_settle_only_on_the_expected_correlation_and_length(
         &mut socket,
         DataFrame::RequestStatusReply {
             correlation_id: correlation(4),
-            result: Box::new(RequestStatusAnswer::NotFound),
+            result: Box::new(RequestStatusAnswer::CentralUnavailable {}),
         },
     )
     .await;
@@ -355,7 +355,7 @@ async fn receipts_and_status_settle_only_on_the_expected_correlation_and_length(
         LinkLaneDisposition::Answered {
             reply: CorrelatedStatusReply {
                 correlation_id: correlation(4),
-                result: Box::new(RequestStatusAnswer::NotFound)
+                result: Box::new(RequestStatusAnswer::CentralUnavailable {})
             },
             accepted_at: tick(13),
         },

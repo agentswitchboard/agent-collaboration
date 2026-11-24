@@ -1,5 +1,6 @@
 use super::*;
 use central_link_protocol::{CorrelationId, LinkRequest};
+use collaboration_central_conformance::fixture_link_reader::read_fixture_frame;
 use reqwest_websocket::WebSocket;
 use workspace_model::{ResolvedSender, central_mail::CentralMailAnswer};
 
@@ -413,7 +414,9 @@ async fn backlog_page_journey(fixture: &Fixture) -> Result<()> {
     let mut receipt_ids = Vec::new();
     let mut receipt_batch = 0x32000_u32;
     for _ in 0..=page_size {
-        let Some(Ok(Message::Text(offer_text))) = reopened.next().await else {
+        let Some(Ok(Message::Text(offer_text))) =
+            read_fixture_frame(&mut reopened, "direct delivery").await?
+        else {
             return Err("expected a direct offer as raw socket text".into());
         };
         let offer_json: serde_json::Value = serde_json::from_str(&offer_text)?;

@@ -1,10 +1,11 @@
 use central_link_protocol::{FrameDirection, LinkFrame, decode_text, encode_text};
+use collaboration_central_conformance::fixture_link_reader::read_fixture_frame;
 use collaboration_central_conformance::{ConformanceResult as Result, signin_fixtures as signed};
 use collaboration_central_tokio::test_support::start_machine_link_fixture;
 pub(super) use collaboration_central_tokio::test_support::{
     MACHINE_LINK_FIXTURE_MACHINE as INSTALLATION, MachineLinkFixture as Fixture,
 };
-use futures_util::{SinkExt, StreamExt};
+use futures_util::SinkExt;
 use reqwest_websocket::{Message, WebSocket};
 use router_clock::ManualClock;
 use runtime_primitives::SyncTime;
@@ -24,7 +25,9 @@ pub(super) fn signed_clock() -> Result<Arc<ManualClock>> {
 }
 
 pub(super) async fn receive(socket: &mut WebSocket) -> Result<LinkFrame> {
-    let message = socket.next().await.ok_or("link ended before a frame")??;
+    let message = read_fixture_frame(socket, "fixture link frame")
+        .await?
+        .ok_or("link ended before a frame")??;
     let Message::Text(text) = message else {
         return Err("expected a link text frame".into());
     };

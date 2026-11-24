@@ -11,11 +11,11 @@ use central_link_protocol::{
     TokenRenewalRefusal, TokenRenewalResult,
 };
 use central_storage::{SqlValue, Statement};
+use collaboration_central_conformance::fixture_link_reader::read_fixture_frame;
 use collaboration_central_conformance::{ConformanceResult as Result, signin_fixtures as signed};
 use collaboration_central_core::ValidatedMachineConnection;
 use collaboration_central_core::{MachineLoginControl, machine_login_control};
 use fleet_contracts::MachineTokenDecision;
-use futures_util::StreamExt;
 use reqwest_websocket::{Message, WebSocket};
 use serde_json::json;
 use std::time::Duration;
@@ -247,7 +247,7 @@ async fn a_renewal_at_the_live_deadline_answers_retryably_then_closes() -> Resul
         }
     );
     assert_eq!(at_deadline, retryable_expiry());
-    let close = socket.next().await;
+    let close = read_fixture_frame(&mut socket, "link close").await?;
     assert!(
         matches!(
             close, Some(Ok(Message::Close { code, .. }))
@@ -343,7 +343,7 @@ async fn every_refused_renewal_keeps_the_current_deadline() -> Result<()> {
     send(&mut socket, &renew_frame(correlation_id, &candidate)?).await?;
     tokio::select! {
         () = applying.until_held() => {}
-        early = socket.next() => {
+        early = read_fixture_frame(&mut socket, "renewal contract link frame")=> {
             return Err(format!("renewal settled before its applying sample: {early:?}").into());
         }
     }
@@ -461,7 +461,7 @@ async fn a_renewal_after_live_revocation_is_refused_as_enrollment_connection_enr
     // Assert
     assert!(revoked.is_some());
     assert_eq!(answer, connection_enrollment_ended());
-    let close = socket.next().await;
+    let close = read_fixture_frame(&mut socket, "link close").await?;
     assert!(
         matches!(
             close, Some(Ok(Message::Close { code, .. }))
@@ -515,7 +515,7 @@ async fn a_batch_after_the_deadline_refuses_every_member_and_then_closes() -> Re
     for _ in &members {
         replies.push(receive(&mut socket).await?);
     }
-    let closed = socket.next().await;
+    let closed = read_fixture_frame(&mut socket, "link close").await?;
 
     // Assert
     for (member, reply) in members.iter().zip(&replies) {
@@ -559,7 +559,7 @@ async fn native_ping_arriving_during_renewal_follows_the_renewed_reply() -> Resu
         send(&mut socket, &renew_frame(correlation, &fresh)?).await?;
         tokio::select! {
             () = hold.until_held() => {}
-            early = socket.next() => return Err(format!("renewal completed before the hold: {early:?}").into()),
+            early = read_fixture_frame(&mut socket, "renewal contract link frame")=> return Err(format!("renewal completed before the hold: {early:?}").into()),
         }
         send(&mut socket, &LinkFrame::Ping).await?;
         hold.release();

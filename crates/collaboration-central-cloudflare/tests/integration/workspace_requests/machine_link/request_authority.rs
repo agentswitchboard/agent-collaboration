@@ -11,6 +11,7 @@ use central_storage::{
     StatementBatch,
 };
 use collaboration_central_conformance::ConformanceResult as Result;
+use collaboration_central_conformance::fixture_link_reader::read_fixture_frame;
 use futures_util::{FutureExt, StreamExt};
 use reqwest_websocket::{Message, RequestBuilderExt};
 use workspace_model::{RefusalReason, WorkspaceOperation, WorkspaceRequest, WorkspaceResult};
@@ -109,7 +110,7 @@ async fn check_request_refusal(
                             return Err("request did not pass the frame-entry authority check".into());
                         }
                     }
-                    early = socket.next() => return Err(format!("request returned before the applying barrier: {early:?}").into()),
+                    early = read_fixture_frame(&mut socket, "request authority link frame")=> return Err(format!("request returned before the applying barrier: {early:?}").into()),
                 }
                 lapse_authority().await?;
                 if socket.next().now_or_never().is_some() {
@@ -132,7 +133,7 @@ async fn check_request_refusal(
             format!("{expected_close:?} requires {expected_reply:?}, got {reply:?}").into(),
         );
     }
-    let closed = socket.next().await;
+    let closed = read_fixture_frame(&mut socket, "link close").await?;
     if !matches!(closed, Some(Ok(Message::Close { code, .. }))
         if MachineLinkCloseCode::from_code(code.into()) == Some(expected_close))
     {
@@ -221,7 +222,7 @@ async fn check_generation_on_link(fixture: &Fixture) -> Result<()> {
         },
     )
     .await?;
-    let closed = socket.next().await;
+    let closed = read_fixture_frame(&mut socket, "link close").await?;
     if !matches!(closed, Some(Ok(Message::Close { code, .. })) if u16::from(code) == 1011) {
         return Err(format!("guarded restore must close with 1011, got {closed:?}").into());
     }

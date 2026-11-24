@@ -1,6 +1,6 @@
 //! Typed Mac calls keep their waiter on the physical socket in the owning object.
 
-use super::workspace_machine_link_io::send;
+use super::workspace_link_text::send;
 #[path = "workspace_approval_delivery.rs"]
 pub(super) mod approval_delivery;
 use super::workspace_pending_mac_calls::WrittenMacCall;
@@ -256,9 +256,9 @@ impl CentralObject {
                     answer,
                 )
                 .map_err(|error| worker::Error::RustError(error.to_string()))?;
-                central_link_protocol::check_central_egress_length(text.len())
+                let encoded = central_link_protocol::CentralEgress::from_fixture_text(text)
                     .map_err(|failure| worker::Error::RustError(failure.to_string()))?;
-                socket.send_with_str(&text)
+                super::workspace_link_text::write_central_text(socket, encoded)
             }
             Ok(TypedCallResult::Refused { reason }) => self.send_central_call_result(
                 socket,

@@ -9,6 +9,7 @@ use central_link_protocol::{
     CorrelationId, DataFrame, LinkFrame, LinkRequest, MachineLinkCloseCode, TokenRenewalRefusal,
     TokenRenewalResult,
 };
+use collaboration_central_conformance::fixture_link_reader::read_fixture_frame;
 use collaboration_central_conformance::{ConformanceResult as Result, signin_fixtures as signed};
 use collaboration_central_tokio::WorkspaceLink;
 use fleet_runtime::PausePoint;
@@ -235,7 +236,8 @@ async fn settle_idle_renewal(
     after_cleanup.release();
     gated.gate.dropped.notified().await;
     if matches!(settlement, WriteSettlement::Unwritable)
-        && let Some(Ok(frame)) = socket.next().await
+        && let Some(Ok(frame)) =
+            read_fixture_frame(&mut socket, "revocation backpressure link frame").await?
     {
         return Err(
             format!("unwritable transport unexpectedly received a frame: {frame:?}").into(),
@@ -312,10 +314,10 @@ async fn revoke_while_reply_is_blocked(
     }
     gate.dropped.notified().await;
     if matches!(settlement, WriteSettlement::Writable) {
-        let first = socket.next().await;
+        let first = read_fixture_frame(&mut socket, "revocation backpressure link frame").await?;
         let close = if matches!(first, Some(Ok(reqwest_websocket::Message::Text(_)))) {
             // Tungstenite may already have queued the ordinary reply in its write buffer.
-            socket.next().await
+            read_fixture_frame(&mut socket, "revocation backpressure link frame").await?
         } else {
             first
         };

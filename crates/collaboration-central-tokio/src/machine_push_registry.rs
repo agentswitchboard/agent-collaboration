@@ -10,7 +10,7 @@ use std::{
     collections::HashMap,
     sync::{Arc, Mutex, OnceLock, PoisonError},
 };
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc};
 use tokio_util::sync::CancellationToken;
 use workspace_ids::{MachineId, MessageId};
 
@@ -21,6 +21,7 @@ struct PushSocket {
     authority: MachineConnectionAttachment,
     sender: mpsc::Sender<MessageId>,
     calls: MacCallSender,
+    claim_retired: Arc<Notify>,
     replaced: CancellationToken,
     authority_close: Arc<OnceLock<MachineLinkCloseCode>>,
 }
@@ -41,6 +42,7 @@ impl MachinePushRegistry {
         let replaced = CancellationToken::new();
         let (calls, outbound_calls) = machine_call_queue::channel(replaced.clone());
         let authority_close = Arc::new(OnceLock::new());
+        let claim_retired = Arc::new(Notify::new());
         let mut sockets = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         let active = sockets.entry(key.clone()).or_default();
         if let Some(older) = active.last() {
@@ -51,6 +53,7 @@ impl MachinePushRegistry {
             authority: connection.attachment(),
             sender: sender.clone(),
             calls,
+            claim_retired: claim_retired.clone(),
             replaced: replaced.clone(),
             authority_close: authority_close.clone(),
         });
@@ -62,6 +65,7 @@ impl MachinePushRegistry {
             authority_close,
             receiver,
             outbound_calls,
+            claim_retired,
         }
     }
 
@@ -168,6 +172,16 @@ impl MachinePushRegistry {
         }
     }
 
+    pub(crate) fn mail_claim_retired(&self, organization: &OrganizationId, machine: MachineId) {
+        let sockets = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(socket) = sockets
+            .get(&(organization.clone(), machine))
+            .and_then(|sockets| sockets.last())
+        {
+            socket.claim_retired.notify_one();
+        }
+    }
+
     pub(crate) fn offer(
         &self,
         organization: &OrganizationId,
@@ -195,6 +209,7 @@ pub(crate) struct MachinePushRegistration {
     pub(crate) authority_close: Arc<OnceLock<MachineLinkCloseCode>>,
     pub(crate) receiver: mpsc::Receiver<MessageId>,
     pub(crate) outbound_calls: MacCallReceiver,
+    pub(crate) claim_retired: Arc<Notify>,
 }
 
 impl MachinePushRegistration {

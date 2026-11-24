@@ -6,9 +6,25 @@ use crate::{
 };
 
 pub struct CentralEgress {
-    pub text: String,
+    text: String,
     /// Original encoded size when a request received its existing fault reply.
-    pub oversized_reply_bytes: Option<usize>,
+    oversized_reply_bytes: Option<usize>,
+}
+
+impl CentralEgress {
+    #[must_use]
+    pub fn into_parts(self) -> (String, Option<usize>) {
+        (self.text, self.oversized_reply_bytes)
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn from_fixture_text(text: String) -> Result<Self, ProtocolError> {
+        check_central_egress_length(text.len())?;
+        Ok(Self {
+            text,
+            oversized_reply_bytes: None,
+        })
+    }
 }
 
 pub fn encode_central_egress(frame: &LinkFrame) -> Result<CentralEgress, ProtocolError> {
@@ -36,18 +52,12 @@ pub fn encode_central_egress(frame: &LinkFrame) -> Result<CentralEgress, Protoco
                 }),
             }
         }
-        LinkFrame::Data(DataFrame::RequestStatusReply {
-            correlation_id,
-            result,
-        }) => match result.as_ref() {
-            RequestStatusAnswer::Answered(reply) => DataFrame::RequestStatusReply {
+        LinkFrame::Data(DataFrame::RequestStatusReply { correlation_id, .. }) => {
+            DataFrame::RequestStatusReply {
                 correlation_id: correlation_id.clone(),
-                result: Box::new(RequestStatusAnswer::Answered(reply.unavailable_answer())),
-            },
-            RequestStatusAnswer::NotFound | RequestStatusAnswer::Refused(_) => {
-                return Err(ProtocolError::EgressTooBig { bytes });
+                result: Box::new(RequestStatusAnswer::CentralUnavailable {}),
             }
-        },
+        }
         LinkFrame::Ping
         | LinkFrame::Pong
         | LinkFrame::Data(

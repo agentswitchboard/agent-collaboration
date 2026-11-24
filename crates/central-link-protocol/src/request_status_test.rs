@@ -50,10 +50,19 @@ fn replay_answers_keep_the_logged_reply_and_domain_refusal_shapes() {
         json!({"kind":"refused","value":{"kind":"workspace","reason":{"kind":"workspaceNotAllowed"}}}),
         json!({"kind":"refused","value":{"kind":"mail","reason":{"kind":"notSession"}}}),
         json!({"kind":"notFound"}),
+        json!({"kind":"centralUnavailable","value":{}}),
     ];
     for wire in cases {
         let answer: RequestStatusAnswer = serde_json::from_value(wire.clone()).unwrap();
         assert_eq!(serde_json::to_value(answer).unwrap(), wire);
+    }
+    for wire in [
+        json!({"kind":"centralUnavailable"}),
+        json!({"kind":"centralUnavailable","value":null}),
+        json!({"kind":"centralUnavailable","retry":true}),
+        json!({"kind":"centralUnavailable","value":{"reason":"store"}}),
+    ] {
+        assert!(serde_json::from_value::<RequestStatusAnswer>(wire).is_err());
     }
     let rejected = json!({"kind":"refused","value":{"kind":"workspace","reason":{"kind":"credentialRefused"}}});
     assert!(serde_json::from_value::<RequestStatusAnswer>(rejected).is_err());

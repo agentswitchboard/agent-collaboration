@@ -375,6 +375,7 @@ impl ReadyLinkLane for ScriptedBatchLane {
             .lock()
             .unwrap()
             .iter()
+            .rev()
             .find(|(owner, query, _)| owner == &command.caller && query == &command.query)
             .map_or(RequestStatusAnswer::NotFound, |(_, _, answer)| {
                 answer.clone()

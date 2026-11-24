@@ -1,4 +1,5 @@
 //! Real public native links: signed admission, ordinary client identity and live frames.
+use collaboration_central_conformance::fixture_link_reader::read_fixture_frame;
 mod alarm_rearm;
 mod approval_calls;
 mod authority_races;
@@ -26,7 +27,7 @@ use central_link_client::{ClientAction, ClientEvent, LinkClient};
 use central_link_protocol::{DataFrame, LinkFrame, ReplyPayload, RequestPayload};
 use collaboration_central_conformance::{ConformanceResult as Result, signin_fixtures as signed};
 use fixture::{Fixture, INSTALLATION, OTHER_MACHINE, OTHER_ORG, receive, send, start_fixture};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::SinkExt;
 use reqwest_websocket::{Message, RequestBuilderExt};
 use serde_json::json;
 use std::time::Duration;
@@ -362,9 +363,14 @@ async fn unknown_receipt_keeps_the_link_open_and_shutdown_drains_it() -> Result<
     )
     .await?;
     socket.send(Message::Text("ping".into())).await?;
-    assert!(matches!(socket.next().await, Some(Ok(Message::Text(text))) if text == "pong"));
+    assert!(
+        matches!(read_fixture_frame(&mut socket, "workspace link link frame").await?, Some(Ok(Message::Text(text))) if text == "pong")
+    );
     fixture.close().await?;
-    assert!(!matches!(socket.next().await, Some(Ok(Message::Text(_)))));
+    assert!(!matches!(
+        read_fixture_frame(&mut socket, "link close").await?,
+        Some(Ok(Message::Text(_)))
+    ));
     Ok(())
 }
 

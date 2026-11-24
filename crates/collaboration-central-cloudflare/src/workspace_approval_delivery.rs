@@ -98,9 +98,6 @@ impl ApprovalDeliveryTransport for WorkerApprovalDelivery {
                 });
                 let address = MacCallAddress::from(&request);
                 let tag = socket_tag(&state, &socket).ok_or(CallFailure::NeverReached)?;
-                let attachment = matching_attachment(&socket, &address, &target.organization_id)?;
-                restore_before_write(&runtime, &pending_calls, &state, &socket, &attachment)
-                    .await?;
                 let MacCall::ApprovalNotice(notice) = &request else {
                     return Err(CallFailure::NeverReached);
                 };
@@ -118,6 +115,9 @@ impl ApprovalDeliveryTransport for WorkerApprovalDelivery {
                 if !is_current_socket(&state, &socket, &target.machine_id) {
                     return Err(CallFailure::NeverReached);
                 }
+                let attachment = matching_attachment(&socket, &address, &target.organization_id)?;
+                restore_before_write(&runtime, &pending_calls, &state, &socket, &attachment)
+                    .await?;
                 pending_calls.begin_mac_call(
                     &clock,
                     &socket,
@@ -261,21 +261,18 @@ impl ApprovalDeliveryTransport for WorkerApprovalDelivery {
                 .into_iter()
                 .find(socket_open)
                 .ok_or(CallFailure::NeverReached)?;
+            let machine = {
+                let _turn = runtime.runtime().take_central_turn_for_admission().await;
+                let authority = matching_attachment(&socket, &address, &target.organization_id)?;
+                restore_before_write(&runtime, &pending_calls, &state, &socket, &authority).await?
+            };
             let item = MacCallDeliveryKey::Ending(request_id, target.router_run.clone());
             let Some(approval_attempt) = claim_worker_attempt(&socket, item)? else {
                 return Ok(ApprovalMacCall::Skipped);
             };
-            let authority = matching_attachment(&socket, &address, &target.organization_id)?;
             let tag = socket_tag(&state, &socket).ok_or(CallFailure::NeverReached)?;
             let stopped = pending_calls.socket_ended(tag.clone()).map(|_| ()).shared();
             let stopped_before_write = stopped.clone();
-            let Ok(collaboration_central_core::MachineLinkRequestAuthority::Admitted(machine)) =
-                runtime
-                    .restore_machine_link_request(&authority.authority)
-                    .await
-            else {
-                return Err(CallFailure::NeverReached);
-            };
             let socket = Arc::new(SendWrapper::new(socket));
             let answer_socket = socket.clone();
             let answer_state = state.clone();
@@ -334,16 +331,6 @@ impl ApprovalDeliveryTransport for WorkerApprovalDelivery {
                             if !is_current_socket(&state, &socket, &target.machine_id) {
                                 return Err(CallFailure::NeverReached);
                             }
-                            let current =
-                                matching_attachment(&socket, &address, &target.organization_id)?;
-                            restore_before_write(
-                                &runtime,
-                                &pending_calls,
-                                &state,
-                                &socket,
-                                &current,
-                            )
-                            .await?;
                             let MacCall::DeliverEnding(ending) = &call else {
                                 return Err(CallFailure::NeverReached);
                             };
@@ -360,6 +347,16 @@ impl ApprovalDeliveryTransport for WorkerApprovalDelivery {
                             if !is_current_socket(&state, &socket, &target.machine_id) {
                                 return Err(CallFailure::NeverReached);
                             }
+                            let current =
+                                matching_attachment(&socket, &address, &target.organization_id)?;
+                            restore_before_write(
+                                &runtime,
+                                &pending_calls,
+                                &state,
+                                &socket,
+                                &current,
+                            )
+                            .await?;
                             pending_calls.begin_mac_call(
                                 &clock,
                                 &socket,
@@ -516,12 +513,12 @@ async fn restore_before_write(
     state: &worker::State,
     socket: &worker::WebSocket,
     attachment: &SocketAttachment,
-) -> Result<(), CallFailure> {
+) -> Result<collaboration_central_core::ValidatedMachineConnection, CallFailure> {
     match runtime
         .restore_machine_in_held_turn(&attachment.authority)
         .await
     {
-        Ok(Ok(_)) => Ok(()),
+        Ok(Ok(machine)) => Ok(machine),
         Ok(Err(cause)) => {
             let _ = pending.close(state, socket, cause.code(), None);
             Err(CallFailure::NeverReached)

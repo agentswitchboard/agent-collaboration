@@ -1,4 +1,5 @@
 //! One original socket across real object eviction, live authority and SQLite effects.
+use collaboration_central_conformance::fixture_link_reader::read_fixture_frame;
 mod alarm_rearm;
 mod approval_calls;
 mod batch;
@@ -28,7 +29,7 @@ use central_link_protocol::{CorrelationId, DataFrame, ReplyPayload};
 use central_storage::{SqlValue, Statement};
 use collaboration_central_conformance::{ConformanceResult as Result, signin_fixtures as signed};
 use fixture::{ConnectedLink, Exchange, Fixture, MACHINE_ID, ORGANIZATION, OTHER_ORGANIZATION};
-use futures_util::{FutureExt, SinkExt, StreamExt};
+use futures_util::{FutureExt, SinkExt};
 use receipt::{AreaReceipt, HibernationReceipt, receipt_result};
 use reqwest_websocket::{Message, RequestBuilderExt};
 use runtime_primitives::Clock;
@@ -160,7 +161,7 @@ async fn hibernation_journey(fixture: &Fixture) -> Result<HibernationReceipt> {
     let mut heartbeat_events = Vec::new();
     for _ in 0..3 {
         link.socket.send(Message::Text("ping".into())).await?;
-        match link.socket.next().await {
+        match read_fixture_frame(&mut link.socket, "machine link link frame").await? {
             Some(Ok(Message::Text(text))) if text == "pong" => {}
             _ => return Err("hibernated socket did not return the literal platform pong".into()),
         }
@@ -557,7 +558,7 @@ async fn denied_journey(fixture: &Fixture, change: AuthorityChange) -> Result<()
             format!("{expected_close:?} must answer {expected_reply:?} first: {reply:?}").into(),
         );
     }
-    match link.socket.next().await {
+    match read_fixture_frame(&mut link.socket, "machine link link frame").await? {
         Some(Ok(Message::Close { code, .. }))
             if central_link_protocol::MachineLinkCloseCode::from_code(code.into())
                 == Some(expected_close) => {}

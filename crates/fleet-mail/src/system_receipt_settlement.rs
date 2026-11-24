@@ -186,7 +186,10 @@ where
     )
     .await?;
     // System writers continue to rely on the post-event completion for publication.
-    Ok(ApplyReceipt::Applied { ready: None })
+    Ok(ApplyReceipt::Applied {
+        ready: None,
+        retired_recipient: None,
+    })
 }
 
 #[cfg(test)]
