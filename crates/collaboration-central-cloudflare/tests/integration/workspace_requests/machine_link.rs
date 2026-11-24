@@ -11,6 +11,7 @@ mod idle_expiry;
 mod link_boundary;
 mod person_admission;
 mod private_enrollment_invalidation;
+mod private_keys;
 mod probe_diagnostic;
 mod receipt;
 mod receipt_enrollment_clock;

@@ -12,14 +12,17 @@ use runtime_primitives::Clock;
 use std::time::Duration;
 use workspace_model::{WorkspaceId, WorkspaceOperation, WorkspaceRequest, WorkspaceResult};
 
-fn renew(correlation: &str, token: &str) -> Result<DataFrame> {
+pub(super) fn renew(correlation: &str, token: &str) -> Result<DataFrame> {
     Ok(DataFrame::RenewMachineToken {
         correlation_id: correlation.parse()?,
         token: token.to_owned().try_into()?,
     })
 }
 
-async fn renewal(link: &mut super::ConnectedLink, frame: DataFrame) -> Result<TokenRenewalResult> {
+pub(super) async fn renewal(
+    link: &mut super::ConnectedLink,
+    frame: DataFrame,
+) -> Result<TokenRenewalResult> {
     let DataFrame::RenewMachineToken {
         correlation_id: sent,
         ..
