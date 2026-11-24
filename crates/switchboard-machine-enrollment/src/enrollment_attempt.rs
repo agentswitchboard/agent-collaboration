@@ -75,7 +75,7 @@ impl SignInClient {
             } => Some((key.organization_id, deployment)),
         };
         if stored_scope.is_some_and(|(organization, deployment)| {
-            organization != context.organization_id || deployment != &context.deployment
+            !context.matches_scope(organization, deployment)
         }) {
             return Err(CredentialStoreError::EnrollmentScopeMismatch.into());
         }

@@ -17,6 +17,9 @@ use super::*;
 mod fixture;
 use fixture::{ALTERNATE_ENROLLMENT, ENROLLMENT, Fixture, TOKEN, generation};
 
+#[path = "enrollment_row_history_test.rs"]
+mod row_histories;
+
 #[cfg(debug_assertions)]
 #[path = "enrollment_tls_fixture.rs"]
 mod tls;

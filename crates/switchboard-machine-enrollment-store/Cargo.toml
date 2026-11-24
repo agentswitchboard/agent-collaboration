@@ -15,6 +15,7 @@ test-support = []
 [dependencies]
 codex-router-secret-store = { path = "../codex-router-secret-store", version = "0.1.158" }
 router-clock.workspace = true
+state-machine-core.workspace = true
 switchboard-machine-core-store = { path = "../switchboard-machine-core-store", version = "0.1.158" }
 switchboard-machine-enrollment = { path = "../switchboard-machine-enrollment", version = "0.1.158" }
 thiserror.workspace = true
@@ -23,6 +24,7 @@ tokio.workspace = true
 [dev-dependencies]
 axum = { workspace = true, features = ["http1", "tokio", "json"] }
 codex-router-secret-store = { path = "../codex-router-secret-store", version = "0.1.158", features = ["keychain-test-guard"] }
+hegel = { package = "hegeltest", version = "=0.52.6", features = ["static-engine"] }
 router-clock = { workspace = true, features = ["test-support"] }
 rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 serde_json.workspace = true
