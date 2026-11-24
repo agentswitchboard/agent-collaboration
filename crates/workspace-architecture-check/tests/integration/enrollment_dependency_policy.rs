@@ -20,7 +20,10 @@ fn allows(kind: DependencyKind, name: &str, source: DependencySource) -> bool {
     use DependencySource::{CratesIo, Workspace};
 
     match (kind, source) {
-        (Normal, Workspace) => matches!(name, "router-clock" | "workspace-ids"),
+        (Normal, Workspace) => matches!(
+            name,
+            "router-clock" | "state-machine-core" | "workspace-ids"
+        ),
         (Dev, Workspace) => matches!(name, "router-clock" | ENROLLMENT),
         (Normal, CratesIo) => matches!(
             name,
