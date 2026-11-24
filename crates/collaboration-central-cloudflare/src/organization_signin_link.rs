@@ -111,10 +111,7 @@ fn invalid_configuration() -> worker::Error {
 mod private_entry {
     use super::is_signin_path;
     use crate::object_location::ObjectAddress;
-    use crate::{
-        cloudflare_transport, http_body,
-        workspace_link_entry::{self, LinkRoute},
-    };
+    use crate::{cloudflare_transport, http_body};
     use axum::response::IntoResponse;
     use collaboration_central_core::person_approval_preflight;
     use fleet_identity_protocol::OrganizationId;
@@ -133,13 +130,7 @@ mod private_entry {
 
     #[event(fetch)]
     pub async fn main(request: Request, env: Env, _context: Context) -> Result<Response> {
-        let response = if let Some(route @ LinkRoute::Person(_)) =
-            workspace_link_entry::link_route(&request.path())
-        {
-            workspace_link_entry::forward(request, &env, route).await?
-        } else {
-            forward(request, &env).await?
-        };
+        let response = forward(request, &env).await?;
         // A fetched response may carry an immutable header guard.
         let headers = response.headers().clone();
         headers.set(ENTRY_HEADER, LINK_ENTRY)?;
