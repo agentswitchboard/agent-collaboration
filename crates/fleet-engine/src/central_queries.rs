@@ -298,12 +298,13 @@ declare_timed_due_lists! {
 __declare_timed_due_row!();
 
 macro_rules! projected_due_query {
-    ($emit:ident, $kind:expr, $horizon:expr, $cap:expr) => {
+    ($emit:ident, $kind:expr, $horizon:expr, $cap:expr, $retry_cutoff:expr) => {
         $emit!(
             "src/queries/read_projected_due_items.sql",
             $kind,
             $horizon,
-            $cap
+            $cap,
+            $retry_cutoff
         )
     };
 }
@@ -356,7 +357,13 @@ where
     let timed_due_query = match projection {
         Some(kind) => {
             let (horizon, cap) = query.bindings();
-            projected_due_query!(build_timed_due_query, kind.tag().to_owned(), horizon, cap)
+            projected_due_query!(
+                build_timed_due_query,
+                kind.tag().to_owned(),
+                horizon,
+                cap,
+                query.retry_cutoff()
+            )
         }
         None => select_timed_due_list!(build_timed_due_query, query),
     };

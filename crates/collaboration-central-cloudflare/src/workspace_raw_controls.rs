@@ -82,6 +82,17 @@ pub(in crate::workspace_central_object) async fn raw_control(
         "/test/raw-workspace-rpc-probe" => {
             workspace_rpc_fixture::probe(&object.env, request.json().await?).await
         }
+        "/test/raw-release-deferred-due-work" => {
+            if let Some(held) = object
+                .controls
+                .central_holds
+                .borrow_mut()
+                .remove(&super::Point::BeforeDeferredDueWork)
+            {
+                held.release();
+            }
+            Response::from_json(&true)
+        }
         "/test/raw-reply-due-activity" => Response::from_json(&object.reply_due_activity.counts()),
         "/test/raw-alarm-count" => {
             Response::from_json(&storage.get::<u64>(ALARM_COUNT_KEY).await?.unwrap_or(0))

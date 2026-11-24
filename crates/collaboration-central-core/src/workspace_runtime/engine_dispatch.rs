@@ -74,6 +74,7 @@ impl<H: CentralStore, S: WorkspaceStores> TimedDueDispatch<WorkspaceRuntime<H, S
         runtime: &WorkspaceRuntime<H, S>,
         kind: DueKind,
         cutoff: EngineTime,
+        retry_cutoff: EngineTime,
         limit: usize,
     ) -> Result<Vec<DueRow>, DueDiscoveryError> {
         let store = runtime.execution.statement_host();
@@ -90,8 +91,10 @@ impl<H: CentralStore, S: WorkspaceStores> TimedDueDispatch<WorkspaceRuntime<H, S
                 )
                 .await
             }
-            DueKind::Wake => fleet_wakes::due_wakes(store, cutoff, limit).await,
-            DueKind::Automation => fleet_schedules::due_schedules(store, cutoff, limit).await,
+            DueKind::Wake => fleet_wakes::due_wakes(store, cutoff, retry_cutoff, limit).await,
+            DueKind::Automation => {
+                fleet_schedules::due_schedules(store, cutoff, retry_cutoff, limit).await
+            }
             DueKind::DirectMessage => fleet_mail::due_direct_messages(store, cutoff, limit).await,
             DueKind::SystemMessageExpiry => {
                 fleet_mail::due_system_message_expiries(store, cutoff, limit).await
@@ -117,7 +120,7 @@ impl<H: CentralStore, S: WorkspaceStores> TimedDueDispatch<WorkspaceRuntime<H, S
         row: DueRow,
     ) -> TimedRowOutcome {
         let mut work = AlarmResult::default();
-        let (done, down) = match kind {
+        let outcome = match kind {
             #[cfg(feature = "test-support")]
             DueKind::Probe => {
                 engine
@@ -204,6 +207,7 @@ impl<H: CentralStore, S: WorkspaceStores> TimedDueDispatch<WorkspaceRuntime<H, S
                     .await
             }
         };
+        let done = matches!(outcome, fleet_engine::TimedUnitOutcome::OccurrenceCommitted);
         match kind {
             DueKind::Wake => work.wakes_fired = usize::from(done),
             DueKind::Automation => work.automations_fired = usize::from(done),
@@ -215,13 +219,19 @@ impl<H: CentralStore, S: WorkspaceStores> TimedDueDispatch<WorkspaceRuntime<H, S
             DueKind::Probe => {}
         }
 
-        if down {
-            TimedRowOutcome::CentralStoreFailed
-        } else {
-            TimedRowOutcome::Handled {
-                work,
-                progressed: done,
+        match outcome {
+            fleet_engine::TimedUnitOutcome::CentralStoreFailed => {
+                TimedRowOutcome::CentralStoreFailed
             }
+            fleet_engine::TimedUnitOutcome::OccurrenceCommitted
+            | fleet_engine::TimedUnitOutcome::AttemptRecorded => TimedRowOutcome::Handled {
+                work,
+                progressed: true,
+            },
+            fleet_engine::TimedUnitOutcome::NoChange => TimedRowOutcome::Handled {
+                work,
+                progressed: false,
+            },
         }
     }
 }

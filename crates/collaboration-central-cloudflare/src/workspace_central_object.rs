@@ -535,8 +535,9 @@ impl DurableObject for CentralObject {
             .await;
             let response = response?.try_into()?;
             self.flush_ready_mail(&runtime).await;
-            work.handoff(&self.reply_due_work_owner(runtime));
-            return Ok(response);
+            return workspace_reply_due_work::write_signin_reply(response, work, || {
+                self.reply_due_work_owner(&runtime)
+            });
         }
         if let Some(path_organization) = crate::workspace_link_entry::organization(&request.path())
         {

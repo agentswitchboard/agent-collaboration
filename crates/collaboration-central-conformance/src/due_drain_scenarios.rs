@@ -24,12 +24,7 @@ pub async fn capped_drain_hands_its_tail_to_the_next_mark<W: DueDrainWitness>(
         u32::try_from(due_in_order.len()).ok(),
         Some(OVERFLOW_POPULATION)
     );
-    let started = std::time::Instant::now();
     witness.drive_first_mark().await;
-    println!(
-        "four-pass local drain: {:.3} ms",
-        started.elapsed().as_secs_f64() * 1e3
-    );
     assert!(
         witness
             .read_finished_keys()

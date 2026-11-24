@@ -19,13 +19,13 @@ pub use alarm_schedule::{AlarmDeadline, AlarmPublicationStatus, AlarmSchedule};
 pub use clock_ids::ClockIds;
 #[cfg(feature = "test-support")]
 pub use due_batch_state::DueUnitStart;
-pub use due_batch_state::{DueBatchClaim, DueBatchState};
+pub use due_batch_state::{AlarmDrainAdmission, DueBatchClaim, DueBatchState};
 pub use fleet_runtime::{FleetRuntime, TurnGuard};
 #[cfg(feature = "test-support")]
 pub use pause_points::{HeldPause, PausePoint, PausePoints};
 pub use reply_due_work::{
     DeferredDueTask, DueBatchYield, DueBatchYieldFailure, ReplyDueWork, ReplyDueWorkOwner,
-    collect_reply_due_work, has_reply_due_scope, queue_reply_due_work, yield_shared_due_batches,
+    collect_reply_due_work, has_reply_due_scope, queue_reply_due_work,
 };
 #[cfg(feature = "test-support")]
 pub use test_faults::{

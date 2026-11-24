@@ -346,3 +346,90 @@ async fn another_valid_stamp_refuses_every_event_and_touches_nothing() {
     );
     fixture.host.close().await;
 }
+
+#[tokio::test]
+async fn a_future_text_key_cannot_mask_a_corrupt_legacy_deadline() {
+    for notices in [true, false] {
+        let fixture = Fixture::new().await;
+        let runtime = runtime(&fixture).await;
+        let start = now(&fixture);
+        let future = at(start, 15, 0, 0);
+        let now = at(start, 4, 20, 0);
+        let (healthy, invalid) = (probe_id(43852), probe_id(43853));
+        let (work_kind, read_deadlines) = if notices {
+            raw(
+                &runtime,
+                "INSERT INTO mail_notification_windows VALUES (?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?)",
+                vec![
+                    text(healthy), text(probe_id(43854)), stamp(start), stamp(future), stamp(start), stamp(start),
+                    text(invalid), text(probe_id(43855)), stamp(start), text("now"), stamp(start), stamp(start),
+                ],
+            ).await;
+            (
+                "legacy_notice_windows",
+                "SELECT due_at FROM mail_notification_windows ORDER BY due_at",
+            )
+        } else {
+            raw(
+                &runtime,
+                "INSERT INTO directory_workspaces(workspace_id,name,state,created_at,updated_at) VALUES (?,'fixture one','active',?,?), (?,'fixture two','active',?,?)",
+                vec![text(healthy), stamp(start), stamp(start), text(invalid), stamp(start), stamp(start)],
+            ).await;
+            raw(
+                &runtime,
+                "INSERT INTO mail_workspace_drains VALUES (?,0,?,?,?), (?,0,?,?,?)",
+                vec![
+                    text(healthy),
+                    stamp(future),
+                    stamp(start),
+                    stamp(start),
+                    text(invalid),
+                    text("now"),
+                    stamp(start),
+                    stamp(start),
+                ],
+            )
+            .await;
+            (
+                "legacy_workspace_drains",
+                "SELECT drain_due_at FROM mail_workspace_drains WHERE drain_due_at IS NOT NULL ORDER BY drain_due_at",
+            )
+        };
+
+        due_batch_at(&fixture, &runtime, now).await;
+
+        let next_try = at(start, 5, 0, 0);
+        let store = runtime.statement_host();
+        let attempts = store.read(super::super::Statement {
+            sql: "SELECT state,failure_count,next_try_at FROM engine_work_attempts WHERE machine_kind=? AND subject_key='all'",
+            args: vec![text(work_kind)],
+        }).await.unwrap().rows;
+        assert_eq!(
+            attempts,
+            vec![vec![text("failing"), integer(1), stamp(next_try)]],
+            "{work_kind}"
+        );
+        assert_eq!(alarm_ms(&runtime).await, ms(next_try), "{work_kind}");
+        let stored = store
+            .read(super::super::Statement {
+                sql: read_deadlines,
+                args: vec![],
+            })
+            .await
+            .unwrap()
+            .rows;
+        assert_eq!(
+            stored,
+            vec![vec![stamp(future)], vec![text("now")]],
+            "{work_kind}"
+        );
+        due_batch_at(&fixture, &runtime, at(start, 4, 59, 0)).await;
+        assert_eq!(
+            count(&runtime, "SELECT COUNT(*) FROM engine_work_attempts WHERE machine_kind=? AND failure_count=1", vec![text(work_kind)]).await,
+            1,
+            "the source control overrides the corrupt item until the exact retry"
+        );
+        assert_eq!(alarm_ms(&runtime).await, ms(next_try));
+        fixture.host.close().await;
+    }
+}

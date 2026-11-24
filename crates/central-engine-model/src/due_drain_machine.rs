@@ -166,6 +166,21 @@ impl Machine for DueDrainMachine {
         event: DueDrainEvent,
         _: &mut Context<'_>,
     ) -> TransitionResult<Self> {
+        Self::reduce(state, event)
+    }
+
+    fn transitions() -> &'static [Transition] {
+        super::due_drain_transitions::DUE_DRAIN_TRANSITIONS
+    }
+
+    fn next_due(_: &DueDrainState) -> Option<EngineTime> {
+        // The physical alarm is derived from the durable due rows.
+        None
+    }
+}
+
+impl DueDrainMachine {
+    pub fn reduce(state: &DueDrainState, event: DueDrainEvent) -> TransitionResult<Self> {
         let wake_id = event.wake_id();
         let refuse_event = || TransitionError::NotAllowed {
             state: state.state_tag(),
@@ -274,15 +289,6 @@ impl Machine for DueDrainMachine {
                 | DueDrainEvent::AlarmPublicationSettled(_),
             ) => Err(refuse_event()),
         }
-    }
-
-    fn transitions() -> &'static [Transition] {
-        super::due_drain_transitions::DUE_DRAIN_TRANSITIONS
-    }
-
-    fn next_due(_: &DueDrainState) -> Option<EngineTime> {
-        // The physical alarm is derived from the durable due rows.
-        None
     }
 }
 

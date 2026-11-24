@@ -77,7 +77,7 @@ async fn a_due_drain_processes_four_batches_and_arms_the_next_mark_for_its_tail(
     let start = now(&fixture);
     let group = probe_id(40000);
     let items: Vec<_> = (0..OVERFLOW_POPULATION)
-        .map(|index| probe_id(41000 + index))
+        .map(|index| probe_id(41000 + OVERFLOW_POPULATION - 1 - index))
         .collect();
     for (index, item) in (0..OVERFLOW_POPULATION).zip(&items) {
         seed_probe(
@@ -198,5 +198,52 @@ async fn eight_held_units_fill_the_fan_out_and_no_ninth_starts() {
     batch.await.unwrap().unwrap();
 
     assert_eq!(fired_items(&runtime, group).await.len(), 20);
+    fixture.host.close().await;
+}
+
+#[tokio::test]
+async fn recording_a_full_batch_of_failures_does_not_delay_the_healthy_tail() {
+    let fixture = Fixture::new().await;
+    let runtime = runtime(&fixture).await;
+    let start = now(&fixture);
+    let due = at(start, 4, 30, 0);
+    let group = probe_id(43500);
+    for index in 0..=250 {
+        seed_probe(
+            &runtime,
+            probe_id(43501 + index),
+            group,
+            Some(due),
+            "bulk fault",
+        )
+        .await;
+    }
+    raw(
+        &runtime,
+        "UPDATE engine_probe_items SET state='broken' WHERE group_id=? AND item_id<>?",
+        vec![text(group), text(probe_id(43751))],
+    )
+    .await;
+
+    due_batch_at(&fixture, &runtime, at(start, 4, 0, 0)).await;
+
+    assert_eq!(
+        fired_items(&runtime, group).await,
+        vec![text(probe_id(43751))]
+    );
+    assert_eq!(
+        count(
+            &runtime,
+            "SELECT effect_count FROM engine_probe_groups WHERE group_id=?",
+            vec![text(group)]
+        )
+        .await,
+        1
+    );
+    assert_eq!(
+        count(&runtime, "SELECT COUNT(*) FROM engine_work_attempts WHERE machine_kind='engine_probe' AND state='failing' AND failure_count=1", vec![]).await,
+        250
+    );
+    assert_eq!(alarm_ms(&runtime).await, ms(at(start, 5, 0, 0)));
     fixture.host.close().await;
 }

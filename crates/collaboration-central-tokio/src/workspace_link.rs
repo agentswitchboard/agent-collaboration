@@ -531,7 +531,7 @@ async fn serve_link(
                 if !writes.send(&mut socket, &reply).await {
                     return;
                 }
-                due_work.handoff(state.host.as_ref());
+                due_work.handoff(Arc::new(state.host.background_tasks.clone()));
             }
             // Direction validation also rejects server-only frames here.
             _ => {
@@ -756,6 +756,12 @@ async fn reply_to_request(
             return RequestOutcome::Stopped;
         }
     };
+    #[cfg(feature = "test-support")]
+    runtime
+        .runtime()
+        .pause_points()
+        .reached_central(fleet_runtime::PausePoint::BeforeLinkReplyWrite)
+        .await;
     let sent = writes
         .send(
             socket,
@@ -766,7 +772,7 @@ async fn reply_to_request(
         )
         .await;
     if sent {
-        due_work.handoff(writes.host);
+        due_work.handoff(Arc::new(writes.host.background_tasks.clone()));
         outcome
     } else {
         RequestOutcome::Stopped

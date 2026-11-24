@@ -46,7 +46,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             #[cfg(feature = "test-support")]
             fixture_link_calls: false,
             reply_due_owner: Default::default(),
-            yield_due_batches: Arc::new(fleet_runtime::yield_shared_due_batches),
+            yield_due_batches: Arc::new(|| Box::pin(std::future::ready(Ok(())))),
             signin_authority: Default::default(),
             person_approval_transactions: None,
             mail_delivery_ready: Arc::new(|_| {}),

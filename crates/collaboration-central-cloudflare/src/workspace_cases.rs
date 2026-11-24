@@ -47,6 +47,9 @@ enum Point {
     EngineCompletionEntered,
     BeforeDueContinuation,
     BeforeDeferredDueWork,
+    BeforeLinkReplyWrite,
+    BeforePrivateReplySinkReads,
+    BeforeDueAlarmPublication,
     BeforeDrainCommit,
     AfterDrainCommit,
     BeforeTimerCommit,
@@ -99,6 +102,9 @@ impl From<Point> for PausePoint {
             Point::EngineCompletionEntered => Self::EngineCompletionEntered,
             Point::BeforeDueContinuation => Self::BeforeDueContinuation,
             Point::BeforeDeferredDueWork => Self::BeforeDeferredDueWork,
+            Point::BeforeLinkReplyWrite => Self::BeforeLinkReplyWrite,
+            Point::BeforePrivateReplySinkReads => Self::BeforePrivateReplySinkReads,
+            Point::BeforeDueAlarmPublication => Self::BeforeDueAlarmPublication,
             Point::BeforeDrainCommit => Self::BeforeDrainCommit,
             Point::AfterDrainCommit => Self::AfterDrainCommit,
             Point::BeforeTimerCommit => Self::BeforeTimerCommit,
@@ -381,6 +387,30 @@ pub(super) async fn control(
             runtime.runtime().until_reply_drains_settle().await;
             Response::from_json(&true)
         }
+        "/test/discoveries-at-each-reply" => {
+            Response::from_json(&runtime.runtime().due_batches().discoveries_at_each_reply())
+        }
+        "/test/skip-next-due-host-yield" => {
+            runtime.runtime().test_faults().skip_next_due_host_yield();
+            Response::from_json(&true)
+        }
+        "/test/release-writer-when-due-pass-finishes" => {
+            let held = object
+                .controls
+                .central_holds
+                .borrow_mut()
+                .remove(&Point::BeforeLinkReplyWrite)
+                .ok_or_else(|| error("link reply writer is not held"))?;
+            runtime
+                .runtime()
+                .pause_points()
+                .release_reply_when_pass_finishes(held);
+            Response::from_json(&true)
+        }
+        "/test/cut-running-reply-due-work" => {
+            runtime.runtime().test_faults().cut_running_reply_drain();
+            Response::from_json(&true)
+        }
         "/test/drop-reply-due-work" => {
             runtime.runtime().test_faults().arm_deferred_due_work_drop();
             Response::from_json(&true)
@@ -410,6 +440,9 @@ pub(super) async fn control(
         }
         "/test/engine-probe-seed" => {
             Response::from_json(&runtime.seed_probe(request.json().await?).await)
+        }
+        "/test/engine-probe-selected-apply" => {
+            Response::from_json(&runtime.apply_selected_probe(request.json().await?).await)
         }
         "/test/engine-probe-request" => {
             #[derive(Deserialize)]

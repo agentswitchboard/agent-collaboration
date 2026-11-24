@@ -2,40 +2,30 @@ use super::{
     due_batch_execution::{DuePass, DuePassEnding},
     engine_host_binding::{EngineHost, FleetEngine},
 };
-use central_engine_model::{DueBatchPolicy, EngineTime, supported_time};
+use central_engine_model::{
+    DueBatchPolicy, DueDrainEffect, DueDrainEvent, DueDrainWakeId, EngineTime, supported_time,
+};
 use central_storage::{AlarmPublicationFailure, EngineAlarmPlan, StoreFailure};
 use fleet_contracts::{AlarmNotPublished, AlarmResult, EventCompletion};
+use fleet_runtime::{AlarmDrainAdmission, DueBatchClaim};
 use fleet_runtime_ports::CentralStore as _;
 
 impl<Host: EngineHost> FleetEngine<'_, Host> {
     pub(crate) async fn complete_event_with_observation(
         &self,
     ) -> Result<EventCompletion, AlarmNotPublished> {
-        #[cfg(feature = "test-support")]
-        {
-            self.0.record_engine_completion_entry();
-            self.engine_test_pause_points()
-                .reached_central(fleet_runtime::PausePoint::EngineCompletionEntered)
-                .await;
-        }
-        let result = self.drain_due_work().await;
-        if let Err(error) = &result {
-            self.observe_alarm_not_published(error.failure.clone());
-        }
+        self.record_completion_entry().await;
+        let result = self.drain_inline().await;
+        self.observe_completion_result(&result);
         result
     }
 
-    /// A reply owns a task only when indexed durable work may be eligible.
-    pub async fn prepare_reply_due_work(&self) -> Option<fleet_runtime::DueBatchClaim> {
-        #[cfg(feature = "test-support")]
-        {
-            self.0.record_engine_completion_entry();
-            self.engine_test_pause_points()
-                .reached_central(fleet_runtime::PausePoint::EngineCompletionEntered)
-                .await;
-        }
-        match self.prepare_reply_claim().await {
-            Ok(claim) => claim,
+    /// Arm a durable fallback before the reply can earn its deferred task.
+    pub async fn prepare_reply_due_work(&self) -> Option<DueDrainWakeId> {
+        self.record_completion_entry().await;
+        match self.prepare_reply_fallback().await {
+            Ok(true) => Some(self.new_wake_id()),
+            Ok(false) => None,
             Err(error) => {
                 self.observe_alarm_not_published(error.failure);
                 None
@@ -43,70 +33,172 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
         }
     }
 
-    async fn prepare_reply_claim(
-        &self,
-    ) -> Result<Option<fleet_runtime::DueBatchClaim>, AlarmNotPublished> {
-        let Some(mut claim) = self.due_batch_state().claim() else {
-            return Ok(None);
-        };
+    #[cfg(feature = "test-support")]
+    async fn record_completion_entry(&self) {
+        self.0.record_engine_completion_entry();
+        self.engine_test_pause_points()
+            .reached_central(fleet_runtime::PausePoint::EngineCompletionEntered)
+            .await;
+    }
+
+    #[cfg(not(feature = "test-support"))]
+    fn record_completion_entry(&self) -> std::future::Ready<()> {
+        std::future::ready(())
+    }
+
+    fn new_wake_id(&self) -> DueDrainWakeId {
+        DueDrainWakeId(self.host_id_source().new_id())
+    }
+
+    async fn prepare_reply_fallback(&self) -> Result<bool, AlarmNotPublished> {
         if !self
             .0
             .organization_is_provisioned()
             .await
             .map_err(|failure| AlarmNotPublished { failure })?
         {
-            drop(claim);
             self.publish_engine_alarm(EngineAlarmPlan::Clear).await?;
-            return Ok(None);
+            return Ok(false);
         }
-        for _ in 0..DueBatchPolicy::DEFAULT.max_batches_per_wake {
-            claim.start_discovery();
-            match self.due_discovery_window().await {
-                Ok((_, _, false)) if claim.release_if_current() => break,
-                Ok((_, _, false)) => {}
-                Ok((now, _, true)) => {
-                    // Preserve a durable fallback independently of the reply task.
-                    let existing = self
-                        .central_store()
-                        .published_alarm()
-                        .await
-                        .map_err(|failure| AlarmNotPublished { failure })?;
-                    if existing.is_none_or(|deadline| deadline <= now) {
-                        self.publish_engine_alarm(EngineAlarmPlan::Recompute)
-                            .await?;
-                    }
-                    return Ok(Some(claim));
+        match self.due_discovery_window().await {
+            Ok((now, _, true)) => {
+                let existing = self
+                    .central_store()
+                    .published_alarm()
+                    .await
+                    .map_err(|failure| AlarmNotPublished { failure })?;
+                if existing.is_none_or(|deadline| deadline <= now) {
+                    self.publish_engine_alarm(EngineAlarmPlan::Recompute)
+                        .await?;
                 }
-                Err(failure) => {
-                    self.observe_due_read_failure(failure);
-                    break;
-                }
+                Ok(true)
+            }
+            Ok((_, _, false)) => {
+                self.publish_engine_alarm(EngineAlarmPlan::Recompute)
+                    .await?;
+                Ok(false)
+            }
+            Err(failure) => {
+                self.observe_due_read_failure(failure);
+                self.publish_engine_alarm(EngineAlarmPlan::Recompute)
+                    .await?;
+                Ok(false)
             }
         }
-        drop(claim);
-        self.publish_engine_alarm(EngineAlarmPlan::Recompute)
-            .await?;
-        Ok(None)
     }
 
-    pub async fn complete_reply_due_work(&self, claim: fleet_runtime::DueBatchClaim) {
-        let _ = self.run_claimed_due_work(claim).await;
-        if let Err(error) = self.publish_engine_alarm(EngineAlarmPlan::Recompute).await {
-            self.observe_alarm_not_published(error.failure);
+    pub async fn complete_reply_due_work(&self, claim: DueBatchClaim) {
+        if let Some(first_step) = claim.transition(DueDrainEvent::HandoffStarted) {
+            let result = self.run_due_batch_claim(&claim, first_step).await;
+            self.observe_completion_result(&result);
         }
     }
 
-    async fn drain_due_work(&self) -> Result<EventCompletion, AlarmNotPublished> {
-        let claim = self.due_batch_state().claim();
-        let provisioned = self
-            .0
-            .organization_is_provisioned()
-            .await
-            .map_err(|failure| AlarmNotPublished { failure })?;
-        let work = match (provisioned, claim) {
-            (true, Some(claim)) => self.run_claimed_due_work(claim).await,
-            (true, None) | (false, _) => AlarmResult::default(),
-        };
+    fn observe_completion_result(&self, result: &Result<EventCompletion, AlarmNotPublished>) {
+        if let Err(error) = result {
+            self.observe_alarm_not_published(error.failure.clone());
+        }
+    }
+
+    async fn drain_inline(&self) -> Result<EventCompletion, AlarmNotPublished> {
+        match self.due_batch_state().alarm_fired(self.new_wake_id()) {
+            Some(AlarmDrainAdmission::RunPass { claim, pass }) => {
+                let first_step = DueDrainEffect::RunPass {
+                    wake_id: claim.wake_id(),
+                    pass,
+                };
+                self.run_due_batch_claim(&claim, first_step).await
+            }
+            Some(AlarmDrainAdmission::PublishWhileOwned) | None => {
+                let provisioned = self
+                    .0
+                    .organization_is_provisioned()
+                    .await
+                    .map_err(|failure| AlarmNotPublished { failure })?;
+                self.publish_drain_completion(AlarmResult::default(), provisioned)
+                    .await
+            }
+        }
+    }
+
+    async fn run_due_batch_claim(
+        &self,
+        claim: &DueBatchClaim,
+        first_step: DueDrainEffect,
+    ) -> Result<EventCompletion, AlarmNotPublished> {
+        let mut step = Some(first_step);
+        let mut work = AlarmResult::default();
+        let mut provisioned = true;
+        while let Some(effect) = step {
+            step = match effect {
+                DueDrainEffect::RunPass { .. } => {
+                    #[cfg(feature = "test-support")]
+                    self.due_batch_state().record_discovery_start();
+                    // The owner can change after the reply, and again during a
+                    // yield. Both the alarm and deferred paths verify it here.
+                    match self.0.organization_is_provisioned().await {
+                        Ok(true) => {
+                            let pass = self.discover_due_pass().await;
+                            work += pass.work;
+                            #[cfg(feature = "test-support")]
+                            self.engine_test_pause_points().pass_finished();
+                            claim.transition(match pass.ending {
+                                DuePassEnding::FullWithProgress => {
+                                    DueDrainEvent::FullPassMadeProgress
+                                }
+                                DuePassEnding::FullWithoutProgress => {
+                                    DueDrainEvent::FullPassMadeNoProgress
+                                }
+                                DuePassEnding::Short => DueDrainEvent::ShortPassFinished,
+                                DuePassEnding::StoreFault => DueDrainEvent::DrainFaulted,
+                            })
+                        }
+                        Ok(false) => {
+                            provisioned = false;
+                            claim.transition(DueDrainEvent::DrainFaulted)
+                        }
+                        Err(failure) => {
+                            claim.transition(DueDrainEvent::DrainFaulted);
+                            claim.transition(DueDrainEvent::AlarmPublicationSettled);
+                            return Err(AlarmNotPublished { failure });
+                        }
+                    }
+                }
+                DueDrainEffect::YieldToHost(_) => {
+                    if self.0.yield_due_batches().await.is_err() {
+                        claim.transition(DueDrainEvent::HostYieldFailed)
+                    } else {
+                        #[cfg(feature = "test-support")]
+                        self.engine_test_pause_points()
+                            .reached_central(fleet_runtime::PausePoint::BeforeDueContinuation)
+                            .await;
+                        claim.transition(DueDrainEvent::HostYielded)
+                    }
+                }
+                DueDrainEffect::PublishDurableAlarm(_) => {
+                    #[cfg(feature = "test-support")]
+                    self.engine_test_pause_points()
+                        .reached_central(fleet_runtime::PausePoint::BeforeDueAlarmPublication)
+                        .await;
+                    let result = self.publish_drain_completion(work, provisioned).await;
+                    claim.transition(DueDrainEvent::AlarmPublicationSettled);
+                    return result;
+                }
+                DueDrainEffect::ScheduleHandoff(_)
+                | DueDrainEffect::TransferHandoff { .. }
+                | DueDrainEffect::ReleaseClaim(_) => None,
+            };
+        }
+        Err(AlarmNotPublished {
+            failure: fleet_runtime_ports::workspace_decode_error::corrupt("engine.due_drain"),
+        })
+    }
+
+    async fn publish_drain_completion(
+        &self,
+        work: AlarmResult,
+        provisioned: bool,
+    ) -> Result<EventCompletion, AlarmNotPublished> {
         let plan = if provisioned {
             EngineAlarmPlan::Recompute
         } else {
@@ -114,31 +206,6 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
         };
         let publication = self.publish_engine_alarm(plan).await?;
         Ok(EventCompletion { work, publication })
-    }
-
-    async fn run_claimed_due_work(&self, mut claim: fleet_runtime::DueBatchClaim) -> AlarmResult {
-        let mut work = AlarmResult::default();
-        for batch_number in 1..=DueBatchPolicy::DEFAULT.max_batches_per_wake {
-            if batch_number > 1 {
-                if self.0.yield_due_batches().await.is_err() {
-                    break;
-                }
-                #[cfg(feature = "test-support")]
-                self.engine_test_pause_points()
-                    .reached_central(fleet_runtime::PausePoint::BeforeDueContinuation)
-                    .await;
-            }
-            claim.start_discovery();
-            let pass = self.discover_due_pass().await;
-            work += pass.work;
-            match pass.ending {
-                DuePassEnding::CannotProgress => break,
-                DuePassEnding::SelectedTail => {}
-                DuePassEnding::Drained if claim.release_if_current() => break,
-                DuePassEnding::Drained => {}
-            }
-        }
-        work
     }
 
     async fn due_discovery_window(&self) -> Result<(EngineTime, EngineTime, bool), StoreFailure> {
@@ -169,13 +236,13 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
             Ok((now, horizon, true)) => self.run_due_batch(now, horizon).await,
             Ok((_, _, false)) => DuePass {
                 work: AlarmResult::default(),
-                ending: DuePassEnding::Drained,
+                ending: DuePassEnding::Short,
             },
             Err(failure) => {
                 self.observe_due_read_failure(failure);
                 DuePass {
                     work: AlarmResult::default(),
-                    ending: DuePassEnding::CannotProgress,
+                    ending: DuePassEnding::StoreFault,
                 }
             }
         }

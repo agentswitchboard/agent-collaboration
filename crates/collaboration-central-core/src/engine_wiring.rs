@@ -41,6 +41,10 @@ impl<H: CentralStore, S: WorkspaceStores> EngineHost for WorkspaceRuntime<H, S> 
         .await
     }
     async fn yield_due_batches(&self) -> Result<(), fleet_runtime::DueBatchYieldFailure> {
+        #[cfg(feature = "test-support")]
+        if self.execution.test_faults().take_due_host_yield_skip() {
+            return Ok(());
+        }
         (self.yield_due_batches)().await
     }
     fn emit_central_observation(&self, observation: CentralObservation) {

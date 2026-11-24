@@ -50,6 +50,9 @@ pub(super) async fn control(
                     | Point::AfterWorkspaceExecute
                     | Point::BeforeDueContinuation
                     | Point::BeforeDeferredDueWork
+                    | Point::BeforeLinkReplyWrite
+                    | Point::BeforePrivateReplySinkReads
+                    | Point::BeforeDueAlarmPublication
                     | Point::EngineCompletionEntered
             ) {
                 return Err(error("not a timer point"));

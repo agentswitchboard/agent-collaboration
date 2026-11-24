@@ -62,12 +62,17 @@ impl DueListKind {
 pub struct DueListQuery {
     kind: DueListKind,
     horizon: SafeInteger,
+    retry_cutoff: SafeInteger,
     cap: SafeInteger,
 }
 
 impl DueListQuery {
     pub const fn kind(self) -> DueListKind {
         self.kind
+    }
+
+    pub const fn retry_cutoff(self) -> i64 {
+        self.retry_cutoff.get()
     }
 
     /// The horizon and per-kind cap bind in this order to ?1 and ?2.
@@ -81,14 +86,30 @@ pub fn due_list_query(
     horizon: EngineTime,
     per_kind_cap: usize,
 ) -> Result<DueListQuery, DueQueryError> {
-    if !supported_time(horizon) {
+    due_list_query_with_retry_cutoff(kind, horizon, horizon, per_kind_cap)
+}
+
+pub fn due_list_query_with_retry_cutoff(
+    kind: DueListKind,
+    horizon: EngineTime,
+    retry_cutoff: EngineTime,
+    per_kind_cap: usize,
+) -> Result<DueListQuery, DueQueryError> {
+    if !supported_time(horizon) || !supported_time(retry_cutoff) {
         return Err(DueQueryError::HorizonOutOfRange);
     }
     let horizon = SafeInteger::new(horizon.timestamp_millis())
+        .map_err(|_| DueQueryError::HorizonOutOfRange)?;
+    let retry_cutoff = SafeInteger::new(retry_cutoff.timestamp_millis())
         .map_err(|_| DueQueryError::HorizonOutOfRange)?;
     let cap = i64::try_from(per_kind_cap)
         .ok()
         .and_then(|cap| SafeInteger::new(cap).ok())
         .ok_or(DueQueryError::CapOutOfRange)?;
-    Ok(DueListQuery { kind, horizon, cap })
+    Ok(DueListQuery {
+        kind,
+        horizon,
+        retry_cutoff,
+        cap,
+    })
 }

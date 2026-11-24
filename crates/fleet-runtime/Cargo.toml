@@ -23,7 +23,7 @@ fleet-runtime-ports.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { version = "1.53.3", default-features = false, features = ["rt", "sync"] }
+tokio = { version = "1.53.3", default-features = false, features = ["sync"] }
 uuid.workspace = true
 workspace-ids.workspace = true
 workspace-model.workspace = true

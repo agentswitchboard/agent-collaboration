@@ -11,41 +11,57 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
     }
 
     pub(crate) async fn after_request_event(&self) {
-        let Some(owner) = self
-            .reply_due_owner
-            .get()
-            .and_then(std::sync::Weak::upgrade)
-        else {
+        let Some(owner) = self.reply_due_owner.get().filter(|_| has_reply_due_scope()) else {
             let _ = self.after_event().await;
             return;
         };
-        if !has_reply_due_scope() {
-            let _ = self.after_event().await;
-            return;
-        }
         self.execution.record_completion_attempt();
-        if let Some(claim) = FleetEngine::new(self).prepare_reply_due_work().await {
-            #[cfg(feature = "test-support")]
-            let pending = self.execution.record_pending_reply_drain();
-            let work: DeferredDueTask = Box::pin(async move {
+        if let Some(wake_id) = FleetEngine::new(self).prepare_reply_due_work().await {
+            let owner = owner.clone();
+            let due_batches = self.execution.due_batches().clone();
+            queue_reply_due_work(move |transport| {
                 #[cfg(feature = "test-support")]
-                let _pending = pending;
-                #[cfg(feature = "test-support")]
-                {
-                    if owner.runtime().test_faults().take_deferred_due_work_drop() {
+                due_batches.record_reply_accepted();
+                due_batches.accept_reply(wake_id, move |claim| {
+                    let Some(owner) = owner.upgrade() else {
                         return;
-                    }
-                    owner
-                        .runtime()
-                        .pause_points()
-                        .reached_central(fleet_runtime::PausePoint::BeforeDeferredDueWork)
-                        .await;
-                }
-                FleetEngine::new(owner.as_ref())
-                    .complete_reply_due_work(claim)
-                    .await;
+                    };
+                    #[cfg(feature = "test-support")]
+                    let pending = owner.execution.record_pending_reply_drain();
+                    #[cfg(feature = "test-support")]
+                    let cut = owner.execution.test_faults().reply_drain_cut();
+                    let apply = async move {
+                        #[cfg(feature = "test-support")]
+                        {
+                            if owner.runtime().test_faults().take_deferred_due_work_drop() {
+                                return;
+                            }
+                            owner
+                                .runtime()
+                                .pause_points()
+                                .reached_central(fleet_runtime::PausePoint::BeforeDeferredDueWork)
+                                .await;
+                        }
+                        FleetEngine::new(owner.as_ref())
+                            .complete_reply_due_work(claim)
+                            .await;
+                    };
+                    let task: DeferredDueTask = Box::pin(async move {
+                        #[cfg(feature = "test-support")]
+                        {
+                            let _pending = pending;
+                            let _ = futures_util::future::select(
+                                std::pin::pin!(cut),
+                                std::pin::pin!(apply),
+                            )
+                            .await;
+                        }
+                        #[cfg(not(feature = "test-support"))]
+                        apply.await;
+                    });
+                    transport.run_after_reply(task);
+                });
             });
-            queue_reply_due_work(work);
         }
     }
 

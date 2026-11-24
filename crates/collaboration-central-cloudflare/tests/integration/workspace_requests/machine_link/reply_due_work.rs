@@ -347,3 +347,100 @@ fn due_logs(fixture: &Fixture) -> Vec<String> {
         })
         .collect()
 }
+
+#[tokio::test]
+async fn a_sent_worker_batch_member_keeps_the_drain_when_the_next_member_errors() -> Result<()> {
+    use super::fixture::{receive, send, session_caller};
+
+    let fixture = Fixture::new().await?;
+    let runtime = fixture.runtime();
+    let mut link = ConnectedLink::open(&fixture).await?;
+    let key: uuid::Uuid = "019f0000-0000-7000-8000-00000000db26".parse()?;
+    let due = fixture.clock.utc_now() + chrono::Duration::seconds(5);
+    runtime
+        .seed_probe(SeedProbe {
+            key,
+            group: key,
+            due: Some(due),
+            claim: "sent batch member".into(),
+        })
+        .await?;
+    let make_request = |key: &str, name: &str| -> Result<WorkspaceRequest> {
+        Ok(WorkspaceRequest {
+            request_id: Some(key.parse()?),
+            workspace_id: None,
+            operation: WorkspaceOperation::CreateWorkspace {
+                name: name.to_owned().try_into()?,
+            },
+        })
+    };
+    let DataFrame::Request { request: first } = link.request_as(
+        session_caller()?,
+        make_request("019f0000-0000-7000-8000-00000000db27", "Sent member")?,
+    )?
+    else {
+        return Err("first workspace request was not framed".into());
+    };
+    let DataFrame::Request { request: second } = link.request_as(
+        session_caller()?,
+        make_request("019f0000-0000-7000-8000-00000000db28", "Failed member")?,
+    )?
+    else {
+        return Err("second workspace request was not framed".into());
+    };
+    let expected_reply = first.correlation_id().clone();
+    let activity: (u64, u64) = runtime.control("raw-reply-due-activity", &()).await?;
+    runtime
+        .fail_machine_restore_after(
+            1,
+            central_storage::StoreFailure::Corrupt {
+                reason: central_storage::CorruptReason::BadValue {
+                    column: "fixture.second_batch_member".into(),
+                },
+            },
+        )
+        .await?;
+    send(
+        &mut link.socket,
+        &DataFrame::Batch {
+            requests: central_link_protocol::LinkRequestBatch::new(vec![*first, *second])?,
+        },
+    )
+    .await?;
+    assert!(
+        matches!(receive(&mut link.socket).await?, DataFrame::Reply { correlation_id, .. } if correlation_id == expected_reply)
+    );
+    if !observe_event(|| async {
+        let observed: (u64, u64) = runtime.control("raw-reply-due-activity", &()).await?;
+        Ok(observed == (activity.0 + 1, 0))
+    })
+    .await?
+    {
+        return Err("the sent member lost its due drain when the next member failed".into());
+    }
+    let facts = runtime.read(Statement {
+        sql: "SELECT (SELECT effect_count FROM engine_probe_groups WHERE group_id=?), (SELECT COUNT(*) FROM directory_workspaces WHERE name='Failed member')",
+        args: vec![SqlValue::Text(key.to_string())],
+    }).await?.rows;
+    assert_eq!(
+        facts,
+        [vec![
+            SqlValue::Integer(1.try_into()?),
+            SqlValue::Integer(0.try_into()?)
+        ]]
+    );
+    assert!(fixture.clock.utc_now() < due);
+    fixture.close().await
+}
+
+#[path = "reply_due_recovery.rs"]
+mod recovery;
+
+#[path = "reply_due_retry.rs"]
+mod retry;
+
+#[path = "reply_due_receipts.rs"]
+mod receipts;
+
+#[path = "reply_due_fairness.rs"]
+mod fairness;

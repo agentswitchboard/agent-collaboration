@@ -18,5 +18,5 @@ pub(crate) mod machine_request_execution;
 pub(crate) mod machine_store_adapter;
 #[cfg(any(feature = "test-support", test))]
 pub(crate) mod request_receipt_store;
-mod timed_due_execution;
+pub(crate) mod timed_due_execution;
 pub(crate) mod transition_batch_writes;

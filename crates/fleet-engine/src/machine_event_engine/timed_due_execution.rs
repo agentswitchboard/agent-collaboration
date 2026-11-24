@@ -7,19 +7,26 @@ use central_engine_model::{DueRow, EngineTime, InstanceKey};
 use central_storage::StoreFailure;
 use fleet_contracts::EngineSubject;
 
+pub enum TimedUnitOutcome {
+    OccurrenceCommitted,
+    AttemptRecorded,
+    NoChange,
+    CentralStoreFailed,
+}
+
 impl<Host: EngineHost> FleetEngine<'_, Host> {
     /// Direct sends and changing direct receipts request an alarm recomputation
     /// with their applying write. The due mark and the failure charge each settle
     /// independently, then this batch recomputes once to avoid paying for the
     /// alarm query (318 rows in the sparse fixture) per due item. System receipts
     /// keep their existing post-event completion path.
-    /// Returns the completion and Central failure flags for the due dispatch.
+    /// Reports whether the occurrence or its attempt changed the actionable set.
     pub async fn run_checked_due_machine_instance<Rejected, Charge>(
         &self,
         subject: &EngineSubject,
         apply: impl std::future::Future<Output = Result<CheckedDueUnit<Rejected>, CheckedDueFailure>>,
         charge: impl FnOnce(Rejected, EngineTime) -> Charge,
-    ) -> (bool, bool)
+    ) -> TimedUnitOutcome
     where
         Charge: std::future::Future<
                 Output = Result<Option<central_engine_model::FailureRecord>, CheckedDueFailure>,
@@ -34,9 +41,9 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
                 self.engine_test_pause_points()
                     .reached_engine(fleet_runtime::PausePoint::AfterEngineCommit, &subject.key.0)
                     .await;
-                return (true, false);
+                return TimedUnitOutcome::OccurrenceCommitted;
             }
-            Ok(CheckedDueUnit::Stale) => return (false, false),
+            Ok(CheckedDueUnit::Stale) => return TimedUnitOutcome::NoChange,
             Ok(CheckedDueUnit::Failed(record)) => Ok(Some(record)),
             Ok(CheckedDueUnit::Rejected(rejected)) => {
                 #[cfg(feature = "test-support")]
@@ -56,14 +63,14 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
         let failure = match failure {
             Ok(Some(record)) => {
                 self.observe_recorded_attempt_failure(subject, &record, &[]);
-                return (false, false);
+                return TimedUnitOutcome::AttemptRecorded;
             }
-            Ok(None) | Err(CheckedDueFailure::AnswerLost) => return (false, false),
+            Ok(None) | Err(CheckedDueFailure::AnswerLost) => return TimedUnitOutcome::NoChange,
             Err(CheckedDueFailure::Unavailable) => StoreFailure::Unavailable,
             Err(CheckedDueFailure::Corrupt { reason }) => StoreFailure::Corrupt { reason },
         };
         self.observe_engine_store_down(subject, failure);
-        (false, true)
+        TimedUnitOutcome::CentralStoreFailed
     }
 
     pub async fn run_due_machine_instance<SubjectMachine, SubjectStore>(
@@ -72,7 +79,7 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
         row: DueRow,
         due_column: &'static str,
         due_event: fn(EngineTime) -> SubjectMachine::Event,
-    ) -> (bool, bool)
+    ) -> TimedUnitOutcome
     where
         SubjectMachine: central_engine_model::Machine,
         SubjectMachine::State: Send + Sync,
@@ -100,17 +107,17 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
             }
         };
         match outcome {
-            MachineEventOutcome::TransitionCommitted(_) => (true, false),
+            MachineEventOutcome::TransitionCommitted(_) => TimedUnitOutcome::OccurrenceCommitted,
             MachineEventOutcome::StorageFailed(failure) => {
                 self.observe_engine_store_down(&subject, failure);
-                (false, true)
+                TimedUnitOutcome::CentralStoreFailed
             }
-            MachineEventOutcome::AttemptFailureRecorded(_)
-            | MachineEventOutcome::RequestItemFailed(_)
+            MachineEventOutcome::AttemptFailureRecorded(_) => TimedUnitOutcome::AttemptRecorded,
+            MachineEventOutcome::RequestItemFailed(_)
             | MachineEventOutcome::SubjectMissing
             | MachineEventOutcome::TransitionRefused(_)
             | MachineEventOutcome::Superseded
-            | MachineEventOutcome::StorageAnswerLost => (false, false),
+            | MachineEventOutcome::StorageAnswerLost => TimedUnitOutcome::NoChange,
         }
     }
 

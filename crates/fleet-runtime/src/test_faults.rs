@@ -19,6 +19,8 @@ pub struct TestFaults {
     alarm_publication: Mutex<Option<AlarmPublicationFailure>>,
     lost_provisioning_reply: AtomicBool,
     drop_deferred_due_work: AtomicBool,
+    skip_due_host_yield: AtomicBool,
+    cut_reply_drain: tokio::sync::watch::Sender<u64>,
 }
 
 impl TestFaults {
@@ -32,6 +34,26 @@ impl TestFaults {
 
     pub fn take_deferred_due_work_drop(&self) -> bool {
         self.drop_deferred_due_work.swap(false, Ordering::SeqCst)
+    }
+
+    pub fn skip_next_due_host_yield(&self) {
+        self.skip_due_host_yield.store(true, Ordering::Release);
+    }
+
+    pub fn take_due_host_yield_skip(&self) -> bool {
+        self.skip_due_host_yield.swap(false, Ordering::AcqRel)
+    }
+
+    pub fn cut_running_reply_drain(&self) {
+        self.cut_reply_drain
+            .send_modify(|generation| *generation = generation.wrapping_add(1));
+    }
+
+    pub fn reply_drain_cut(&self) -> impl std::future::Future<Output = ()> + Send + use<> {
+        let mut changed = self.cut_reply_drain.subscribe();
+        async move {
+            let _ = changed.changed().await;
+        }
     }
 
     pub fn arm_lost_provisioning_reply(&self) {

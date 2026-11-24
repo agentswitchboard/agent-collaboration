@@ -158,6 +158,7 @@ async fn competing_reply(fixture: &Fixture) -> Result<()> {
     let pauses = runtime.runtime().pause_points();
     let before = pauses.central_count(PausePoint::BeforeDueContinuation);
     let held = pauses.hold_central(PausePoint::BeforeDueContinuation);
+    let mut publishing = pauses.hold_central(PausePoint::BeforeDueAlarmPublication);
     let effects = || async {
         let rows = store
             .read(Statement {
@@ -198,12 +199,24 @@ async fn competing_reply(fixture: &Fixture) -> Result<()> {
         },
     )
     .await?;
-    if !observe_event(|| async {
-        tokio::task::yield_now().await;
-        Ok(store.alarm().is_none())
-    })
-    .await?
+    publishing.until_held().await;
+    if store.alarm().is_none() {
+        return Err(
+            "the physical alarm must still be armed while final publication is held".into(),
+        );
+    }
+    use futures_util::FutureExt as _;
+    if runtime
+        .runtime()
+        .until_reply_drains_settle()
+        .now_or_never()
+        .is_some()
     {
+        return Err("the reply drain settled before its publication".into());
+    }
+    publishing.release();
+    runtime.runtime().until_reply_drains_settle().await;
+    if store.alarm().is_some() {
         return Err("the completed continuation did not clear the alarm".into());
     }
     Ok(())
@@ -261,3 +274,12 @@ async fn dropped_task(fixture: &Fixture) -> Result<()> {
     }
     Ok(())
 }
+
+#[path = "reply_due_recovery.rs"]
+mod recovery;
+
+#[path = "reply_due_receipts.rs"]
+mod receipts;
+
+#[path = "reply_due_fairness.rs"]
+mod fairness;

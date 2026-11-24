@@ -314,6 +314,9 @@ impl TokioWorkspaceHost {
         let background_tasks = self.background_tasks.clone();
         let central = Arc::new(
             central
+                .with_due_batch_yield(Arc::new(
+                    crate::workspace_reply_due_work::yield_tokio_due_batches,
+                ))
                 .with_approval_delivery_completion(Arc::new(move |work| {
                     background_tasks.schedule(work)
                 }))

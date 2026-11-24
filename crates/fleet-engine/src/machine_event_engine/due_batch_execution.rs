@@ -43,6 +43,7 @@ pub trait TimedDueDispatch<Host: EngineHost>: Send + Sync {
         host: &Host,
         kind: Self::TimedSourceKind,
         cutoff: EngineTime,
+        retry_cutoff: EngineTime,
         limit: usize,
     ) -> impl Future<Output = Result<Vec<DueRow>, DueDiscoveryError>> + Send;
     fn dispatch_timed_due_row(
@@ -69,9 +70,10 @@ pub(super) struct DuePass {
 
 #[derive(Clone, Copy)]
 pub(super) enum DuePassEnding {
-    SelectedTail,
-    Drained,
-    CannotProgress,
+    FullWithProgress,
+    FullWithoutProgress,
+    Short,
+    StoreFault,
 }
 
 enum DueBatchUnit<TimedKind, WholeKind> {
@@ -119,8 +121,19 @@ pub async fn read_due_rows(
     cutoff: EngineTime,
     limit: usize,
 ) -> Result<Vec<DueRow>, DueDiscoveryError> {
-    let query = central_engine_model::due_list_query(kind, cutoff, limit)
-        .map_err(DueDiscoveryError::InvalidBounds)?;
+    read_due_rows_with_retry_cutoff(host, kind, cutoff, cutoff, limit).await
+}
+
+pub async fn read_due_rows_with_retry_cutoff(
+    host: &impl CentralStore,
+    kind: DueListKind,
+    cutoff: EngineTime,
+    retry_cutoff: EngineTime,
+    limit: usize,
+) -> Result<Vec<DueRow>, DueDiscoveryError> {
+    let query =
+        central_engine_model::due_list_query_with_retry_cutoff(kind, cutoff, retry_cutoff, limit)
+            .map_err(DueDiscoveryError::InvalidBounds)?;
     host.read_timed_due_rows(query)
         .await
         .map_err(DueDiscoveryError::ReadFailed)
@@ -188,7 +201,7 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
                 DueCutoff::LookAheadHorizon => horizon,
             };
             match timed_due_dispatch
-                .discover_due_rows(self.0, kind, cutoff, policy.per_kind_cap + 1)
+                .discover_due_rows(self.0, kind, cutoff, now, policy.per_kind_cap + 1)
                 .await
             {
                 Ok(mut rows) => {
@@ -278,9 +291,10 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
             central_down = stop_after_store_failure.load(Ordering::Acquire);
         }
         let ending = match (central_down, more_timed_rows_due, timed_progress) {
-            (true, _, _) | (false, true, false) => DuePassEnding::CannotProgress,
-            (false, true, true) => DuePassEnding::SelectedTail,
-            (false, false, _) => DuePassEnding::Drained,
+            (true, _, _) => DuePassEnding::StoreFault,
+            (false, true, false) => DuePassEnding::FullWithoutProgress,
+            (false, true, true) => DuePassEnding::FullWithProgress,
+            (false, false, _) => DuePassEnding::Short,
         };
         DuePass {
             work: due_work_result,
