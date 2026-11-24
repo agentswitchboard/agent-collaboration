@@ -23,32 +23,6 @@ use super::{
     work::{OutboxWork, OutboxWorkError},
 };
 
-/// The outbox driver records whether the open mark still owes recovery of a local claim.
-#[derive(Clone, Copy, Eq, PartialEq)]
-pub(super) enum ClaimRecovery {
-    Clear,
-    ScanOwed,
-    ParkedForScan,
-    ParkedForReturn,
-}
-
-impl ClaimRecovery {
-    pub(super) fn park_after_empty(self) -> Self {
-        match self {
-            Self::ScanOwed => Self::ParkedForScan,
-            other => other,
-        }
-    }
-
-    pub(super) fn after_scan(self, owes_local_return: bool) -> Self {
-        match (self, owes_local_return) {
-            (Self::Clear | Self::ParkedForReturn, _) => self,
-            (_, false) => Self::Clear,
-            (_, true) => Self::ParkedForReturn,
-        }
-    }
-}
-
 /// The store supplies a genuine orphan and custody prepares the exact owner's request-status read.
 pub(crate) struct OrphanProbe {
     pub(crate) claim: UnansweredOutboxClaim,
