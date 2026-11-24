@@ -416,9 +416,8 @@ impl ExternalProviderSupervisor {
             DeliveryAdmission::Requested(_)
             | DeliveryAdmission::QueueOnRun(_)
             | DeliveryAdmission::SteerExisting(_) => AdmissionClass::OwnerPlaced,
-            DeliveryAdmission::Warm(_) | DeliveryAdmission::Notice(_) => {
-                AdmissionClass::Independent
-            }
+            DeliveryAdmission::Warm(_) => AdmissionClass::Independent,
+            DeliveryAdmission::Notice(_) => AdmissionClass::Notice,
             #[cfg(test)]
             DeliveryAdmission::Direct => AdmissionClass::Independent,
         };

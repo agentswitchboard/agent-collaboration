@@ -295,8 +295,13 @@ impl LiveOperation {
 
     fn blocks_independent_admission(&self) -> bool {
         let lifecycle = self.lifecycle.state();
-        (self.class.holds_admission() && lifecycle.custody.holds_custody())
-            || self.holds_dispatch_at(&lifecycle)
+        !self.is_notice()
+            && ((self.class.holds_admission() && lifecycle.custody.holds_custody())
+                || self.holds_dispatch_at(&lifecycle))
+    }
+
+    pub(super) fn is_notice(&self) -> bool {
+        self.class == AdmissionClass::Notice
     }
 
     fn holds_dispatch(&self) -> bool {
@@ -438,13 +443,14 @@ impl LiveOperations {
         binding: &ProviderBindingIdentity,
         request: AdmissionRequest<'_>,
     ) -> Vec<OperationId> {
-        self.overlapping_holders(
-            binding,
-            request,
-            LiveOperation::blocks_independent_admission,
-        )
-        .map(|(operation, _)| operation.clone())
-        .collect()
+        let blocks = if request.mode.class == AdmissionClass::Notice {
+            LiveOperation::holds_custody
+        } else {
+            LiveOperation::blocks_independent_admission
+        };
+        self.overlapping_holders(binding, request, blocks)
+            .map(|(operation, _)| operation.clone())
+            .collect()
     }
 
     pub(super) fn lane_mark_blocker(

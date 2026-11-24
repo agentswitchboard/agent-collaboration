@@ -10,7 +10,9 @@ use super::{
     ProviderBindingIdentity, ProviderOperationAdmission, ProviderOperationAdmissionResult,
     ProviderOperationEffect, ProviderOperationKind, ProviderOperationRecord,
     ProviderReconciliationState, SessionRef, admission_failure, failure,
-    provider_admission_policy::{AdmissionMode, AdmissionRequest, EarlierOperation},
+    provider_admission_policy::{
+        AdmissionBlockers, AdmissionClass, AdmissionMode, AdmissionRequest, EarlierOperation,
+    },
     provider_operation_index::Reservation,
     snapshot_failure, snapshot_from_record, unavailable_failure,
 };
@@ -195,17 +197,22 @@ impl ExternalProviderSupervisor {
                 if self.inner.clock.monotonic_now() >= deadline {
                     return Err(admission_expired(request.operation, request.target));
                 }
-                let pending = outcomes.as_ref().is_some_and(|outcomes| {
-                    request.target.is_some_and(|target| {
-                        outcomes.pending_dispatches_for(target).any(|operation| {
-                            request.blocked_by(
+                let notice = request.mode.class == AdmissionClass::Notice;
+                let pending = outcomes.as_ref().and_then(|outcomes| {
+                    let target = request.target?;
+                    outcomes.pending_dispatches_for(target).find(|operation| {
+                        (notice
+                            || !operations
+                                .operations
+                                .get(*operation)
+                                .is_some_and(|live| live.is_notice()))
+                            && request.blocked_by(
                                 operation,
                                 EarlierOperation::InFlight {
                                     target: Some(target),
                                 },
                                 None,
                             )
-                        })
                     })
                 });
                 let unknown = outcomes.as_ref().map_or_else(Vec::new, |outcomes| {
@@ -218,11 +225,18 @@ impl ExternalProviderSupervisor {
                         context.unconfirmed_cancel.as_deref(),
                     )
                 });
-                if pending
+                if let Some(pending) = pending
                     && !blocked_by_unknown
                     && !operations.operations.contains_key(request.operation)
                 {
-                    None
+                    if notice {
+                        Some(Err(AdmissionBlockers {
+                            unknown: Vec::new(),
+                            in_flight: vec![pending.clone()],
+                        }))
+                    } else {
+                        None
+                    }
                 } else {
                     Some(operations.reserve(
                         binding,

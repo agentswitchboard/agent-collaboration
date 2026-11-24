@@ -190,13 +190,14 @@ struct ReservationEntry {
     admission_holder: bool,
 }
 
-fn prompt_entries(foreground: uuid::Uuid) -> [ReservationEntry; 17] {
-    use AdmissionClass::{Independent, OwnerPlaced, RefuseWhileRunning};
+fn prompt_entries(foreground: uuid::Uuid) -> [ReservationEntry; 18] {
+    use AdmissionClass::{Independent, Notice, OwnerPlaced, RefuseWhileRunning};
     [
         ("direct prompt", Independent, false, true),
         ("Compact", Independent, false, true),
         ("Warm", Independent, false, true),
         ("direct delivery", Independent, false, true),
+        ("notice", Notice, false, false),
         ("idle API Auto", OwnerPlaced, false, false),
         ("idle Steer fallback", OwnerPlaced, false, false),
         ("rowless idle Auto", OwnerPlaced, true, false),
@@ -272,15 +273,21 @@ fn the_reservation_class_table_keeps_admission_and_dispatch_holds_distinct() {
         &session,
         AdmissionMode::deferred(AdmissionClass::OwnerPlaced),
     );
+    let notice = prompt_request(
+        &second,
+        &session,
+        AdmissionMode::deferred(AdmissionClass::Notice),
+    );
     for entry in prompt_entries(uuid::Uuid::now_v7()) {
         let mut index = LiveOperations::default();
         let holder = place_prompt(&mut index, &binding, &session, &first, &entry);
         let assert_hold_readers = |dispatch_hold: bool| {
-            // Independent admission sees either hold, the lane sees dispatch only,
-            // and owner placement sees neither.
+            // Notice admission yields to both reservations and dispatch holders.
+            // The lane still sees the dispatch mark on a notice.
             assert_eq!(
                 index.admission_blockers(&binding, asks).contains(&first),
-                entry.admission_holder || dispatch_hold,
+                entry.mode.class != AdmissionClass::Notice
+                    && (entry.admission_holder || dispatch_hold),
                 "{}",
                 entry.name
             );
@@ -292,6 +299,12 @@ fn the_reservation_class_table_keeps_admission_and_dispatch_holds_distinct() {
             );
             assert!(
                 index.admission_blockers(&binding, places).is_empty(),
+                "{}",
+                entry.name
+            );
+            assert_eq!(
+                index.admission_blockers(&binding, notice),
+                vec![first.clone()],
                 "{}",
                 entry.name
             );
@@ -307,6 +320,7 @@ fn the_reservation_class_table_keeps_admission_and_dispatch_holds_distinct() {
         assert_hold_readers(false);
         holder.finish_write(CustodyEnd::NoWrite);
         assert!(index.admission_blockers(&binding, asks).is_empty());
+        assert!(index.admission_blockers(&binding, notice).is_empty());
         assert_eq!(index.lane_mark_blocker(&binding, asks), None);
     }
     for (kind, target, mode) in [

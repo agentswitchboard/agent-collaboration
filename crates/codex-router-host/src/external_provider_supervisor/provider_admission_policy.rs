@@ -13,7 +13,11 @@ pub(super) enum DispatchMark {
 pub(super) enum AdmissionClass {
     Independent,
     OwnerPlaced,
-    RefuseWhileRunning { foreground: uuid::Uuid },
+    /// A notice yields to existing custody without reserving admission itself.
+    Notice,
+    RefuseWhileRunning {
+        foreground: uuid::Uuid,
+    },
 }
 
 impl AdmissionClass {
