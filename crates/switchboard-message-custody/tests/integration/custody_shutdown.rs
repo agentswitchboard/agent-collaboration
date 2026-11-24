@@ -28,6 +28,7 @@ use switchboard_message_custody::{
     },
     outbox_work::OutboxWork,
     recipient_inbox::RecipientInbox,
+    recipient_sessions::RECIPIENT_LOOKUP_BUDGET,
 };
 use tokio::sync::mpsc;
 use workspace_model::{
@@ -43,11 +44,13 @@ use super::{
     inbox_custody::{direct_offer, recipient_session},
     outbox_timing::{manual_clock, open_outbox, thread_post},
     worker_orphans::scoped_query,
+    worker_turns::WorkerClock,
 };
 
 struct RunningCustody {
     root: tempfile::TempDir,
     clock: Arc<ManualClock>,
+    scheduler: Arc<WorkerClock>,
     lane: Arc<ScriptedBatchLane>,
     directory: Arc<HeldDirectory>,
     faults: StoreFaultPlan,
@@ -60,6 +63,7 @@ impl RunningCustody {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("machine_local.sqlite");
         let clock = manual_clock(1_763_380_780_000);
+        let scheduler = WorkerClock::observing(clock.clone());
         let machine = recipient_session().machine_id;
         let lane = Arc::new(ScriptedBatchLane::new(
             new_admission(machine.clone(), clock.clone()),
@@ -80,7 +84,7 @@ impl RunningCustody {
         );
         let custody = CustodyLink::new(
             lane.clone(),
-            clock.clone(),
+            scheduler.clone(),
             Arc::new(NoFlushJitter),
             OutboxWork::new(Box::new(outbox), clock.clone()),
             inbox,
@@ -90,6 +94,7 @@ impl RunningCustody {
         Self {
             root,
             clock,
+            scheduler,
             lane,
             directory,
             faults,
@@ -370,4 +375,93 @@ async fn stop_reaps_remote_tool_waits_and_preserves_the_lost_reply_outcome() {
         request: lost, scope: RequestScope::Organization
     } if lost == request)
     );
+}
+
+#[tokio::test]
+async fn stop_cancels_remote_tools_while_an_admitted_outbox_insert_is_held() {
+    let custody = RunningCustody::start().await;
+    let (immediate, release_immediate_drop) = custody.lane.hold_next_immediate_reply();
+    let remote_request = thread_post(60);
+    let reply = custody.calls.reserve().await.unwrap().submit(
+        Caller::Session(recipient_session()),
+        SubmissionPayload::Mail(CentralMailRequest {
+            request_id: remote_request.request.clone(),
+            operation: CentralMailOperation::SetNoticeCadence {
+                cadence: NoticeCadence::M15,
+            },
+        }),
+    );
+    immediate.entered.notified().await;
+    let status = custody.lane.hold_next_status();
+    let status_reply = custody
+        .calls
+        .reserve()
+        .await
+        .unwrap()
+        .request_status(remote_request.caller.clone(), scoped_query(&remote_request));
+    status.entered.notified().await;
+    let item = thread_post(61);
+    let (enter_store, write_store) = custody.faults.hold_next_insert_entry();
+    let local_reply = custody
+        .calls
+        .reserve()
+        .await
+        .unwrap()
+        .submit(item.caller.clone(), submission(&item));
+    enter_store.notified().await;
+
+    custody.group.request_stop();
+    release_immediate_drop.send(()).unwrap();
+    // Both lane answers are ready before either stopped task can be polled.
+    immediate.answer.notify_one();
+    status
+        .accepted
+        .send_replace(Some(custody.clock.monotonic_now()));
+
+    assert!(matches!(reply.resolve().await, Submission::Uncertain {
+        request, scope: RequestScope::Organization
+    } if request == remote_request.request));
+    assert!(matches!(
+        status_reply.resolve().await,
+        CustodyRequestStatus::StatusUnavailable
+    ));
+    assert!(first_poll(custody.group.join()).await.is_pending());
+    assert_eq!(
+        custody.stored_status(&item).await,
+        OutboxRequestStatus::NotFound
+    );
+    write_store.send(InsertRelease::Continue).unwrap();
+    assert!(
+        matches!(local_reply.resolve().await, Submission::InOutbox(receipt) if receipt.id == item.request)
+    );
+    assert_eq!(custody.group.join().await, Ok(()));
+}
+
+#[tokio::test]
+async fn a_recipient_lookup_timer_cannot_report_a_parked_worker() {
+    let custody = RunningCustody::start().await;
+    let post = thread_post(62);
+    let (entered, release) = custody.faults.hold_next_insert_entry();
+    let reply = custody
+        .calls
+        .reserve()
+        .await
+        .unwrap()
+        .submit(post.caller.clone(), submission(&post));
+    entered.notified().await;
+    let checkpoint = custody.scheduler.checkpoint();
+    custody.offer_to_held_directory();
+    custody.directory.entered.notified().await;
+    let lookup_deadline = custody.clock.monotonic_now().after(RECIPIENT_LOOKUP_BUDGET);
+    custody.clock.not_due_check_now(lookup_deadline).await;
+
+    assert!(
+        first_poll(custody.scheduler.wait_for_armed_timer(checkpoint, None))
+            .await
+            .is_pending()
+    );
+    custody.group.request_stop();
+    release.send(InsertRelease::Continue).unwrap();
+    assert!(matches!(reply.resolve().await, Submission::InOutbox(_)));
+    assert_eq!(custody.group.join().await, Ok(()));
 }

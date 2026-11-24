@@ -9,12 +9,10 @@ use chrono::{DateTime, Utc};
 use router_clock::{ClockInstant, ManualClock, RuntimeClock};
 use runtime_primitives::{Clock, SyncTime};
 use std::{
+    collections::BTreeMap,
     future::{Future, poll_fn},
     pin::{Pin, pin},
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
+    sync::{Arc, Mutex},
     time::Duration,
 };
 use switchboard_message_custody::{
@@ -29,15 +27,30 @@ use super::custody_task::ObserveTask;
 /// Tests use this clock decorator to observe the worker parked with a timer armed.
 pub(super) struct WorkerClock {
     pub(super) manual: Arc<ManualClock>,
-    timers: AtomicUsize,
-    parked: watch::Sender<(usize, ClockInstant)>,
+    timers: Mutex<BTreeMap<ClockInstant, ArmedTimer>>,
+    parked: watch::Sender<usize>,
 }
 
-struct PendingTimer<'clock>(&'clock AtomicUsize);
+#[derive(Default)]
+struct ArmedTimer {
+    count: usize,
+    last_poll: Option<(usize, ClockInstant)>,
+}
+
+struct PendingTimer<'clock> {
+    clock: &'clock WorkerClock,
+    deadline: ClockInstant,
+}
 
 impl Drop for PendingTimer<'_> {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::Relaxed);
+        let mut timers = self.clock.timers.lock().unwrap();
+        if let Some(timer) = timers.get_mut(&self.deadline) {
+            timer.count -= 1;
+            if timer.count == 0 {
+                timers.remove(&self.deadline);
+            }
+        }
     }
 }
 
@@ -58,15 +71,23 @@ impl RuntimeClock for WorkerClock {
 
     fn sleep_until(&self, deadline: ClockInstant) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         Box::pin(async move {
-            self.timers.fetch_add(1, Ordering::Relaxed);
-            let _timer = PendingTimer(&self.timers);
             let mut timer = pin!(self.manual.sleep_until(deadline));
+            let mut armed = None;
             poll_fn(|context| {
                 let result = timer.as_mut().poll(context);
                 if result.is_pending() {
-                    self.parked.send_modify(|(polls, elapsed)| {
+                    self.parked.send_modify(|polls| {
                         *polls += 1;
-                        *elapsed = self.monotonic_now();
+                        let mut timers = self.timers.lock().unwrap();
+                        let current = timers.entry(deadline).or_default();
+                        current.last_poll = Some((*polls, self.monotonic_now()));
+                        if armed.is_none() {
+                            current.count += 1;
+                            armed = Some(PendingTimer {
+                                clock: self,
+                                deadline,
+                            });
+                        }
                     });
                 }
                 result
@@ -80,45 +101,33 @@ impl WorkerClock {
     pub(super) fn observing(manual: Arc<ManualClock>) -> Arc<Self> {
         Arc::new(Self {
             manual,
-            timers: AtomicUsize::new(0),
-            parked: watch::channel((0, ClockInstant::ZERO)).0,
+            timers: Mutex::new(BTreeMap::new()),
+            parked: watch::channel(0).0,
         })
     }
 
     pub(super) fn checkpoint(&self) -> usize {
-        self.parked.borrow().0
+        *self.parked.borrow()
     }
 
-    async fn wait_for_armed_timer(&self, before: usize) {
+    pub(super) async fn wait_for_armed_timer(&self, before: usize, deadline: Option<ClockInstant>) {
         let now = self.monotonic_now();
         let mut parked = self.parked.subscribe();
         let mut after = before;
         loop {
-            let (sequence, _) = *parked
-                .wait_for(|(polls, elapsed)| *polls > after && *elapsed >= now)
-                .await
-                .unwrap();
+            let sequence = *parked.wait_for(|polls| *polls > after).await.unwrap();
             // These fixtures use a current-thread runtime. The test can only
             // observe this signal after the worker yields. A selected branch
             // drops its timer before SQLite or any other operation can park.
-            if self.timers.load(Ordering::Relaxed) != 0 {
+            if self.timers.lock().unwrap().iter().any(|(armed, timer)| {
+                deadline.is_none_or(|deadline| *armed == deadline)
+                    && timer
+                        .last_poll
+                        .is_some_and(|(poll, elapsed)| poll > before && elapsed >= now)
+            }) {
                 return;
             }
             after = sequence;
-        }
-    }
-
-    #[expect(
-        clippy::panic,
-        reason = "The worker must park with a registered clock timer."
-    )]
-    pub(super) async fn wait_after(&self, before: usize) {
-        tokio::select! {
-            biased;
-            () = self.wait_for_armed_timer(before) => {}
-            () = async { for _ in 0..50_000 { tokio::task::yield_now().await; } } => {
-                panic!("custody worker never parked with an armed timer");
-            }
         }
     }
 }
@@ -143,6 +152,24 @@ impl ObservedWorker {
         }
     }
 
+    pub(super) async fn wait_after(&self, before: usize) {
+        self.wait_for_progress(self.clock.wait_for_armed_timer(before, None))
+            .await;
+    }
+
+    pub(super) async fn wait_for_timer(&self, before: usize, deadline: ClockInstant) {
+        self.wait_for_progress(self.clock.wait_for_armed_timer(before, Some(deadline)))
+            .await;
+    }
+
+    async fn wait_for_progress<T>(&self, witness: impl Future<Output = T>) -> T {
+        tokio::select! {
+            biased;
+            observation = witness => observation,
+            exit = self.group.join() => panic!("custody ended before the expected progress: {exit:?}"),
+        }
+    }
+
     pub(super) async fn advance(
         &mut self,
         elapsed: Duration,
@@ -153,7 +180,7 @@ impl ObservedWorker {
         // worker in that case and asks it to reproject from the new instant.
         let caller = super::outbox_timing::thread_post(1).caller;
         self.calls.pending_writes(caller).await?;
-        self.clock.wait_after(before).await;
+        self.wait_after(before).await;
         self.take_reports()
     }
 

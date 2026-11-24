@@ -59,24 +59,19 @@ pub fn custody_task(
     let stop = CustodyStop::new();
     let (calls, commands) = command_queue(
         MAX_LINK_REQUEST_BATCH_SIZE,
-        StopOnExit {
-            stop: stop.clone(),
-            panic_failure: CustodyRunFailure::WorkerPanicked,
-        },
+        StopOnExit::new(&stop, CustodyRunFailure::WorkerPanicked),
     );
     let (saved, offers) = mpsc::unbounded_channel();
     let (retry_offers, retries) = mpsc::channel(1);
     let offers_stopped = stop.0.subscribe();
     let worker_stopped = stop.0.subscribe();
-    let offer_exit = StopOnExit {
-        stop: stop.clone(),
-        panic_failure: CustodyRunFailure::OfferTakerPanicked,
-    };
+    let offer_exit = StopOnExit::new(&stop, CustodyRunFailure::OfferTakerPanicked);
     let lane = custody.lane.clone();
     let inbox = custody.inbox.clone();
     let offer_taker = tokio::spawn(async move {
-        let _exit = offer_exit;
+        let mut exit = offer_exit;
         run_offer_taker(lane, inbox, offers_stopped, retries, saved).await;
+        exit.complete();
     });
     let remote_tools = Arc::new(Mutex::new(JoinSet::new()));
     let worker_tools = remote_tools.clone();
@@ -215,7 +210,7 @@ async fn run_custody(
                     command.refuse_unstarted();
                     break;
                 }
-                handle_tool(&mut custody, tool_requests, command, &*sink).await;
+                handle_tool(&mut custody, tool_requests, command, &*sink, &stop).await;
             },
             event = offers.recv(), if offer_stream_open => {
                 match event {
@@ -390,7 +385,7 @@ async fn run_custody(
             _ = tool_requests.join_next(), if !tool_requests.is_empty() => {}
         }
     }
-    commands.refuse_queued();
+    commands.finish();
 }
 
 async fn handle_tool(
@@ -398,6 +393,7 @@ async fn handle_tool(
     pending_requests: &mut JoinSet<()>,
     command: CustodyCommand,
     sink: &dyn CustodyEventSink,
+    stop: &watch::Receiver<CustodyRunState>,
 ) {
     match command {
         CustodyCommand::Submit {
@@ -415,12 +411,17 @@ async fn handle_tool(
                 }
                 PreparedSubmission::Immediate(command) => {
                     let lane = custody.lane.clone();
+                    let mut stop = stop.clone();
                     pending_requests.spawn(async move {
                         if reply.is_closed() {
                             return;
                         }
                         let request = command.request.clone();
-                        let disposition = lane.submit_immediate_request(command).await;
+                        let disposition = tokio::select! {
+                            biased;
+                            () = wait_for_stop(&mut stop) => return,
+                            disposition = async { lane.submit_immediate_request(command).await } => disposition,
+                        };
                         let _ = reply.send(settle_immediate_request(&request, disposition));
                     });
                 }
@@ -444,12 +445,17 @@ async fn handle_tool(
                 }
                 PreparedRequestStatus::Remote(command) => {
                     let lane = custody.lane.clone();
+                    let mut stop = stop.clone();
                     pending_requests.spawn(async move {
                         if reply.is_closed() {
                             return;
                         }
                         let correlation = command.correlation_id.clone();
-                        let disposition = lane.request_status(command).await;
+                        let disposition = tokio::select! {
+                            biased;
+                            () = wait_for_stop(&mut stop) => return,
+                            disposition = async { lane.request_status(command).await } => disposition,
+                        };
                         let _ = reply.send(remote_status(&correlation, disposition));
                     });
                 }

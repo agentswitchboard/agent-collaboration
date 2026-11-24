@@ -14,6 +14,9 @@ pub enum CustodyRunFailure {
     WorkerPanicked,
     #[error("custody offer taker panicked")]
     OfferTakerPanicked,
+    /// Both tasks and the remote waits have physically ended. This does not
+    /// prove that a SQLite statement already issued on the SQLx connection
+    /// thread has finished.
     #[error("custody run was cancelled")]
     Cancelled,
 }
@@ -21,7 +24,14 @@ pub enum CustodyRunFailure {
 /// Owns the stop signal and retains the result of joining both members.
 pub struct CustodyRunGroup {
     stop: CustodyStop,
-    result: watch::Receiver<Option<Result<(), CustodyRunFailure>>>,
+    joins: Mutex<CustodyJoins>,
+    remote_tools: Arc<Mutex<JoinSet<()>>>,
+}
+
+struct CustodyJoins {
+    worker: Option<JoinHandle<()>>,
+    offer_taker: Option<JoinHandle<()>>,
+    result: Option<Result<(), CustodyRunFailure>>,
 }
 
 impl CustodyRunGroup {
@@ -32,12 +42,27 @@ impl CustodyRunGroup {
     /// Wait for both members and their owned work to end. The result remains
     /// available if a caller drops this future or calls join again.
     pub async fn join(&self) -> Result<(), CustodyRunFailure> {
-        let mut result = self.result.clone();
+        let mut joins = self.joins.lock().await;
+        if let Some(result) = joins.result {
+            return result;
+        }
+        join_member(
+            &mut joins.worker,
+            &self.stop,
+            CustodyRunFailure::WorkerPanicked,
+        )
+        .await;
+        join_member(
+            &mut joins.offer_taker,
+            &self.stop,
+            CustodyRunFailure::OfferTakerPanicked,
+        )
+        .await;
+        // The set stays owned by the group if this shutdown wait is dropped.
+        self.remote_tools.lock().await.shutdown().await;
+        let result = self.stop.0.borrow().first_failure.map_or(Ok(()), Err);
+        joins.result = Some(result);
         result
-            .wait_for(Option::is_some)
-            .await
-            .map_err(|_| CustodyRunFailure::Cancelled)?
-            .unwrap_or(Err(CustodyRunFailure::Cancelled))
     }
 }
 
@@ -83,13 +108,34 @@ pub(super) async fn wait_for_stop(stop: &mut watch::Receiver<CustodyRunState>) {
 /// handle becomes ready. Each member supplies its own panic outcome.
 pub(super) struct StopOnExit {
     pub(super) stop: CustodyStop,
-    pub(super) panic_failure: CustodyRunFailure,
+    panic_failure: CustodyRunFailure,
+    completed: bool,
+}
+
+impl StopOnExit {
+    pub(super) fn new(stop: &CustodyStop, panic_failure: CustodyRunFailure) -> Self {
+        Self {
+            stop: stop.clone(),
+            panic_failure,
+            completed: false,
+        }
+    }
+
+    pub(super) fn complete(&mut self) {
+        self.completed = true;
+    }
 }
 
 impl Drop for StopOnExit {
     fn drop(&mut self) {
-        self.stop
-            .stop_with(std::thread::panicking().then_some(self.panic_failure));
+        let failure = if std::thread::panicking() {
+            Some(self.panic_failure)
+        } else if self.completed {
+            None
+        } else {
+            Some(CustodyRunFailure::Cancelled)
+        };
+        self.stop.stop_with(failure);
     }
 }
 
@@ -99,29 +145,25 @@ pub(super) fn retain_group(
     offer_taker: JoinHandle<()>,
     remote_tools: Arc<Mutex<JoinSet<()>>>,
 ) -> CustodyRunGroup {
-    let (joined, result) = watch::channel(None);
-    let member_stop = stop.clone();
-    tokio::spawn(async move {
-        tokio::join!(
-            async {
-                join_member(worker, &member_stop, CustodyRunFailure::WorkerPanicked).await;
-                // Remote tool waits are rebuild losses. Abort and reap them
-                // even if the worker unwound while one was in flight.
-                remote_tools.lock().await.shutdown().await;
-            },
-            join_member(
-                offer_taker,
-                &member_stop,
-                CustodyRunFailure::OfferTakerPanicked
-            )
-        );
-        let outcome = member_stop.0.borrow().first_failure.map_or(Ok(()), Err);
-        joined.send_replace(Some(outcome));
-    });
-    CustodyRunGroup { stop, result }
+    CustodyRunGroup {
+        stop,
+        joins: Mutex::new(CustodyJoins {
+            worker: Some(worker),
+            offer_taker: Some(offer_taker),
+            result: None,
+        }),
+        remote_tools,
+    }
 }
 
-async fn join_member(member: JoinHandle<()>, stop: &CustodyStop, panic_failure: CustodyRunFailure) {
+async fn join_member(
+    retained: &mut Option<JoinHandle<()>>,
+    stop: &CustodyStop,
+    panic_failure: CustodyRunFailure,
+) {
+    let Some(member) = retained.as_mut() else {
+        return;
+    };
     let failure = member.await.err().map(|error| {
         if error.is_panic() {
             panic_failure
@@ -130,6 +172,7 @@ async fn join_member(member: JoinHandle<()>, stop: &CustodyStop, panic_failure: 
         }
     });
     stop.stop_with(failure);
+    *retained = None;
 }
 
 #[cfg(test)]

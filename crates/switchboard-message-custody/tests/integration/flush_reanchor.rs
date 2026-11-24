@@ -24,8 +24,8 @@ async fn worker_readmission_after_a_missed_mark_arms_the_next_window_without_spi
     let before_admission = campaign.worker.clock.checkpoint();
     peer.admitted
         .send_replace(Some(new_admission(owner.machine_id.clone(), clock.clone())));
-    campaign.worker.clock.wait_after(before_admission).await;
     let next = ClockInstant::ZERO.after(Duration::from_secs(80));
+    campaign.worker.wait_for_timer(before_admission, next).await;
     let disconnected_gap = clock.monotonic_now();
     assert_eq!(
         clock
@@ -84,8 +84,11 @@ async fn a_backwards_welcome_rebases_waiting_receipts_but_preserves_used_windows
         Timestamp::from_timestamp_millis(MARK_MS - 1_190_000).unwrap();
     let before_rebase = campaign.worker.clock.checkpoint();
     campaign.peer.admitted.send_replace(Some(backwards));
-    campaign.worker.clock.wait_after(before_rebase).await;
     let available = ClockInstant::ZERO.after(Duration::from_secs(75));
+    campaign
+        .worker
+        .wait_for_timer(before_rebase, available)
+        .await;
     assert!(
         campaign.clock.has_not_due_check_now(available),
         "the waiting receipt must be due in the new clock's next unused window"
@@ -113,7 +116,13 @@ async fn a_backwards_welcome_rebases_waiting_receipts_but_preserves_used_windows
     returned.clock_anchor.central_time = Timestamp::from_timestamp_millis(MARK_MS).unwrap();
     let before_return = campaign.worker.clock.checkpoint();
     campaign.peer.admitted.send_replace(Some(returned));
-    campaign.worker.clock.wait_after(before_return).await;
+    campaign
+        .worker
+        .wait_for_timer(
+            before_return,
+            ClockInstant::ZERO.after(Duration::from_secs(135)),
+        )
+        .await;
     assert!(
         campaign.worker.take_reports().unwrap().answered.is_empty(),
         "the previously consumed numeric window cannot be reopened"

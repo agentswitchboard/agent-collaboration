@@ -107,7 +107,7 @@ impl CustodyCommand {
 pub(super) struct CustodyCommandReceiver {
     // Field drop order revokes admission before the receiver is destroyed,
     // including when the worker unwinds.
-    _exit: StopOnExit,
+    exit: StopOnExit,
     receiver: mpsc::Receiver<CustodyCommand>,
 }
 
@@ -116,13 +116,14 @@ impl CustodyCommandReceiver {
         self.receiver.recv().await
     }
 
-    pub(super) fn refuse_queued(&mut self) {
+    pub(super) fn finish(&mut self) {
         self.receiver.close();
         // The gate is already closed. Outstanding reservations can no longer
         // submit anything, so we need only answer messages currently queued.
         while let Ok(command) = self.receiver.try_recv() {
             command.refuse_unstarted();
         }
+        self.exit.complete();
     }
 }
 
@@ -136,10 +137,7 @@ pub(super) fn command_queue(
             commands,
             stop: exit.stop.clone(),
         },
-        CustodyCommandReceiver {
-            _exit: exit,
-            receiver,
-        },
+        CustodyCommandReceiver { exit, receiver },
     )
 }
 

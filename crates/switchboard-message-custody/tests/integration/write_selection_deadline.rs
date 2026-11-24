@@ -165,8 +165,7 @@ async fn the_available_mark_claims_and_sends_a_write_with_ten_seconds_left() {
         .send_replace(Some(new_admission(machine, lane.clock.clone())));
 
     let mut worker = ObservedWorker::start(custody, observed.clone());
-    observed.wait_after(0).await;
-    let flush = worker.take_reports().unwrap();
+    let flush = flush_event(&mut worker.events, "the near-cutoff frame result").await;
     assert!(
         matches!(flush.answered.as_slice(), [answer] if answer.request == item.request),
         "a write with ten seconds left must be claimed and sent"
@@ -234,8 +233,7 @@ async fn a_checked_answer_before_the_original_deadline_settles_the_write() {
         .send_replace(Some(new_admission(machine, lane.clock.clone())));
 
     let mut worker = ObservedWorker::start(custody, observed.clone());
-    observed.wait_after(0).await;
-    let flush = worker.take_reports().unwrap();
+    let flush = flush_event(&mut worker.events, "the checked answer").await;
     assert!(matches!(flush.answered.as_slice(), [answer] if answer.request == item.request));
     assert!(
         worker
@@ -276,8 +274,14 @@ async fn an_untouched_result_ready_at_the_fence_uses_the_members_original_cutoff
             .send_replace(Some(new_admission(machine, lane.clock.clone())));
 
         let mut worker = ObservedWorker::start(custody, observed.clone());
-        observed.wait_after(0).await;
-        let flush = worker.take_reports().unwrap();
+        let flush = if remaining == closes_in {
+            flush_event(&mut worker.events, "the original cutoff report").await
+        } else {
+            worker
+                .wait_for_timer(0, ClockInstant::ZERO.after(until_mark + remaining))
+                .await;
+            worker.take_reports().unwrap()
+        };
         assert!(flush.answered.is_empty() && flush.issues.is_empty());
         let endings = if remaining == closes_in {
             flush.ended

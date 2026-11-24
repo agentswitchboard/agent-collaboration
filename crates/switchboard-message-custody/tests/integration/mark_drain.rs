@@ -455,7 +455,9 @@ async fn a_near_cutoff_orphan_rejoins_the_waiting_writes_before_three_frames_dra
     queued.insert(0, orphan.request.clone());
     let query = scoped_query(&orphan);
     let mut worker = ObservedWorker::start(custody, clock.clone());
-    clock.wait_after(0).await;
+    worker
+        .wait_for_timer(0, ClockInstant::ZERO.after(FIRST_MARK))
+        .await;
     assert!(worker.take_reports().unwrap().issues.is_empty());
     assert!(
         matches!(

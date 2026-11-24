@@ -148,6 +148,7 @@ pub(super) struct HeldImmediateReply {
     pub(super) entered: Notify,
     pub(super) dropping: Notify,
     pub(super) ended: Notify,
+    pub(super) answer: Notify,
     release_drop: Mutex<std::sync::mpsc::Receiver<()>>,
 }
 
@@ -230,6 +231,7 @@ impl ScriptedBatchLane {
             entered: Notify::new(),
             dropping: Notify::new(),
             ended: Notify::new(),
+            answer: Notify::new(),
             release_drop: Mutex::new(held),
         });
         assert!(
@@ -479,7 +481,10 @@ impl ReadyLinkLane for ScriptedBatchLane {
             return Box::pin(async move {
                 let _lifetime = ImmediateReplyLifetime(&gate);
                 gate.entered.notify_one();
-                std::future::pending().await
+                gate.answer.notified().await;
+                LinkLaneDisposition::NotReached {
+                    cause: UntouchedCommand::ConnectionUnavailable,
+                }
             });
         }
         Box::pin(std::future::ready(LinkLaneDisposition::Answered {
@@ -617,7 +622,9 @@ async fn check_partial_replay(answers: &[bool]) {
     }
 
     let mut worker = ObservedWorker::start(custody, observed_clock.clone());
-    observed_clock.wait_after(0).await;
+    worker
+        .wait_for_timer(0, ClockInstant::ZERO.after(Duration::from_secs(20)))
+        .await;
     assert!(worker.take_reports().unwrap().answered.is_empty());
     assert!(
         lane.history.lock().unwrap().attempts.is_empty(),

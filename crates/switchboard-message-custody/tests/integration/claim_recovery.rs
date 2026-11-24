@@ -81,11 +81,14 @@ pub(super) async fn check_subsequent_claim_recovery(count: u16) {
         &db,
         peer.clone(),
         observed_clock.clone(),
+        clock.clone(),
         owner.machine_id.clone(),
     )
     .await;
     let mut worker = ObservedWorker::start(reopened, observed_clock.clone());
-    observed_clock.wait_after(0).await;
+    worker
+        .wait_for_timer(0, ClockInstant::ZERO.after(Duration::from_secs(80)))
+        .await;
     assert!(worker.take_reports().unwrap().issues.is_empty());
     let probes = peer.take_calls();
     let queried: Vec<_> = probes
