@@ -24,9 +24,16 @@ pub(super) struct WireWriteFence {
 #[derive(Clone, Copy)]
 enum WireWriteState {
     Idle,
-    AwaitingFirstByte { before: ClockInstant },
-    Started,
-    Discard { crossed: bool },
+    AwaitingFirstByte {
+        first_byte_before: ClockInstant,
+        finish_before: ClockInstant,
+    },
+    Started {
+        finish_before: ClockInstant,
+    },
+    Discard {
+        crossed: bool,
+    },
 }
 
 impl WireWriteFence {
@@ -37,9 +44,16 @@ impl WireWriteFence {
         }
     }
 
-    pub(super) fn watch_first_byte(&self, before: ClockInstant) -> WireWriteGuard<'_> {
+    pub(super) fn watch_frame(
+        &self,
+        first_byte_before: ClockInstant,
+        finish_before: ClockInstant,
+    ) -> WireWriteGuard<'_> {
         *self.state.lock().unwrap_or_else(PoisonError::into_inner) =
-            WireWriteState::AwaitingFirstByte { before };
+            WireWriteState::AwaitingFirstByte {
+                first_byte_before,
+                finish_before,
+            };
         WireWriteGuard { fence: self }
     }
 
@@ -53,7 +67,7 @@ impl WireWriteFence {
     pub(super) fn crossed(&self) -> bool {
         matches!(
             *self.state.lock().unwrap_or_else(PoisonError::into_inner),
-            WireWriteState::Started | WireWriteState::Discard { crossed: true }
+            WireWriteState::Started { .. } | WireWriteState::Discard { crossed: true }
         )
     }
 
@@ -63,13 +77,23 @@ impl WireWriteFence {
     ) -> Poll<io::Result<usize>> {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         match *state {
-            WireWriteState::AwaitingFirstByte { before }
-                if self.clock.monotonic_now() >= before =>
-            {
+            WireWriteState::AwaitingFirstByte {
+                first_byte_before, ..
+            } if self.clock.monotonic_now() >= first_byte_before => {
                 *state = WireWriteState::Discard { crossed: false };
                 return Poll::Ready(Err(io::Error::new(
                     io::ErrorKind::TimedOut,
                     "first write fence elapsed",
+                )));
+            }
+            WireWriteState::Started { finish_before }
+                if self.clock.monotonic_now() >= finish_before =>
+            {
+                // The timer can have returned Pending just before this poll.
+                *state = WireWriteState::Discard { crossed: true };
+                return Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "link frame finish deadline elapsed",
                 )));
             }
             WireWriteState::Discard { .. } => {
@@ -80,13 +104,13 @@ impl WireWriteFence {
             }
             WireWriteState::Idle
             | WireWriteState::AwaitingFirstByte { .. }
-            | WireWriteState::Started => {}
+            | WireWriteState::Started { .. } => {}
         }
         let result = write();
-        if matches!(*state, WireWriteState::AwaitingFirstByte { .. })
+        if let WireWriteState::AwaitingFirstByte { finish_before, .. } = *state
             && matches!(&result, Poll::Ready(Ok(bytes)) if *bytes != 0)
         {
-            *state = WireWriteState::Started;
+            *state = WireWriteState::Started { finish_before };
         }
         result
     }
@@ -123,7 +147,7 @@ impl Drop for WireWriteGuard<'_> {
             WireWriteState::AwaitingFirstByte { .. } => {
                 *state = WireWriteState::Discard { crossed: false }
             }
-            WireWriteState::Started => *state = WireWriteState::Discard { crossed: true },
+            WireWriteState::Started { .. } => *state = WireWriteState::Discard { crossed: true },
         }
     }
 }

@@ -1,5 +1,6 @@
 use std::{
-    io,
+    future::poll_fn,
+    io::{self, IoSlice},
     pin::Pin,
     sync::{
         Arc,
@@ -97,7 +98,7 @@ async fn sink_ready_at_exact_send_or_authority_fence_cannot_emit_a_byte() {
             case: SinkCase::ReadyAt(Duration::from_secs(3)),
             entered_send: false,
         };
-        let result = write_user_frame(
+        let result = write_fenced_frame(
             &mut sink,
             "test".to_owned(),
             SendFence {
@@ -127,7 +128,7 @@ async fn writer_discriminates_untouched_refusals_from_a_failed_flush() {
             case,
             entered_send: false,
         };
-        let result = write_user_frame(
+        let result = write_fenced_frame(
             &mut sink,
             "test".into(),
             SendFence {
@@ -159,7 +160,7 @@ async fn writer_readiness_timeout_keeps_the_frame_untouched() {
         case: SinkCase::Pending,
         entered_send: false,
     };
-    let mut write = Box::pin(write_user_frame(
+    let mut write = Box::pin(write_fenced_frame(
         &mut sink,
         "test".into(),
         SendFence {
@@ -242,7 +243,10 @@ pub(crate) struct BufferedFixture {
 
 impl BufferedFixture {
     pub(crate) async fn new(allowed_bytes: usize) -> Self {
-        let clock = clock();
+        Self::with_clock(clock(), allowed_bytes).await
+    }
+
+    pub(crate) async fn with_clock(clock: Arc<ManualClock>, allowed_bytes: usize) -> Self {
         let boundary = Arc::new(WireWriteFence::new(clock.clone()));
         let (wire, peer) = tokio::io::duplex(1024);
         let remaining = Arc::new(AtomicUsize::new(allowed_bytes));
@@ -277,7 +281,7 @@ impl BufferedFixture {
     }
 
     async fn check_started_flush_loss(mut self) {
-        let mut write = Box::pin(write_user_frame(
+        let mut write = Box::pin(write_fenced_frame(
             &mut self.socket,
             "test".into(),
             SendFence {
@@ -312,7 +316,7 @@ async fn buffered_zero_byte_frame_cannot_start_at_either_fence_or_flush_on_close
         ),
     ] {
         let mut fixture = BufferedFixture::new(0).await;
-        let mut write = Box::pin(write_user_frame(
+        let mut write = Box::pin(write_fenced_frame(
             &mut fixture.socket,
             "staged user frame".into(),
             SendFence {
@@ -338,4 +342,56 @@ async fn buffered_zero_byte_frame_cannot_start_at_either_fence_or_flush_on_close
             "normal flush and teardown must write zero bytes for the expired frame"
         );
     }
+}
+
+#[tokio::test]
+async fn a_started_user_frame_can_finish_after_send_before() {
+    let mut fixture = BufferedFixture::new(1).await;
+    let mut write = Box::pin(write_fenced_frame(
+        &mut fixture.socket,
+        "ordinary user frame".into(),
+        SendFence {
+            send_before: elapsed(3),
+            authority_until: elapsed(5),
+            write_until: elapsed(8),
+        },
+        fixture.clock.as_ref(),
+        &fixture.boundary,
+    ));
+    assert!(write.as_mut().now_or_never().is_none());
+    assert_eq!(fixture.crossed.load(Ordering::Relaxed), 1);
+
+    fixture.clock.advance(Duration::from_secs(3)).unwrap();
+    fixture.remaining.store(1024, Ordering::Relaxed);
+    assert!(matches!(write.await, FrameWrite::Flushed));
+    assert!(!fixture.boundary.must_discard());
+    let mut peer = WebSocketStream::from_raw_socket(fixture.peer, Role::Server, None).await;
+    assert!(matches!(
+        futures_util::StreamExt::next(&mut peer).await,
+        Some(Ok(Message::Text(wire))) if wire.as_str() == "ordinary user frame"
+    ));
+}
+
+#[tokio::test]
+async fn vectored_continuation_is_refused_at_the_finish_deadline() {
+    let fixture = BufferedFixture::new(1).await;
+    let mut raw = fixture.socket.into_inner().into_inner();
+    let guard = fixture.boundary.watch_frame(elapsed(2), elapsed(3));
+    let first = poll_fn(|context| {
+        Pin::new(&mut raw).poll_write_vectored(context, &[IoSlice::new(b"first")])
+    })
+    .await
+    .unwrap();
+    assert_eq!(first, 1);
+    assert!(guard.crossed());
+
+    fixture.clock.advance(Duration::from_secs(3)).unwrap();
+    fixture.remaining.store(1024, Ordering::Relaxed);
+    let result = poll_fn(|context| {
+        Pin::new(&mut raw).poll_write_vectored(context, &[IoSlice::new(b"continuation")])
+    })
+    .await;
+    assert!(matches!(result, Err(error) if error.kind() == io::ErrorKind::TimedOut));
+    assert!(fixture.boundary.must_discard() && guard.crossed());
+    assert_eq!(fixture.crossed.load(Ordering::Relaxed), 1);
 }
