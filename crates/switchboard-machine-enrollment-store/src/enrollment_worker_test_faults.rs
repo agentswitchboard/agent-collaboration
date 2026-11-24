@@ -1,11 +1,14 @@
 use std::{
     future::{Future, poll_fn},
-    sync::{Arc, Mutex, atomic::AtomicUsize},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
 };
 
 use tokio::sync::oneshot;
 
-use super::{EnrollmentRowStoreError, EnrollmentRowWrite};
+use super::{EnrollmentRowStoreError, EnrollmentRowWrite, MachineLocalStoreError};
 
 pub(crate) struct TestDependencies {
     pub(crate) faults: Arc<TestWriteFaults>,
@@ -27,6 +30,7 @@ pub(crate) struct TestWriteFaults {
     prepared_replacement: Mutex<Option<ReplacementWitnessGate>>,
     resource_cleanup: Mutex<Option<ReplacementWitnessGate>>,
     pending_key_reap: Mutex<Option<oneshot::Sender<()>>>,
+    lose_close_acknowledgement: AtomicBool,
 }
 
 struct ReplacementWitnessGate {
@@ -35,6 +39,25 @@ struct ReplacementWitnessGate {
 }
 
 impl TestWriteFaults {
+    pub(crate) fn lose_close_acknowledgement(&self) {
+        self.lose_close_acknowledgement
+            .store(true, Ordering::SeqCst);
+    }
+
+    pub(crate) fn connection_close_result(
+        &self,
+        result: Result<(), MachineLocalStoreError>,
+    ) -> Result<(), MachineLocalStoreError> {
+        result?;
+        if self
+            .lose_close_acknowledgement
+            .swap(false, Ordering::SeqCst)
+        {
+            return Err(MachineLocalStoreError::Database(sqlx::Error::WorkerCrashed));
+        }
+        Ok(())
+    }
+
     pub(crate) fn hold_replacement_witness(&self) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
         Self::hold(&self.replacement_witness)
     }

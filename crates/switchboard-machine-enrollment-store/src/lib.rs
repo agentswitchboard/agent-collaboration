@@ -122,10 +122,7 @@ impl MachineEnrollmentStore {
     /// Stops admission and waits for the active operation and connection to settle.
     pub async fn close(&self) -> Result<(), EnrollmentStoreCloseError> {
         self.request_close();
-        self.join()
-            .await
-            .map_err(|_| EnrollmentStoreCloseError::WorkerStopped)?
-            .outcome
+        self.worker.close_outcome().await
     }
 
     fn enqueue_request(

@@ -2,6 +2,63 @@ use std::task::Poll;
 
 use super::*;
 
+async fn assert_connection_close_unconfirmed(
+    store: &MachineEnrollmentStore,
+    exit: EnrollmentWorkerExit,
+) {
+    let join = store.join().await;
+    assert!(
+        matches!(join, Err(EnrollmentObservationError::ConnectionCloseUnconfirmed { exit: observed }) if observed == exit),
+        "expected unconfirmed SQLite close, got {join:?}"
+    );
+    assert_eq!(store.worker_exit().await, Ok(exit));
+}
+
+#[tokio::test]
+async fn missing_sqlite_close_acknowledgement_preserves_connection_error_after_normal_exit() {
+    let fixture = Fixture::open().await;
+    fixture.faults.lose_close_acknowledgement();
+
+    fixture.store.request_close();
+
+    assert_connection_close_unconfirmed(&fixture.store, EnrollmentWorkerExit::Requested).await;
+    let first = fixture.store.close().await;
+    let second = fixture.store.close().await;
+    let (
+        Err(EnrollmentStoreCloseError::Connection(first)),
+        Err(EnrollmentStoreCloseError::Connection(second)),
+    ) = (first, second)
+    else {
+        panic!("both closes must return the retained SQLite error");
+    };
+    assert!(matches!(
+        first.as_ref(),
+        MachineLocalStoreError::Database(sqlx::Error::WorkerCrashed)
+    ));
+    assert!(Arc::ptr_eq(&first, &second));
+}
+
+#[tokio::test]
+async fn missing_sqlite_close_acknowledgement_preserves_worker_stopped_after_panic() {
+    let fixture = Fixture::open().await;
+    fixture.faults.lose_close_acknowledgement();
+    fixture.faults.arm(TestWriteFault::PanicBeforeCommit);
+    let initial = fixture.binding(1, ENROLLMENT, TOKEN);
+
+    assert_eq!(
+        fixture.store.replace(generation(0), &initial).await,
+        Err(CredentialStoreError::Replace)
+    );
+
+    assert_connection_close_unconfirmed(&fixture.store, EnrollmentWorkerExit::Autonomous).await;
+    for _ in 0..2 {
+        assert!(matches!(
+            fixture.store.close().await,
+            Err(EnrollmentStoreCloseError::WorkerStopped)
+        ));
+    }
+}
+
 #[tokio::test]
 async fn requested_close_finishes_started_write_after_first_join_waiter_is_dropped() {
     let fixture = Fixture::open().await;

@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use switchboard_machine_core_store::MachineLocalStoreError;
 use tokio::sync::{Mutex, mpsc, watch};
 
 use crate::{
@@ -7,15 +8,17 @@ use crate::{
     enrollment_worker::{EnrollmentWorker, EnrollmentWorkerExit},
 };
 
-/// The enrollment store's retained result of reaping its worker and resources.
+/// A physical join receipt published by the enrollment store after the worker
+/// and its blocking tasks end and SQLite acknowledges the connection close.
 #[derive(Clone, Debug)]
 pub struct EnrollmentJoin {
     pub outcome: Result<(), EnrollmentStoreCloseError>,
 }
 
 /// Why the enrollment store could not provide the requested lifecycle witness.
-/// A `join()` error means ownership is unconfirmed. Keep the store outstanding
-/// and withhold any replacement until physical termination is established.
+/// Every `join()` error, including an unacknowledged SQLite close, leaves
+/// ownership unconfirmed. Keep the store outstanding and withhold replacement
+/// until physical termination is established.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum EnrollmentObservationError {
     /// The publisher ended before recording the requested witness.
@@ -24,6 +27,9 @@ pub enum EnrollmentObservationError {
     /// The worker task ended, but the reaper could not recover its resources.
     #[error("the enrollment reaper could not confirm release of the worker's resources")]
     OwnershipUnconfirmed { exit: EnrollmentWorkerExit },
+    /// SQLite close returned an error before confirming connection release.
+    #[error("the enrollment reaper could not confirm the database connection closed")]
+    ConnectionCloseUnconfirmed { exit: EnrollmentWorkerExit },
 }
 
 #[derive(Clone)]
@@ -36,8 +42,41 @@ pub(super) struct WorkerLifecycle {
 enum WorkerProgress {
     Running,
     Exited(EnrollmentWorkerExit),
-    Joined(EnrollmentWorkerExit, EnrollmentJoin),
-    Unconfirmed(EnrollmentWorkerExit),
+    Reported(ReaperReport),
+}
+
+#[derive(Clone)]
+struct ReaperReport {
+    exit: EnrollmentWorkerExit,
+    completion: WorkerCompletion,
+}
+
+#[derive(Clone)]
+enum WorkerCompletion {
+    Joined(EnrollmentJoin),
+    OwnershipUnconfirmed,
+    ConnectionCloseUnconfirmed {
+        error: Arc<MachineLocalStoreError>,
+        worker_outcome: WorkerTaskOutcome,
+    },
+}
+
+#[derive(Clone, Copy)]
+enum WorkerTaskOutcome {
+    Returned,
+    Failed,
+}
+
+impl WorkerTaskOutcome {
+    fn legacy_close_result(
+        self,
+        connection_result: Result<(), Arc<MachineLocalStoreError>>,
+    ) -> Result<(), EnrollmentStoreCloseError> {
+        match self {
+            Self::Returned => connection_result.map_err(EnrollmentStoreCloseError::Connection),
+            Self::Failed => Err(EnrollmentStoreCloseError::WorkerStopped),
+        }
+    }
 }
 
 impl WorkerLifecycle {
@@ -62,24 +101,29 @@ impl WorkerLifecycle {
         #[cfg(test)]
         let abort = task.abort_handle();
         tokio::spawn(async move {
-            let worker_result = task.await;
-            let exit = match &worker_result {
-                Ok(exit) => *exit,
-                Err(_) => EnrollmentWorkerExit::Autonomous,
+            let (exit, worker_outcome) = match task.await {
+                Ok(exit) => (exit, WorkerTaskOutcome::Returned),
+                Err(_) => (EnrollmentWorkerExit::Autonomous, WorkerTaskOutcome::Failed),
             };
             report.send_replace(WorkerProgress::Exited(exit));
 
             let Ok(worker) = Arc::try_unwrap(worker) else {
-                report.send_replace(WorkerProgress::Unconfirmed(exit));
+                report.send_replace(WorkerProgress::Reported(ReaperReport {
+                    exit,
+                    completion: WorkerCompletion::OwnershipUnconfirmed,
+                }));
                 return;
             };
-            let connection_result = worker.into_inner().close_resources().await;
-            let outcome = match worker_result {
-                Ok(_) => connection_result
-                    .map_err(|error| EnrollmentStoreCloseError::Connection(Arc::new(error))),
-                Err(_) => Err(EnrollmentStoreCloseError::WorkerStopped),
+            let completion = match worker.into_inner().close_resources().await {
+                Ok(()) => WorkerCompletion::Joined(EnrollmentJoin {
+                    outcome: worker_outcome.legacy_close_result(Ok(())),
+                }),
+                Err(error) => WorkerCompletion::ConnectionCloseUnconfirmed {
+                    error: Arc::new(error),
+                    worker_outcome,
+                },
             };
-            report.send_replace(WorkerProgress::Joined(exit, EnrollmentJoin { outcome }));
+            report.send_replace(WorkerProgress::Reported(ReaperReport { exit, completion }));
         });
         Self {
             progress,
@@ -97,29 +141,49 @@ impl WorkerLifecycle {
             .await
             .map_err(|_| EnrollmentObservationError::ReaperLost)?;
         match &*observed {
-            WorkerProgress::Exited(exit)
-            | WorkerProgress::Joined(exit, _)
-            | WorkerProgress::Unconfirmed(exit) => Ok(*exit),
+            WorkerProgress::Exited(exit) | WorkerProgress::Reported(ReaperReport { exit, .. }) => {
+                Ok(*exit)
+            }
             WorkerProgress::Running => Err(EnrollmentObservationError::ReaperLost),
         }
     }
 
     pub(super) async fn join(&self) -> Result<EnrollmentJoin, EnrollmentObservationError> {
+        let ReaperReport { exit, completion } = self.reaper_report().await?;
+        match completion {
+            WorkerCompletion::Joined(receipt) => Ok(receipt),
+            WorkerCompletion::OwnershipUnconfirmed => {
+                Err(EnrollmentObservationError::OwnershipUnconfirmed { exit })
+            }
+            WorkerCompletion::ConnectionCloseUnconfirmed { .. } => {
+                Err(EnrollmentObservationError::ConnectionCloseUnconfirmed { exit })
+            }
+        }
+    }
+
+    pub(super) async fn close_outcome(&self) -> Result<(), EnrollmentStoreCloseError> {
+        let report = self
+            .reaper_report()
+            .await
+            .map_err(|_| EnrollmentStoreCloseError::WorkerStopped)?;
+        match report.completion {
+            WorkerCompletion::Joined(receipt) => receipt.outcome,
+            WorkerCompletion::OwnershipUnconfirmed => Err(EnrollmentStoreCloseError::WorkerStopped),
+            WorkerCompletion::ConnectionCloseUnconfirmed {
+                error,
+                worker_outcome,
+            } => worker_outcome.legacy_close_result(Err(error)),
+        }
+    }
+
+    async fn reaper_report(&self) -> Result<ReaperReport, EnrollmentObservationError> {
         let mut progress = self.progress.clone();
         let observed = progress
-            .wait_for(|progress| {
-                matches!(
-                    progress,
-                    WorkerProgress::Joined(..) | WorkerProgress::Unconfirmed(_)
-                )
-            })
+            .wait_for(|progress| matches!(progress, WorkerProgress::Reported(_)))
             .await
             .map_err(|_| EnrollmentObservationError::ReaperLost)?;
         match &*observed {
-            WorkerProgress::Joined(_, receipt) => Ok(receipt.clone()),
-            WorkerProgress::Unconfirmed(exit) => {
-                Err(EnrollmentObservationError::OwnershipUnconfirmed { exit: *exit })
-            }
+            WorkerProgress::Reported(report) => Ok(report.clone()),
             WorkerProgress::Running | WorkerProgress::Exited(_) => {
                 Err(EnrollmentObservationError::ReaperLost)
             }

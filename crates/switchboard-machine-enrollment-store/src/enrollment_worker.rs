@@ -145,7 +145,12 @@ impl EnrollmentWorker {
                 test_faults::observe_pending_key_reap(pending_key, self.test_dependencies.as_ref());
             let _ = pending_key.await;
         }
-        self.store.close().await
+        let result = self.store.close().await;
+        #[cfg(test)]
+        if let Some(test) = &self.test_dependencies {
+            return test.faults.connection_close_result(result);
+        }
+        result
     }
 
     async fn handle(
