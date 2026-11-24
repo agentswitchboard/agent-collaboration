@@ -17,7 +17,6 @@ use std::{
 use switchboard_message_custody::recipient_sessions::{
     CombinedRecipientSessionDirectory, RecipientSessionAnswer, RecipientSessionDirectory,
     RecipientSessionSources, SessionId, SessionInventory, SessionInventoryAnswer::AtLeast,
-    UnavailableSessionInventory,
 };
 use switchboard_session_store::{ProviderOperationStore, ProviderSessionRecord};
 use tokio::sync::Mutex;
@@ -291,7 +290,7 @@ async fn claude_peer_inventory_cannot_assert_absence_on_registry_failures() {
 }
 
 #[tokio::test]
-async fn managed_and_terminal_claims_share_no_authority_to_deduplicate() {
+async fn managed_claude_takes_precedence_over_the_same_id_in_the_terminal() {
     let root = tempfile::tempdir().unwrap();
     let store = Arc::new(Mutex::new(
         ProviderOperationStore::open(&root.path().join("provider-operations.sqlite"))
@@ -299,18 +298,23 @@ async fn managed_and_terminal_claims_share_no_authority_to_deduplicate() {
             .unwrap(),
     ));
     let managed = managed_inventory(Some(store.clone()));
-    let claude = provider_record(&managed, 0, root.path());
+    let target = session_id("managed-claude-session");
+    let claude = provider_record_for_session(&managed, 0, root.path(), &target);
     store.lock().await.record_session(&claude).await.unwrap();
-    seed_peer(root.path(), std::process::id(), SAVED, true);
+    seed_peer(root.path(), std::process::id(), target.as_str(), true);
     let directory = CombinedRecipientSessionDirectory::new(RecipientSessionSources {
-        codex: Arc::new(UnavailableSessionInventory),
+        codex: Arc::new(CodexSessionInventory::new(
+            root.path().to_owned(),
+            Arc::new(UnmaterializedThreadHolder::new()),
+            NativeGenerationGate::default(),
+        )),
         managed_providers: Arc::new(managed),
         claude_terminal: Arc::new(terminal_inventory(root.path())),
     });
 
     assert_eq!(
-        directory.query_recipient_session(&session_id(SAVED)).await,
-        RecipientSessionAnswer::AmbiguousSession
+        directory.query_recipient_session(&target).await,
+        RecipientSessionAnswer::KnownOnce
     );
 }
 

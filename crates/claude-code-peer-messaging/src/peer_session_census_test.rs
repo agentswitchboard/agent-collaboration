@@ -25,11 +25,7 @@ fn identified(root: &Path, pid: u32, id: &str, time: i64) -> PathBuf {
 }
 
 const fn answer(at_least: usize, complete: bool) -> PeerCensusOutcome {
-    PeerCensusOutcome::Answer(PeerCensusAnswer {
-        at_least,
-        complete,
-        managed_claude_alias: false,
-    })
+    PeerCensusOutcome::Answer(PeerCensusAnswer { at_least, complete })
 }
 
 fn read_target(entries: impl IntoIterator<Item = io::Result<PathBuf>>) -> PeerSessionCensus {
@@ -61,15 +57,15 @@ fn parseable_proc_start_compares_displayed_seconds_without_using_registration_st
         panic!("the process start is usable");
     };
     assert_eq!(
-        compare_incarnation(recorded, Some(ProcessStart(59_000))),
-        Incarnation::Verified(ProcessStart(59_000))
+        compare_incarnation(recorded, Some(59_000)),
+        Incarnation::Verified
     );
     assert_eq!(
-        compare_incarnation(recorded, Some(ProcessStart(58_000))),
+        compare_incarnation(recorded, Some(58_000)),
         Incarnation::Stale
     );
     assert_eq!(
-        compare_incarnation(recorded, Some(ProcessStart(60_000))),
+        compare_incarnation(recorded, Some(60_000)),
         Incarnation::Stale
     );
     assert_eq!(compare_incarnation(recorded, None), Incarnation::Unverified);
@@ -81,12 +77,12 @@ fn known_limit_pid_reuse_inside_the_same_displayed_second_is_indistinguishable()
     // Both report the same displayed second after a record stamped at .100.
     let displayed_second = 59_000;
     for recorded in [
-        RecordedProcessStart::DisplayedSecond(ProcessStart(displayed_second)),
+        RecordedProcessStart::DisplayedSecond(displayed_second),
         RecordedProcessStart::RegistrationTimestamp(displayed_second + 100),
     ] {
         assert_eq!(
-            compare_incarnation(recorded, Some(ProcessStart(displayed_second))),
-            Incarnation::Verified(ProcessStart(displayed_second))
+            compare_incarnation(recorded, Some(displayed_second)),
+            Incarnation::Verified
         );
     }
 }
@@ -109,7 +105,7 @@ async fn valid_json_without_a_usable_id_is_incomplete_when_live() {
     let observed = census
         .answer_with(
             |_| Ok(true),
-            |_| ready(ProcessStartObservation::Observed(ProcessStart(1_000))),
+            |_| ready(ProcessStartObservation::DisplayedSecond(1_000)),
             || true,
             |_| {},
         )
@@ -131,7 +127,7 @@ async fn each_readable_match_survives_an_unreadable_live_record() {
         let observed = census
             .answer_with(
                 |_| Ok(true),
-                |_| ready(ProcessStartObservation::Observed(ProcessStart(1_000))),
+                |_| ready(ProcessStartObservation::DisplayedSecond(1_000)),
                 || true,
                 |_| {},
             )
@@ -164,7 +160,7 @@ async fn unidentified_probe_failure_and_directory_iteration_failure_are_each_inc
         let observed = census
             .answer_with(
                 |_| Ok(true),
-                |_| ready(ProcessStartObservation::Observed(ProcessStart(1_000))),
+                |_| ready(ProcessStartObservation::DisplayedSecond(1_000)),
                 || true,
                 |_| {},
             )
@@ -218,11 +214,10 @@ async fn excludes_reused_pid_and_keeps_unresolved_incarnation_incomplete() {
                     } else {
                         later_process
                     };
-                    ready(
-                        time.map_or(ProcessStartObservation::Unavailable, |started| {
-                            ProcessStartObservation::Observed(ProcessStart(started))
-                        }),
-                    )
+                    ready(time.map_or(
+                        ProcessStartObservation::Unavailable,
+                        ProcessStartObservation::DisplayedSecond,
+                    ))
                 },
                 || true,
                 |_| {},
@@ -257,9 +252,7 @@ async fn two_distinct_proved_claims_return_before_the_next_held_probe() {
                     if pid == 102 {
                         std::task::Poll::Pending
                     } else {
-                        std::task::Poll::Ready(ProcessStartObservation::Observed(ProcessStart(
-                            1_000,
-                        )))
+                        std::task::Poll::Ready(ProcessStartObservation::DisplayedSecond(1_000))
                     }
                 })
             },
@@ -294,7 +287,7 @@ async fn interruption_preserves_the_already_proved_lower_bound() {
             |pid| {
                 calls.push(pid);
                 ready(if pid == 100 {
-                    ProcessStartObservation::Observed(ProcessStart(1_000))
+                    ProcessStartObservation::DisplayedSecond(1_000)
                 } else {
                     ProcessStartObservation::Interrupted
                 })
@@ -352,53 +345,4 @@ async fn real_child_is_current_only_for_record_written_after_its_start() {
         answer(1, true)
     );
     drop(child);
-}
-
-#[tokio::test]
-async fn denied_ancestry_keeps_the_verified_registry_claim() {
-    struct LiveAdapter(ProcessIncarnation);
-    impl ManagedClaudeLaunches for LiveAdapter {
-        fn live_adapter(&self, _: &SessionId) -> Option<ProcessIncarnation> {
-            Some(self.0)
-        }
-    }
-
-    let root = tempfile::tempdir().unwrap();
-    let census = read_target([Ok(write_record(
-        root.path(),
-        100,
-        r#"{"pid":100,"sessionId":"target","startedAt":1500}"#,
-    ))]);
-    let launch = LiveAdapter(ProcessIncarnation {
-        pid: NonZeroU32::new(42).unwrap(),
-        started: ProcessStart(0),
-    });
-    let managed = ManagedClaudeClaim {
-        launches: &launch,
-        adapter: launch.0,
-    };
-    let observed = census
-        .count_verified_claims(
-            |_| Ok(true),
-            |_| ready(ProcessStartObservation::Observed(ProcessStart(1_000))),
-            || true,
-            |_| {
-                ready(managed_claim_disposition(
-                    &managed,
-                    &session("target"),
-                    ProcessObservation::Unavailable,
-                ))
-            },
-            |_| {},
-        )
-        .await;
-
-    assert_eq!(
-        observed,
-        PeerCensusOutcome::Answer(PeerCensusAnswer {
-            at_least: 1,
-            complete: true,
-            managed_claude_alias: false,
-        }),
-    );
 }

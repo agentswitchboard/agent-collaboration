@@ -51,50 +51,21 @@ pub enum SessionInventoryAnswer {
     Complete(usize),
     /// The authority may be hiding more matches.
     AtLeast(usize),
-    CompleteWithManagedClaude {
-        independent: usize,
-    },
-    AtLeastWithManagedClaude {
-        independent: usize,
-    },
 }
 
 impl SessionInventoryAnswer {
-    const fn evidence(self) -> (usize, bool, bool) {
+    const fn proved(self) -> usize {
         match self {
-            Self::Complete(count) => (count, false, true),
-            Self::AtLeast(count) => (count, false, false),
-            Self::CompleteWithManagedClaude { independent } => (independent, true, true),
-            Self::AtLeastWithManagedClaude { independent } => (independent, true, false),
-        }
-    }
-
-    /// A positive claim for the exact managed Claude owner. Both inventories
-    /// may carry it when the terminal record proved its managed ancestry.
-    #[must_use]
-    pub const fn with_managed_claude(self) -> Self {
-        let (independent, _, complete) = self.evidence();
-        if complete {
-            Self::CompleteWithManagedClaude { independent }
-        } else {
-            Self::AtLeastWithManagedClaude { independent }
+            Self::Complete(count) | Self::AtLeast(count) => count,
         }
     }
 
     #[must_use]
     pub const fn merge(self, other: Self) -> Self {
-        let (left, left_managed, left_complete) = self.evidence();
-        let (right, right_managed, right_complete) = other.evidence();
-        let independent = left.saturating_add(right);
-        let merged = if left_complete && right_complete {
-            Self::Complete(independent)
-        } else {
-            Self::AtLeast(independent)
-        };
-        if left_managed || right_managed {
-            merged.with_managed_claude()
-        } else {
-            merged
+        let proved = self.proved().saturating_add(other.proved());
+        match (self, other) {
+            (Self::AtLeast(_), _) | (_, Self::AtLeast(_)) => Self::AtLeast(proved),
+            _ => Self::Complete(proved),
         }
     }
 }
@@ -105,9 +76,18 @@ const UNAVAILABLE_INVENTORY: SessionInventoryAnswer = SessionInventoryAnswer::At
 pub type InventoryRead<'lookup> =
     Pin<Box<dyn Future<Output = SessionInventoryAnswer> + Send + 'lookup>>;
 
+/// Which role this lookup plays in resolving the addressed session.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SessionInventorySource {
+    Independent,
+    ManagedClaude,
+    ClaudeTerminal,
+}
+
 /// A disjoint part of an authority. Its completed answer replaces any evidence
 /// the authority could already prove before starting the read.
 pub struct SessionInventoryPart<'lookup> {
+    pub source: SessionInventorySource,
     pub observed: SessionInventoryAnswer,
     pub read: InventoryRead<'lookup>,
 }
@@ -126,6 +106,7 @@ pub trait SessionInventory: Send + Sync {
         _deadline: Option<ClockInstant>,
     ) -> Vec<SessionInventoryPart<'lookup>> {
         vec![SessionInventoryPart {
+            source: SessionInventorySource::Independent,
             observed: UNAVAILABLE_INVENTORY,
             read: self.lookup_session(session_id),
         }]
@@ -152,14 +133,57 @@ pub fn combine_inventory_answers(
     let summary = answers
         .into_iter()
         .fold(EMPTY_INVENTORY, SessionInventoryAnswer::merge);
-    let (independent, managed, complete) = summary.evidence();
-    let proved = independent.saturating_add(if managed { 1 } else { 0 });
-    match (proved, complete) {
-        (2.., _) => RecipientSessionAnswer::AmbiguousSession,
-        (_, false) => RecipientSessionAnswer::CouldNotTell,
-        (1, true) => RecipientSessionAnswer::KnownOnce,
-        (0, true) => RecipientSessionAnswer::UnknownSession,
+    match summary {
+        SessionInventoryAnswer::Complete(2..) | SessionInventoryAnswer::AtLeast(2..) => {
+            RecipientSessionAnswer::AmbiguousSession
+        }
+        SessionInventoryAnswer::AtLeast(_) => RecipientSessionAnswer::CouldNotTell,
+        SessionInventoryAnswer::Complete(1) => RecipientSessionAnswer::KnownOnce,
+        SessionInventoryAnswer::Complete(0) => RecipientSessionAnswer::UnknownSession,
     }
+}
+
+fn resolve_recipient_parts(
+    parts: impl IntoIterator<Item = (SessionInventorySource, SessionInventoryAnswer)>,
+) -> RecipientSessionAnswer {
+    let mut independent = EMPTY_INVENTORY;
+    let mut managed_claude = EMPTY_INVENTORY;
+    let mut claude_terminal = EMPTY_INVENTORY;
+    for (source, answer) in parts {
+        let slot = match source {
+            SessionInventorySource::Independent => &mut independent,
+            SessionInventorySource::ManagedClaude => &mut managed_claude,
+            SessionInventorySource::ClaudeTerminal => &mut claude_terminal,
+        };
+        *slot = slot.merge(answer);
+    }
+    combine_inventory_answers([
+        independent,
+        prefer_managed_claude(managed_claude, claude_terminal),
+    ])
+}
+
+/// A managed Claude claim owns this Mac's address. A terminal sighting of the
+/// same ID has no separate address, even when someone explicitly reuses the ID
+/// in another project (Claude Code 2.1.331), or opens the pre-clear conversation
+/// after a context reset kept the ACP ID but minted a new native ID
+/// (claude-agent-acp 0.81.0). The Lead accepted both cases.
+fn prefer_managed_claude(
+    managed: SessionInventoryAnswer,
+    terminal: SessionInventoryAnswer,
+) -> SessionInventoryAnswer {
+    let terminal_count = match managed {
+        SessionInventoryAnswer::Complete(0) => return terminal,
+        // Until the managed lookup can prove absence, multiple terminal sightings
+        // establish only one guaranteed Claude claim.
+        SessionInventoryAnswer::AtLeast(0) => terminal.proved().min(1),
+        SessionInventoryAnswer::Complete(_) | SessionInventoryAnswer::AtLeast(_) => 0,
+    };
+    let terminal = match terminal {
+        SessionInventoryAnswer::Complete(_) => SessionInventoryAnswer::Complete(terminal_count),
+        SessionInventoryAnswer::AtLeast(_) => SessionInventoryAnswer::AtLeast(terminal_count),
+    };
+    managed.merge(terminal)
 }
 
 /// Resolves endpoint-free addresses against the Mac's session sources.
@@ -193,11 +217,12 @@ impl CombinedRecipientSessionDirectory {
         ]
         .into_iter()
         .flat_map(|source| source.lookup_parts(session_id, cutoff))
-        .map(|part| (part.observed, Some(part.read)))
+        .map(|part| (part.source, part.observed, Some(part.read)))
         .collect();
-        let mut summary = combine_inventory_answers(parts.iter().map(|(answer, _)| *answer));
+        let mut summary =
+            resolve_recipient_parts(parts.iter().map(|(source, answer, _)| (*source, *answer)));
         let lookups = poll_fn(|context| {
-            for (answer, pending) in &mut parts {
+            for (_, answer, pending) in &mut parts {
                 if let Some(read) = pending
                     && let Poll::Ready(completed) = read.as_mut().poll(context)
                 {
@@ -205,9 +230,10 @@ impl CombinedRecipientSessionDirectory {
                     *pending = None;
                 }
             }
-            summary = combine_inventory_answers(parts.iter().map(|(answer, _)| *answer));
+            summary =
+                resolve_recipient_parts(parts.iter().map(|(source, answer, _)| (*source, *answer)));
             if summary == RecipientSessionAnswer::AmbiguousSession
-                || parts.iter().all(|(_, pending)| pending.is_none())
+                || parts.iter().all(|(_, _, pending)| pending.is_none())
             {
                 Poll::Ready(summary)
             } else {

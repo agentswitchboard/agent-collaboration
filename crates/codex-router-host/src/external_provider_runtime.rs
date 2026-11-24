@@ -92,7 +92,6 @@ mod initialization_authentication_tests;
 
 pub struct ExternalProviderRuntime {
     client: AgentSessionClient<HostInteractionPort>,
-    managed_claude_adapter: Option<claude_code_peer_messaging::ProcessIncarnation>,
     owner_ingress: Arc<SessionOwnerIngress>,
     owner_door: std::sync::OnceLock<Arc<crate::session_owner_door::SessionOwnerDoor>>,
     #[cfg(any(test, feature = "test-support"))]
@@ -206,7 +205,6 @@ impl ExternalProviderRuntime {
         .await?;
         Ok(Self {
             client,
-            managed_claude_adapter: None,
             owner_ingress,
             owner_door: std::sync::OnceLock::new(),
             #[cfg(any(test, feature = "test-support"))]
@@ -243,7 +241,6 @@ impl ExternalProviderRuntime {
         .await?;
         Ok(Self {
             client,
-            managed_claude_adapter: None,
             owner_ingress,
             owner_door: std::sync::OnceLock::new(),
             #[cfg(any(test, feature = "test-support"))]
@@ -285,7 +282,6 @@ impl ExternalProviderRuntime {
         .await?;
         Ok(Self {
             client,
-            managed_claude_adapter: None,
             owner_ingress,
             owner_door: std::sync::OnceLock::new(),
             #[cfg(any(test, feature = "test-support"))]
@@ -339,7 +335,6 @@ impl ExternalProviderRuntime {
         .await?;
         Ok(Self {
             client,
-            managed_claude_adapter: None,
             owner_ingress,
             owner_door: std::sync::OnceLock::new(),
             preparation_fixture: Arc::default(),
@@ -388,38 +383,6 @@ impl ExternalProviderRuntime {
         point: acp_client_runtime::owner_wire::FixtureDispatchPoint,
     ) -> tokio::sync::oneshot::Receiver<Result<(), agent_client_protocol::Error>> {
         self.client.owner_wire().observe_dispatch_for_test(point)
-    }
-
-    /// Sample the owned child after ACP initialization and before publishing
-    /// this managed binding, so a later lookup can reject a replacement PID.
-    pub(crate) async fn observe_managed_claude_adapter(&mut self) {
-        const PROCESS_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
-        let Some(pid) = self.client.live_adapter_process_id() else {
-            return;
-        };
-        let clock = self.client.runtime_clock();
-        let stop = self.client.retirement();
-        let stopped = async {
-            tokio::select! {
-                () = stop.cancelled() => {}
-                () = clock.sleep_for(PROCESS_BUDGET) => {}
-            }
-        };
-        let observation =
-            claude_code_peer_messaging::ProcessIncarnation::observe(pid, stopped, || {
-                clock.sleep_for(PROCESS_BUDGET)
-            })
-            .await;
-        if self.client.live_adapter_process_id() == Some(pid) {
-            self.managed_claude_adapter = observation;
-        }
-    }
-
-    pub(crate) fn live_claude_adapter(
-        &self,
-    ) -> Option<claude_code_peer_messaging::ProcessIncarnation> {
-        self.client.live_adapter_process_id()?;
-        self.managed_claude_adapter
     }
 
     pub fn retirement(&self) -> CancellationToken {

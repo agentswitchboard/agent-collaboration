@@ -66,8 +66,6 @@ impl<P: InteractionPort> AgentSessionClient<P> {
             stderr,
             mut lifetime,
         } = transport;
-        let adapter_process_id = Arc::new(std::sync::atomic::AtomicU32::new(lifetime.process_id()));
-        let task_adapter_process_id = Arc::clone(&adapter_process_id);
         let shutdown = CancellationToken::new();
         let sink_closed = CancellationToken::new();
         let client_sink_closed = sink_closed.clone();
@@ -400,7 +398,6 @@ impl<P: InteractionPort> AgentSessionClient<P> {
             let child_exited = tokio::select! {
                 _result = &mut connection => false,
                 () = lifetime.exited() => {
-                    task_adapter_process_id.store(0, Ordering::Release);
                     // The exited child may have flushed its initialize response into stdout.
                     // Let the connection settle admission before retiring it.
                     tokio::select! {
@@ -410,7 +407,6 @@ impl<P: InteractionPort> AgentSessionClient<P> {
                     true
                 },
             };
-            task_adapter_process_id.store(0, Ordering::Release);
             connection_retirement.cancel();
 
             if !child_exited {
@@ -454,7 +450,6 @@ impl<P: InteractionPort> AgentSessionClient<P> {
             shutdown,
             sink_closed: client_sink_closed,
             retirement,
-            adapter_process_id,
             task: tokio::sync::Mutex::new(Some(task)),
             #[cfg(feature = "test-observation")]
             connection_settled,

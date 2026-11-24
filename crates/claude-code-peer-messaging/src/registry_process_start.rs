@@ -1,47 +1,17 @@
 use std::{
-    ffi::OsStr,
     future::Future,
-    num::NonZeroU32,
     path::Path,
     process::{Command, Stdio},
 };
 use tokio::io::AsyncReadExt;
 
-/// Kernel start time as displayed by `ps -o lstart=` in UTC, to the second.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(super) struct ProcessStart(pub(super) i64);
-
-/// An observed PID bound to the same start-time precision as a peer claim.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ProcessIncarnation {
-    pub(super) pid: NonZeroU32,
-    pub(super) started: ProcessStart,
-}
-
-impl ProcessIncarnation {
-    pub async fn observe<TReap: Future<Output = ()>>(
-        pid: NonZeroU32,
-        stop: impl Future<Output = ()>,
-        reap_deadline: impl FnOnce() -> TReap,
-    ) -> Option<Self> {
-        match process_started_at(pid.get(), stop, reap_deadline).await {
-            ProcessObservation::Observed(started) => Some(Self { pid, started }),
-            ProcessObservation::Unavailable
-            | ProcessObservation::Interrupted
-            | ProcessObservation::ReapDeferred => None,
-        }
-    }
-}
-
 #[derive(Debug, PartialEq, Eq)]
-pub(super) enum ProcessObservation<Value> {
-    Observed(Value),
+pub(super) enum ProcessStartObservation {
+    DisplayedSecond(i64),
     Unavailable,
     Interrupted,
     ReapDeferred,
 }
-
-pub(super) type ProcessStartObservation = ProcessObservation<ProcessStart>;
 
 pub(super) async fn process_started_at<TReap: Future<Output = ()>>(
     process_id: u32,
@@ -49,27 +19,17 @@ pub(super) async fn process_started_at<TReap: Future<Output = ()>>(
     reap_deadline: impl FnOnce() -> TReap,
 ) -> ProcessStartObservation {
     let Some(mut child) = spawn_process_start(Path::new("/bin/ps"), process_id) else {
-        return ProcessObservation::Unavailable;
+        return ProcessStartObservation::Unavailable;
     };
     read_process_start(&mut child, stop, reap_deadline).await
 }
 
 fn spawn_process_start(command_path: &Path, process_id: u32) -> Option<tokio::process::Child> {
-    spawn_ps_probe(
-        command_path,
-        ["-p", &process_id.to_string(), "-o", "lstart="],
-    )
-}
-
-pub(super) fn spawn_ps_probe(
-    command_path: &Path,
-    args: impl IntoIterator<Item = impl AsRef<OsStr>>,
-) -> Option<tokio::process::Child> {
     let mut command = Command::new(command_path);
     command
         .env("LC_ALL", "C")
         .env("TZ", "UTC")
-        .args(args)
+        .args(["-p", &process_id.to_string(), "-o", "lstart="])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
@@ -84,32 +44,12 @@ async fn read_process_start<TReap: Future<Output = ()>>(
     stop: impl Future<Output = ()>,
     reap_deadline: impl FnOnce() -> TReap,
 ) -> ProcessStartObservation {
-    read_ps_probe(child, 128, stop, reap_deadline, |output| {
-        parse_ps_start(output).map(ProcessStart)
-    })
-    .await
-}
-
-pub(super) async fn read_ps_probe<Value, TReap: Future<Output = ()>>(
-    child: &mut tokio::process::Child,
-    output_limit: u64,
-    stop: impl Future<Output = ()>,
-    reap_deadline: impl FnOnce() -> TReap,
-    parse: impl FnOnce(&str) -> Option<Value>,
-) -> ProcessObservation<Value> {
-    let stdout = child.stdout.take();
+    let mut stdout = child.stdout.take().map(|stdout| stdout.take(128));
     let mut bytes = Vec::new();
     let finished = async {
         let read = async {
-            match stdout {
-                Some(stdout) => stdout
-                    .take(output_limit + 1)
-                    .read_to_end(&mut bytes)
-                    .await
-                    .ok()
-                    .is_some_and(|count| {
-                        u64::try_from(count).is_ok_and(|count| count <= output_limit)
-                    }),
+            match &mut stdout {
+                Some(stdout) => stdout.read_to_end(&mut bytes).await.is_ok(),
                 None => false,
             }
         };
@@ -121,39 +61,40 @@ pub(super) async fn read_ps_probe<Value, TReap: Future<Output = ()>>(
         result = finished => Some(result),
     };
     match finished {
-        Some((Ok(status), true)) if status.success() => {
-            std::str::from_utf8(&bytes).ok().and_then(parse).map_or(
-                ProcessObservation::Unavailable,
-                ProcessObservation::Observed,
-            )
-        }
-        Some((Ok(_), _)) => ProcessObservation::Unavailable,
-        Some((Err(_), _)) => ProcessObservation::ReapDeferred,
+        Some((Ok(status), true)) if status.success() => std::str::from_utf8(&bytes)
+            .ok()
+            .and_then(parse_ps_start)
+            .map_or(
+                ProcessStartObservation::Unavailable,
+                ProcessStartObservation::DisplayedSecond,
+            ),
+        Some((Ok(_), _)) => ProcessStartObservation::Unavailable,
+        Some((Err(_), _)) => ProcessStartObservation::ReapDeferred,
         None => reap_interrupted_probe(child, reap_deadline()).await,
     }
 }
 
-async fn reap_interrupted_probe<Value>(
+async fn reap_interrupted_probe(
     child: &mut tokio::process::Child,
     deadline: impl Future<Output = ()>,
-) -> ProcessObservation<Value> {
+) -> ProcessStartObservation {
     if child.start_kill().is_err() {
-        return ProcessObservation::ReapDeferred;
+        return ProcessStartObservation::ReapDeferred;
     }
     wait_for_reap(child.wait(), deadline).await
 }
 
-async fn wait_for_reap<Value>(
+async fn wait_for_reap(
     wait: impl Future<Output = std::io::Result<std::process::ExitStatus>>,
     deadline: impl Future<Output = ()>,
-) -> ProcessObservation<Value> {
+) -> ProcessStartObservation {
     tokio::select! {
         biased;
         result = wait => match result {
-            Ok(_) => ProcessObservation::Interrupted,
-            Err(_) => ProcessObservation::ReapDeferred,
+            Ok(_) => ProcessStartObservation::Interrupted,
+            Err(_) => ProcessStartObservation::ReapDeferred,
         },
-        () = deadline => ProcessObservation::ReapDeferred,
+        () = deadline => ProcessStartObservation::ReapDeferred,
     }
 }
 

@@ -8,6 +8,7 @@ use provider_session_machines::session_lifecycle_machine::SessionLifecycle;
 use std::{future::Future, pin::Pin, sync::Arc};
 use switchboard_message_custody::recipient_sessions::{
     SessionId, SessionInventory, SessionInventoryAnswer, SessionInventoryPart,
+    SessionInventorySource,
 };
 use switchboard_session_store::ProviderOperationStore;
 use tokio::sync::Mutex;
@@ -50,7 +51,7 @@ impl ManagedProviderSessionInventory {
     fn lookup_endpoint(
         &self,
         target: SessionRef,
-        managed_claude: bool,
+        source: SessionInventorySource,
     ) -> SessionInventoryPart<'_> {
         let owner_knows = self
             .supervisor
@@ -62,38 +63,23 @@ impl ManagedProviderSessionInventory {
                     SessionLifecycle::Live { .. } | SessionLifecycle::Loading { .. }
                 )
             });
-        let count_match = move |found, complete_read| match (found, managed_claude, complete_read) {
-            (true, true, _) => {
-                let empty = if complete_read {
-                    complete(0)
-                } else {
-                    UNAVAILABLE
-                };
-                empty.with_managed_claude()
-            }
-            (found, _, true) => complete(usize::from(found)),
-            (found, _, false) => SessionInventoryAnswer::AtLeast(usize::from(found)),
-        };
-        let observed = count_match(owner_knows, false);
+        let observed = SessionInventoryAnswer::AtLeast(usize::from(owner_knows));
         SessionInventoryPart {
+            source,
             observed,
             read: Box::pin(async move {
                 let Some(store) = &self.store else {
                     return observed;
                 };
                 match store.lock().await.session_record(&target).await {
-                    Ok(record) => count_match(owner_knows || record.is_some(), true),
+                    Ok(record) => complete(usize::from(owner_knows || record.is_some())),
                     Err(_) => observed,
                 }
             }),
         }
     }
 
-    fn endpoint_parts(
-        &self,
-        session_id: &SessionId,
-        identify_managed_claude: bool,
-    ) -> Option<[SessionInventoryPart<'_>; 2]> {
+    fn endpoint_parts(&self, session_id: &SessionId) -> Option<[SessionInventoryPart<'_>; 2]> {
         let session_id =
             collaboration_protocol::SessionId::try_from(session_id.as_str().to_owned()).ok()?;
         let [claude, cursor] = &self.endpoints;
@@ -102,8 +88,8 @@ impl ManagedProviderSessionInventory {
             session_id: session_id.clone(),
         };
         Some([
-            self.lookup_endpoint(target(claude), identify_managed_claude),
-            self.lookup_endpoint(target(cursor), false),
+            self.lookup_endpoint(target(claude), SessionInventorySource::ManagedClaude),
+            self.lookup_endpoint(target(cursor), SessionInventorySource::Independent),
         ])
     }
 }
@@ -114,7 +100,7 @@ impl SessionInventory for ManagedProviderSessionInventory {
         session_id: &'lookup SessionId,
     ) -> Pin<Box<dyn Future<Output = SessionInventoryAnswer> + Send + 'lookup>> {
         Box::pin(async move {
-            let Some([claude, cursor]) = self.endpoint_parts(session_id, false) else {
+            let Some([claude, cursor]) = self.endpoint_parts(session_id) else {
                 return UNAVAILABLE;
             };
             let (claude, cursor) = tokio::join!(claude.read, cursor.read);
@@ -127,9 +113,10 @@ impl SessionInventory for ManagedProviderSessionInventory {
         session_id: &'lookup SessionId,
         _deadline: Option<router_clock::ClockInstant>,
     ) -> Vec<SessionInventoryPart<'lookup>> {
-        match self.endpoint_parts(session_id, true) {
+        match self.endpoint_parts(session_id) {
             Some(parts) => Vec::from(parts),
             None => vec![SessionInventoryPart {
+                source: SessionInventorySource::ManagedClaude,
                 observed: UNAVAILABLE,
                 read: Box::pin(std::future::ready(UNAVAILABLE)),
             }],
