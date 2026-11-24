@@ -6028,6 +6028,7 @@ dependencies = [
  "router-clock",
  "serde",
  "serde_json",
+ "state-machine-core",
  "switchboard-machine-enrollment",
  "thiserror 2.0.18",
  "tokio",
