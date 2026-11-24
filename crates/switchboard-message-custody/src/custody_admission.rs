@@ -112,18 +112,17 @@ pub(super) struct CustodyCommandReceiver {
 }
 
 impl CustodyCommandReceiver {
-    pub(super) async fn recv(&mut self) -> Option<CustodyCommand> {
-        self.receiver.recv().await
+    pub(super) fn split(&mut self) -> (&mut StopOnExit, &mut mpsc::Receiver<CustodyCommand>) {
+        (&mut self.exit, &mut self.receiver)
     }
+}
 
-    pub(super) fn finish(&mut self) {
-        self.receiver.close();
-        // The gate is already closed. Outstanding reservations can no longer
-        // submit anything, so we need only answer messages currently queued.
-        while let Ok(command) = self.receiver.try_recv() {
-            command.refuse_unstarted();
-        }
-        self.exit.complete();
+pub(super) fn refuse_queued_commands(receiver: &mut mpsc::Receiver<CustodyCommand>) {
+    receiver.close();
+    // The gate is already closed. Outstanding reservations can no longer
+    // submit anything, so we need only answer messages currently queued.
+    while let Ok(command) = receiver.try_recv() {
+        command.refuse_unstarted();
     }
 }
 

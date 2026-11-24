@@ -14,6 +14,7 @@ use std::{
     pin::pin,
     sync::Arc,
     task::Poll,
+    thread,
 };
 use switchboard_machine_core_store::{
     InboxStore, MachineLocalStore, NewOutboxItem, OutboxQueuedWrite, OutboxRequestStatus,
@@ -30,7 +31,7 @@ use switchboard_message_custody::{
     recipient_inbox::RecipientInbox,
     recipient_sessions::RECIPIENT_LOOKUP_BUDGET,
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use workspace_model::{
     Caller, ResolvedSender,
     central_mail::{CentralMailOperation, CentralMailRequest, NoticeCadence},
@@ -308,6 +309,44 @@ async fn worker_panic_joins_the_offer_taker_and_leaves_a_queued_submit_uncertain
     assert_eq!(
         custody.stored_status(&queued).await,
         OutboxRequestStatus::NotFound
+    );
+}
+
+#[tokio::test]
+async fn a_runtime_owners_unrelated_panic_cancels_healthy_custody_members() {
+    let (retain, retained) = oneshot::channel();
+    let runtime_owner = thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let custody = runtime.block_on(async {
+            let running = RunningCustody::start().await;
+            assert!(
+                running
+                    .calls
+                    .pending_writes(thread_post(63).caller)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            running.offer_to_held_directory();
+            running.directory.entered.notified().await;
+            running
+        });
+        assert!(retain.send(custody).is_ok());
+        panic!("runtime owner's unrelated panic");
+    });
+
+    let custody = retained.await.unwrap();
+    let unrelated_panic = runtime_owner.join().unwrap_err();
+    assert_eq!(
+        unrelated_panic.downcast_ref::<&str>(),
+        Some(&"runtime owner's unrelated panic")
+    );
+    assert_eq!(
+        custody.group.join().await,
+        Err(CustodyRunFailure::Cancelled)
     );
 }
 

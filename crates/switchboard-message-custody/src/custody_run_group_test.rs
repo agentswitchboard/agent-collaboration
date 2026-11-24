@@ -76,13 +76,18 @@ async fn first_failure(cancel_offer_first: bool) -> Result<(), CustodyRunFailure
     let offer_lifetime = (offer_exit, SignalMemberExit(Some(offer_done)));
     let (panic_worker, held_worker) = oneshot::channel::<()>();
     let worker = tokio::spawn(async move {
-        let _lifetime = worker_lifetime;
-        assert_eq!(held_worker.await, Ok(()));
-        panic!("scripted custody worker panic");
+        let mut lifetime = worker_lifetime;
+        lifetime
+            .0
+            .run(async move {
+                assert_eq!(held_worker.await, Ok(()));
+                panic!("scripted custody worker panic");
+            })
+            .await;
     });
     let offer_taker = tokio::spawn(async move {
-        let _lifetime = offer_lifetime;
-        pending().await
+        let mut lifetime = offer_lifetime;
+        lifetime.0.run(pending()).await;
     });
     let cancel_offer = offer_taker.abort_handle();
     let group = retain_group(

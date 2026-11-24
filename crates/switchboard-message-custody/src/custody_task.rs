@@ -24,7 +24,7 @@ pub use crate::custody_admission::{
 pub use crate::custody_run_group::{CustodyRunFailure, CustodyRunGroup};
 
 use crate::{
-    custody_admission::{CustodyCommand, CustodyCommandReceiver, command_queue},
+    custody_admission::{CustodyCommand, command_queue, refuse_queued_commands},
     custody_link::{CustodyLink, CustodyLinkError},
     custody_operator::CustodyOperatorEvent,
     custody_run_group::{CustodyRunState, CustodyStop, StopOnExit, retain_group, wait_for_stop},
@@ -57,7 +57,7 @@ pub fn custody_task(
     sink: Arc<dyn CustodyEventSink>,
 ) -> (CustodyTaskHandle, CustodyRunGroup) {
     let stop = CustodyStop::new();
-    let (calls, commands) = command_queue(
+    let (calls, mut commands) = command_queue(
         MAX_LINK_REQUEST_BATCH_SIZE,
         StopOnExit::new(&stop, CustodyRunFailure::WorkerPanicked),
     );
@@ -70,23 +70,27 @@ pub fn custody_task(
     let inbox = custody.inbox.clone();
     let offer_taker = tokio::spawn(async move {
         let mut exit = offer_exit;
-        run_offer_taker(lane, inbox, offers_stopped, retries, saved).await;
-        exit.complete();
+        exit.run(run_offer_taker(lane, inbox, offers_stopped, retries, saved))
+            .await;
     });
     let remote_tools = Arc::new(Mutex::new(JoinSet::new()));
     let worker_tools = remote_tools.clone();
     let worker = tokio::spawn(async move {
-        let mut tools = worker_tools.lock().await;
-        run_custody(
-            custody,
-            commands,
-            offers,
-            retry_offers,
-            worker_stopped,
-            sink,
-            &mut tools,
-        )
-        .await;
+        let (exit, receiver) = commands.split();
+        let member = Box::pin(async move {
+            let mut tools = worker_tools.lock().await;
+            run_custody(
+                custody,
+                receiver,
+                offers,
+                retry_offers,
+                worker_stopped,
+                sink,
+                &mut tools,
+            )
+            .await;
+        });
+        exit.run(member).await;
     });
     (calls, retain_group(stop, worker, offer_taker, remote_tools))
 }
@@ -148,7 +152,7 @@ const LOCAL_RECOVERY_RETRY: Duration = Duration::from_secs(1);
 
 async fn run_custody(
     mut custody: CustodyLink,
-    mut commands: CustodyCommandReceiver,
+    commands: &mut mpsc::Receiver<CustodyCommand>,
     mut offers: mpsc::UnboundedReceiver<Result<TakenEvent, InboxCustodyError>>,
     retry_offers: mpsc::Sender<()>,
     mut stop: watch::Receiver<CustodyRunState>,
@@ -385,7 +389,7 @@ async fn run_custody(
             _ = tool_requests.join_next(), if !tool_requests.is_empty() => {}
         }
     }
-    commands.finish();
+    refuse_queued_commands(commands);
 }
 
 async fn handle_tool(

@@ -1,6 +1,12 @@
 //! Retains the physical completion of both custody members.
 
-use std::sync::Arc;
+use std::{
+    future::{Future, poll_fn},
+    panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
+    pin::pin,
+    sync::Arc,
+    task::Poll,
+};
 
 use tokio::{
     sync::{Mutex, watch},
@@ -109,7 +115,7 @@ pub(super) async fn wait_for_stop(stop: &mut watch::Receiver<CustodyRunState>) {
 pub(super) struct StopOnExit {
     pub(super) stop: CustodyStop,
     panic_failure: CustodyRunFailure,
-    completed: bool,
+    finished: bool,
 }
 
 impl StopOnExit {
@@ -117,25 +123,41 @@ impl StopOnExit {
         Self {
             stop: stop.clone(),
             panic_failure,
-            completed: false,
+            finished: false,
         }
     }
 
-    pub(super) fn complete(&mut self) {
-        self.completed = true;
+    pub(super) async fn run(&mut self, member: impl Future<Output = ()>) {
+        let mut member = pin!(member);
+        // Catch only panics from the member's poll. The caller retains the
+        // exit guard outside this future, including during runtime shutdown.
+        poll_fn(
+            |context| match catch_unwind(AssertUnwindSafe(|| member.as_mut().poll(context))) {
+                Ok(Poll::Pending) => Poll::Pending,
+                Ok(Poll::Ready(())) => {
+                    self.finish(None);
+                    Poll::Ready(())
+                }
+                Err(panic) => {
+                    self.finish(Some(self.panic_failure));
+                    resume_unwind(panic);
+                }
+            },
+        )
+        .await;
+    }
+
+    fn finish(&mut self, failure: Option<CustodyRunFailure>) {
+        self.stop.stop_with(failure);
+        self.finished = true;
     }
 }
 
 impl Drop for StopOnExit {
     fn drop(&mut self) {
-        let failure = if std::thread::panicking() {
-            Some(self.panic_failure)
-        } else if self.completed {
-            None
-        } else {
-            Some(CustodyRunFailure::Cancelled)
-        };
-        self.stop.stop_with(failure);
+        if !self.finished {
+            self.stop.stop_with(Some(CustodyRunFailure::Cancelled));
+        }
     }
 }
 
