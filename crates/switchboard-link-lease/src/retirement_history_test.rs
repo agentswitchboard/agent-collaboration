@@ -336,6 +336,7 @@ fn assert_ended(fixture: &Fixture, key: &EnrollmentKey, generation: u64, why: St
             key: key.clone(),
             generation: BindingGeneration::from_persisted(generation).unwrap(),
             why,
+            deployment: fixture.binding.context.deployment.clone(),
         }
     );
 }
