@@ -6,9 +6,9 @@ use switchboard_machine_core_store::{
     EnrollmentMetadataReadError, MachineIdentityError, MachineLocalStoreError,
 };
 use switchboard_machine_enrollment::{
-    CredentialStore, CredentialStoreError, DeviceInstructions, EnrollmentEnd, EnrollmentFailure,
-    EnrollmentRequest, InvalidReason, MachineId, OrganizationId, SignInClient, SignInClientError,
-    SignInDeployment, SignInFailure,
+    ApprovedEnrollmentSaveFailure, CredentialStore, CredentialStoreError, DeviceInstructions,
+    EnrollmentEnd, EnrollmentFailure, EnrollmentRequest, InvalidReason, MachineId, OrganizationId,
+    SignInClient, SignInClientError, SignInDeployment, SignInFailure,
 };
 use switchboard_machine_enrollment_store::EnrollmentStoreCloseError;
 
@@ -66,6 +66,8 @@ pub enum EnrollCommandError {
     DebugRoot(&'static str),
     #[error("The Router state directory must be a private, absolute directory.")]
     InvalidRoot,
+    #[error("The machine database and its SQLite sidecars must be regular files.")]
+    InvalidDatabasePath,
     #[error("The Router state directory could not be opened.")]
     RootFilesystem(#[source] std::io::Error),
     #[error("The Mac's local identity could not be opened.")]
@@ -162,6 +164,12 @@ fn describe_ending(failure: EnrollmentFailure) -> &'static str {
         }
         EnrollmentFailure::Store(CredentialStoreError::EnrollmentScopeMismatch) => {
             "Remove this machine first, then enroll it in the new organization or sign-in deployment."
+        }
+        EnrollmentFailure::AfterApproval(ApprovedEnrollmentSaveFailure::NotSaved(_)) => {
+            "Sign-in approved this request. The save on this Mac failed. Check codex-router enrollment status before starting again."
+        }
+        EnrollmentFailure::AfterApproval(ApprovedEnrollmentSaveFailure::OutcomeUnknown(_)) => {
+            "Sign-in approved this request. It is not known whether this Mac saved it. Check codex-router enrollment status and the enrollment at central before asking for another approval. Local status may show an older enrollment for the same organization."
         }
         EnrollmentFailure::Store(
             CredentialStoreError::Read

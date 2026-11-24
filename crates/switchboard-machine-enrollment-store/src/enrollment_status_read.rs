@@ -6,7 +6,7 @@ use switchboard_machine_core_store::{
     EnrollmentMetadataQueryError, EnrollmentMetadataReadError, MachineEnrollmentMetadataRow,
     read_machine_enrollment_row,
 };
-use switchboard_machine_enrollment::EnrollmentMetadata;
+use switchboard_machine_enrollment::{EnrollmentMetadata, MachineId};
 
 use crate::enrollment_row_mapping::enrollment_metadata;
 
@@ -15,7 +15,10 @@ use crate::enrollment_row_mapping::enrollment_metadata;
 pub enum MachineEnrollmentStatus {
     DatabaseAbsent,
     MachineAbsent,
-    Present(EnrollmentMetadata),
+    Present {
+        machine_id: MachineId,
+        metadata: EnrollmentMetadata,
+    },
 }
 
 /// Observes enrollment without initializing storage or reading a credential.
@@ -28,9 +31,10 @@ pub async fn read_machine_enrollment_status(
         MachineEnrollmentMetadataRow::Found {
             machine_id,
             enrollment,
-        } => MachineEnrollmentStatus::Present(
-            enrollment_metadata(enrollment, &machine_id)
+        } => MachineEnrollmentStatus::Present {
+            metadata: enrollment_metadata(enrollment, &machine_id)
                 .map_err(EnrollmentMetadataQueryError::from)?,
-        ),
+            machine_id,
+        },
     })
 }

@@ -2,7 +2,10 @@ use std::{
     future::ready,
     io::{self, Write},
     pin::pin,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -27,11 +30,32 @@ const ENROLLMENT: &str = "019a0000-0000-7000-8000-000000000005";
 const LABEL: &str = "Skybook";
 const USER_CODE: &str = "SHOP-LION";
 
-struct ScriptedEnrollmentStore(Mutex<StoredEnrollment>);
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ScriptedSave {
+    Applied,
+    Rejected,
+    LostAcknowledgement,
+}
+
+struct ScriptedEnrollmentStore {
+    saved: Mutex<StoredEnrollment>,
+    save: ScriptedSave,
+    write_started: AtomicBool,
+    reconciliation_read: AtomicBool,
+}
 
 impl ScriptedEnrollmentStore {
+    fn new(saved: StoredEnrollment, save: ScriptedSave) -> Self {
+        Self {
+            saved: Mutex::new(saved),
+            save,
+            write_started: AtomicBool::new(false),
+            reconciliation_read: AtomicBool::new(false),
+        }
+    }
+
     fn snapshot(&self) -> StoredEnrollment {
-        self.0.lock().expect("scripted enrollment").clone()
+        self.saved.lock().expect("scripted enrollment").clone()
     }
 }
 
@@ -41,6 +65,12 @@ impl CredentialStore for ScriptedEnrollmentStore {
     }
 
     async fn read(&self) -> Result<StoredEnrollment, CredentialStoreError> {
+        if self.save == ScriptedSave::LostAcknowledgement
+            && self.write_started.load(Ordering::SeqCst)
+        {
+            self.reconciliation_read.store(true, Ordering::SeqCst);
+            return Err(CredentialStoreError::Read);
+        }
         Ok(self.snapshot())
     }
 
@@ -60,9 +90,19 @@ impl CredentialStore for ScriptedEnrollmentStore {
         expected: BindingGeneration,
         binding: &EnrollmentBinding,
     ) -> Result<ConditionalWrite, CredentialStoreError> {
-        let mut saved = self.0.lock().expect("scripted enrollment");
+        assert!(
+            !self.write_started.swap(true, Ordering::SeqCst),
+            "only one approved save is expected"
+        );
+        let mut saved = self.saved.lock().expect("scripted enrollment");
         assert_eq!(saved.generation(), expected);
+        if self.save == ScriptedSave::Rejected {
+            return Err(CredentialStoreError::Replace);
+        }
         *saved = StoredEnrollment::Active(binding.clone());
+        if self.save == ScriptedSave::LostAcknowledgement {
+            return Err(CredentialStoreError::OutcomeNotKnown);
+        }
         Ok(ConditionalWrite::Applied)
     }
 
@@ -110,15 +150,18 @@ impl Write for EnrollmentOutput<'_> {
 
 #[tokio::test]
 async fn approved_enrollment_displays_instructions_then_installs_and_reports_success() {
-    let (terminal, result) = run_approved_enrollment(Ok(())).await;
+    let (terminal, result) = run_approved_enrollment(ScriptedSave::Applied, Ok(())).await;
     result.expect("enrollment installed");
     assert!(terminal.ends_with("Code SHOP-LION\nThis Mac is enrolled.\n"));
 }
 
 #[tokio::test]
 async fn enrollment_close_failure_points_to_status_after_install() {
-    let (terminal, result) =
-        run_approved_enrollment(Err(EnrollmentStoreCloseError::WorkerStopped)).await;
+    let (terminal, result) = run_approved_enrollment(
+        ScriptedSave::Applied,
+        Err(EnrollmentStoreCloseError::WorkerStopped),
+    )
+    .await;
     assert!(terminal.ends_with("Code SHOP-LION\n"));
     assert_eq!(
         result.expect_err("the store could not close").to_string(),
@@ -126,7 +169,33 @@ async fn enrollment_close_failure_points_to_status_after_install() {
     );
 }
 
+#[tokio::test]
+async fn approved_enrollment_reports_a_definite_local_save_failure() {
+    let (terminal, result) = run_approved_enrollment(ScriptedSave::Rejected, Ok(())).await;
+    assert!(terminal.ends_with("Code SHOP-LION\n"));
+    assert!(!terminal.contains("This Mac is enrolled."));
+    assert_eq!(
+        result.expect_err("local save was refused").to_string(),
+        "Sign-in approved this request. The save on this Mac failed. Check codex-router enrollment status before starting again."
+    );
+}
+
+#[tokio::test]
+async fn approved_enrollment_reports_an_unknown_local_save_outcome() {
+    let (terminal, result) =
+        run_approved_enrollment(ScriptedSave::LostAcknowledgement, Ok(())).await;
+    assert!(terminal.ends_with("Code SHOP-LION\n"));
+    assert!(!terminal.contains("This Mac is enrolled."));
+    assert_eq!(
+        result
+            .expect_err("local save acknowledgement and reconciliation were lost")
+            .to_string(),
+        "Sign-in approved this request. It is not known whether this Mac saved it. Check codex-router enrollment status and the enrollment at central before asking for another approval. Local status may show an older enrollment for the same organization."
+    );
+}
+
 async fn run_approved_enrollment(
+    save: ScriptedSave,
     closing: Result<(), EnrollmentStoreCloseError>,
 ) -> (String, Result<(), EnrollCommandError>) {
     let clock = fixture_clock();
@@ -145,7 +214,7 @@ async fn run_approved_enrollment(
     .expect("fixture client");
     let script = tokio::spawn(serve_approval(listener, origin.clone()));
     let machine_id: MachineId = MACHINE.parse().expect("fixture machine ID");
-    let store = ScriptedEnrollmentStore(Mutex::new(StoredEnrollment::Empty));
+    let store = ScriptedEnrollmentStore::new(StoredEnrollment::Empty, save);
     let mut output = EnrollmentOutput {
         store: &store,
         captured: Vec::new(),
@@ -183,12 +252,21 @@ async fn run_approved_enrollment(
         !output.instructions_after_install,
         "displayed device instructions after install"
     );
-    let StoredEnrollment::Active(binding) = store.snapshot() else {
-        panic!("the approved binding was not installed");
-    };
-    assert_eq!(binding.context.machine_id, machine_id);
-    assert_eq!(binding.context.organization_id, organization_id());
-    assert_eq!(binding.credential.enrollment_id.to_string(), ENROLLMENT);
+    assert!(store.write_started.load(Ordering::SeqCst));
+    assert_eq!(
+        store.reconciliation_read.load(Ordering::SeqCst),
+        save == ScriptedSave::LostAcknowledgement
+    );
+    if save == ScriptedSave::Rejected {
+        assert!(matches!(store.snapshot(), StoredEnrollment::Empty));
+    } else {
+        let StoredEnrollment::Active(binding) = store.snapshot() else {
+            panic!("the approved binding was not installed");
+        };
+        assert_eq!(binding.context.machine_id, machine_id);
+        assert_eq!(binding.context.organization_id, organization_id());
+        assert_eq!(binding.credential.enrollment_id.to_string(), ENROLLMENT);
+    }
     let captured = String::from_utf8(output.captured).expect("UTF-8 terminal");
     assert!(captured.starts_with(&format!("Open {origin}device?user_code={USER_CODE}\n")));
     (captured, result)
@@ -203,19 +281,22 @@ async fn existing_scope_refusal_reports_remove_first_without_contacting_sign_in(
     )
     .expect("fixture client");
     let machine_id: MachineId = MACHINE.parse().expect("fixture machine ID");
-    let store = ScriptedEnrollmentStore(Mutex::new(StoredEnrollment::Ended {
-        generation: BindingGeneration::from_persisted(1).expect("fixture generation"),
-        key: EnrollmentKey {
-            machine_id: machine_id.clone(),
-            organization_id: organization_id(),
-            enrollment_id: ENROLLMENT.parse().expect("fixture enrollment ID"),
+    let store = ScriptedEnrollmentStore::new(
+        StoredEnrollment::Ended {
+            generation: BindingGeneration::from_persisted(1).expect("fixture generation"),
+            key: EnrollmentKey {
+                machine_id: machine_id.clone(),
+                organization_id: organization_id(),
+                enrollment_id: ENROLLMENT.parse().expect("fixture enrollment ID"),
+            },
+            why: EnrollmentEnd::Revoked,
+            deployment: SignInDeployment::new(
+                "https://other.example/".parse().expect("fixture origin"),
+            )
+            .expect("fixture deployment"),
         },
-        why: EnrollmentEnd::Revoked,
-        deployment: SignInDeployment::new(
-            "https://other.example/".parse().expect("fixture origin"),
-        )
-        .expect("fixture deployment"),
-    }));
+        ScriptedSave::Applied,
+    );
     let mut output = Vec::new();
     let result = run_enroll(
         organization_id(),

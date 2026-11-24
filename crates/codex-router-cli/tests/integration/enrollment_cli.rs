@@ -2,6 +2,10 @@ use std::{
     borrow::Cow, ffi::OsString, fs, io, os::unix::fs::DirBuilderExt, path::Path, process::Output,
 };
 
+use sqlx::{
+    Connection, SqliteConnection,
+    sqlite::{SqliteConnectOptions, SqliteLockingMode},
+};
 use switchboard_machine_core_store::{
     EnrollmentMetadataQueryError, EnrollmentMetadataReadError, EnrollmentRowChange,
     EnrollmentRowCorruption, EnrollmentRowWrite, MACHINE_LOCAL_DATABASE, MachineLocalStore,
@@ -17,6 +21,14 @@ const SIGN_IN: &str = "https://signin.example/";
 const NOW_MS: i64 = 1_790_000_000_000;
 
 fn compiled_cli(home: &Path, args: &[&str], root_override: Option<&Path>) -> io::Result<Output> {
+    compiled_cli_command(home, args, root_override).output()
+}
+
+fn compiled_cli_command(
+    home: &Path,
+    args: &[&str],
+    root_override: Option<&Path>,
+) -> std::process::Command {
     let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_codex-router"));
     command
         .env("HOME", home)
@@ -27,7 +39,7 @@ fn compiled_cli(home: &Path, args: &[&str], root_override: Option<&Path>) -> io:
     if let Some(root) = root_override {
         command.env("CODEX_ROUTER_DEBUG_ROUTER_ROOT", root);
     }
-    command.output()
+    command
 }
 
 fn stdout(output: &Output) -> Cow<'_, str> {
@@ -94,15 +106,26 @@ async fn fresh_enrollment_status_creates_nothing() {
         .await
         .expect("fixture database without identity");
     store.close().await.expect("close fixture database");
-    let before = files_in(&router_root).expect("read fixture state");
+    let before = fs::read(&database).expect("machine database");
     let result =
         compiled_cli(home.path(), &["enrollment", "status"], None).expect("run signed Router CLI");
     assert_eq!(stdout(&result), "This Mac is not enrolled.\n");
-    assert_eq!(files_in(&router_root).expect("read fixture state"), before);
+    assert_eq!(fs::read(&database).expect("machine database"), before);
     assert!(matches!(
         read_machine_enrollment_status(&database).await,
         Ok(MachineEnrollmentStatus::MachineAbsent)
     ));
+    let machine_id = load_or_create_machine_id(&router_root, NOW_MS)
+        .await
+        .expect("fixture machine ID");
+    let before = fs::read(&database).expect("machine database");
+    let result =
+        compiled_cli(home.path(), &["enrollment", "status"], None).expect("run signed Router CLI");
+    assert_eq!(
+        stdout(&result),
+        format!("This Mac is not enrolled.\nMachine: {machine_id}\n")
+    );
+    assert_eq!(fs::read(&database).expect("machine database"), before);
 }
 
 #[cfg(debug_assertions)]
@@ -163,16 +186,16 @@ async fn compiled_status_reports_active_and_ended_rows_without_writing() {
     assert_eq!(applied, EnrollmentRowWrite::Applied);
     store.close().await.expect("close seed store");
 
-    let before = files_in(&router_root).expect("read fixture state");
+    let before = fs::read(&database).expect("machine database");
     let active =
         compiled_cli(home.path(), &["enrollment", "status"], None).expect("run signed Router CLI");
     assert_eq!(
         stdout(&active),
         format!(
-            "This Mac is enrolled.\nOrganization: {ORGANIZATION}\nSign-in: {SIGN_IN}\nThis is what the Mac has stored. It does not show whether the link to central is up.\n"
+            "This Mac is enrolled.\nMachine: {machine_id}\nOrganization: {ORGANIZATION}\nSign-in: {SIGN_IN}\nThis is what the Mac has stored. It does not show whether the link to central is up.\n"
         )
     );
-    assert_eq!(files_in(&router_root).expect("read fixture state"), before);
+    assert_eq!(fs::read(&database).expect("machine database"), before);
 
     let mut store = MachineLocalStore::open(&database)
         .await
@@ -186,16 +209,16 @@ async fn compiled_status_reports_active_and_ended_rows_without_writing() {
     assert_eq!(applied, EnrollmentRowWrite::Applied);
     store.close().await.expect("close seed store");
 
-    let before = files_in(&router_root).expect("read fixture state");
+    let before = fs::read(&database).expect("machine database");
     let ended =
         compiled_cli(home.path(), &["enrollment", "status"], None).expect("run signed Router CLI");
     assert_eq!(
         stdout(&ended),
         format!(
-            "This Mac's enrollment ended: the enrollment was revoked.\nOrganization: {ORGANIZATION}\n"
+            "This Mac's enrollment ended: the enrollment was revoked.\nMachine: {machine_id}\nOrganization: {ORGANIZATION}\n"
         )
     );
-    assert_eq!(files_in(&router_root).expect("read fixture state"), before);
+    assert_eq!(fs::read(&database).expect("machine database"), before);
 }
 
 #[tokio::test]
@@ -232,7 +255,7 @@ async fn compiled_status_reads_current_enrollment_from_an_open_wal_without_writi
     assert_eq!(
         stdout(&active),
         format!(
-            "This Mac is enrolled.\nOrganization: {ORGANIZATION}\nSign-in: {SIGN_IN}\nThis is what the Mac has stored. It does not show whether the link to central is up.\n"
+            "This Mac is enrolled.\nMachine: {machine_id}\nOrganization: {ORGANIZATION}\nSign-in: {SIGN_IN}\nThis is what the Mac has stored. It does not show whether the link to central is up.\n"
         ),
         "status must report the current active enrollment from the open WAL",
     );
@@ -262,7 +285,7 @@ async fn compiled_status_reads_current_enrollment_from_an_open_wal_without_writi
     assert_eq!(
         stdout(&ended),
         format!(
-            "This Mac's enrollment ended: the enrollment was revoked.\nOrganization: {ORGANIZATION}\n"
+            "This Mac's enrollment ended: the enrollment was revoked.\nMachine: {machine_id}\nOrganization: {ORGANIZATION}\n"
         ),
         "status must report the current ended enrollment from the open WAL",
     );
@@ -321,12 +344,12 @@ async fn compiled_status_refuses_unreadable_database_and_corrupt_metadata() {
         .expect("fixture Router root");
     let database = root.join(MACHINE_LOCAL_DATABASE);
     fs::write(&database, b"not a database").expect("unreadable database fixture");
-    let before = files_in(&root).expect("read fixture state");
+    let before = fs::read(&database).expect("machine database");
     assert_status_error(
         &compiled_cli(home.path(), &["enrollment", "status"], None).expect("run signed Router CLI"),
         "could not read the machine database",
     );
-    assert_eq!(files_in(&root).expect("read fixture state"), before);
+    assert_eq!(fs::read(&database).expect("machine database"), before);
     assert!(matches!(
         read_machine_enrollment_status(&database).await,
         Err(EnrollmentMetadataReadError::Query(
@@ -356,12 +379,12 @@ async fn compiled_status_refuses_unreadable_database_and_corrupt_metadata() {
         .await
         .expect("seed corrupt deployment");
     store.close().await.expect("close seed store");
-    let before = files_in(&root).expect("read fixture state");
+    let before = fs::read(&database).expect("machine database");
     assert_status_error(
         &compiled_cli(home.path(), &["enrollment", "status"], None).expect("run signed Router CLI"),
         "stored enrollment metadata is corrupt",
     );
-    assert_eq!(files_in(&root).expect("read fixture state"), before);
+    assert_eq!(fs::read(&database).expect("machine database"), before);
     assert!(matches!(
         read_machine_enrollment_status(&database).await,
         Err(EnrollmentMetadataReadError::Query(
@@ -385,4 +408,106 @@ fn default_fixture_root(home: &Path) -> std::path::PathBuf {
     } else {
         ".codex-router"
     })
+}
+
+#[cfg(debug_assertions)]
+#[tokio::test]
+async fn linked_database_and_sidecars_are_refused_before_sign_in_or_status() {
+    let home = tempfile::tempdir().expect("fixture home");
+    let production = home.path().join(".codex-router");
+    let debug = home.path().join(".codex-router-debug");
+    for root in [&production, &debug] {
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(root)
+            .expect("private fixture root");
+    }
+    let production_database = production.join(MACHINE_LOCAL_DATABASE);
+    load_or_create_machine_id(&production, NOW_MS)
+        .await
+        .expect("protected fixture identity");
+    let before = files_in(&production).expect("protected fixture files");
+    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("listen only for unexpected sign-in TCP connections");
+    let sign_in = format!(
+        "https://{}/",
+        listener.local_addr().expect("fixture address")
+    );
+
+    for leaf in [
+        MACHINE_LOCAL_DATABASE.to_owned(),
+        format!("{MACHINE_LOCAL_DATABASE}-wal"),
+        format!("{MACHINE_LOCAL_DATABASE}-shm"),
+    ] {
+        let link = debug.join(leaf);
+        std::os::unix::fs::symlink(&production_database, &link).expect("protected leaf alias");
+        for args in [
+            &[
+                "enroll",
+                "--organization",
+                ORGANIZATION,
+                "--sign-in",
+                &sign_in,
+            ][..],
+            &["enrollment", "status"][..],
+        ] {
+            let mut process =
+                tokio::process::Command::from(compiled_cli_command(home.path(), args, None));
+            process.kill_on_drop(true);
+            let output = tokio::select! {
+                biased;
+                connection = listener.accept() => panic!("the linked database path reached sign-in: {:?}", connection.map(|(_, address)| address)),
+                result = process.output() => result.expect("run signed Router CLI"),
+            };
+            assert_status_error(
+                &output,
+                "machine database and its SQLite sidecars must be regular files",
+            );
+            assert_eq!(
+                files_in(&production).expect("protected fixture files"),
+                before
+            );
+        }
+        fs::remove_file(&link).expect("remove just the fixture alias");
+    }
+    assert!(files_in(&debug).expect("debug fixture files").is_empty());
+}
+
+#[tokio::test]
+async fn compiled_status_reports_sqlite_busy_without_printing_a_state() {
+    let home = tempfile::tempdir().expect("fixture home");
+    let root = default_fixture_root(home.path());
+    fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&root)
+        .expect("private fixture root");
+    load_or_create_machine_id(&root, NOW_MS)
+        .await
+        .expect("fixture identity");
+    let database = root.join(MACHINE_LOCAL_DATABASE);
+    let options = SqliteConnectOptions::new()
+        .filename(&database)
+        .locking_mode(SqliteLockingMode::Exclusive);
+    let mut writer = SqliteConnection::connect_with(&options)
+        .await
+        .expect("open fixture writer");
+    let mut held = writer
+        .begin_with("BEGIN EXCLUSIVE")
+        .await
+        .expect("hold SQLite exclusive lock");
+    sqlx::query_scalar::<_, i64>("SELECT count(*) FROM machine_identity")
+        .fetch_one(&mut *held)
+        .await
+        .expect("hold the WAL database open");
+
+    let output =
+        compiled_cli(home.path(), &["enrollment", "status"], None).expect("run signed Router CLI");
+    assert_status_error(&output, "the machine database is busy or locked. Try again");
+    assert!(matches!(
+        read_machine_enrollment_status(&database).await,
+        Err(EnrollmentMetadataReadError::Busy(_))
+    ));
+    held.rollback().await.expect("release exclusive lock");
+    writer.close().await.expect("close fixture writer");
 }

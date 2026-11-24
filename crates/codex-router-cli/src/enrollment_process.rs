@@ -1,18 +1,11 @@
 //! Opens the machine identity and enrollment store for the Router CLI.
 
-use std::{
-    ffi::OsStr,
-    fs, io,
-    os::unix::fs::{DirBuilderExt, PermissionsExt},
-    path::Path,
-    sync::Arc,
-};
+use std::{ffi::OsStr, io, path::Path, sync::Arc};
 
 use router_clock::{RuntimeClock, SystemRuntimeClock};
-use switchboard_machine_core_store::{MACHINE_LOCAL_DATABASE, load_or_create_machine_id};
 use switchboard_machine_enrollment::MachineId;
 use switchboard_machine_enrollment_store::{
-    MachineEnrollmentStatus, MachineEnrollmentStore, read_machine_enrollment_status,
+    MachineEnrollmentStore, read_machine_enrollment_status,
 };
 
 use crate::{
@@ -22,28 +15,24 @@ use crate::{
     enrollment_status::write_enrollment_status,
 };
 
+#[path = "enrollment_root.rs"]
+mod enrollment_root;
+use enrollment_root::ValidatedEnrollmentRoot;
+
 pub(crate) async fn enroll_from_process(
     arguments: EnrollArguments,
     root: &Path,
     output: &mut (impl io::Write + Send),
 ) -> Result<(), EnrollCommandError> {
-    if !validate_enrollment_root(root)? {
-        match fs::DirBuilder::new().mode(0o700).create(root) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(EnrollCommandError::RootFilesystem(error)),
-        }
-    }
+    let root = ValidatedEnrollmentRoot::prepare(root)?;
     let clock: Arc<dyn RuntimeClock + Send + Sync> = Arc::new(SystemRuntimeClock::new());
-    let machine_id = load_or_create_machine_id(root, clock.now().unix_millis())
-        .await
-        .map_err(EnrollCommandError::MachineIdentity)?;
+    let machine_id = root.load_machine_id(clock.now().unix_millis()).await?;
     let hostname = nix::unistd::gethostname().ok();
     let machine_label = enrollment_machine_label(hostname.as_deref(), &machine_id);
     let client = create_sign_in_client(&arguments.sign_in, Arc::clone(&clock))?;
     let store = MachineEnrollmentStore::open(
-        &root.join(MACHINE_LOCAL_DATABASE),
-        root.join("secrets"),
+        &root.database_path()?,
+        root.secret_root(),
         machine_id.clone(),
         clock,
     )
@@ -67,54 +56,11 @@ pub(crate) async fn enrollment_status_from_process(
     root: &Path,
     output: &mut (impl io::Write + Send),
 ) -> Result<(), EnrollCommandError> {
-    validate_enrollment_root(root)?;
-    let status = read_machine_enrollment_status(&root.join(MACHINE_LOCAL_DATABASE))
+    let root = ValidatedEnrollmentRoot::from_process(root)?;
+    let status = read_machine_enrollment_status(&root.database_path()?)
         .await
         .map_err(EnrollCommandError::StatusRead)?;
-    let metadata = match status {
-        MachineEnrollmentStatus::DatabaseAbsent | MachineEnrollmentStatus::MachineAbsent => {
-            switchboard_machine_enrollment::EnrollmentMetadata::Empty
-        }
-        MachineEnrollmentStatus::Present(metadata) => metadata,
-    };
-    write_enrollment_status(output, &metadata).map_err(|_| EnrollCommandError::Output)
-}
-
-fn validate_enrollment_root(root: &Path) -> Result<bool, EnrollCommandError> {
-    #[cfg(debug_assertions)]
-    validate_debug_enrollment_root(root)?;
-    if !root.is_absolute() {
-        return Err(EnrollCommandError::InvalidRoot);
-    }
-    match fs::symlink_metadata(root) {
-        Ok(metadata) if metadata.is_dir() && metadata.permissions().mode() & 0o077 == 0 => Ok(true),
-        Ok(_) => Err(EnrollCommandError::InvalidRoot),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(EnrollCommandError::RootFilesystem(error)),
-    }
-}
-
-#[cfg(debug_assertions)]
-fn validate_debug_enrollment_root(root: &Path) -> Result<(), EnrollCommandError> {
-    let user = nix::unistd::User::from_uid(nix::unistd::getuid())
-        .map_err(|_| {
-            EnrollCommandError::DebugRoot("Could not identify the account's home directory.")
-        })?
-        .ok_or(EnrollCommandError::DebugRoot(
-            "Could not identify the account's home directory.",
-        ))?;
-    if let Some(home) = std::env::var_os("HOME").filter(|home| !home.is_empty()) {
-        codex_native_integration::validate_debug_directory(
-            root,
-            &Path::new(&home).join(crate::DEFAULT_ROUTER_ROOT_DIR),
-        )
-        .map_err(EnrollCommandError::DebugRoot)?;
-    }
-    codex_native_integration::validate_debug_directory(
-        root,
-        &user.dir.join(crate::DEFAULT_ROUTER_ROOT_DIR),
-    )
-    .map_err(EnrollCommandError::DebugRoot)
+    write_enrollment_status(output, &status).map_err(|_| EnrollCommandError::Output)
 }
 
 fn enrollment_machine_label<'label>(

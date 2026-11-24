@@ -58,24 +58,40 @@ fn is_sqlite_busy_or_locked(error: &sqlx::Error) -> bool {
         .is_some_and(|code| matches!(code & SQLITE_PRIMARY_CODE_MASK, SQLITE_BUSY | SQLITE_LOCKED))
 }
 
-/// Observes an existing database without creating a database file or changing any rows.
+/// Reads one SQLite snapshot without creating a root, database, or row, running
+/// migrations, changing journal mode, or issuing a write transaction. SQLite
+/// may create or map WAL/SHM sidecars for an existing database and briefly
+/// acquire its internal WAL lock to recover the index.
 pub async fn read_machine_enrollment_row(
     database: &Path,
 ) -> Result<MachineEnrollmentMetadataRow, EnrollmentMetadataReadError> {
-    if existing_file_size(database)?.is_none() {
+    let Some(options) = existing_database_read_options(database)? else {
         return Ok(MachineEnrollmentMetadataRow::DatabaseAbsent);
+    };
+    read_enrollment_snapshot(&options).await
+}
+
+fn existing_database_read_options(database: &Path) -> io::Result<Option<SqliteConnectOptions>> {
+    match fs::symlink_metadata(database) {
+        Ok(metadata) if metadata.is_file() => Ok(Some(
+            SqliteConnectOptions::new()
+                .filename(database)
+                .create_if_missing(false)
+                .read_only(true),
+        )),
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "expected a regular file",
+        )),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
     }
-    let mut wal = database.as_os_str().to_owned();
-    wal.push("-wal");
-    let has_nonempty_wal = existing_file_size(Path::new(&wal))?.is_some_and(|size| size != 0);
-    // Use SQLite's WAL reader when committed changes may still be in the log.
-    // Without a log, the immutable reader avoids creating sidecar files.
-    let options = SqliteConnectOptions::new()
-        .filename(database)
-        .create_if_missing(false)
-        .read_only(true)
-        .immutable(!has_nonempty_wal);
-    let mut connection = SqliteConnection::connect_with(&options)
+}
+
+async fn read_enrollment_snapshot(
+    options: &SqliteConnectOptions,
+) -> Result<MachineEnrollmentMetadataRow, EnrollmentMetadataReadError> {
+    let mut connection = SqliteConnection::connect_with(options)
         .await
         .map_err(EnrollmentMetadataQueryError::from)?;
     let result = fetch_enrollment_metadata(&mut connection, None).await;
@@ -89,18 +105,6 @@ pub async fn read_machine_enrollment_row(
         },
         None => MachineEnrollmentMetadataRow::MachineAbsent,
     })
-}
-
-fn existing_file_size(path: &Path) -> io::Result<Option<u64>> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_file() => Ok(Some(metadata.len())),
-        Ok(_) => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "expected a regular file",
-        )),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error),
-    }
 }
 
 pub(super) async fn fetch_enrollment_metadata(
@@ -144,3 +148,7 @@ pub(super) fn parse_machine_id(stored_id: &[u8]) -> Result<MachineId, Enrollment
         .and_then(|value| value.parse().ok())
         .ok_or(EnrollmentRowCorruption::MachineId)
 }
+
+#[cfg(test)]
+#[path = "enrollment_metadata_read_test.rs"]
+mod tests;

@@ -3,19 +3,31 @@
 use std::io::{self, Write};
 
 use switchboard_machine_enrollment::{EnrollmentEnd, EnrollmentMetadata, InvalidReason};
+use switchboard_machine_enrollment_store::MachineEnrollmentStatus;
 
 pub(crate) const ENROLLED_TEXT: &str = "This Mac is enrolled.";
 
 pub(crate) fn write_enrollment_status(
     output: &mut impl Write,
-    metadata: &EnrollmentMetadata,
+    status: &MachineEnrollmentStatus,
 ) -> io::Result<()> {
+    let MachineEnrollmentStatus::Present {
+        machine_id,
+        metadata,
+    } = status
+    else {
+        return writeln!(output, "This Mac is not enrolled.");
+    };
     match metadata {
-        EnrollmentMetadata::Empty => writeln!(output, "This Mac is not enrolled."),
+        EnrollmentMetadata::Empty => {
+            writeln!(output, "This Mac is not enrolled.")?;
+            writeln!(output, "Machine: {}", machine_id.as_str())
+        }
         EnrollmentMetadata::Active {
             key, deployment, ..
         } => {
             writeln!(output, "{ENROLLED_TEXT}")?;
+            writeln!(output, "Machine: {}", machine_id.as_str())?;
             writeln!(output, "Organization: {}", key.organization_id)?;
             writeln!(output, "Sign-in: {}", deployment.origin())?;
             writeln!(
@@ -29,6 +41,7 @@ pub(crate) fn write_enrollment_status(
                 "This Mac's enrollment ended: {}.",
                 ending_reason(*why)
             )?;
+            writeln!(output, "Machine: {}", machine_id.as_str())?;
             writeln!(output, "Organization: {}", key.organization_id)
         }
     }
