@@ -41,6 +41,12 @@ struct CustodyJoins {
 }
 
 impl CustodyRunGroup {
+    /// Observes revoked admission without collecting the group's owned work.
+    /// A member exiting revokes admission before its join handle is ready.
+    pub async fn admission_stopped(&self) {
+        wait_for_stop(&mut self.stop.0.subscribe()).await;
+    }
+
     pub fn request_stop(&self) {
         self.stop.request();
     }

@@ -1,33 +1,4 @@
-use std::{path::PathBuf, sync::Arc};
-
-use router_clock::RuntimeClock;
-use switchboard_message_custody::{
-    custody_task::{CustodyEventSink, CustodyTaskEvent},
-    recipient_sessions::RecipientSessionDirectory,
-};
-use switchboard_message_unit::{MessageRuntime, MessageUnitEvents};
-
-#[derive(Clone)]
-pub(crate) struct HostMessageRoots {
-    state: PathBuf,
-    secrets: PathBuf,
-}
-
-impl HostMessageRoots {
-    pub(crate) fn new(state: PathBuf, secrets: PathBuf) -> Self {
-        Self { state, secrets }
-    }
-
-    pub(super) async fn start(
-        self,
-        clock: Arc<dyn RuntimeClock>,
-        recipients: Arc<dyn RecipientSessionDirectory>,
-        custody_events: Arc<dyn CustodyEventSink>,
-    ) -> MessageRuntime {
-        let events = MessageUnitEvents::new(custody_events);
-        MessageRuntime::start(&self.state, self.secrets, clock, recipients, events).await
-    }
-}
+use switchboard_message_custody::custody_task::{CustodyEventSink, CustodyTaskEvent};
 
 pub(super) struct HostCustodyEvents;
 
