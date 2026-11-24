@@ -238,7 +238,7 @@ impl Fixture {
         );
         let retirements = owner.retirement_fence();
         prepare(&retirements, &binding.key());
-        let source = EnrollmentLeaseSource::start(owner, clock.clone());
+        let source = EnrollmentLeaseSource::start(owner, clock.clone(), Arc::new(BTreeSet::new()));
         Self {
             source,
             store,
@@ -259,6 +259,21 @@ impl Fixture {
             expires_in: Duration::from_secs(60),
         })
     }
+}
+
+pub(crate) fn clean_join() -> LeaseJoin {
+    LeaseJoin {
+        unsettled_retirements: vec![],
+        worker: Ok(()),
+    }
+}
+
+pub(crate) async fn stop_lease(
+    source: &EnrollmentLeaseSource,
+    clock: &dyn RuntimeClock,
+) -> LeaseJoin {
+    source.request_stop_by(clock.monotonic_now().after(Duration::from_secs(5)));
+    source.join().await
 }
 
 async fn start_acquire<'a>(
@@ -284,26 +299,29 @@ async fn dropping_the_caller_drains_the_started_refresh_into_storage() {
     reply.send(fixture.rotated()).unwrap();
 
     assert_eq!(
-        fixture.source.close().await.unwrap(),
-        UnfinishedLeaseWork::default()
+        stop_lease(&fixture.source, fixture.clock.as_ref()).await,
+        clean_join()
     );
     assert_eq!(fixture.store.row.borrow().generation().get(), 2);
 }
 
 #[tokio::test]
-async fn close_bounds_a_held_refresh_and_lists_its_key() {
+async fn stop_cancels_a_held_refresh_at_the_cutoff() {
     let mut fixture = Fixture::new();
     let key = fixture.binding.key();
     let acquire = start_acquire(&fixture.source, &key).await;
     let held_sign_in = fixture.refreshes.recv().await.unwrap();
-    let mut close = std::pin::pin!(fixture.source.close());
+    fixture
+        .source
+        .request_stop_by(ClockInstant::ZERO.after(Duration::from_secs(5)));
+    let mut close = std::pin::pin!(fixture.source.join());
     tokio::select! {
         result = &mut close => panic!("close returned before its deadline: {result:?}"),
         () = fixture.clock.not_due_check_now(ClockInstant::ZERO.after(Duration::from_secs(5))) => {}
     }
     fixture.clock.advance(Duration::from_secs(5)).unwrap();
 
-    assert_eq!(close.await.unwrap().acquisitions, vec![key.clone()]);
+    assert_eq!(close.await, clean_join());
     assert_eq!(acquire.await, Err(LeaseFailure::Fault));
     assert!(held_sign_in.is_closed());
 }
@@ -345,8 +363,8 @@ async fn end_fences_immediately_retries_and_keeps_the_first_cause() {
         Err(LeaseFailure::EnrollmentEnded)
     );
     assert_eq!(
-        fixture.source.close().await.unwrap(),
-        UnfinishedLeaseWork::default()
+        stop_lease(&fixture.source, fixture.clock.as_ref()).await,
+        clean_join()
     );
 }
 
@@ -362,10 +380,10 @@ async fn closing_reports_retirements_whose_final_attempt_cannot_write() {
         .await;
 
     assert_eq!(
-        fixture.source.close().await.unwrap(),
-        UnfinishedLeaseWork {
-            acquisitions: vec![],
-            retirements: vec![key],
+        stop_lease(&fixture.source, fixture.clock.as_ref()).await,
+        LeaseJoin {
+            unsettled_retirements: vec![key],
+            worker: Ok(())
         }
     );
 }
@@ -423,8 +441,8 @@ async fn a_stale_refusal_releases_the_fence_for_the_same_keys_newer_generation()
         .unwrap();
     assert_eq!(second.await.unwrap().window.version, LeaseVersion(3));
     assert_eq!(
-        fixture.source.close().await.unwrap(),
-        UnfinishedLeaseWork::default()
+        stop_lease(&fixture.source, fixture.clock.as_ref()).await,
+        clean_join()
     );
 }
 
@@ -436,8 +454,8 @@ async fn central_ended_cause_preserves_the_distinct_stored_reason() {
         .source
         .end(&key, EnrollmentEnd::ConnectionEnrollmentEnded);
     assert_eq!(
-        fixture.source.close().await.unwrap(),
-        UnfinishedLeaseWork::default()
+        stop_lease(&fixture.source, fixture.clock.as_ref()).await,
+        clean_join()
     );
     assert_eq!(
         fixture.store.row.borrow().clone(),
@@ -471,8 +489,8 @@ async fn a_queued_acquire_does_not_start_refresh_after_the_key_is_fenced() {
         request = fixture.refreshes.recv() => panic!("the queued acquire reached sign-in: {}", request.is_some()),
     }
     assert_eq!(
-        fixture.source.close().await.unwrap(),
-        UnfinishedLeaseWork::default()
+        stop_lease(&fixture.source, fixture.clock.as_ref()).await,
+        clean_join()
     );
 }
 
@@ -500,8 +518,8 @@ async fn a_dispatched_acquire_cannot_start_sign_in_when_its_held_read_returns_af
         request = fixture.refreshes.recv() => panic!("sign-in started after end: {}", request.is_some()),
     }
     assert_eq!(
-        source.close().await.unwrap(),
-        UnfinishedLeaseWork::default()
+        stop_lease(&source, fixture.clock.as_ref()).await,
+        clean_join()
     );
 }
 
@@ -545,8 +563,8 @@ async fn a_definitive_end_waiting_behind_a_stale_refusal_keeps_the_key_fenced() 
     assert!(release_read.send(Box::new(|| {})).is_ok());
 
     assert_eq!(
-        fixture.source.close().await.unwrap(),
-        UnfinishedLeaseWork::default()
+        stop_lease(&fixture.source, fixture.clock.as_ref()).await,
+        clean_join()
     );
     assert_eq!(
         fixture.store.row.borrow().clone(),
@@ -571,7 +589,10 @@ async fn forced_close_abandons_a_rotated_credential_held_before_storage() {
     let acquire = start_acquire(&fixture.source, &key).await;
     let held_sign_in = fixture.refreshes.recv().await.unwrap();
 
-    let mut close = std::pin::pin!(fixture.source.close());
+    fixture
+        .source
+        .request_stop_by(ClockInstant::ZERO.after(Duration::from_secs(5)));
+    let mut close = std::pin::pin!(fixture.source.join());
     tokio::select! {
         result = &mut close => panic!("close returned before its deadline: {result:?}"),
         () = fixture.clock.not_due_check_now(ClockInstant::ZERO.after(Duration::from_secs(5))) => {}
@@ -580,7 +601,7 @@ async fn forced_close_abandons_a_rotated_credential_held_before_storage() {
     held_sign_in.send(fixture.rotated()).unwrap();
     writing.await.unwrap();
     fixture.clock.advance(Duration::from_secs(1)).unwrap();
-    assert_eq!(close.await.unwrap().acquisitions, vec![key.clone()]);
+    assert_eq!(close.await, clean_join());
     assert_eq!(acquire.await, Err(LeaseFailure::Fault));
 
     assert!(release_write.send(Box::new(|| {})).is_err());
@@ -588,33 +609,24 @@ async fn forced_close_abandons_a_rotated_credential_held_before_storage() {
 }
 
 #[tokio::test]
-async fn close_uses_the_first_call_deadline_even_if_the_supervisor_polls_late() {
+async fn an_earlier_stop_tightens_the_live_cutoff_and_a_later_one_does_not() {
     let mut fixture = Fixture::new();
     let key = fixture.binding.key();
     let acquire = start_acquire(&fixture.source, &key).await;
     let held_sign_in = fixture.refreshes.recv().await.unwrap();
 
-    let mut first_close = std::pin::pin!(fixture.source.close());
-    poll_fn(|context| {
-        assert!(first_close.as_mut().poll(context).is_pending());
-        Poll::Ready(())
-    })
-    .await;
-    fixture.clock.advance(Duration::from_secs(6)).unwrap();
-    let repeat_close = fixture.source.close();
+    let cutoff = |seconds| ClockInstant::ZERO.after(Duration::from_secs(seconds));
+    fixture.source.request_stop_by(cutoff(5));
+    fixture.clock.not_due_check_now(cutoff(5)).await;
+    fixture.source.request_stop_by(cutoff(3));
+    fixture.source.request_stop_by(cutoff(9));
+    assert_eq!(*fixture.source.closing.borrow(), Some(cutoff(3)));
+    fixture.clock.not_due_check_now(cutoff(3)).await;
+    fixture.clock.advance(Duration::from_secs(3)).unwrap();
 
-    let (first, repeated) = tokio::select! {
-        reports = async { tokio::join!(&mut first_close, repeat_close) } => reports,
-        () = fixture.clock.not_due_check_now(ClockInstant::ZERO.after(Duration::from_secs(11))) => {
-            panic!("the supervisor gave close another five seconds");
-        }
-    };
-    let expected = UnfinishedLeaseWork {
-        acquisitions: vec![key.clone()],
-        retirements: vec![],
-    };
-    assert_eq!(first, Ok(expected.clone()));
-    assert_eq!(repeated, Ok(expected));
+    let (first, repeated) = tokio::join!(fixture.source.join(), fixture.source.join());
+    assert_eq!(first, clean_join());
+    assert_eq!(repeated, first);
     assert_eq!(acquire.await, Err(LeaseFailure::Fault));
     assert!(held_sign_in.is_closed());
 }
@@ -638,10 +650,10 @@ async fn an_owner_refusal_survives_a_dropped_acquire_and_appears_in_the_close_re
     attempts.wait_for(|count| *count >= 2).await.unwrap();
 
     assert_eq!(
-        fixture.source.close().await.unwrap(),
-        UnfinishedLeaseWork {
-            acquisitions: vec![],
-            retirements: vec![key],
+        stop_lease(&fixture.source, fixture.clock.as_ref()).await,
+        LeaseJoin {
+            unsettled_retirements: vec![key],
+            worker: Ok(())
         }
     );
 }
@@ -685,8 +697,8 @@ async fn a_delayed_lease_refused_callback_cannot_erase_a_new_owner_refusal() {
     second_answer.send(refresh_refused()).unwrap();
     assert_eq!(second.await, Err(LeaseFailure::EnrollmentEnded));
     assert_eq!(
-        fixture.source.close().await.unwrap(),
-        UnfinishedLeaseWork::default()
+        stop_lease(&fixture.source, fixture.clock.as_ref()).await,
+        clean_join()
     );
     assert_eq!(
         fixture.store.row.borrow().clone(),
@@ -711,10 +723,10 @@ async fn close_finds_pending_retirements_admitted_by_a_retained_owner_handle() {
     fixture.source.end(&key, EnrollmentEnd::Revoked);
 
     assert_eq!(
-        fixture.source.close().await.unwrap(),
-        UnfinishedLeaseWork {
-            acquisitions: vec![],
-            retirements: vec![key],
+        stop_lease(&fixture.source, fixture.clock.as_ref()).await,
+        LeaseJoin {
+            unsettled_retirements: vec![key],
+            worker: Ok(())
         }
     );
 }

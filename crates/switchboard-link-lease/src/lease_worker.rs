@@ -1,4 +1,9 @@
-use std::{future::pending, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeSet,
+    future::{Future, pending, poll_fn},
+    sync::{Arc, Mutex, PoisonError},
+    time::Duration,
+};
 
 use router_clock::{ClockInstant, RuntimeClock};
 use switchboard_central_link::{
@@ -6,15 +11,15 @@ use switchboard_central_link::{
     link_policy::{LeaseVersion, LeaseWindow},
 };
 use switchboard_machine_enrollment::{
-    AccessRequest, BindingGeneration, CredentialStore, EnrollmentKey, LeaseUnavailable,
-    RefreshOwner, RefreshSource,
+    AccessRequest, BindingGeneration, CredentialStore, EnrollmentId, EnrollmentKey,
+    LeaseUnavailable, RefreshOwner, RefreshSource,
 };
 use tokio::{
     sync::{mpsc, oneshot, watch},
     task::{Id, JoinError, JoinSet},
 };
 
-use crate::{CLOSE_BUDGET, UnfinishedLeaseWork};
+use crate::LeaseWorkerFailure;
 
 const RETRY_RETIREMENT: Duration = Duration::from_secs(5);
 
@@ -27,7 +32,7 @@ pub(crate) struct LeaseCommand {
 }
 
 enum StartedWork {
-    Acquire(EnrollmentKey),
+    Acquire,
     Retire(EnrollmentKey),
 }
 
@@ -37,39 +42,131 @@ enum FinishedWork {
     StillPending,
 }
 
+struct ChildTasks(Mutex<JoinSet<FinishedWork>>);
+
+impl ChildTasks {
+    fn new() -> Self {
+        Self(Mutex::new(JoinSet::new()))
+    }
+
+    fn spawn(&self, task: impl Future<Output = FinishedWork> + Send + 'static) -> Id {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .spawn(task)
+            .id()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_empty()
+    }
+
+    async fn join_next(&self) -> Option<Result<(Id, FinishedWork), JoinError>> {
+        poll_fn(|context| {
+            self.0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .poll_join_next_with_id(context)
+        })
+        .await
+    }
+
+    async fn reap(
+        &self,
+        clock: &dyn RuntimeClock,
+        mut closing: watch::Receiver<Option<ClockInstant>>,
+    ) {
+        let mut stop_open = true;
+        while !self.is_empty() {
+            let cutoff = observed_cutoff(clock, &mut closing);
+            if cutoff.is_some_and(|cutoff| clock.monotonic_now() >= cutoff) {
+                self.0
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .abort_all();
+                while self.join_next().await.is_some() {}
+                return;
+            }
+            tokio::select! {
+                biased;
+                result = closing.changed(), if stop_open => stop_open = result.is_ok(),
+                _ = self.join_next() => {}
+                () = wait_until(clock, cutoff) => {}
+            }
+        }
+    }
+}
+
 pub(crate) async fn run<Store, Source>(
+    owner: RefreshOwner<Store, Source>,
+    clock: Arc<dyn RuntimeClock + Send + Sync>,
+    commands: mpsc::UnboundedReceiver<LeaseCommand>,
+    closing: watch::Receiver<Option<ClockInstant>>,
+    excluded: Arc<BTreeSet<EnrollmentId>>,
+) -> Result<(), LeaseWorkerFailure>
+where
+    Store: CredentialStore + 'static,
+    Source: RefreshSource + 'static,
+{
+    let children = Arc::new(ChildTasks::new());
+    let worker = tokio::spawn(work(
+        owner,
+        clock.clone(),
+        commands,
+        closing.clone(),
+        excluded,
+        children.clone(),
+    ));
+    reap_worker(worker, &children, clock.as_ref(), closing).await
+}
+
+async fn reap_worker(
+    worker: tokio::task::JoinHandle<()>,
+    children: &ChildTasks,
+    clock: &dyn RuntimeClock,
+    closing: watch::Receiver<Option<ClockInstant>>,
+) -> Result<(), LeaseWorkerFailure> {
+    let outcome = worker.await.map_err(LeaseWorkerFailure::from);
+    // Child ownership survives a failed worker and only the supplied cutoff
+    // can cancel unfinished tasks while the adapter is still retained.
+    children.reap(clock, closing).await;
+    outcome
+}
+
+async fn work<Store, Source>(
     owner: RefreshOwner<Store, Source>,
     clock: Arc<dyn RuntimeClock + Send + Sync>,
     mut commands: mpsc::UnboundedReceiver<LeaseCommand>,
     mut closing: watch::Receiver<Option<ClockInstant>>,
-) -> UnfinishedLeaseWork
-where
+    excluded: Arc<BTreeSet<EnrollmentId>>,
+    tasks: Arc<ChildTasks>,
+) where
     Store: CredentialStore + 'static,
     Source: RefreshSource + 'static,
 {
     let owner = Arc::new(owner);
     let fence = owner.retirement_fence();
     let mut changes = fence.subscribe();
-    let mut tasks = JoinSet::new();
     let mut started = Vec::new();
     let mut final_attempts = Vec::new();
-    let mut unfinished_acquisitions = Vec::new();
-    let mut deadline = None;
+    let mut stop_open = true;
 
     loop {
-        if deadline.is_none() {
-            deadline = *closing.borrow_and_update();
-        }
-        if let Some(cutoff) = deadline {
+        let cutoff = observed_cutoff(clock.as_ref(), &mut closing);
+        if let Some(cutoff) = cutoff {
             commands.close();
             if clock.monotonic_now() >= cutoff {
-                break;
+                return;
             }
         }
 
         changes.borrow_and_update();
         for key in fence.pending_keys() {
-            if final_attempts.contains(&key)
+            if excluded.contains(&key.enrollment_id)
+                || final_attempts.contains(&key)
                 || started
                     .iter()
                     .any(|(_, work)| matches!(work, StartedWork::Retire(active) if active == &key))
@@ -80,58 +177,49 @@ where
             let clock = Arc::clone(&clock);
             let closing = closing.clone();
             let task_key = key.clone();
-            let task = tasks
+            let id = tasks
                 .spawn(async move { retire(&owner, clock.as_ref(), &task_key, closing).await });
-            started.push((task.id(), StartedWork::Retire(key)));
+            started.push((id, StartedWork::Retire(key)));
         }
-
-        if deadline.is_some() && tasks.is_empty() {
-            break;
+        if cutoff.is_some() && tasks.is_empty() {
+            return;
         }
         tokio::select! {
             biased;
-            result = closing.changed(), if deadline.is_none() => {
-                if result.is_err() {
-                    deadline = Some(clock.monotonic_now().after(CLOSE_BUDGET));
-                }
-            }
-            () = async {
-                if let Some(cutoff) = deadline {
-                    clock.sleep_until(cutoff).await;
-                } else {
-                    pending().await
-                }
-            } => break,
-            result = tasks.join_next_with_id(), if !tasks.is_empty() => {
+            result = closing.changed(), if stop_open => stop_open = result.is_ok(),
+            () = wait_until(clock.as_ref(), cutoff) => {}
+            result = tasks.join_next(), if !tasks.is_empty() => {
                 if let Some(result) = result {
-                    settle(result, &mut started, &mut unfinished_acquisitions, &mut final_attempts);
+                    settle(result, &mut started, &mut final_attempts);
                 }
             }
             _ = changes.changed() => {}
-            command = commands.recv(), if deadline.is_none() => match command {
-                Some(command) => dispatch(command, &owner, &closing, &mut tasks, &mut started),
-                None => deadline = Some(clock.monotonic_now().after(CLOSE_BUDGET)),
+            command = commands.recv(), if cutoff.is_none() => match command {
+                Some(command) => dispatch(command, &owner, &closing, &excluded, &tasks, &mut started),
+                None => return,
             },
         }
     }
+}
 
-    tasks.abort_all();
-    while let Some(result) = tasks.try_join_next_with_id() {
-        settle(
-            result,
-            &mut started,
-            &mut unfinished_acquisitions,
-            &mut final_attempts,
-        );
-    }
-    for (_, work) in started {
-        if let StartedWork::Acquire(key) = work {
-            remember(&mut unfinished_acquisitions, key);
-        }
-    }
-    UnfinishedLeaseWork {
-        acquisitions: unfinished_acquisitions,
-        retirements: fence.pending_keys(),
+fn observed_cutoff(
+    clock: &dyn RuntimeClock,
+    closing: &mut watch::Receiver<Option<ClockInstant>>,
+) -> Option<ClockInstant> {
+    let cutoff = *closing.borrow_and_update();
+    cutoff.or_else(|| {
+        closing
+            .has_changed()
+            .is_err()
+            .then(|| clock.monotonic_now())
+    })
+}
+
+async fn wait_until(clock: &dyn RuntimeClock, cutoff: Option<ClockInstant>) {
+    if let Some(cutoff) = cutoff {
+        clock.sleep_until(cutoff).await;
+    } else {
+        pending().await
     }
 }
 
@@ -139,7 +227,8 @@ fn dispatch<Store, Source>(
     command: LeaseCommand,
     owner: &Arc<RefreshOwner<Store, Source>>,
     closing: &watch::Receiver<Option<ClockInstant>>,
-    tasks: &mut JoinSet<FinishedWork>,
+    excluded: &BTreeSet<EnrollmentId>,
+    tasks: &ChildTasks,
     started: &mut Vec<(Id, StartedWork)>,
 ) where
     Store: CredentialStore + 'static,
@@ -154,17 +243,16 @@ fn dispatch<Store, Source>(
     if closing.is_some() || reply.is_closed() {
         return;
     }
-    if owner.retirement_fence().is_fenced(&key) {
+    if excluded.contains(&key.enrollment_id) || owner.retirement_fence().is_fenced(&key) {
         let _ = reply.send(Err(LeaseFailure::EnrollmentEnded));
         return;
     }
     let owner = Arc::clone(owner);
-    let task_key = key.clone();
-    let task = tasks.spawn(async move {
-        let _ = reply.send(acquire(&owner, &task_key, newer_than).await);
+    let id = tasks.spawn(async move {
+        let _ = reply.send(acquire(&owner, &key, newer_than).await);
         FinishedWork::Acquired
     });
-    started.push((task.id(), StartedWork::Acquire(key)));
+    started.push((id, StartedWork::Acquire));
 }
 
 async fn acquire<Store, Source>(
@@ -251,7 +339,6 @@ where
 fn settle(
     result: Result<(Id, FinishedWork), JoinError>,
     started: &mut Vec<(Id, StartedWork)>,
-    unfinished_acquisitions: &mut Vec<EnrollmentKey>,
     final_attempts: &mut Vec<EnrollmentKey>,
 ) {
     let (id, result) = match result {
@@ -262,21 +349,15 @@ fn settle(
         return;
     };
     let (_, work) = started.swap_remove(index);
-    match (work, result) {
-        (StartedWork::Acquire(key), None) => remember(unfinished_acquisitions, key),
-        (StartedWork::Retire(key), Some(FinishedWork::StillPending)) => {
-            remember(final_attempts, key);
-        }
-        _ => {}
-    }
-}
-
-fn remember(keys: &mut Vec<EnrollmentKey>, key: EnrollmentKey) {
-    if !keys.contains(&key) {
-        keys.push(key);
+    if let (StartedWork::Retire(key), Some(FinishedWork::StillPending)) = (work, result) {
+        final_attempts.push(key);
     }
 }
 
 #[cfg(test)]
 #[path = "lease_mapping_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "lease_worker_join_test.rs"]
+mod join_tests;

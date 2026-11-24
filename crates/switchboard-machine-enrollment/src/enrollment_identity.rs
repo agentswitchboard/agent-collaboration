@@ -59,5 +59,6 @@ enrollment_identifier!(
 );
 enrollment_identifier!(
     /// The enrollment client id sign-in issues for this machine's refreshes.
+    #[derive(Ord, PartialOrd)]
     EnrollmentId
 );

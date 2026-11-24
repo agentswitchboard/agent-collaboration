@@ -1,6 +1,6 @@
 //! Adapts one enrollment context to the Central driver's lease and retirement port.
 
-use std::{fmt, future::Future, sync::Arc, time::Duration};
+use std::{collections::BTreeSet, sync::Arc};
 
 use central_link_client::EnrollmentEnd;
 use router_clock::{ClockInstant, RuntimeClock};
@@ -9,8 +9,8 @@ use switchboard_central_link::{
     link_policy::LeaseVersion,
 };
 use switchboard_machine_enrollment::{
-    CredentialStore, EnrollmentEnd as StoredEnding, EnrollmentKey, RefreshOwner, RefreshSource,
-    RetirementFence,
+    CredentialStore, EnrollmentEnd as StoredEnding, EnrollmentId, EnrollmentKey, RefreshOwner,
+    RefreshSource, RetirementFence,
 };
 use tokio::{
     sync::{Mutex as AsyncMutex, mpsc, oneshot, watch},
@@ -21,46 +21,61 @@ mod lease_worker;
 
 use lease_worker::{LeaseCommand, run};
 
-const CLOSE_BUDGET: Duration = Duration::from_secs(5);
-
 /// Lease adapter started and closed by its composition owner.
 pub struct EnrollmentLeaseSource {
     commands: mpsc::UnboundedSender<LeaseCommand>,
     retirements: RetirementFence,
     closing: watch::Sender<Option<ClockInstant>>,
-    clock: Arc<dyn RuntimeClock + Send + Sync>,
+    excluded: Arc<BTreeSet<EnrollmentId>>,
     completion: AsyncMutex<Completion>,
 }
 
-/// Operations that did not finish on the closing adapter.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct UnfinishedLeaseWork {
-    pub acquisitions: Vec<EnrollmentKey>,
-    pub retirements: Vec<EnrollmentKey>,
+/// Physical completion of the worker and its child tasks.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LeaseJoin {
+    pub unsettled_retirements: Vec<EnrollmentKey>,
+    pub worker: Result<(), LeaseWorkerFailure>,
 }
 
 enum Completion {
-    Running(JoinHandle<UnfinishedLeaseWork>),
-    Closed(Result<UnfinishedLeaseWork, LeaseWorkerStopped>),
+    Running(JoinHandle<Result<(), LeaseWorkerFailure>>),
+    Joined(LeaseJoin),
 }
 
-/// The task ended without returning its shutdown report.
+/// Diagnostic outcome of the lease worker.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct LeaseWorkerStopped;
+pub enum LeaseWorkerFailure {
+    Panicked,
+    Cancelled,
+}
 
-impl fmt::Display for LeaseWorkerStopped {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("the enrollment lease worker stopped without a shutdown report")
+impl std::fmt::Display for LeaseWorkerFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Panicked => formatter.write_str("the enrollment lease worker panicked"),
+            Self::Cancelled => formatter.write_str("the enrollment lease worker was cancelled"),
+        }
     }
 }
 
-impl std::error::Error for LeaseWorkerStopped {}
+impl std::error::Error for LeaseWorkerFailure {}
+
+impl From<tokio::task::JoinError> for LeaseWorkerFailure {
+    fn from(error: tokio::task::JoinError) -> Self {
+        if error.is_panic() {
+            Self::Panicked
+        } else {
+            Self::Cancelled
+        }
+    }
+}
 
 impl EnrollmentLeaseSource {
     /// Starts the lease supervisor in the caller's runtime.
     pub fn start<Store, Source>(
         owner: RefreshOwner<Store, Source>,
         clock: Arc<dyn RuntimeClock + Send + Sync>,
+        excluded: Arc<BTreeSet<EnrollmentId>>,
     ) -> Self
     where
         Store: CredentialStore + 'static,
@@ -70,41 +85,47 @@ impl EnrollmentLeaseSource {
         let (closing, stopped) = watch::channel(None);
         owner.supervise_retirement();
         let retirements = owner.retirement_fence();
-        let task = tokio::spawn(run(owner, clock.clone(), work, stopped));
+        let task = tokio::spawn(run(owner, clock, work, stopped, excluded.clone()));
         Self {
             commands,
             retirements,
             closing,
-            clock,
+            excluded,
             completion: AsyncMutex::new(Completion::Running(task)),
         }
     }
 
-    /// Stops admission immediately and gives all close callers the same deadline.
-    ///
-    /// The five-second bound uses the injected clock. It requires the runtime to
-    /// schedule the supervisor and injected futures to yield promptly. Cancellation
-    /// is cooperative, so a store operation already admitted may still settle.
-    pub fn close(
-        &self,
-    ) -> impl Future<Output = Result<UnfinishedLeaseWork, LeaseWorkerStopped>> + '_ {
+    /// Closes admission and requests the earliest supplied shutdown cutoff.
+    pub fn request_stop_by(&self, cutoff: ClockInstant) {
         self.closing.send_if_modified(|deadline| {
-            if deadline.is_some() {
+            if deadline.is_some_and(|previous| previous <= cutoff) {
                 return false;
             }
-            *deadline = Some(self.clock.monotonic_now().after(CLOSE_BUDGET));
+            *deadline = Some(cutoff);
             true
         });
-        async {
-            let mut completion = self.completion.lock().await;
-            match &mut *completion {
-                Completion::Running(task) => {
-                    let result = task.await.map_err(|_| LeaseWorkerStopped);
-                    *completion = Completion::Closed(result.clone());
-                    result
-                }
-                Completion::Closed(result) => result.clone(),
+    }
+
+    /// Waits for physical completion. Cancelling a wait leaves the join available.
+    pub async fn join(&self) -> LeaseJoin {
+        let mut completion = self.completion.lock().await;
+        match &mut *completion {
+            Completion::Running(task) => {
+                let worker = task
+                    .await
+                    .map_err(LeaseWorkerFailure::from)
+                    .and_then(|result| result);
+                // An admitted retirement write is store-owned and can finish after
+                // its child stops waiting. A pending entry here stays fenced even
+                // when the store has already written, or will write, the ending.
+                let joined = LeaseJoin {
+                    unsettled_retirements: self.retirements.pending_keys(),
+                    worker,
+                };
+                *completion = Completion::Joined(joined.clone());
+                joined
             }
+            Completion::Joined(joined) => joined.clone(),
         }
     }
 }
@@ -119,7 +140,7 @@ impl LeaseSource<EnrollmentKey> for EnrollmentLeaseSource {
             let (reply, result) = oneshot::channel();
             {
                 let closing = self.closing.borrow();
-                if self.retirements.is_fenced(key) {
+                if self.excluded.contains(&key.enrollment_id) || self.retirements.is_fenced(key) {
                     return Err(LeaseFailure::EnrollmentEnded);
                 }
                 if closing.is_some() {
@@ -134,7 +155,7 @@ impl LeaseSource<EnrollmentKey> for EnrollmentLeaseSource {
                     .map_err(|_| LeaseFailure::Fault)?;
             }
             let result = result.await.map_err(|_| LeaseFailure::Fault)?;
-            if self.retirements.is_fenced(key) {
+            if self.excluded.contains(&key.enrollment_id) || self.retirements.is_fenced(key) {
                 return Err(LeaseFailure::EnrollmentEnded);
             }
             result
@@ -143,7 +164,7 @@ impl LeaseSource<EnrollmentKey> for EnrollmentLeaseSource {
 
     fn end(&self, key: &EnrollmentKey, cause: EnrollmentEnd) {
         let closing = self.closing.borrow();
-        if closing.is_some() {
+        if closing.is_some() || self.excluded.contains(&key.enrollment_id) {
             return;
         }
         let why = match cause {
