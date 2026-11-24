@@ -130,6 +130,11 @@ impl SessionStoreFixture {
             .bind(caller.enrollment_id.as_str()).bind(id(3)).bind(caller.machine_id.as_str())
             .bind(id(4)).bind(FIXED_TIME).bind(caller.enrollment_id.as_str()).bind(FIXED_TIME)
             .bind(FIXED_TIME).bind(FIXED_TIME).execute(&mut connection).await.unwrap();
+
+        sqlx::query("INSERT INTO directory_workspaces (workspace_id,name,state,created_at,updated_at) VALUES ('019a3dce-2000-7000-8000-000000000004','Session workspace','active',?,?)")
+        .bind(FIXED_TIME).bind(FIXED_TIME).execute(&mut connection).await.unwrap();
+        sqlx::query("INSERT INTO login_machine_allowances (allowance_id,machine_id,workspace_id,state,change_request_id,change_origin,created_at,updated_at) VALUES ('019a3dce-2000-7000-8000-000000000007',?,'019a3dce-2000-7000-8000-000000000004','active','019a3dce-2000-7000-8000-000000000007','automatic','2026-11-22T10:00:00.000Z','2026-11-22T10:00:00.000Z')")
+        .bind(caller.machine_id.as_str()).execute(&mut connection).await.unwrap();
         connection.close().await.unwrap();
         Self {
             _root: root,
@@ -259,10 +264,29 @@ impl SessionStoreFixture {
                     ids: &mut self.ids,
                 };
                 let result = match operation {
-                    Operation::Create(request) => service
-                        .create(&admitted, request, &mut context, &mut self.secrets)
-                        .await
-                        .map(Receipt::Create),
+                    Operation::Create(request) => {
+                        let project_lookup = match &request.project {
+                            fleet_identity_protocol::StartProject::Named { project_ref } => {
+                                fleet_runtime_ports::SessionProjectLookup::fixture_named_project(
+                                    &project_ref.workspace,
+                                    &project_ref.project,
+                                )
+                            }
+                            fleet_identity_protocol::StartProject::SameAsParent {} => {
+                                fleet_runtime_ports::SessionProjectLookup::NotRead
+                            }
+                        };
+                        service
+                            .create(
+                                &admitted,
+                                request,
+                                project_lookup,
+                                &mut context,
+                                &mut self.secrets,
+                            )
+                            .await
+                            .map(Receipt::Create)
+                    }
                     Operation::Bind(request) => service
                         .bind(&admitted, request, &mut context)
                         .await
@@ -386,6 +410,15 @@ pub fn create(operation: u16, attempt: u64) -> CreateFleetSession {
         creator: SessionCreator::RouterOperator {},
         agent_program: HarnessKind::Codex,
         session_kind: CreateSessionKind::Ordinary {},
+        project: fleet_identity_protocol::StartProject::Named {
+            project_ref: fleet_identity_protocol::ProjectRef {
+                workspace: "019a3dce-2000-7000-8000-000000000004".parse().unwrap(),
+                project: "019a3dce-2000-7000-8000-000000000005"
+                    .to_owned()
+                    .try_into()
+                    .unwrap(),
+            },
+        },
     }
 }
 

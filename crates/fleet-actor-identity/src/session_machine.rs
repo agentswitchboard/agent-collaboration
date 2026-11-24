@@ -53,7 +53,7 @@ impl Machine for SessionLifecycle {
             } => create(
                 state,
                 caller,
-                first.map(|admission| *admission),
+                first,
                 &contents_digest,
                 attempt,
                 candidate_secret,
@@ -138,7 +138,7 @@ fn create(
                 ))?;
                 issue(
                     ReservedSession {
-                        reservation,
+                        reservation: *reservation,
                         attempt,
                         secret_hash: SessionSecretHash::from_secret(&secret)
                             .map_err(TransitionError::Domain)?,
@@ -171,32 +171,25 @@ fn create(
                 address: address_of(&bound),
             }),
         ),
-        SessionState::Abandoned { ref cause, at, .. } => {
-            let settlement = SessionSettlement::Abandoned {
-                cause: cause.clone(),
-                time: wire_time(at)?,
-            };
-            let next = state.read_at(now, enrollment_ended_at);
-            Ok((
-                next,
-                vec![SessionReceipt::Create(CreateFleetSessionReply::Settled {
-                    settlement,
-                })],
-            ))
-        }
-        SessionState::Ended { ref cause, at, .. } => {
-            let settlement = SessionSettlement::Ended {
-                cause: cause.clone(),
-                time: wire_time(at)?,
-            };
-            let next = state.read_at(now, enrollment_ended_at);
-            Ok((
-                next,
-                vec![SessionReceipt::Create(CreateFleetSessionReply::Settled {
-                    settlement,
-                })],
-            ))
-        }
+        // Create reports the projected settlement. Bind and End persist it.
+        SessionState::Abandoned { cause, at, .. } => unchanged(
+            state,
+            SessionReceipt::Create(CreateFleetSessionReply::Settled {
+                settlement: SessionSettlement::Abandoned {
+                    cause,
+                    time: wire_time(at)?,
+                },
+            }),
+        ),
+        SessionState::Ended { cause, at, .. } => unchanged(
+            state,
+            SessionReceipt::Create(CreateFleetSessionReply::Settled {
+                settlement: SessionSettlement::Ended {
+                    cause,
+                    time: wire_time(at)?,
+                },
+            }),
+        ),
     }
 }
 
@@ -205,6 +198,7 @@ fn issue(reserved: ReservedSession, secret: SessionSecret) -> SessionChange {
         session_id: reserved.reservation.session_id.clone(),
         secret,
         reserved_until: wire_time(reserved.reservation.reserved_until)?,
+        workspace: reserved.reservation.project.workspace.clone(),
     };
     Ok((
         SessionState::Reserved(reserved),

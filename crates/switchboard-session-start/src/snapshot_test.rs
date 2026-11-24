@@ -22,6 +22,15 @@ fn specimen() -> StoredSnapshot {
         asker: CandidateAsker::Operator,
         agent_program: HarnessKind::Claude,
         kind: CreateSessionKind::Ordinary {},
+        project: fleet_identity_protocol::StartProject::Named {
+            project_ref: fleet_identity_protocol::ProjectRef {
+                workspace: "019c0000-0000-7000-8000-000000000005".parse().unwrap(),
+                project: "019c0000-0000-7000-8000-000000000006"
+                    .to_owned()
+                    .try_into()
+                    .unwrap(),
+            },
+        },
         local_digest: LocalStartDigest::new([0; 32]),
         launch: LaunchSpecRef::new(1),
     })

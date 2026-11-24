@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT s.actor_id,s.machine_id,s.enrollment_id,s.harness_session_id,s.create_operation_id,s.create_contents_digest,s.create_attempt,s.agent_program,s.session_kind,s.creator_kind,s.creator_actor_id,s.secret_hash,s.session_state,s.reserved_until,s.bound_at,s.settled_cause,s.settled_at,d.parent_actor_id FROM actor_sessions s LEFT JOIN actor_delegates d ON d.actor_id=s.actor_id WHERE s.machine_id=? AND s.create_operation_id=?\n",
+  "query": "SELECT s.actor_id,s.project_id,s.workspace_id,s.machine_id,s.enrollment_id,s.harness_session_id,s.create_operation_id,s.create_contents_digest,s.create_attempt,s.agent_program,s.session_kind,s.creator_kind,s.creator_actor_id,s.secret_hash,s.session_state,s.reserved_until,s.bound_at,s.settled_cause,s.settled_at,d.parent_actor_id FROM actor_sessions s LEFT JOIN actor_delegates d ON d.actor_id=s.actor_id WHERE s.machine_id=? AND s.create_operation_id=?\n",
   "describe": {
     "columns": [
       {
@@ -15,8 +15,30 @@
         }
       },
       {
-        "name": "machine_id",
+        "name": "project_id",
         "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "actor_sessions",
+            "name": "project_id"
+          }
+        }
+      },
+      {
+        "name": "workspace_id",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "actor_sessions",
+            "name": "workspace_id"
+          }
+        }
+      },
+      {
+        "name": "machine_id",
+        "ordinal": 3,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -27,7 +49,7 @@
       },
       {
         "name": "enrollment_id",
-        "ordinal": 2,
+        "ordinal": 4,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -38,7 +60,7 @@
       },
       {
         "name": "harness_session_id",
-        "ordinal": 3,
+        "ordinal": 5,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -49,7 +71,7 @@
       },
       {
         "name": "create_operation_id",
-        "ordinal": 4,
+        "ordinal": 6,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -60,7 +82,7 @@
       },
       {
         "name": "create_contents_digest",
-        "ordinal": 5,
+        "ordinal": 7,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -71,7 +93,7 @@
       },
       {
         "name": "create_attempt",
-        "ordinal": 6,
+        "ordinal": 8,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -82,7 +104,7 @@
       },
       {
         "name": "agent_program",
-        "ordinal": 7,
+        "ordinal": 9,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -93,7 +115,7 @@
       },
       {
         "name": "session_kind",
-        "ordinal": 8,
+        "ordinal": 10,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -104,7 +126,7 @@
       },
       {
         "name": "creator_kind",
-        "ordinal": 9,
+        "ordinal": 11,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -115,7 +137,7 @@
       },
       {
         "name": "creator_actor_id",
-        "ordinal": 10,
+        "ordinal": 12,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -126,7 +148,7 @@
       },
       {
         "name": "secret_hash",
-        "ordinal": 11,
+        "ordinal": 13,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -137,7 +159,7 @@
       },
       {
         "name": "session_state",
-        "ordinal": 12,
+        "ordinal": 14,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -148,7 +170,7 @@
       },
       {
         "name": "reserved_until",
-        "ordinal": 13,
+        "ordinal": 15,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -159,7 +181,7 @@
       },
       {
         "name": "bound_at",
-        "ordinal": 14,
+        "ordinal": 16,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -170,7 +192,7 @@
       },
       {
         "name": "settled_cause",
-        "ordinal": 15,
+        "ordinal": 17,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -181,7 +203,7 @@
       },
       {
         "name": "settled_at",
-        "ordinal": 16,
+        "ordinal": 18,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -192,7 +214,7 @@
       },
       {
         "name": "parent_actor_id",
-        "ordinal": 17,
+        "ordinal": 19,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -207,6 +229,8 @@
     },
     "nullable": [
       false,
+      true,
+      true,
       false,
       false,
       true,
@@ -226,5 +250,5 @@
       true
     ]
   },
-  "hash": "37b8a6062b389b82405966b6e476e106849c778f29968ae64ae3aefe58e87086"
+  "hash": "a9b725fa7dbdb5530919602400c84c41d5616a44485542d29dc9da1264785467"
 }

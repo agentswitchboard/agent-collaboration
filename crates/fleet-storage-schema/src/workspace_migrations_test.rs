@@ -1,7 +1,7 @@
 use super::central_migrator;
 
 /// A non-test-support build returns `migrations/central` unchanged, so that
-/// directory must hold exactly 0001–0014. test-support appends only the probe
+/// directory holds 0001–0014 and 0016 while approval erasure is pending. Test support appends the probe
 /// fixture after it, so no probe migration can ship.
 #[test]
 fn production_history_matches_the_approved_catalog_and_test_support_appends_the_probe() {
@@ -14,7 +14,7 @@ fn production_history_matches_the_approved_catalog_and_test_support_appends_the_
             .iter()
             .map(|(version, _)| *version)
             .collect::<Vec<_>>(),
-        vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+        vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16],
         "{production:?}"
     );
     assert!(
@@ -33,6 +33,7 @@ fn production_history_matches_the_approved_catalog_and_test_support_appends_the_
     assert_eq!(production[11].1, "approval applying time");
     assert_eq!(production[12].1, "approval destination request key");
     assert_eq!(production[13].1, "approval destination chain");
+    assert_eq!(production[14].1, "session project workspace");
 
     let built = central_migrator()
         .iter()
@@ -45,7 +46,7 @@ fn production_history_matches_the_approved_catalog_and_test_support_appends_the_
         production
             .iter()
             .cloned()
-            .chain([(15, "engine probe fixture".to_owned())])
+            .chain([(17, "engine probe fixture".to_owned())])
             .collect::<Vec<_>>()
     );
     #[cfg(not(feature = "test-support"))]

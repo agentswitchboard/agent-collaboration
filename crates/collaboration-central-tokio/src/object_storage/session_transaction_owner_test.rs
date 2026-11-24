@@ -140,6 +140,7 @@ async fn reject_foreign_executor(fixture: &MachineLinkFixture) -> Result<()> {
             creator: SessionCreator::RouterOperator {},
             agent_program: HarnessKind::Codex,
             session_kind: CreateSessionKind::Ordinary {},
+            project: fleet_identity_protocol::StartProject::SameAsParent {},
         },
     });
     let result = dispatcher
@@ -147,6 +148,7 @@ async fn reject_foreign_executor(fixture: &MachineLinkFixture) -> Result<()> {
             &machine,
             call,
             collaboration_central_core::TypedCallCarrier::Session,
+            fleet_runtime_ports::SessionProjectLookup::NotRead,
         )
         .await;
     if !matches!(result, Err(StoreFailure::Corrupt { reason: CorruptReason::BadValue { ref column } }) if column == "signin_organization_identity.id")

@@ -32,6 +32,7 @@ zeroize.workspace = true
 workspace-ids.workspace = true
 
 [dev-dependencies]
+fleet-runtime-ports = { workspace = true, features = ["test-support"] }
 futures-util = "0.3.34"
 fleet-contracts.workspace = true
 fleet-machine-login = { workspace = true, features = ["test-support"] }

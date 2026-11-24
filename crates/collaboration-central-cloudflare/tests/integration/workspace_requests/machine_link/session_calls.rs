@@ -175,3 +175,114 @@ async fn workerd_central_fault_rolls_back_create_and_keeps_the_link_open() -> Re
     fixture.close().await?;
     observed
 }
+
+#[tokio::test]
+async fn workerd_session_projects_are_admitted_on_the_link_and_survive_reopen() {
+    use collaboration_central_conformance::{
+        session_project_fixture::{FIRST_WORKSPACE, withdraw_session_allowance},
+        session_project_scenarios::{
+            admit_session_projects, assert_session_project_migration,
+            expect_allowance_withdrawal_refusal, record_session_projects,
+            send_project_create_before_withdrawal, session_project_migration,
+        },
+    };
+    use futures_util::StreamExt;
+
+    let fixture = Fixture::with_production_dispatcher().await.unwrap();
+    let observed: Result<()> = async {
+        let mut link = ConnectedLink::open(&fixture).await?;
+        let store = fixture.runtime();
+        let expected = admit_session_projects(&mut link.socket, &fixture.organization, async || {
+            Ok(store.read(session_mutation_records()).await?.rows)
+        }).await?;
+        assert_eq!(store.read(record_session_projects()).await?.rows, expected);
+        let point = "beforeSessionTransaction";
+        assert!(store.control::<bool>("hold-central", &point).await?);
+        let correlation = send_project_create_before_withdrawal(&mut link.socket, &fixture.organization).await?;
+        tokio::select! {
+            held = store.control::<bool>("until-held-central", &point) => assert!(held?),
+            _ = link.socket.next() => return Err("Create replied before the post-read barrier".into()),
+        }
+        let withdrawal = store.run_batch(withdraw_session_allowance(MACHINE_ID, FIRST_WORKSPACE)).await;
+        assert!(store.control::<bool>("release-central", &point).await?);
+        assert!(matches!(withdrawal?, BatchOutcome::Applied { .. }));
+        expect_allowance_withdrawal_refusal(&mut link.socket, &fixture.organization, &correlation).await?;
+        assert_eq!(store.read(record_session_projects()).await?.rows, expected);
+
+        link.close().await?;
+        fixture.host.reset_owners(&fixture.organization, &FIRST_WORKSPACE.parse()?).await;
+        let reopened = fixture.runtime();
+        assert_eq!(reopened.read(record_session_projects()).await?.rows, expected);
+        assert_session_project_migration(reopened.read(session_project_migration()).await?);
+        Ok(())
+    }.await;
+    fixture.close().await.unwrap();
+    observed.unwrap();
+}
+
+#[tokio::test]
+async fn workerd_session_start_denials_skip_owner_reads_and_recheck_on_write() {
+    use collaboration_central_conformance::{
+        session_project_fixture::{
+            FIRST_WORKSPACE, FOREIGN_WORKSPACE, SECOND_WORKSPACE, UNALLOWED_WORKSPACE,
+            archive_session_workspace, directory_entry, restore_session_allowance,
+            withdraw_session_allowance,
+        },
+        session_project_review_scenarios::{
+            archive_candidate, require_machine_not_allowed, reserve_for_rotation,
+            send_create_for_review_race, verify_denials_without_workspace_reads,
+            verify_replays_without_allowance,
+        },
+        session_project_scenarios::expect_allowance_withdrawal_refusal,
+    };
+    use futures_util::StreamExt;
+    let fixture = Fixture::with_production_dispatcher().await.unwrap();
+    let observed: Result<()> = async {
+        let store = fixture.runtime();
+        let foreign = fixture.host.cold_runtime(&OTHER_ORGANIZATION.to_owned().try_into()?);
+        let read_calls = async || Ok::<_, Box<dyn std::error::Error + Send + Sync>>(store.control::<u64>("raw-legacy-workspace-call-count", &()).await?);
+        assert!(matches!(store.run_batch(directory_entry(UNALLOWED_WORKSPACE)).await?, BatchOutcome::Applied { .. }));
+        assert!(matches!(foreign.run_batch(directory_entry(FOREIGN_WORKSPACE)).await?, BatchOutcome::Applied { .. }));
+
+        let mut link = ConnectedLink::open(&fixture).await?;
+        let (equal_attempt, higher_attempt) = reserve_for_rotation(&mut link.socket, &fixture.organization).await?;
+        let before = store.read(session_mutation_records()).await?.rows;
+        let withdrawal = withdraw_session_allowance(MACHINE_ID, FIRST_WORKSPACE);
+        assert!(matches!(store.run_batch(withdrawal.clone()).await?, BatchOutcome::Applied { .. }));
+        verify_denials_without_workspace_reads(
+            &mut link.socket, &fixture.organization, higher_attempt.clone(),
+            &read_calls, async || Ok(store.read(session_mutation_records()).await?.rows),
+        ).await?;
+        verify_replays_without_allowance(&mut link.socket, &fixture.organization, equal_attempt).await?;
+        assert!(store.read(session_mutation_records()).await?.rows == before);
+        assert!(matches!(store.run_batch(restore_session_allowance(MACHINE_ID, FIRST_WORKSPACE)).await?, BatchOutcome::Applied { .. }));
+
+        let archived_start = archive_candidate()?;
+        for (request, change) in [
+            (higher_attempt, withdrawal),
+            (archived_start.clone(), archive_session_workspace(SECOND_WORKSPACE)),
+        ] {
+            let reads_before = read_calls().await?;
+            let point = "beforeSessionTransaction";
+            assert!(store.control::<bool>("hold-central", &point).await?);
+            let correlation = send_create_for_review_race(&mut link.socket, &fixture.organization, request).await?;
+            tokio::select! {
+                held = store.control::<bool>("until-held-central", &point) => assert!(held?),
+                _ = link.socket.next() => return Err("Create replied before its applying barrier".into()),
+            }
+            assert_eq!(read_calls().await?, reads_before + 1);
+            let changed = store.run_batch(change).await;
+            assert!(store.control::<bool>("release-central", &point).await?);
+            assert!(matches!(changed?, BatchOutcome::Applied { .. }));
+            expect_allowance_withdrawal_refusal(&mut link.socket, &fixture.organization, &correlation).await?;
+            assert!(store.read(session_mutation_records()).await?.rows == before);
+        }
+        let reads_before = read_calls().await?;
+        require_machine_not_allowed(&mut link.socket, &fixture.organization, archived_start).await?;
+        assert_eq!(read_calls().await?, reads_before);
+        assert!(store.read(session_mutation_records()).await?.rows == before);
+        link.close().await
+    }.await;
+    fixture.close().await.unwrap();
+    observed.unwrap();
+}

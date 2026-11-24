@@ -11,8 +11,10 @@ use central_link_protocol::{
 };
 use central_storage::StoreFailure;
 use fleet_contracts::MachineConnectionAttachment;
+use fleet_identity_protocol::StartProject;
+use fleet_machine_login::machine_can_start_in_workspace;
 use fleet_rpc::{CallFailure, CorrelatedRpc, Envelope, IndependentReplyRpc};
-use fleet_runtime_ports::{CentralStore, WorkspaceStores};
+use fleet_runtime_ports::{CentralStore, SessionProjectLookup, WorkspaceStores};
 use std::{future::Future, sync::Arc, time::Duration};
 use workspace_ids::RouterRunId;
 
@@ -301,6 +303,20 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         else {
             return Ok(DispatchedCentralCall::refused(LinkCallRefusal::UnknownCall));
         };
+        let project_lookup = if let CentralCall::CreateFleetSession(envelope) = &request
+            && &envelope.target == machine.organization_id()
+            && let StartProject::Named { project_ref } = &envelope.body.project
+            && machine_can_start_in_workspace(
+                self.execution.statement_host(),
+                machine.machine_id(),
+                &project_ref.workspace,
+            )
+            .await?
+        {
+            self.execution.read_session_start_project(project_ref).await
+        } else {
+            SessionProjectLookup::NotRead
+        };
         let requested_run = match &request {
             CentralCall::RegisterRun(envelope)
                 if &envelope.target.organization_id == machine.organization_id() =>
@@ -358,7 +374,9 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             result,
             committed_delivery,
             completion,
-        } = dispatcher.dispatch(&machine, request, carrier).await?;
+        } = dispatcher
+            .dispatch(&machine, request, carrier, project_lookup)
+            .await?;
         drop(apply_turn);
         if let Some(delivery) = committed_delivery
             && let Some(schedule) = &self.approval_delivery_completion

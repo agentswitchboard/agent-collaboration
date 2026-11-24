@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT allowance.state AS allowance_state, workspace.state AS workspace_state\nFROM login_machine_allowances AS allowance\nLEFT JOIN directory_workspaces AS workspace ON workspace.workspace_id = allowance.workspace_id\nWHERE allowance.machine_id = ? AND allowance.workspace_id = ?\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "allowance_state",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "login_machine_allowances",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "name": "workspace_state",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "directory_workspaces",
+            "name": "state"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "04510044e58244c36b3e6e781143577fb981732e979fe61043e8b64b29af8353"
+}

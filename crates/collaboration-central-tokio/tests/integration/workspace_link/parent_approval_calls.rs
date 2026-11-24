@@ -329,6 +329,14 @@ impl CompetingApprovalFixture for NativeApprovalFixture {
     ) -> Result<(ApprovalHolderTarget, reqwest_websocket::WebSocket)> {
         use super::super::{fixture::OTHER_MACHINE, typed_call_holder::connect_other_machine};
         let mut socket = connect_other_machine(&self.link).await?;
+        let owner = self.link.host.central(&self.link.organization_id).await?;
+        let batch = collaboration_central_conformance::session_project_fixture::allow_competing_session_machine(OTHER_MACHINE);
+        if !matches!(
+            owner.runtime().statement_host().run_batch(batch).await?,
+            central_storage::BatchOutcome::Applied { .. }
+        ) {
+            return Err("fixture competing machine allowance did not apply".into());
+        }
         collaboration_central_conformance::approval_link_scenarios::announce_mac_calls(
             &mut socket,
             vec![central_link_protocol::MacCallKind::ApprovalNotice],

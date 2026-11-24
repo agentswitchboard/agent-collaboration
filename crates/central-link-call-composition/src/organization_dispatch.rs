@@ -285,6 +285,7 @@ where
         machine: &'call ValidatedMachineConnection,
         request: CentralCall,
         carrier: TypedCallCarrier,
+        project_lookup: fleet_runtime_ports::SessionProjectLookup,
     ) -> Pin<Box<dyn Future<Output = Result<CentralCallWork, StoreFailure>> + Send + 'call>> {
         Box::pin(async move {
             match request {
@@ -292,7 +293,7 @@ where
                     .apply::<CreateFleetSessionRpc>(
                         machine,
                         request,
-                        |request, loan, machine, inputs, time| {
+                        move |request, loan, machine, inputs, time| {
                             Box::pin(async move {
                                 dispatch_fallible_correlated_central_call(request, |body| async {
                                     let mut ids = ApplyingIds(inputs.ids.as_ref());
@@ -306,6 +307,7 @@ where
                                             .create(
                                                 &machine,
                                                 body,
+                                                project_lookup,
                                                 &mut context,
                                                 &mut ApplyingSecrets(inputs.fill_secret),
                                             )

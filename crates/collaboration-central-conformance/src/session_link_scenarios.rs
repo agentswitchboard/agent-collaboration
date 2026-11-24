@@ -1,5 +1,6 @@
 //! Shared socket scenarios for Central's production session-call dispatcher.
 use crate::ConformanceResult as Result;
+use crate::session_project_fixture::{FIRST_PROJECT, FIRST_WORKSPACE, project_at};
 use central_link_protocol::{
     CentralCallReply, CentralLinkRpc, CorrelationId, DataFrame, FrameDirection, LinkCallRefusal,
     LinkFrame, MachineLinkCloseCode, TypedCallResult, decode_text, encode_text,
@@ -206,13 +207,16 @@ pub fn session_identity_records() -> Statement {
     }
 }
 
-fn create() -> Result<CreateFleetSession> {
+pub(crate) fn create() -> Result<CreateFleetSession> {
     Ok(CreateFleetSession {
         operation_id: OPERATION.parse()?,
         attempt: 1_u64.try_into()?,
         creator: SessionCreator::RouterOperator {},
         agent_program: fleet_identity_protocol::HarnessKind::Codex,
         session_kind: CreateSessionKind::Ordinary {},
+        project: fleet_identity_protocol::StartProject::Named {
+            project_ref: project_at(FIRST_WORKSPACE, FIRST_PROJECT)?,
+        },
     })
 }
 
@@ -232,7 +236,7 @@ pub(crate) async fn call<R: CentralLinkRpc<Target = OrganizationId>>(
     read_reply(socket, &correlation).await
 }
 
-async fn send_call<R: CentralLinkRpc<Target = OrganizationId>>(
+pub(crate) async fn send_call<R: CentralLinkRpc<Target = OrganizationId>>(
     socket: &mut WebSocket,
     organization: &OrganizationId,
     body: R::Request,
@@ -254,7 +258,7 @@ async fn send_call<R: CentralLinkRpc<Target = OrganizationId>>(
     Ok(correlation)
 }
 
-async fn read_reply(
+pub(crate) async fn read_reply(
     socket: &mut WebSocket,
     expected: &CorrelationId,
 ) -> Result<TypedCallResult<CentralCallReply>> {

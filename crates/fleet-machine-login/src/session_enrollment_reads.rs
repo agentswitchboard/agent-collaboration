@@ -1,9 +1,9 @@
 //! Machine Login's enrollment projection for session custody.
 
-use central_storage::StoreFailure;
+use central_storage::{SqlValue, StoreFailure};
 use fleet_identity_protocol::EnrollmentId;
 use fleet_lent_transaction::CentralTransaction;
-use fleet_runtime_ports::workspace_decode_error::corrupt;
+use fleet_runtime_ports::{workspace_decode_error::corrupt, workspace_is_servable};
 use sqlx_core::{
     arguments::IntoArguments, column::ColumnIndex, database::Database, decode::Decode,
     encode::Encode, query_as::query_as, types::Type,
@@ -115,4 +115,87 @@ impl StoredSessionEnrollmentRow {
             }
         }
     }
+}
+
+/// Keep an inactive or absent allowance indistinguishable to the start caller.
+pub async fn machine_can_start_in_workspace(
+    host: &impl fleet_runtime_ports::CentralStore,
+    machine: &MachineId,
+    workspace: &workspace_ids::WorkspaceId,
+) -> Result<bool, StoreFailure> {
+    use central_storage::Statement;
+    let outcome = host
+        .read(Statement {
+            sql: include_str!("queries/read_session_workspace_allowance.sql"),
+            args: vec![
+                SqlValue::Text(machine.as_str().to_owned()),
+                SqlValue::Text(workspace.as_str().to_owned()),
+            ],
+        })
+        .await?;
+    match outcome.rows.as_slice() {
+        [] => Ok(false),
+        [row] => match row.as_slice() {
+            [SqlValue::Text(allowance), SqlValue::Text(workspace)] => {
+                decode_start_allowance(allowance, Some(workspace))
+            }
+            [SqlValue::Text(allowance), SqlValue::Null] => decode_start_allowance(allowance, None),
+            _ => Err(corrupt("login_machine_allowances.state")),
+        },
+        _ => Err(corrupt("login_machine_allowances.state")),
+    }
+}
+
+/// Recheck the allowance on the same transaction that writes the reservation.
+pub async fn machine_can_start_in_workspace_in_transaction<Transaction: CentralTransaction>(
+    tx: &mut Transaction,
+    machine: &MachineId,
+    workspace: &workspace_ids::WorkspaceId,
+) -> Result<bool, StoreFailure>
+where
+    <Transaction::Database as Database>::Arguments: IntoArguments<Transaction::Database>,
+    String: Type<Transaction::Database>
+        + for<'q> Encode<'q, Transaction::Database>
+        + for<'r> Decode<'r, Transaction::Database>,
+    Option<String>: Type<Transaction::Database> + for<'r> Decode<'r, Transaction::Database>,
+    for<'r> &'r str: ColumnIndex<<Transaction::Database as Database>::Row>,
+{
+    #[derive(sqlx::FromRow)]
+    struct StoredStartAllowance {
+        allowance_state: String,
+        workspace_state: Option<String>,
+    }
+
+    let machine = machine.as_str();
+    let workspace = workspace.as_str();
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    let _ = sqlx::query_file_as!(
+        StoredStartAllowance,
+        "src/queries/read_session_workspace_allowance.sql",
+        machine,
+        workspace
+    );
+    let stored = query_as::<_, StoredStartAllowance>(include_str!(
+        "queries/read_session_workspace_allowance.sql"
+    ))
+    .bind(machine.to_owned())
+    .bind(workspace.to_owned())
+    .fetch_optional(tx.executor())
+    .await
+    .map_err(lent_read_failure)?;
+    stored.map_or(Ok(false), |row| {
+        decode_start_allowance(&row.allowance_state, row.workspace_state.as_deref())
+    })
+}
+
+fn decode_start_allowance(
+    allowance: &str,
+    workspace_state: Option<&str>,
+) -> Result<bool, StoreFailure> {
+    let allowance_active = match allowance {
+        "active" => true,
+        "withdrawn" => false,
+        _ => return Err(corrupt("login_machine_allowances.state")),
+    };
+    workspace_is_servable(allowance_active, workspace_state)
 }

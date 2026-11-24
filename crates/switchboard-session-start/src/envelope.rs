@@ -1,6 +1,6 @@
 use fleet_identity_protocol::{
     CreateFleetSession, CreateSessionAttempt, CreateSessionDigest, CreateSessionKind, EnrollmentId,
-    HarnessKind, PresentedSessionSecret, SessionCreator,
+    HarnessKind, PresentedSessionSecret, SessionCreator, StartProject,
 };
 use workspace_ids::{CentralSessionId, MachineId, SessionOperationId};
 
@@ -56,6 +56,7 @@ pub struct StartCandidate {
     pub asker: CandidateAsker,
     pub agent_program: HarnessKind,
     pub kind: CreateSessionKind,
+    pub project: StartProject,
     pub local_digest: LocalStartDigest,
     pub launch: LaunchSpecRef,
 }
@@ -79,6 +80,7 @@ pub struct StartEnvelope {
     machine: MachineId,
     asker: StartAsker,
     agent_program: HarnessKind,
+    project: StartProject,
     local_digest: LocalStartDigest,
     central_digest: CreateSessionDigest,
     launch: LaunchSpecRef,
@@ -103,15 +105,21 @@ impl StartEnvelope {
         }
         let attempt =
             CreateSessionAttempt::try_from(1).map_err(|_| EnvelopeRefusal::DigestNotComputable)?;
-        let central_digest =
-            create_request(&candidate.scope, &asker, &candidate.agent_program, attempt)
-                .contents_digest()
-                .map_err(|_| EnvelopeRefusal::DigestNotComputable)?;
+        let central_digest = create_request(
+            &candidate.scope,
+            &asker,
+            &candidate.agent_program,
+            &candidate.project,
+            attempt,
+        )
+        .contents_digest()
+        .map_err(|_| EnvelopeRefusal::DigestNotComputable)?;
         Ok(Self {
             scope: candidate.scope,
             machine: candidate.machine,
             asker,
             agent_program: candidate.agent_program,
+            project: candidate.project,
             local_digest: candidate.local_digest,
             central_digest,
             launch: candidate.launch,
@@ -132,6 +140,10 @@ impl StartEnvelope {
 
     pub const fn agent_program(&self) -> &HarnessKind {
         &self.agent_program
+    }
+
+    pub const fn project(&self) -> &StartProject {
+        &self.project
     }
 
     pub const fn local_digest(&self) -> LocalStartDigest {
@@ -156,7 +168,13 @@ impl StartEnvelope {
     }
 
     pub(crate) fn create_request(&self, attempt: CreateSessionAttempt) -> CreateFleetSession {
-        create_request(&self.scope, &self.asker, &self.agent_program, attempt)
+        create_request(
+            &self.scope,
+            &self.asker,
+            &self.agent_program,
+            &self.project,
+            attempt,
+        )
     }
 }
 
@@ -164,6 +182,7 @@ fn create_request(
     scope: &StartScope,
     asker: &StartAsker,
     agent_program: &HarnessKind,
+    project: &StartProject,
     attempt: CreateSessionAttempt,
 ) -> CreateFleetSession {
     let creator = match asker {
@@ -179,5 +198,6 @@ fn create_request(
         creator,
         agent_program: agent_program.clone(),
         session_kind: CreateSessionKind::Ordinary {},
+        project: project.clone(),
     }
 }

@@ -4,24 +4,27 @@ use central_storage::StoreFailure;
 use fleet_identity_protocol::{
     BindFleetSession, BindFleetSessionReply, CreateFleetSession, CreateFleetSessionReply,
     CreateSessionKind, CreateSessionRefusal, EndFleetSessionReply, EnrollmentId,
-    PresentedSessionSecret, SessionCreator, SessionSecret,
+    PresentedSessionSecret, ProjectRef, SessionCreator, SessionSecret,
 };
 use fleet_lent_transaction::OrganizationTransaction;
 use fleet_machine_login::{
-    SessionEnrollmentStatus, link_authority::ValidatedMachineConnection, read_session_enrollment,
+    SessionEnrollmentStatus, link_authority::ValidatedMachineConnection,
+    machine_can_start_in_workspace_in_transaction, read_session_enrollment,
 };
-use fleet_runtime_ports::workspace_decode_error::corrupt;
+use fleet_runtime_ports::{SessionProjectLookup, workspace_decode_error::corrupt};
 use sqlx_core::{
     arguments::IntoArguments, column::ColumnIndex, database::Database, decode::Decode,
     encode::Encode, types::Type,
 };
 use workspace_ids::{CentralSessionId, MachineId};
 
-use crate::session_repository::SessionRepository;
 use crate::{
     AddressAvailability, AuthenticatedSession, BoundSession, NewSessionAdmission,
     RecordedSessionCreator, ScopedSession, SessionApply, SessionCreatorAdmission, SessionEvent,
     SessionLifecycle, SessionMachineRefusal, SessionReceipt, SessionReservation, SessionState,
+};
+use crate::{
+    session_repository::SessionRepository, session_start_admission::admit_session_project,
 };
 
 const RESERVATION_DURATION_MILLIS: i64 = 600_000;
@@ -107,6 +110,7 @@ where
         &mut self,
         connection: &ValidatedMachineConnection,
         request: CreateFleetSession,
+        project_lookup: SessionProjectLookup,
         context: &mut Context<'_>,
         secrets: &mut impl SessionSecretSource,
     ) -> Result<SessionCallOutcome<CreateFleetSessionReply>, SessionServiceError> {
@@ -155,8 +159,22 @@ where
             .map_err(|_| SessionServiceError::InvalidCreateContents)?;
         let historical = self.historical_end(caller, &prior).await?;
         let first = if prior == SessionState::Missing {
-            Some(Box::new(match creator.allows(&request.session_kind) {
-                Ok(()) => NewSessionAdmission::Permitted(SessionReservation {
+            let admission = match creator.allows(&request.session_kind) {
+                Ok(()) => {
+                    admit_session_project(
+                        self.repository.tx,
+                        &caller.machine_id,
+                        &request.project,
+                        &request.session_kind,
+                        creator.recorded_project(),
+                        project_lookup,
+                    )
+                    .await?
+                }
+                Err(reason) => Err(reason),
+            };
+            Some(match admission {
+                Ok(project) => NewSessionAdmission::Permitted(Box::new(SessionReservation {
                     session_id: CentralSessionId::try_from(context.ids.next_id().to_string())
                         .map_err(|_| SessionServiceError::InvalidSessionId)?,
                     machine_id: caller.machine_id.clone(),
@@ -167,15 +185,36 @@ where
                     agent_program: request.agent_program,
                     kind: request.session_kind,
                     reserved_until: reserve_until(context.now)?,
-                }),
+                    project,
+                })),
                 Err(reason) => NewSessionAdmission::Refused(reason),
-            }))
+            })
         } else {
             None
         };
-        let issue_secret = matches!(first.as_deref(), Some(NewSessionAdmission::Permitted(_)))
-            || matches!(prior.read_at(context.now, historical),
-                SessionState::Reserved(reserved) if reserved.allows_rotation(&digest, request.attempt));
+        let rotates_secret = if let SessionState::Reserved(reserved) =
+            prior.read_at(context.now, historical)
+            && reserved.allows_rotation(&digest, request.attempt)
+        {
+            if !machine_can_start_in_workspace_in_transaction(
+                self.repository.tx,
+                &caller.machine_id,
+                &reserved.reservation.project.workspace,
+            )
+            .await?
+            {
+                return Ok(SessionCallOutcome::Answered(
+                    CreateFleetSessionReply::Refused {
+                        reason: CreateSessionRefusal::MachineNotAllowed {},
+                    },
+                ));
+            }
+            true
+        } else {
+            false
+        };
+        let issue_secret =
+            matches!(first, Some(NewSessionAdmission::Permitted(_))) || rotates_secret;
         let candidate_secret = issue_secret
             .then(|| secrets.new_session_secret())
             .transpose()?;
@@ -470,6 +509,7 @@ where
                         Ok(Creator::Admitted(CreatorScope::Session {
                             session_id: session_id.clone(),
                             kind: bound.reserved.reservation.kind,
+                            project: bound.reserved.reservation.project,
                         }))
                     }
                 }
@@ -491,6 +531,7 @@ enum CreatorScope {
     Session {
         session_id: CentralSessionId,
         kind: CreateSessionKind,
+        project: ProjectRef,
     },
 }
 
@@ -528,6 +569,13 @@ impl CreatorScope {
                 },
                 CreateSessionKind::Delegate { .. },
             ) => Err(CreateSessionRefusal::ParentNotValid {}),
+        }
+    }
+
+    fn recorded_project(&self) -> Option<&ProjectRef> {
+        match self {
+            Self::Operator => None,
+            Self::Session { project, .. } => Some(project),
         }
     }
 

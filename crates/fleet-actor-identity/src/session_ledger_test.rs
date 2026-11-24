@@ -154,13 +154,12 @@ impl Ledger {
                             session_id: session_identity(),
                             secret: SessionSecret::from_bytes(&[attempt; 32]),
                             reserved_until: timestamp(deadline),
+                            workspace: fixture_project().workspace,
                         }
                     }
-                    Self::Abandoned(..) | Self::Ended(..) => {
-                        let settlement = effective.settlement().unwrap();
-                        *self = effective;
-                        Reply::Settled { settlement }
-                    }
+                    Self::Abandoned(..) | Self::Ended(..) => Reply::Settled {
+                        settlement: effective.settlement().unwrap(),
+                    },
                 };
                 SessionReceipt::Create(reply)
             }
@@ -332,11 +331,9 @@ impl Action {
                     } else {
                         SessionCreatorAdmission::Admitted
                     },
-                    first: (!refused).then(|| {
-                        Box::new(NewSessionAdmission::Refused(
-                            CreateSessionRefusal::ParentNotValid {},
-                        ))
-                    }),
+                    first: (!refused).then_some(NewSessionAdmission::Refused(
+                        CreateSessionRefusal::ParentNotValid {},
+                    )),
                     contents_digest: Content::Original.digest(),
                     attempt: 1.try_into().unwrap(),
                     candidate_secret: None,

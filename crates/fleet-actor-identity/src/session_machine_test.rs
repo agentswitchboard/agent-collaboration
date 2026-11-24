@@ -28,6 +28,9 @@ fn operation() -> CreateFleetSession {
         creator: SessionCreator::RouterOperator {},
         agent_program: HarnessKind::Codex,
         session_kind: CreateSessionKind::Ordinary {},
+        project: fleet_identity_protocol::StartProject::Named {
+            project_ref: fixture_project(),
+        },
     }
 }
 
@@ -43,10 +46,11 @@ fn candidate(digest: &CreateSessionDigest, sequence: u8, deadline: i64) -> Sessi
         agent_program: HarnessKind::Codex,
         kind: CreateSessionKind::Ordinary {},
         reserved_until: when(deadline),
+        project: fixture_project(),
     };
     SessionEvent::Create {
         caller: SessionCreatorAdmission::Admitted,
-        first: Some(Box::new(NewSessionAdmission::Permitted(reservation))),
+        first: Some(NewSessionAdmission::Permitted(Box::new(reservation))),
         contents_digest: digest.clone(),
         attempt: CreateSessionAttempt::try_from(u64::from(sequence)).unwrap(),
         candidate_secret: Some(SessionSecret::from_bytes(&[sequence; 32])),
@@ -192,3 +196,10 @@ fn conflicting_digest() -> CreateSessionDigest {
 
 #[path = "session_ledger_test.rs"]
 mod session_ledger;
+
+fn fixture_project() -> fleet_identity_protocol::ProjectRef {
+    fleet_identity_protocol::ProjectRef {
+        workspace: "019a3dce-2000-7000-8000-000000000004".parse().unwrap(),
+        project: "019a3dce-2000-7000-8000-000000000005".parse().unwrap(),
+    }
+}

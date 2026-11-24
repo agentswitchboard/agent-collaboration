@@ -1,20 +1,8 @@
 //! Live remote starts preserve correlation and ambiguous outcomes.
 use crate::{AbsolutePath, InstallationId, OrganizationId, RemoteStartId, UnixSeconds};
-use message_board::{MachineLabel, ProjectId, SessionRef, WorkspaceId};
+use message_board::{MachineLabel, SessionRef, WorkspaceId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RequestRemoteStart {
-    pub request_id: RemoteStartId,
-    pub requester: SessionRef,
-    pub organization_id: OrganizationId,
-    pub workspace_id: WorkspaceId,
-    pub target: InstallationId,
-    pub project_id: ProjectId,
-    pub launch: RemoteLaunch,
-    pub timeout_seconds: u32,
-}
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RemoteLaunch {
@@ -74,16 +62,6 @@ pub enum RemoteStartRefusal {
     MachineNotConnected {},
     RequestIdReused {},
     Unavailable {},
-}
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct StartRequestedSession {
-    pub request_id: RemoteStartId,
-    pub requester: SessionRef,
-    pub workspace_id: WorkspaceId,
-    pub project_id: ProjectId,
-    pub launch: RemoteLaunch,
-    pub deadline: UnixSeconds,
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

@@ -14,6 +14,8 @@ const machineId = sessionId(1);
 const enrollmentId = sessionId(2);
 const harnessId = sessionId(30);
 const otherHarnessId = sessionId(31);
+const fixtureWorkspace = "019a3dce-2000-7000-8000-000000000004";
+const fixtureProject = "019a3dce-2000-7000-8000-000000000005";
 const ordinary = { kind: "ordinary" };
 const operator = { kind: "routerOperator" };
 const endCause = { kind: "endedForGood" };
@@ -32,6 +34,7 @@ const reservationSchema = z.strictObject({
   sessionId: z.uuidv7(),
   secret: z.string(),
   reservedUntil: z.string(),
+  workspace: z.uuidv7(),
 });
 
 type SessionResponse = z.infer<typeof responseSchema>;
@@ -48,6 +51,10 @@ function createRequest(
     creator,
     agentProgram: "codex",
     sessionKind,
+    project: {
+      kind: "named",
+      projectRef: { workspace: fixtureWorkspace, project: fixtureProject },
+    },
   };
 }
 
@@ -164,6 +171,7 @@ test("Workerd reopens retries, activates once, and retains the address after End
     sessionId: sessionId(100),
     secret: fixtureSecret(4),
     reservedUntil: fixtureDeadline,
+    workspace: fixtureWorkspace,
   });
 
   assert.deepEqual(

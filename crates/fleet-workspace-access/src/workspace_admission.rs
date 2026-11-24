@@ -6,49 +6,27 @@ use fleet_contracts::{
 };
 use fleet_runtime_ports::stored_values::column;
 use fleet_runtime_ports::workspace_decode_error::corrupt;
-use fleet_runtime_ports::{CentralStore, WorkspaceStores};
-use workspace_model::{Caller, RefusalReason, WorkspaceId, WorkspaceState};
-
-struct StoredWorkspaceStateRow {
-    workspace_state: String,
-}
-
-impl StoredWorkspaceStateRow {
-    fn decode(&self) -> Result<WorkspaceState, StoreFailure> {
-        match self.workspace_state.as_str() {
-            "active" => Ok(WorkspaceState::Active),
-            "archived" => Ok(WorkspaceState::Archived),
-            _ => Err(corrupt("directory_workspaces.state")),
-        }
-    }
-}
+use fleet_runtime_ports::{CentralStore, WorkspaceStores, workspace_is_servable};
+use workspace_model::{Caller, RefusalReason, WorkspaceId};
 
 fn read_workspace_state(workspace: &WorkspaceId) -> Statement {
     let workspace_id = workspace.as_str();
     #[cfg(all(test, not(target_arch = "wasm32")))]
-    let _ = sqlx::query_file_as!(
-        StoredWorkspaceStateRow,
-        "src/queries/read_workspace_state.sql",
-        workspace_id
-    );
+    let _ = sqlx::query_file!("src/queries/read_workspace_state.sql", workspace_id);
     Statement {
         sql: include_str!("queries/read_workspace_state.sql"),
         args: vec![SqlValue::Text(workspace_id.to_owned())],
     }
 }
 
-fn decode_workspace_state(rows: &ReadOutcome) -> Result<Option<WorkspaceState>, StoreFailure> {
+fn decode_workspace_state(rows: &ReadOutcome) -> Result<Option<&str>, StoreFailure> {
     let row = match rows.rows.as_slice() {
         [] => return Ok(None),
         [row] => row,
         _ => return Err(corrupt("directory_workspaces.workspace_id")),
     };
     match column(rows, row, "workspace_state")? {
-        SqlValue::Text(value) => StoredWorkspaceStateRow {
-            workspace_state: value.clone(),
-        }
-        .decode()
-        .map(Some),
+        SqlValue::Text(value) => Ok(Some(value)),
         SqlValue::Null => Ok(None),
         _ => Err(corrupt("directory_workspaces.state")),
     }
@@ -91,7 +69,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceAccess<'_, Host, Stor
                 .statement_host()
                 .read(read_workspace_state(workspace))
                 .await?;
-            if decode_workspace_state(&rows)? != Some(WorkspaceState::Active) {
+            if !workspace_is_servable(true, decode_workspace_state(&rows)?)? {
                 return Ok(Err(WorkspaceAdmissionRefusal::Workspace(
                     RefusalReason::WorkspaceNotAllowed,
                 )));

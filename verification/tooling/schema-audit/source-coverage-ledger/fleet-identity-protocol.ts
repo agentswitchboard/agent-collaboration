@@ -27,7 +27,7 @@ export const section: LedgerSection = {
     {
       file: `${R}remote_start.rs`,
       disposition: { kind: "defines", owners: ["router-vocabulary"] },
-      note: "central remote-start wire RequestRemoteStart l8, RemoteLaunch l20, RemoteStartAdmission l50, StartRequestedSession l76, ReportRemoteStart l86, RemoteStartResult l127 (carry board SessionRef, no conversion); RemoteLaunchAccess l39 duplicates collaboration-protocol RouterAccess (mapped both ways at provider_conversation_contract.rs:249,260); HarnessKind l27 appears only inside the Fleet RequestRemoteStart frame and is converted nowhere, outside Project 2's protocols, no inventory row",
+      note: "Fleet remote-start wire includes RemoteLaunch, RemoteStartAdmission, ReportRemoteStart and RemoteStartResult with the board SessionRef. RemoteLaunchAccess duplicates collaboration-protocol RouterAccess. HarnessKind is also used in the session lifecycle contract. These Fleet messages are outside Project 2's protocols.",
     },
     {
       file: `${R}session_activity.rs`,

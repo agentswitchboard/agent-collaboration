@@ -21,10 +21,21 @@ pub enum BindDispute {
     AlreadyBoundToDifferentId,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProjectRefusal {
+    ProjectRequired,
+    ProjectNotInWorkspace,
+    MachineNotAllowed,
+    HelperOutsideWorkspace,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FailureReason {
     CouldNotSave,
     CreatorNotAllowed,
+    ProjectRefused {
+        reason: ProjectRefusal,
+    },
     Conflict,
     ActiveWithoutLocalProof {
         session_id: CentralSessionId,

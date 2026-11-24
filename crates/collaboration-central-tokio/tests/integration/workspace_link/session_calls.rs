@@ -191,3 +191,141 @@ async fn tokio_wrong_target_refuses_before_the_failing_lender() -> Result<()> {
     fixture.close().await?;
     observed
 }
+
+#[tokio::test]
+async fn tokio_session_projects_are_admitted_on_the_link_and_survive_reopen() {
+    use collaboration_central_conformance::{
+        session_project_fixture::{FIRST_WORKSPACE, withdraw_session_allowance},
+        session_project_scenarios::{
+            admit_session_projects, assert_session_project_migration,
+            expect_allowance_withdrawal_refusal, record_session_projects,
+            send_project_create_before_withdrawal, session_project_migration,
+        },
+    };
+    use fleet_runtime::PausePoint;
+    use futures_util::StreamExt;
+
+    let fixture = start_session_link_fixture(signed_clock().unwrap())
+        .await
+        .unwrap();
+    let observed: Result<()> = async {
+        let mut socket = connect(&fixture).await?;
+        let owner = fixture.host.central(&fixture.organization_id).await?;
+        let store = owner.runtime().statement_host();
+        let expected = admit_session_projects(&mut socket, &fixture.organization_id, async || {
+            Ok(store.read(session_mutation_records()).await?.rows)
+        })
+        .await?;
+        assert_eq!(store.read(record_session_projects()).await?.rows, expected);
+        let mut held = owner
+            .runtime()
+            .pause_points()
+            .hold_central(PausePoint::BeforeSessionTransaction);
+        let correlation =
+            send_project_create_before_withdrawal(&mut socket, &fixture.organization_id).await?;
+        tokio::select! {
+            () = held.until_held() => {},
+            _ = socket.next() => return Err("Create replied before the post-read barrier".into()),
+        }
+        assert!(matches!(
+            store
+                .run_batch(withdraw_session_allowance(INSTALLATION, FIRST_WORKSPACE))
+                .await?,
+            BatchOutcome::Applied { .. }
+        ));
+        held.release();
+        expect_allowance_withdrawal_refusal(&mut socket, &fixture.organization_id, &correlation)
+            .await?;
+        assert_eq!(store.read(record_session_projects()).await?.rows, expected);
+
+        drop(socket);
+        fixture.host.close().await;
+        let reopened = collaboration_central_tokio::TokioWorkspaceHost::open(
+            &fixture.root_path().join("modern"),
+            fixture.clock.clone(),
+        )
+        .await?;
+        let reopened_owner = reopened.central(&fixture.organization_id).await?;
+        let reopened_store = reopened_owner.runtime().statement_host();
+        let rows = reopened_store.read(record_session_projects()).await?;
+        let migration = reopened_store.read(session_project_migration()).await?;
+        reopened.close().await;
+        assert_eq!(rows.rows, expected);
+        assert_session_project_migration(migration);
+        Ok(())
+    }
+    .await;
+    fixture.close().await.unwrap();
+    observed.unwrap();
+}
+
+#[tokio::test]
+async fn tokio_session_start_denials_skip_owner_reads_and_recheck_on_write() {
+    use collaboration_central_conformance::{
+        session_project_fixture::{
+            FIRST_WORKSPACE, FOREIGN_WORKSPACE, SECOND_WORKSPACE, UNALLOWED_WORKSPACE,
+            archive_session_workspace, directory_entry, restore_session_allowance,
+            withdraw_session_allowance,
+        },
+        session_project_review_scenarios::{
+            archive_candidate, require_machine_not_allowed, reserve_for_rotation,
+            send_create_for_review_race, verify_denials_without_workspace_reads,
+            verify_replays_without_allowance,
+        },
+        session_project_scenarios::expect_allowance_withdrawal_refusal,
+    };
+    use fleet_runtime::PausePoint;
+    use futures_util::StreamExt;
+    let fixture = start_session_link_fixture(signed_clock().unwrap())
+        .await
+        .unwrap();
+    let observed: Result<()> = async {
+        let owner = fixture.host.central(&fixture.organization_id).await?;
+        let foreign = fixture.host.central(&OTHER_ORG.to_owned().try_into()?).await?;
+        let runtime = owner.runtime();
+        let store = runtime.statement_host();
+        assert!(matches!(store.run_batch(directory_entry(UNALLOWED_WORKSPACE)).await?, BatchOutcome::Applied { .. }));
+        assert!(matches!(foreign.runtime().statement_host().run_batch(directory_entry(FOREIGN_WORKSPACE)).await?, BatchOutcome::Applied { .. }));
+
+        let mut socket = connect(&fixture).await?;
+        let (equal_attempt, higher_attempt) = reserve_for_rotation(&mut socket, &fixture.organization_id).await?;
+        let before = store.read(session_mutation_records()).await?.rows;
+        let withdrawal = withdraw_session_allowance(INSTALLATION, FIRST_WORKSPACE);
+        assert!(matches!(store.run_batch(withdrawal.clone()).await?, BatchOutcome::Applied { .. }));
+        verify_denials_without_workspace_reads(
+            &mut socket, &fixture.organization_id, higher_attempt.clone(),
+            async || Ok(runtime.workspace_stores().workspace_call_count()),
+            async || Ok(store.read(session_mutation_records()).await?.rows),
+        ).await?;
+        verify_replays_without_allowance(&mut socket, &fixture.organization_id, equal_attempt).await?;
+        assert!(store.read(session_mutation_records()).await?.rows == before);
+        assert!(matches!(store.run_batch(restore_session_allowance(INSTALLATION, FIRST_WORKSPACE)).await?, BatchOutcome::Applied { .. }));
+
+        let archived_start = archive_candidate()?;
+        for (request, change) in [
+            (higher_attempt, withdrawal),
+            (archived_start.clone(), archive_session_workspace(SECOND_WORKSPACE)),
+        ] {
+            let reads_before = runtime.workspace_stores().workspace_call_count();
+            let mut held = runtime.pause_points().hold_central(PausePoint::BeforeSessionTransaction);
+            let correlation = send_create_for_review_race(&mut socket, &fixture.organization_id, request).await?;
+            tokio::select! {
+                () = held.until_held() => {},
+                _ = socket.next() => return Err("Create replied before its applying barrier".into()),
+            }
+            assert_eq!(runtime.workspace_stores().workspace_call_count(), reads_before + 1);
+            let changed = store.run_batch(change).await;
+            held.release();
+            assert!(matches!(changed?, BatchOutcome::Applied { .. }));
+            expect_allowance_withdrawal_refusal(&mut socket, &fixture.organization_id, &correlation).await?;
+            assert!(store.read(session_mutation_records()).await?.rows == before);
+        }
+        let reads_before = runtime.workspace_stores().workspace_call_count();
+        require_machine_not_allowed(&mut socket, &fixture.organization_id, archived_start).await?;
+        assert_eq!(runtime.workspace_stores().workspace_call_count(), reads_before);
+        assert!(store.read(session_mutation_records()).await?.rows == before);
+        Ok(())
+    }.await;
+    fixture.close().await.unwrap();
+    observed.unwrap();
+}

@@ -2,7 +2,9 @@
 
 use crate::{CreateSessionAttempt, CreateSessionDigest, HarnessKind, SessionSecret, SessionTime};
 use serde::{Deserialize, Deserializer, de::value::StrDeserializer};
-use workspace_ids::{CentralSessionId, SessionId, SessionOperationId, SessionRef};
+use workspace_ids::{
+    CentralSessionId, ProjectId, SessionId, SessionOperationId, SessionRef, WorkspaceId,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, schemars::JsonSchema)]
 #[cfg_attr(
@@ -16,6 +18,7 @@ pub struct CreateFleetSession {
     pub creator: SessionCreator,
     pub agent_program: HarnessKind,
     pub session_kind: CreateSessionKind,
+    pub project: StartProject,
 }
 
 impl<'de> Deserialize<'de> for CreateFleetSession {
@@ -33,6 +36,7 @@ impl<'de> Deserialize<'de> for CreateFleetSession {
             #[serde(deserialize_with = "deserialize_agent_program")]
             agent_program: HarnessKind,
             session_kind: CreateSessionKind,
+            project: StartProject,
         }
         CreateFields::deserialize(crate::named_wire_record::NamedMap(decoder))
     }
@@ -43,6 +47,22 @@ fn deserialize_agent_program<'de, Decoder: Deserializer<'de>>(
 ) -> Result<HarnessKind, Decoder::Error> {
     let spelling = String::deserialize(decoder)?;
     HarnessKind::deserialize(StrDeserializer::new(&spelling))
+}
+
+named_wire_record! {
+    pub struct ProjectRef as "ProjectRef"
+    [deny_unknown_fields] {
+        pub workspace: WorkspaceId,
+        pub project: ProjectId,
+    }
+}
+
+named_wire_record! {
+    pub enum StartProject as "StartProject"
+    [tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase", deny_unknown_fields] {
+        Named { project_ref: ProjectRef },
+        SameAsParent {},
+    }
 }
 
 named_wire_record! {
@@ -79,6 +99,7 @@ named_wire_record! {
             session_id: CentralSessionId,
             secret: SessionSecret,
             reserved_until: SessionTime,
+            workspace: WorkspaceId,
         },
         Superseded {},
         Active {
@@ -100,6 +121,10 @@ named_wire_record! {
     [tag = "kind", rename_all = "camelCase", deny_unknown_fields] {
         CreatorNotAllowed {},
         ParentNotValid {},
+        ProjectRequired {},
+        ProjectNotInWorkspace {},
+        MachineNotAllowed {},
+        HelperOutsideWorkspace {},
     }
 }
 

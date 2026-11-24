@@ -12,6 +12,7 @@ workspace = true
 
 [features]
 wire-export = ["dep:specta"]
+test-support = []
 
 [dependencies]
 central-storage.workspace = true

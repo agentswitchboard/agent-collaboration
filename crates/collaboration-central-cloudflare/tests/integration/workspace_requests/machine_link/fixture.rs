@@ -7,7 +7,14 @@ use central_storage::{
     AlarmUpdate, BatchOutcome, GuardedStatement, RowExpectation, SqlValue, Statement,
     StatementBatch,
 };
-use collaboration_central_conformance::{ConformanceResult as Result, signin_fixtures as signed};
+use collaboration_central_conformance::{
+    ConformanceResult as Result,
+    session_project_fixture::{
+        FIRST_PROJECT, FIRST_WORKSPACE, SECOND_PROJECT, SECOND_WORKSPACE, seed_session_project,
+        session_project_allowances,
+    },
+    signin_fixtures as signed,
+};
 use fleet_contracts::{
     DecideDeviceLogin, DecideMachineToken, DeviceLoginDecision, MachineTokenDecision,
 };
@@ -122,6 +129,30 @@ impl Fixture {
             signed::NOW_SECONDS,
             grant_expires_at.0,
         )?;
+        if !fixture_link_calls {
+            let runtime = host.cold_runtime(&provision.organization_id);
+            if !matches!(
+                runtime
+                    .run_batch(session_project_allowances(MACHINE_ID))
+                    .await?,
+                BatchOutcome::Applied { .. }
+            ) {
+                return Err("fixture session allowances did not apply".into());
+            }
+            for (workspace, project) in [
+                (FIRST_WORKSPACE, FIRST_PROJECT),
+                (SECOND_WORKSPACE, SECOND_PROJECT),
+            ] {
+                if !matches!(
+                    runtime
+                        .workspace_batch(&workspace.parse()?, seed_session_project(project))
+                        .await?,
+                    BatchOutcome::Applied { .. }
+                ) {
+                    return Err("fixture workspace project did not apply".into());
+                }
+            }
+        }
         Ok(Self {
             host,
             clock,

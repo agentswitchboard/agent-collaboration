@@ -3,7 +3,7 @@ use central_engine_model::{EngineTime, EventTag, RefusalTag, StateTag};
 use fleet_identity_protocol::{
     AbandonedSessionCause, BindFleetSessionReply, CreateFleetSessionReply, CreateSessionAttempt,
     CreateSessionDigest, CreateSessionKind, CreateSessionRefusal, EndFleetSessionReply,
-    EndedSessionCause, EnrollmentId, HarnessKind, RouterEndCause, SessionSecret,
+    EndedSessionCause, EnrollmentId, HarnessKind, ProjectRef, RouterEndCause, SessionSecret,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -54,6 +54,7 @@ pub struct SessionReservation {
     pub agent_program: HarnessKind,
     pub kind: CreateSessionKind,
     pub reserved_until: EngineTime,
+    pub project: ProjectRef,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -166,7 +167,7 @@ impl StateTag for SessionState {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NewSessionAdmission {
-    Permitted(SessionReservation),
+    Permitted(Box<SessionReservation>),
     Refused(CreateSessionRefusal),
 }
 
@@ -195,7 +196,7 @@ pub enum SessionEndIdentity {
 pub enum SessionEvent {
     Create {
         caller: SessionCreatorAdmission,
-        first: Option<Box<NewSessionAdmission>>,
+        first: Option<NewSessionAdmission>,
         contents_digest: CreateSessionDigest,
         attempt: CreateSessionAttempt,
         /// Supplied by the service, which never persists the plaintext.
