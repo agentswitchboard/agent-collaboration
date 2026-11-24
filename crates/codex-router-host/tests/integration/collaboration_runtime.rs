@@ -42,7 +42,7 @@ async fn host_serves_the_stateless_collaboration_api_at_the_manifest_url() {
     let root = tempfile::tempdir().expect("temporary runtime root");
     std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
         .expect("private runtime root");
-    let runtime = CollaborationRuntime::start(CollaborationRuntimeInputs {
+    let inputs = CollaborationRuntimeInputs {
         directory: root.path().to_owned(),
         codex_home: root.path().to_owned(),
         backend_socket: root.path().join("backend.sock"),
@@ -51,12 +51,17 @@ async fn host_serves_the_stateless_collaboration_api_at_the_manifest_url() {
         peer_registry_directory: None,
         remote_control_server_name: None,
         owner_human_id: None,
-    })
-    .await
-    .expect("runtime starts");
+    };
+    let runtime = CollaborationRuntime::start_with_test_clock(inputs, crate::provider_test_clock())
+        .await
+        .expect("runtime starts");
     let manifest: collaboration_protocol::ServiceManifest =
         serde_json::from_slice(&std::fs::read(root.path().join("service.json")).expect("manifest"))
             .expect("manifest decode");
+    assert_eq!(
+        manifest.native_schema_digest, None,
+        "startup without a native schema must publish no native schema digest"
+    );
     let authority = manifest
         .mcp
         .url

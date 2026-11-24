@@ -90,6 +90,53 @@ async fn real_service_snapshot_folds_prior_publications() {
     served.stop().await.unwrap();
 }
 
+#[tokio::test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "Fixture errors propagate and assertions identify a changed SDK response."
+)]
+async fn served_inventory_returns_both_endpoint_descriptions()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Arrange: two logical endpoints on one service, with distinct native channels.
+    let root = private_directory()?;
+    let service_id = "019b011e-4000-7000-8000-000000000001";
+    let service_epoch = "019b011e-4000-7000-8000-000000000002";
+    let description = |endpoint_id, label, path| {
+        serde_json::from_value::<collaboration_protocol::EndpointDescription>(json!({
+            "endpoint": {"serviceId": service_id, "endpointId": endpoint_id},
+            "label": label,
+            "availability": {"state": "unprobed"},
+            "channels": [{"kind": "nativeCodex", "transport": "unixWebSocket",
+                "path": path, "schemaDigest": null, "generation": null}]
+        }))
+    };
+    let first = description("first-codex", "First Codex", "first.sock")?;
+    let second = description("second-codex", "Second Codex", "second.sock")?;
+    let application = ApplicationFixture::new(service_id, service_epoch)?
+        .with_endpoints(vec![first.clone(), second.clone()])?
+        .build();
+    let served = ServedCollaborationApi::start(root.path(), application)?;
+    let client = CollaborationClient::connect(root.path(), "distinct-endpoints-proof", "1").await?;
+
+    // Act
+    let inventory = client.list_endpoints().await?;
+    served.stop().await?;
+
+    // Assert: compare both full descriptions without assuming a catalogue order.
+    assert_eq!(inventory.endpoints.len(), 2);
+    assert!(
+        inventory.endpoints.contains(&first),
+        "{:?}",
+        inventory.endpoints
+    );
+    assert!(
+        inventory.endpoints.contains(&second),
+        "{:?}",
+        inventory.endpoints
+    );
+    Ok(())
+}
+
 /// The owner-only service directory the API socket requires.
 fn private_directory() -> std::io::Result<tempfile::TempDir> {
     use std::os::unix::fs::PermissionsExt;
