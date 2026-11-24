@@ -20,6 +20,12 @@ use fixture::{ALTERNATE_ENROLLMENT, ENROLLMENT, Fixture, TOKEN, generation};
 #[path = "enrollment_row_history_test.rs"]
 mod row_histories;
 
+#[path = "retirement_history_test.rs"]
+mod retirement_histories;
+
+#[path = "renewal_history_test.rs"]
+mod renewal_histories;
+
 #[cfg(debug_assertions)]
 #[path = "enrollment_tls_fixture.rs"]
 mod tls;

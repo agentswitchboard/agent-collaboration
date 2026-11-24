@@ -34,14 +34,12 @@ fn allows(kind: DependencyKind, name: &str, source: DependencySource) -> bool {
                 | "serde_json"
                 | "thiserror"
                 | "tokio"
+                | "tracing"
                 | "url"
                 | "uuid"
                 | "zeroize"
         ),
-        (Dev, CratesIo) => matches!(
-            name,
-            "axum" | "chrono" | "hegeltest" | "tracing" | "tracing-subscriber"
-        ),
+        (Dev, CratesIo) => matches!(name, "axum" | "chrono" | "hegeltest" | "tracing-subscriber"),
         _ => false,
     }
 }
@@ -83,6 +81,7 @@ fn feature_contract(kind: DependencyKind, name: &str) -> (bool, &'static [&'stat
                 "time",
             ],
         ),
+        (Normal, "tracing") => (false, &["std"]),
         (Normal, "url") => (true, &["serde"]),
         (Normal, "uuid") => (true, &["v5", "v7"]),
         _ => (true, &[]),
