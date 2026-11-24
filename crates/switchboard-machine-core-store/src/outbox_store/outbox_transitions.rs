@@ -1,6 +1,9 @@
 //! Transactional outbox claim, settlement, expiry and retention.
 use super::{
     ANSWERED_RETENTION_MILLIS, MacOutbox, OutboxStoreError, StoredOutboxWrite,
+    outbox_row_machine::{
+        OutboxRowEffect, OutboxRowEvent, OutboxRowMachine, OutboxRowRefusal, OutboxRowState,
+    },
     outbox_rows::{
         DecodedRow, StoredPayload, corrupt_row, decode_row, expect_one, in_flight_rows,
         outbox_content, payload_content_digest, read_row, select_outbox_rows, waiting_page,
@@ -9,11 +12,12 @@ use super::{
     validate_write_timestamp,
 };
 use crate::{
-    EndedWrite, OutboxRequestStatus, OutboxWriteOutcome, StoreScan,
-    outbox_deadline::DepartureAtDeadline, outbox_item_state::OutboxItemState,
-    outbox_receipt_profile::AnsweredWrite, outbox_settlement::SettledWrite,
+    EndedWrite, OutboxCancellation, OutboxRequestStatus, OutboxWriteOutcome, StoreScan,
+    outbox_item_state::OutboxItemState, outbox_receipt_profile::AnsweredWrite,
+    outbox_settlement::SettledWrite,
 };
 use sqlite_storage_maintenance::TransactionStart;
+use state_machine_core::{StateMachine, TransitionError};
 use std::collections::BTreeSet;
 use workspace_ids::RequestId;
 
@@ -79,11 +83,13 @@ impl MacOutbox<'_> {
                 .as_ref()
                 .map(decode_row)
                 .transpose()?;
-            let Some(row) = decoded.filter(|row| is_waiting(row.state) && row.deadline_ms > now_ms)
-            else {
+            let Some(row) = decoded else {
                 return Err(unexpected(request, "in the outbox before its deadline"));
             };
-            writes.push(claim_row(&mut transaction, row, now_ms).await?);
+            let claimed = claim_row(&mut transaction, row, now_ms, i64::MAX, now_ms).await?;
+            writes.push(
+                claimed.ok_or_else(|| unexpected(request, "in the outbox before its deadline"))?,
+            );
         }
         transaction.commit().await?;
         Ok(writes)
@@ -123,13 +129,24 @@ impl MacOutbox<'_> {
                     continue;
                 }
                 if row.deadline_ms <= now_ms {
-                    let departure = waiting_departure(row.state);
-                    ended.push(end_row(&mut transaction, row, departure, now_ms).await?);
-                } else if row.deadline_ms > required_deadline_after_ms
-                    && row.flush_at_ms <= mark_ms
-                    && writes.len() < usize::from(limit)
+                    collect_ending(
+                        &mut transaction,
+                        &row,
+                        OutboxRowEvent::EndDue { now_ms },
+                        &mut ended,
+                    )
+                    .await?;
+                } else if writes.len() < usize::from(limit)
+                    && let Some(write) = claim_row(
+                        &mut transaction,
+                        row,
+                        now_ms,
+                        mark_ms,
+                        required_deadline_after_ms,
+                    )
+                    .await?
                 {
-                    writes.push(claim_row(&mut transaction, row, now_ms).await?);
+                    writes.push(write);
                 }
             }
             if next.is_none() {
@@ -265,13 +282,17 @@ impl MacOutbox<'_> {
     ) -> Result<(), OutboxStoreError> {
         validate_write_timestamp(now_ms, "updated_at")?;
         let mut transaction = self.store.transaction(TransactionStart::Immediate).await?;
-        let row = read_in_flight(&mut transaction, request).await?;
-        let waiting = if row.state == OutboxItemState::Sent {
-            OutboxItemState::InOutbox
-        } else {
-            OutboxItemState::SentAnswerLost
-        };
-        update_state(&mut transaction, &row, waiting, now_ms).await?;
+        let raw = read_row(&mut transaction, request)
+            .await?
+            .ok_or_else(|| unexpected(request, "sent"))?;
+        let row = decode_row(&raw)?;
+        apply_row_event(
+            &mut transaction,
+            &row,
+            OutboxRowEvent::ReturnNotTransmitted { now_ms },
+            "sent",
+        )
+        .await?;
         transaction.commit().await?;
         Ok(())
     }
@@ -293,30 +314,21 @@ impl MacOutbox<'_> {
                 .await?
                 .ok_or_else(|| unexpected(request, "sent"))?;
             let row = match decode_row(&raw) {
-                Ok(row) => require_in_flight(row, request)?,
+                Ok(row) => row,
                 Err(corruption) => {
                     corrupt_rows.push(corruption);
                     continue;
                 }
             };
-            if row.deadline_ms <= now_ms {
-                ended.push(
-                    end_row(
-                        &mut transaction,
-                        row,
-                        DepartureAtDeadline::MayHaveArrived,
-                        now_ms,
-                    )
-                    .await?,
-                );
-            } else {
-                update_state(
-                    &mut transaction,
-                    &row,
-                    OutboxItemState::SentAnswerLost,
-                    now_ms,
-                )
-                .await?;
+            if let RowTransition::Ended(ending) = apply_row_event(
+                &mut transaction,
+                &row,
+                OutboxRowEvent::ReturnUnanswered { now_ms },
+                "sent",
+            )
+            .await?
+            {
+                ended.push(ending);
             }
         }
         transaction.commit().await?;
@@ -339,9 +351,14 @@ impl MacOutbox<'_> {
             healthy,
             corrupt_rows,
         } = waiting_rows(&mut transaction).await?;
-        for row in healthy.into_iter().filter(|row| row.deadline_ms <= now_ms) {
-            let departure = waiting_departure(row.state);
-            ended.push(end_row(&mut transaction, row, departure, now_ms).await?);
+        for row in healthy {
+            collect_ending(
+                &mut transaction,
+                &row,
+                OutboxRowEvent::EndDue { now_ms },
+                &mut ended,
+            )
+            .await?;
         }
         transaction.commit().await?;
         Ok(StoreScan {
@@ -365,17 +382,15 @@ impl MacOutbox<'_> {
         let mut ended = Vec::new();
         for row in healthy
             .into_iter()
-            .filter(|row| row.deadline_ms <= now_ms && !live_request_ids.contains(&row.request))
+            .filter(|row| !live_request_ids.contains(&row.request))
         {
-            ended.push(
-                end_row(
-                    &mut transaction,
-                    row,
-                    DepartureAtDeadline::MayHaveArrived,
-                    now_ms,
-                )
-                .await?,
-            );
+            collect_ending(
+                &mut transaction,
+                &row,
+                OutboxRowEvent::EndDue { now_ms },
+                &mut ended,
+            )
+            .await?;
         }
         transaction.commit().await?;
         Ok(StoreScan {
@@ -390,22 +405,6 @@ impl MacOutbox<'_> {
 pub struct ClaimedBatch {
     pub writes: Vec<StoredOutboxWrite>,
     pub ended: Vec<EndedWrite>,
-}
-
-#[cfg(test)]
-fn is_waiting(state: OutboxItemState) -> bool {
-    matches!(
-        state,
-        OutboxItemState::InOutbox | OutboxItemState::SentAnswerLost
-    )
-}
-
-fn waiting_departure(state: OutboxItemState) -> DepartureAtDeadline {
-    if state == OutboxItemState::InOutbox {
-        DepartureAtDeadline::NeverLeft
-    } else {
-        DepartureAtDeadline::MayHaveArrived
-    }
 }
 
 async fn read_in_flight(
@@ -443,22 +442,82 @@ async fn claim_row(
     connection: &mut sqlx::SqliteConnection,
     row: DecodedRow,
     now_ms: i64,
-) -> Result<StoredOutboxWrite, OutboxStoreError> {
-    let next = if row.state == OutboxItemState::InOutbox {
-        OutboxItemState::Sent
-    } else {
-        OutboxItemState::Resent
+    eligible_through_ms: i64,
+    required_deadline_after_ms: i64,
+) -> Result<Option<StoredOutboxWrite>, OutboxStoreError> {
+    let event = OutboxRowEvent::Claim {
+        now_ms,
+        eligible_through_ms,
+        required_deadline_after_ms,
     };
-    update_state(connection, &row, next, now_ms).await?;
+    if let RowTransition::NotDue =
+        apply_row_event(connection, &row, event, "in the outbox before its deadline").await?
+    {
+        return Ok(None);
+    }
     let StoredPayload::Unanswered(payload) = row.payload else {
         return Err(corrupt_row(row.request.as_str(), "payload_json"));
     };
-    Ok(StoredOutboxWrite {
+    Ok(Some(StoredOutboxWrite {
         request: row.request,
         caller: row.caller,
         payload,
         sent_at: row.sent_at,
-    })
+    }))
+}
+
+enum RowTransition {
+    NotDue,
+    Stamped,
+    Ended(EndedWrite),
+}
+
+async fn apply_row_event(
+    connection: &mut sqlx::SqliteConnection,
+    row: &DecodedRow,
+    event: OutboxRowEvent,
+    expected: &'static str,
+) -> Result<RowTransition, OutboxStoreError> {
+    let snapshot = OutboxRowState {
+        item_state: row.state,
+        flush_at_ms: row.flush_at_ms,
+        deadline_ms: row.deadline_ms,
+    };
+    let (next, effects) = match OutboxRowMachine::transition(&snapshot, event) {
+        Ok(transition) => transition,
+        Err(TransitionError::Domain(OutboxRowRefusal::NotDue)) => return Ok(RowTransition::NotDue),
+        Err(TransitionError::NotAllowed { .. } | TransitionError::Stale) => {
+            return Err(unexpected(&row.request, expected));
+        }
+    };
+    let mut result = RowTransition::Stamped;
+    for effect in effects {
+        match effect {
+            OutboxRowEffect::Stamp { now_ms } => {
+                update_state(connection, row, next.item_state, now_ms).await?
+            }
+            OutboxRowEffect::Finish { now_ms, reason } => {
+                result = RowTransition::Ended(
+                    end_row(connection, row, next.item_state, reason, now_ms).await?,
+                );
+            }
+        }
+    }
+    Ok(result)
+}
+
+async fn collect_ending(
+    connection: &mut sqlx::SqliteConnection,
+    row: &DecodedRow,
+    event: OutboxRowEvent,
+    ended: &mut Vec<EndedWrite>,
+) -> Result<(), OutboxStoreError> {
+    if let RowTransition::Ended(ending) =
+        apply_row_event(connection, row, event, "waiting or sent").await?
+    {
+        ended.push(ending);
+    }
+    Ok(())
 }
 
 fn unexpected(request: &RequestId, expected: &'static str) -> OutboxStoreError {
@@ -473,24 +532,24 @@ fn unexpected(request: &RequestId, expected: &'static str) -> OutboxStoreError {
 /// of the same write is still recognised.
 async fn end_row(
     transaction: &mut sqlx::SqliteConnection,
-    row: DecodedRow,
-    departure: DepartureAtDeadline,
+    row: &DecodedRow,
+    next: OutboxItemState,
+    reason: OutboxCancellation,
     now_ms: i64,
 ) -> Result<EndedWrite, OutboxStoreError> {
     let request = &row.request;
     let request_id = request.as_str();
-    let StoredPayload::Unanswered(payload) = row.payload else {
+    let StoredPayload::Unanswered(payload) = &row.payload else {
         return Err(corrupt_row(request_id, "payload_json"));
     };
-    let target = outbox_content(request_id, &payload)?.target;
-    let reason = crate::outbox_deadline::end_reason(departure);
+    let target = outbox_content(request_id, payload)?.target;
     let record = serde_json::to_string(&AnsweredWrite {
         delivery_outcome: None,
         request_id: request.clone(),
         target: target.clone(),
-        content_digest: payload_content_digest(&payload)?,
+        content_digest: payload_content_digest(payload)?,
     })?;
-    let to = OutboxItemState::ended(reason).as_str();
+    let to = next.as_str();
     let from = row.state.as_str();
     let changed = sqlx::query!(
         "UPDATE outbox_items SET item_state = ?, payload_json = ?, updated_at = ?
@@ -506,8 +565,8 @@ async fn end_row(
     .rows_affected();
     expect_one(changed, request, "waiting or sent")?;
     Ok(EndedWrite {
-        caller: row.caller,
-        request_id: row.request,
+        caller: row.caller.clone(),
+        request_id: row.request.clone(),
         target,
         reason,
     })

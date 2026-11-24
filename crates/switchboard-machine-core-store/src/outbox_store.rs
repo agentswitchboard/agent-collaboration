@@ -10,6 +10,7 @@ use workspace_ids::RequestId;
 use workspace_model::{Caller, Timestamp};
 
 mod outbox_queries;
+mod outbox_row_machine;
 mod outbox_rows;
 mod outbox_transitions;
 mod sender_outcome_store;
