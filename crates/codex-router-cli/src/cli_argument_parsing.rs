@@ -15,6 +15,9 @@ use std::ffi::OsString;
 use std::num::NonZeroU64;
 use std::path::PathBuf;
 
+#[cfg(unix)]
+use crate::enrollment_command::{ENROLL_HELP, EnrollArguments, EnrollCommandError, STATUS_HELP};
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum CliCommand {
     Serve(ServeCommand),
@@ -26,6 +29,10 @@ pub(super) enum CliCommand {
     Host(HostCommand),
     #[cfg(unix)]
     Central(super::central_command::CentralCommand),
+    #[cfg(unix)]
+    Enroll(EnrollArguments),
+    #[cfg(unix)]
+    EnrollmentStatus,
     Version,
     Help(&'static str),
 }
@@ -71,6 +78,28 @@ impl CliCommand {
             "central" => Ok(Self::Central(
                 super::central_command::CentralCommand::parse(parser.remaining_arguments())?,
             )),
+            #[cfg(unix)]
+            "enroll" => {
+                let arguments = parser.remaining_arguments();
+                if is_enrollment_help(&arguments) {
+                    return Ok(Self::Help(ENROLL_HELP));
+                }
+                Ok(Self::Enroll(EnrollArguments::parse(arguments)?))
+            }
+            #[cfg(unix)]
+            "enrollment" => {
+                let arguments = parser.remaining_arguments();
+                match arguments.as_slice() {
+                    [status] if status == "status" => Ok(Self::EnrollmentStatus),
+                    [status, help]
+                        if status == "status" && is_enrollment_help(std::slice::from_ref(help)) =>
+                    {
+                        Ok(Self::Help(STATUS_HELP))
+                    }
+                    arguments if is_enrollment_help(arguments) => Ok(Self::Help(STATUS_HELP)),
+                    _ => Err(EnrollCommandError::StatusArguments.into()),
+                }
+            }
             "host" => Ok(Self::Host(
                 HostCommand::parse(parser.remaining_arguments())
                     .map_err(|message| CliError::HostParse { message })?,
@@ -85,6 +114,11 @@ impl CliCommand {
             }),
         }
     }
+}
+
+#[cfg(unix)]
+fn is_enrollment_help(arguments: &[OsString]) -> bool {
+    matches!(arguments, [help] if help == "--help" || help == "-h" || help == "help")
 }
 
 fn is_binary_name(command: &str) -> bool {

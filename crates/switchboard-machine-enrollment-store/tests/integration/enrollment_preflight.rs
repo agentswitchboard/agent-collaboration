@@ -144,7 +144,14 @@ async fn a_held_first_grant_loses_to_another_organizations_install() {
     release.send(()).unwrap();
     let outcome = losing_install.await;
 
-    assert_eq!(outcome, Err(EnrollmentFailure::ReplacementConflict));
+    assert_eq!(
+        outcome,
+        Err(EnrollmentFailure::AfterApproval(
+            switchboard_machine_enrollment::ApprovedEnrollmentSaveFailure::NotSaved(
+                switchboard_machine_enrollment::EnrollmentSaveFailure::ReplacementConflict,
+            ),
+        ))
+    );
     assert_eq!(
         fixture.store.read().await,
         Ok(StoredEnrollment::Active(winner))
