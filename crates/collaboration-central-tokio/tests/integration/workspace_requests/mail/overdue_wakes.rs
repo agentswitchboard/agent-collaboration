@@ -23,24 +23,18 @@ async fn wake_effects(runtime: &Runtime) -> Vec<Vec<SqlValue>> {
 }
 
 #[tokio::test]
-async fn admitted_wake_committed_after_due_fires_inside_request_spacing() {
+async fn admitted_wake_committed_after_due_fires_on_its_own_commit() {
     let fixture = Fixture::new().await;
     let central = runtime(&fixture).await;
     let start = fixture.clock.utc_now();
     let preceding_batch = at(start, 4, 45, 0);
     let due = at(start, 5, 0, 0);
     let committed = at(start, 5, 1, 0);
-    let request_alarm_floor = at(start, 5, 15, 0);
     let next_mark = at(start, 10, 0, 0);
+    let batch_count = central.runtime().due_batch_starts().len();
     fixture.set_utc(preceding_batch).await;
     let future = set_wake(&fixture, 45351, next_mark).await;
-    assert_eq!(
-        central
-            .runtime()
-            .due_batch_snapshot()
-            .last_start_unix_millis,
-        ms(preceding_batch)
-    );
+    assert_eq!(central.runtime().due_batch_starts().len(), batch_count);
     assert_eq!(alarm_ms(&central), ms(next_mark));
     driver_settled(&fixture, &central).await;
     let callbacks = central.runtime().alarm_completion_count();
@@ -68,7 +62,7 @@ async fn admitted_wake_committed_after_due_fires_inside_request_spacing() {
         () = held_transition.until_held() => {}
     }
     assert!(wake_effects(&central).await.is_empty());
-    assert_eq!(alarm_ms(&central), ms(request_alarm_floor));
+    assert_eq!(alarm_ms(&central), ms(next_mark));
     held_transition.release();
     let wake = request.await;
 
@@ -80,14 +74,7 @@ async fn admitted_wake_committed_after_due_fires_inside_request_spacing() {
     assert_eq!(wake_state(&central, &future).await, text("active"));
     assert_eq!(alarm_ms(&central), ms(next_mark));
     assert_eq!(central.runtime().alarm_completion_count(), callbacks);
-    assert_eq!(
-        central
-            .runtime()
-            .due_batch_snapshot()
-            .last_start_unix_millis,
-        ms(preceding_batch),
-        "the ordinary due batch was still inside its request spacing"
-    );
+    assert_eq!(central.runtime().due_batch_starts().len(), batch_count);
     fixture.host.close().await;
 }
 
@@ -118,8 +105,7 @@ async fn cold_open_fires_an_overdue_accepted_wake_before_the_next_mark() {
         vec![vec![text(&wake), stamp(reopened_at)]]
     );
     assert_eq!(wake_state(&reopened, &future).await, text("active"));
-    // The next wake is inside a regular batch's look-ahead. A cold claim
-    // would also floor its alarm at 10:10:01, one second after its due time.
+    // Cold recovery targets only the already overdue wake.
     assert_eq!(alarm_ms(&reopened), ms(next_mark));
     assert!(reopened.runtime().due_batch_starts().is_empty());
     assert_eq!(reopened.runtime().alarm_completion_count(), 0);

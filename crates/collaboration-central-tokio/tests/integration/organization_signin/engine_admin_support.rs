@@ -107,6 +107,14 @@ impl EngineOrg {
     pub async fn raw(&self, sql: &'static str, args: Vec<SqlValue>) {
         self.f.apply(A, sql, args).await.unwrap();
     }
+    pub async fn settle_reply_drains(&self) {
+        self.runtime()
+            .await
+            .runtime()
+            .until_reply_drains_settle()
+            .await;
+    }
+
     pub async fn after_event(&self) {
         self.runtime().await.after_event().await.unwrap();
     }

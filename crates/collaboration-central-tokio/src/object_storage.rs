@@ -387,6 +387,19 @@ impl ObjectStorage {
         fleet_engine::read_alarm_inputs(&mut NativeTransaction(connection)).await
     }
 
+    pub(crate) async fn engine_due_times(
+        &self,
+    ) -> Result<fleet_runtime_ports::EngineDueTimes, StoreFailure> {
+        let mut connection = self
+            .opened()
+            .await?
+            .pool()
+            .acquire()
+            .await
+            .map_err(|_| StoreFailure::Unavailable)?;
+        fleet_engine::read_engine_due_times(&mut NativeTransaction(&mut connection)).await
+    }
+
     pub(crate) async fn engine_alarm_inputs(
         &self,
     ) -> Result<central_storage::EngineAlarmTimes, StoreFailure> {

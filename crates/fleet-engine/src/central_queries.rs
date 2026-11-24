@@ -3,6 +3,7 @@ use crate::DueKind;
 use central_engine_model::{DueListKind, DueListQuery, DueRow, InstanceKey};
 use central_storage::{CorruptReason, EngineAlarmTimes, SafeInteger, StoreFailure};
 use fleet_lent_transaction::CentralTransaction;
+use fleet_runtime_ports::EngineDueTimes;
 use sqlx::{ColumnIndex, Database, Decode, Encode, IntoArguments, Type};
 
 #[derive(sqlx::FromRow)]
@@ -21,10 +22,17 @@ struct StoredIndexedAlarmInputs {
     notice_window_due: Option<i64>,
     #[sqlx(rename = "workspace_drain_due?: i64")]
     workspace_drain_due: Option<i64>,
+    #[sqlx(rename = "look_ahead_due?: i64")]
+    look_ahead_due: Option<i64>,
+    #[sqlx(rename = "exact_due?: i64")]
+    exact_due: Option<i64>,
+    #[sqlx(rename = "approval_due?: i64")]
+    approval_due: Option<i64>,
 }
 
 struct IndexedAlarmSnapshot {
     times: EngineAlarmTimes,
+    due: EngineDueTimes,
     legacy_by_kind: [(DueKind, Option<i64>); 2],
 }
 
@@ -78,6 +86,21 @@ where
     Ok(read_alarm_snapshot(transaction).await?.times)
 }
 
+pub async fn read_engine_due_times<CentralTransactionLender: CentralTransaction>(
+    transaction: &mut CentralTransactionLender,
+) -> Result<EngineDueTimes, StoreFailure>
+where
+    <CentralTransactionLender::Database as Database>::Arguments:
+        IntoArguments<CentralTransactionLender::Database>,
+    String: Type<CentralTransactionLender::Database>
+        + for<'q> Encode<'q, CentralTransactionLender::Database>,
+    i64: Type<CentralTransactionLender::Database>
+        + for<'row> Decode<'row, CentralTransactionLender::Database>,
+    for<'row> &'row str: ColumnIndex<<CentralTransactionLender::Database as Database>::Row>,
+{
+    Ok(read_alarm_snapshot(transaction).await?.due)
+}
+
 async fn read_alarm_snapshot<CentralTransactionLender: CentralTransaction>(
     transaction: &mut CentralTransactionLender,
 ) -> Result<IndexedAlarmSnapshot, StoreFailure>
@@ -104,8 +127,9 @@ where
         .map_err(|error| map_central_query_failure(error, "engine alarm input"))?
         .unwrap_or_default();
     let on_grid_due = row.on_grid_due;
+    let look_ahead_due = row.look_ahead_due;
     #[cfg(feature = "test-support")]
-    let on_grid_due = {
+    let (on_grid_due, look_ahead_due) = {
         macro_rules! bind_fixture_alarm {
             ($file:literal) => {
                 sqlx::query_as::<CentralTransactionLender::Database, StoredAlarmInputs>(
@@ -129,12 +153,18 @@ where
                 .fetch_one(transaction.executor())
                 .await
                 .map_err(|error| map_central_query_failure(error, "engine fixture alarm input"))?;
-            [on_grid_due, fixture.on_grid_due]
-                .into_iter()
-                .flatten()
-                .min()
+            (
+                [on_grid_due, fixture.on_grid_due]
+                    .into_iter()
+                    .flatten()
+                    .min(),
+                [look_ahead_due, fixture.on_grid_due]
+                    .into_iter()
+                    .flatten()
+                    .min(),
+            )
         } else {
-            on_grid_due
+            (on_grid_due, look_ahead_due)
         }
     };
     let legacy_by_kind = [
@@ -156,6 +186,23 @@ where
     };
     Ok(IndexedAlarmSnapshot {
         times,
+        due: EngineDueTimes {
+            look_ahead_due_ms: validate_optional_alarm_millis(
+                look_ahead_due,
+                "look-ahead due input",
+            )?,
+            exact_due_ms: [row.exact_due, times.earliest_legacy_due_unix_millis]
+                .into_iter()
+                .flatten()
+                .min()
+                .map(|due| validate_optional_alarm_millis(Some(due), "exact due input"))
+                .transpose()?
+                .flatten(),
+            approval_due_ms: validate_optional_alarm_millis(
+                row.approval_due,
+                "approval due input",
+            )?,
+        },
         legacy_by_kind,
     })
 }
@@ -251,12 +298,13 @@ declare_timed_due_lists! {
 __declare_timed_due_row!();
 
 macro_rules! projected_due_query {
-    ($emit:ident, $kind:expr, $horizon:expr, $cap:expr) => {
+    ($emit:ident, $kind:expr, $horizon:expr, $cap:expr, $retry_cutoff:expr) => {
         $emit!(
             "src/queries/read_projected_due_items.sql",
             $kind,
             $horizon,
-            $cap
+            $cap,
+            $retry_cutoff
         )
     };
 }
@@ -309,7 +357,13 @@ where
     let timed_due_query = match projection {
         Some(kind) => {
             let (horizon, cap) = query.bindings();
-            projected_due_query!(build_timed_due_query, kind.tag().to_owned(), horizon, cap)
+            projected_due_query!(
+                build_timed_due_query,
+                kind.tag().to_owned(),
+                horizon,
+                cap,
+                query.retry_cutoff()
+            )
         }
         None => select_timed_due_list!(build_timed_due_query, query),
     };

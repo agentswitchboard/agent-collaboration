@@ -1,6 +1,6 @@
 //! Typed Mac calls keep their waiter on the physical socket in the owning object.
 
-use super::workspace_machine_link::send;
+use super::workspace_link_frame::send;
 #[path = "workspace_approval_delivery.rs"]
 pub(super) mod approval_delivery;
 #[path = "workspace_pending_mac_calls.rs"]

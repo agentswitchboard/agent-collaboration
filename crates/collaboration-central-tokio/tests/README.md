@@ -129,13 +129,15 @@ Ported from the paused reliability branch (alarm robustness):
   post-commit publication failure keeps the rows and the previous alarm, the upper range
   has no mark and arms nothing, a restart mid fan-out redoes nothing, and a dropped alarm
   is re-published by the next request.
-- `workspace_requests::mail::engine_large_batch`: V9 on the native host; 1,000 due probe
-  instances in four capped batches 30 s apart, earliest first and once each, with at most
-  eight units in flight; prints batch timings as measurement only.
-- `workspace_requests::mail::engine_timing_races`: V12 races on the native host; a
-  publication built before a newer claim uses the newer floor and backlog, a claim waits
-  out a decision's publication, simultaneous events run one due batch, notice units get no
-  look-ahead, and a changed organization stamp refuses every event.
+- `workspace_requests::mail::engine_large_batch`: shared 1,200-item conformance
+  checks four capped passes in one wake-up and the actual alarm callback for the
+  200-item tail. Separate cases hold eight in-flight units and check that a ninth waits.
+- `workspace_requests::mail::engine_timing_races`: overlapping publications keep
+  the exact durable deadline, one owner runs the due work, and notice units
+  apply at their own cutoff. Stamp mismatches keep the existing refusal.
+- The machine-link reply-due-work cases use the real workspace and mail socket
+  replies and private sign-in HTTP reply. They also cover an independent reply
+  between passes and recovery after dropping a scheduled drain.
 - `workspace_requests::engine_v2_support`: shared native V2 helpers (failure record
   reads, mark arithmetic, wake and automation requests, and a `tracing` capture of the
   native `EngineItemFailed` log lines).

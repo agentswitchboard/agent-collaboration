@@ -133,6 +133,13 @@ impl CentralStore for CentralStatements {
     > + Send {
         SendFuture::new(async move { statement_store::engine_alarm_inputs(&self.connection).await })
     }
+    fn engine_due_times(
+        &self,
+    ) -> impl std::future::Future<
+        Output = std::result::Result<fleet_runtime_ports::EngineDueTimes, StoreFailure>,
+    > + Send {
+        SendFuture::new(async move { statement_store::engine_due_times(&self.connection).await })
+    }
     fn published_alarm(
         &self,
     ) -> impl std::future::Future<
@@ -240,6 +247,8 @@ pub struct CentralObject {
     #[cfg(feature = "test-support")]
     controls: workspace_cases::Controls,
     #[cfg(feature = "test-support")]
+    reply_due_activity: Arc<workspace_reply_due_work::ReplyDueActivity>,
+    #[cfg(feature = "test-support")]
     witnesses: workspace_link_witness::PendingWitnesses,
     #[cfg(feature = "test-support")]
     launcher_clock_sampled: Mutex<bool>,
@@ -307,7 +316,7 @@ impl CentralObject {
             connection: Arc::new(SendWrapper::new(connection)),
             state: self.state.clone(),
             clock: self.clock.clone(),
-            decide_alarm: fleet_runtime::engine_alarm_decider(self.due_batches.clone()),
+            decide_alarm: fleet_runtime::engine_alarm_decider(),
         })
     }
     async fn migrate(&self) -> std::result::Result<(), StoreFailure> {
@@ -410,6 +419,7 @@ impl CentralObject {
         let deadline_state = self.state.clone();
         let central = Arc::new(
             central
+                .with_due_batch_yield(Arc::new(worker_due_yield::yield_worker_due_batches))
                 .with_approval_delivery_completion(Arc::new(move |work| {
                     deadline_state.wait_until(work)
                 }))
@@ -428,6 +438,7 @@ impl CentralObject {
                     );
                 })),
         );
+        central.enable_reply_due_work();
         ending_transport.install_runtime(&central);
         match startup {
             ColdAlarmStart::DriveFollows => central.recompute_alarm().await?,
@@ -452,6 +463,8 @@ impl DurableObject for CentralObject {
             mail_pushes: Default::default(),
             #[cfg(feature = "test-support")]
             controls: workspace_cases::Controls::default(),
+            #[cfg(feature = "test-support")]
+            reply_due_activity: Default::default(),
             #[cfg(feature = "test-support")]
             witnesses: workspace_link_witness::PendingWitnesses::default(),
             #[cfg(feature = "test-support")]
@@ -515,11 +528,16 @@ impl DurableObject for CentralObject {
                 }
             };
             use tower_service::Service;
-            let response = collaboration_central_core::organization_signin_router(runtime.clone())
-                .call(http::Request::from_parts(parts, body))
-                .await?;
+            let (response, work) = fleet_runtime::collect_reply_due_work(
+                collaboration_central_core::organization_signin_router(runtime.clone())
+                    .call(http::Request::from_parts(parts, body)),
+            )
+            .await;
+            let response = response?.try_into()?;
             self.flush_ready_mail(&runtime).await;
-            return response.try_into();
+            return workspace_reply_due_work::write_signin_reply(response, work, || {
+                self.reply_due_work_owner(&runtime)
+            });
         }
         if let Some(path_organization) = crate::workspace_link_entry::organization(&request.path())
         {
@@ -570,6 +588,14 @@ mod signin_launcher_controls;
 
 #[path = "workspace_machine_link.rs"]
 mod workspace_machine_link;
+
+#[path = "workspace_link_frame.rs"]
+mod workspace_link_frame;
+
+#[path = "worker_due_yield.rs"]
+mod worker_due_yield;
+#[path = "workspace_reply_due_work.rs"]
+mod workspace_reply_due_work;
 
 #[path = "workspace_socket_attachment.rs"]
 mod workspace_socket_attachment;

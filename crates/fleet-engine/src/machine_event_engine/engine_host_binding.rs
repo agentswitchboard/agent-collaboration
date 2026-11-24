@@ -13,7 +13,7 @@ use fleet_contracts::{
 };
 use fleet_runtime::DueBatchState;
 use fleet_runtime_ports::CentralStore;
-use std::future::Future;
+use std::{future::Future, sync::Arc};
 
 pub trait EngineHost: Send + Sync + Sized {
     type TimedDueDispatch: TimedDueDispatch<Self>;
@@ -24,7 +24,15 @@ pub trait EngineHost: Send + Sync + Sized {
     /// The one injected clock.
     fn current_engine_time(&self) -> Result<EngineTime, StoreFailure>;
     fn host_id_source(&self) -> &dyn fleet_runtime_ports::IdSource;
-    fn due_batch_state(&self) -> &DueBatchState;
+    fn due_batch_state(&self) -> &Arc<DueBatchState>;
+    /// The greatest exact cutoff, used only to conservatively skip discovery.
+    fn exact_due_cutoff(
+        &self,
+        now: EngineTime,
+    ) -> impl Future<Output = Result<EngineTime, StoreFailure>> + Send;
+    fn yield_due_batches(
+        &self,
+    ) -> impl Future<Output = Result<(), fleet_runtime::DueBatchYieldFailure>> + Send;
     fn emit_central_observation(&self, observation: CentralObservation);
     fn offer_ready_mail(&self, delivery: MailDeliveryReady);
     /// Today's organization stamp check (P3): `Ok(false)` when unprovisioned.
@@ -72,7 +80,7 @@ impl<'a, Host: EngineHost> FleetEngine<'a, Host> {
     pub(crate) fn host_id_source(&self) -> &'a dyn fleet_runtime_ports::IdSource {
         self.0.host_id_source()
     }
-    pub(crate) fn due_batch_state(&self) -> &'a DueBatchState {
+    pub(crate) fn due_batch_state(&self) -> &'a Arc<DueBatchState> {
         self.0.due_batch_state()
     }
     pub(crate) fn emit_central_observation(&self, observation: CentralObservation) {

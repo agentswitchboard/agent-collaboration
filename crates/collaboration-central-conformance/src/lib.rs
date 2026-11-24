@@ -7,6 +7,7 @@ pub mod approval_authority_scenarios;
 pub mod approval_link_scenarios;
 #[cfg(feature = "session-link-test-support")]
 pub mod approval_provider_scenarios;
+pub mod due_drain_scenarios;
 mod machine_allowance_fixture;
 #[cfg(feature = "session-link-test-support")]
 pub mod parent_approval_scenarios;

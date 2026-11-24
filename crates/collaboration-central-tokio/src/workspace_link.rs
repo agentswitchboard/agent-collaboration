@@ -207,6 +207,7 @@ async fn serve_link(
         stop: &state.stop,
         replaced: &registration.replaced,
         authority_close: &registration.authority_close,
+        host: state.host.as_ref(),
         clock: state.host.link_clock(),
         tasks: &state.tasks,
     };
@@ -493,35 +494,44 @@ async fn serve_link(
                 receipts,
             }) => {
                 let attachment = connection.attachment();
-                let mut results = Vec::with_capacity(receipts.receipts().len());
-                for receipt in receipts.receipts() {
-                    match runtime
-                        .apply_delivery_receipt(
-                            &attachment,
-                            &receipt.message_id,
-                            receipt.kind.clone(),
-                        )
-                        .await
-                    {
-                        Ok(MailReceiptSettlement::Applied) => results.push(ReceiptResult::Recorded),
-                        Ok(MailReceiptSettlement::Stop(result)) => results.push(result),
-                        Ok(MailReceiptSettlement::AuthorityLapsed(cause)) => {
-                            writes.close_authority(&mut socket, cause);
-                            return;
-                        }
-                        Err(_) => {
-                            writes.close(&mut socket, close_code::ERROR, "central unavailable");
-                            return;
+                let (reply, due_work) = fleet_runtime::collect_reply_due_work(async {
+                    let mut results = Vec::with_capacity(receipts.receipts().len());
+                    for receipt in receipts.receipts() {
+                        match runtime
+                            .apply_delivery_receipt(
+                                &attachment,
+                                &receipt.message_id,
+                                receipt.kind.clone(),
+                            )
+                            .await
+                        {
+                            Ok(MailReceiptSettlement::Applied) => {
+                                results.push(ReceiptResult::Recorded)
+                            }
+                            Ok(MailReceiptSettlement::Stop(result)) => results.push(result),
+                            Ok(MailReceiptSettlement::AuthorityLapsed(cause)) => {
+                                writes.close_authority(&mut socket, cause);
+                                return None;
+                            }
+                            Err(_) => {
+                                writes.close(&mut socket, close_code::ERROR, "central unavailable");
+                                return None;
+                            }
                         }
                     }
-                }
-                let reply = LinkFrame::Data(DataFrame::ReceiptResults {
-                    correlation_id,
-                    results,
-                });
+                    Some(LinkFrame::Data(DataFrame::ReceiptResults {
+                        correlation_id,
+                        results,
+                    }))
+                })
+                .await;
+                let Some(reply) = reply else {
+                    return;
+                };
                 if !writes.send(&mut socket, &reply).await {
                     return;
                 }
+                due_work.handoff(Arc::new(state.host.background_tasks.clone()));
             }
             // Direction validation also rejects server-only frames here.
             _ => {
@@ -710,23 +720,30 @@ async fn reply_to_request(
     }
     // Each request restores the connection against live rows first, as the
     // Worker does: after the deadline or a revocation it is refused.
-    let dispatched = match runtime
-        .restore_machine_link_request(&connection.attachment())
-        .await
-    {
-        Ok(MachineLinkRequestAuthority::Admitted(active)) => {
-            dispatch_request(runtime, &active, request).await
+    let (dispatched, due_work) = fleet_runtime::collect_reply_due_work(async {
+        match runtime
+            .restore_machine_link_request(&connection.attachment())
+            .await
+        {
+            Ok(MachineLinkRequestAuthority::Admitted(active)) => {
+                dispatch_request(runtime, &active, request).await
+            }
+            Ok(MachineLinkRequestAuthority::Refused(cause)) => {
+                Err(ApplyingRequestFailure::Authority(cause))
+            }
+            Ok(MachineLinkRequestAuthority::TemporarilyUnavailable) if in_batch => {
+                Ok(ReplyPayload::central_unavailable(request.payload()))
+            }
+            Ok(MachineLinkRequestAuthority::TemporarilyUnavailable) | Err(_) => {
+                writes.close(socket, close_code::ERROR, "central unavailable");
+                return None;
+            }
         }
-        Ok(MachineLinkRequestAuthority::Refused(cause)) => {
-            Err(ApplyingRequestFailure::Authority(cause))
-        }
-        Ok(MachineLinkRequestAuthority::TemporarilyUnavailable) if in_batch => {
-            Ok(ReplyPayload::central_unavailable(request.payload()))
-        }
-        Ok(MachineLinkRequestAuthority::TemporarilyUnavailable) | Err(_) => {
-            writes.close(socket, close_code::ERROR, "central unavailable");
-            return RequestOutcome::Stopped;
-        }
+        .into()
+    })
+    .await;
+    let Some(dispatched) = dispatched else {
+        return RequestOutcome::Stopped;
     };
     let (result, outcome) = match dispatched {
         Ok(result) => (result, RequestOutcome::Replied),
@@ -739,6 +756,12 @@ async fn reply_to_request(
             return RequestOutcome::Stopped;
         }
     };
+    #[cfg(feature = "test-support")]
+    runtime
+        .runtime()
+        .pause_points()
+        .reached_central(fleet_runtime::PausePoint::BeforeLinkReplyWrite)
+        .await;
     let sent = writes
         .send(
             socket,
@@ -749,6 +772,7 @@ async fn reply_to_request(
         )
         .await;
     if sent {
+        due_work.handoff(Arc::new(writes.host.background_tasks.clone()));
         outcome
     } else {
         RequestOutcome::Stopped
@@ -781,6 +805,7 @@ struct LinkWrites<'a> {
     stop: &'a CancellationToken,
     replaced: &'a CancellationToken,
     authority_close: &'a OnceLock<MachineLinkCloseCode>,
+    host: &'a TokioWorkspaceHost,
     clock: &'a dyn RuntimeClock,
     tasks: &'a TaskTracker,
 }

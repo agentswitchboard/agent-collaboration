@@ -22,55 +22,29 @@ fn alarm_properties_cover_supplied_times_and_every_pending_combination(case: Tes
         );
         EngineTime::from_timestamp_millis(mark * 300_000).unwrap()
     });
-    let leftovers_beyond_cap = case.draw(gs::booleans());
-    let last_batch_start = if leftovers_beyond_cap {
-        Some(draw_time())
-    } else {
-        optional_time()
-    };
     let inputs = AlarmInputs {
         now: draw_time(),
-        last_batch_start,
-        leftovers_beyond_cap,
         earliest_on_grid_due: grid,
         earliest_legacy_due: optional_time(),
     };
-    let policy = DueBatchPolicy::DEFAULT;
+    let earliest = [inputs.earliest_on_grid_due, inputs.earliest_legacy_due]
+        .into_iter()
+        .flatten()
+        .min();
 
-    let decision = next_alarm(&inputs, &policy);
-
-    assert_eq!(decision, next_alarm(&inputs, &policy));
-    let pending = grid.is_some() || inputs.earliest_legacy_due.is_some();
-    assert_eq!(decision == AlarmDecision::Clear, !pending);
-    match decision {
-        AlarmDecision::Clear => {}
-        AlarmDecision::Unpublishable => {
-            let no_portable_floor = inputs.last_batch_start.is_some_and(|start| {
-                start
-                    .checked_add_signed(policy.spacing)
-                    .is_none_or(|floor| !supported_time(floor))
-            });
-            let next_mark_ms = (inputs.now.timestamp_millis().div_euclid(300_000) + 1) * 300_000;
-            assert!(
-                no_portable_floor || next_mark_ms > MAX_ALARM_UNIX_MILLIS,
-                "a valid future mark and portable floor must not be refused"
-            );
+    match earliest {
+        None => assert_eq!(next_alarm(&inputs), AlarmDecision::Clear),
+        Some(due) if due > inputs.now => {
+            assert_eq!(next_alarm(&inputs), AlarmDecision::SetAt(due));
         }
-        AlarmDecision::SetAt(at) => {
-            assert!(pending);
-            assert!(at > inputs.now);
-            assert!(supported_time(at));
-            let floor = inputs
-                .last_batch_start
-                .and_then(|start| start.checked_add_signed(policy.spacing));
-            if let Some(floor) = floor {
-                assert!(at >= floor);
-            }
-            assert!(
-                at.timestamp_millis().rem_euclid(300_000) == 0
-                    || Some(at) == floor
-                    || Some(at) == inputs.earliest_legacy_due
-            );
+        Some(_) => {
+            let mark = (inputs.now.timestamp_millis().div_euclid(300_000) + 1) * 300_000;
+            let expected = if mark <= MAX_ALARM_UNIX_MILLIS {
+                AlarmDecision::SetAt(EngineTime::from_timestamp_millis(mark).unwrap())
+            } else {
+                AlarmDecision::Unpublishable
+            };
+            assert_eq!(next_alarm(&inputs), expected);
         }
     }
 }

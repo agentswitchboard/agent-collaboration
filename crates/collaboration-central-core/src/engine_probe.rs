@@ -24,6 +24,22 @@ pub struct ProbeRequest {
     pub event: ProbeEvent,
 }
 
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SelectedProbeVerdict {
+    OccurrenceCommitted,
+    AttemptRecorded,
+    Unchanged,
+    CentralStoreFailed,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SelectedProbe {
+    pub key: InstanceKey,
+    pub occurrence: EngineTime,
+}
+
 impl<Host: fleet_runtime_ports::CentralStore, Stores: fleet_runtime_ports::WorkspaceStores>
     crate::WorkspaceRuntime<Host, Stores>
 {
@@ -57,6 +73,36 @@ impl<Host: fleet_runtime_ports::CentralStore, Stores: fleet_runtime_ports::Works
                     vec![text(seed.key),text(seed.group),seed.due.map_or(central_storage::SqlValue::Null,|due|text(format_utc_millis(due))),text(seed.claim),text(&now),text(&now)]),
             ],alarm:central_storage::AlarmUpdate::Unchanged,
         }).await
+    }
+
+    /// Apply an already selected fixture occurrence through the guarded store.
+    pub async fn apply_selected_probe(&self, selected: SelectedProbe) -> SelectedProbeVerdict {
+        let occurrence_ms = selected.occurrence.timestamp_millis();
+        let row = central_engine_model::DueRow {
+            key: selected.key,
+            occurrence_ms,
+            effective_due_ms: occurrence_ms,
+        };
+        match fleet_engine::FleetEngine::new(self)
+            .run_due_machine_instance::<EngineProbe, _>(
+                &crate::engine::probe_store::ProbeStore(self),
+                row,
+                "engine_probe_items.due_at",
+                |occurrence| ProbeEvent::Due { occurrence },
+            )
+            .await
+        {
+            fleet_engine::TimedUnitOutcome::OccurrenceCommitted => {
+                SelectedProbeVerdict::OccurrenceCommitted
+            }
+            fleet_engine::TimedUnitOutcome::AttemptRecorded => {
+                SelectedProbeVerdict::AttemptRecorded
+            }
+            fleet_engine::TimedUnitOutcome::NoChange => SelectedProbeVerdict::Unchanged,
+            fleet_engine::TimedUnitOutcome::CentralStoreFailed => {
+                SelectedProbeVerdict::CentralStoreFailed
+            }
+        }
     }
 
     pub async fn request_probe(

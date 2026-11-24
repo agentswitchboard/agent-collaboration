@@ -421,13 +421,13 @@ async fn operational_database_codes_are_never_charged_to_the_item() {
             vec![text("waiting"), integer(0), integer(0)],
             "code {code} is an outage, not the item's failure"
         );
-        let floor = due + chrono::Duration::seconds(30);
+        let fallback = due + chrono::Duration::minutes(5);
         assert_eq!(
             alarm_ms(&runtime),
-            Some(floor.timestamp_millis()),
+            Some(fallback.timestamp_millis()),
             "code {code}"
         );
-        fixture.set_utc(floor).await;
+        fixture.set_utc(fallback).await;
         runtime.after_event().await.unwrap();
         assert_eq!(
             probe_facts(&runtime, item, group).await,
@@ -532,6 +532,11 @@ async fn no_unit_starts_after_central_store_down_and_started_units_settle() {
         probe_facts(&runtime, faulted, group).await,
         vec![text("waiting"), integer(7), integer(0)],
         "the faulted item carries no record"
+    );
+    assert_eq!(
+        alarm_ms(&runtime),
+        Some((due + minutes(5)).timestamp_millis()),
+        "the outage stops this drain and leaves the next physical mark"
     );
     assert_fixture_attempt_ids_are_uuid_v7(
         &fixture,

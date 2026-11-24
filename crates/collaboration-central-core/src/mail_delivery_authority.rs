@@ -37,7 +37,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             &result,
             Ok(MailReceiptSettlement::Applied) | Err(StoreFailure::AnswerLost)
         ) {
-            let _ = self.after_event().await;
+            self.after_request_event().await;
         }
         result
     }

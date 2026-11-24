@@ -66,10 +66,7 @@ async fn lost_read_answer_before_effect_is_unavailable_and_never_cached() {
                 .join(format!("{}.sqlite", f.caller.organization_id().as_str())),
             Arc::new(fleet_storage_schema::workspace_migrations::central_migrator()),
         )
-        .with_engine_publication(
-            clock.clone(),
-            fleet_runtime::engine_alarm_decider(due_batches.clone()),
-        ),
+        .with_engine_publication(clock.clone(), fleet_runtime::engine_alarm_decider()),
     );
     let store = Arc::new(ObjectStorage::new(
         f.root

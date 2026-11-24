@@ -1,7 +1,5 @@
-use super::checked_attempts::{CheckedDueFailure, CheckedDueUnit};
 use super::{
     engine_host_binding::{EngineHost, FleetEngine},
-    machine_event_execution::MachineEventOutcome,
     machine_store_adapter::classify_corrupt_subject_row,
     transition_batch_writes::BatchApplyFailure,
 };
@@ -12,8 +10,7 @@ use central_storage::{
     AlarmPublication, AlarmUpdate, BatchOutcome, EngineAlarmPlan, StatementBatch, StoreFailure,
 };
 use fleet_contracts::{
-    AlarmNotPublished, AlarmResult, ControlGate, EngineSubject, EventCompletion, FailureOutcome,
-    LegacyUnitOutcome,
+    AlarmNotPublished, AlarmResult, ControlGate, EngineSubject, FailureOutcome, LegacyUnitOutcome,
 };
 use fleet_runtime_ports::{CentralStore, workspace_decode_error::corrupt};
 use futures_util::{StreamExt, stream};
@@ -34,7 +31,7 @@ pub enum DueDiscoveryError {
 }
 
 pub enum TimedRowOutcome {
-    Handled(AlarmResult),
+    Handled { work: AlarmResult, progressed: bool },
     CentralStoreFailed,
 }
 pub trait TimedDueDispatch<Host: EngineHost>: Send + Sync {
@@ -46,6 +43,7 @@ pub trait TimedDueDispatch<Host: EngineHost>: Send + Sync {
         host: &Host,
         kind: Self::TimedSourceKind,
         cutoff: EngineTime,
+        retry_cutoff: EngineTime,
         limit: usize,
     ) -> impl Future<Output = Result<Vec<DueRow>, DueDiscoveryError>> + Send;
     fn dispatch_timed_due_row(
@@ -63,6 +61,19 @@ pub struct WholeDueUnitControl {
 pub enum WholeUnitOutcome {
     Skipped,
     Completed(AlarmResult),
+}
+
+pub(super) struct DuePass {
+    pub(super) work: AlarmResult,
+    pub(super) ending: DuePassEnding,
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum DuePassEnding {
+    FullWithProgress,
+    FullWithoutProgress,
+    Short,
+    StoreFault,
 }
 
 enum DueBatchUnit<TimedKind, WholeKind> {
@@ -110,68 +121,25 @@ pub async fn read_due_rows(
     cutoff: EngineTime,
     limit: usize,
 ) -> Result<Vec<DueRow>, DueDiscoveryError> {
-    let query = central_engine_model::due_list_query(kind, cutoff, limit)
-        .map_err(DueDiscoveryError::InvalidBounds)?;
+    read_due_rows_with_retry_cutoff(host, kind, cutoff, cutoff, limit).await
+}
+
+pub async fn read_due_rows_with_retry_cutoff(
+    host: &impl CentralStore,
+    kind: DueListKind,
+    cutoff: EngineTime,
+    retry_cutoff: EngineTime,
+    limit: usize,
+) -> Result<Vec<DueRow>, DueDiscoveryError> {
+    let query =
+        central_engine_model::due_list_query_with_retry_cutoff(kind, cutoff, retry_cutoff, limit)
+            .map_err(DueDiscoveryError::InvalidBounds)?;
     host.read_timed_due_rows(query)
         .await
         .map_err(DueDiscoveryError::ReadFailed)
 }
 
 impl<Host: EngineHost> FleetEngine<'_, Host> {
-    /// Every event reaches this after its own work. The claim occurs before the
-    /// first await; only individual units perform async work, at most eight wide.
-    pub(crate) async fn complete_event_with_observation(
-        &self,
-    ) -> Result<EventCompletion, AlarmNotPublished> {
-        #[cfg(feature = "test-support")]
-        {
-            self.0.record_engine_completion_entry();
-            self.engine_test_pause_points()
-                .reached_central(fleet_runtime::PausePoint::EngineCompletionEntered)
-                .await;
-        }
-        let result = self.complete_due_work_and_alarm().await;
-        if let Err(error) = &result {
-            self.observe_alarm_not_published(error.failure.clone());
-        }
-        result
-    }
-
-    async fn complete_due_work_and_alarm(&self) -> Result<EventCompletion, AlarmNotPublished> {
-        let now = self
-            .current_engine_time()
-            .map_err(|failure| AlarmNotPublished { failure })?;
-        let due_batch_claimed = self
-            .due_batch_state()
-            .try_claim(now.timestamp_millis(), DueBatchPolicy::DEFAULT.spacing)
-            .map_err(|reason| AlarmNotPublished {
-                failure: StoreFailure::AlarmUnpublishable { reason },
-            })?;
-        let provisioned = self
-            .0
-            .organization_is_provisioned()
-            .await
-            .map_err(|failure| AlarmNotPublished { failure })?;
-        if !provisioned {
-            let publication = self.publish_engine_alarm(EngineAlarmPlan::Clear).await?;
-            return Ok(EventCompletion {
-                work: AlarmResult::default(),
-                publication,
-            });
-        }
-        let mut due_work_result = AlarmResult::default();
-        if due_batch_claimed {
-            due_work_result = self.run_due_batch(now).await;
-        }
-        let publication = self
-            .publish_engine_alarm(EngineAlarmPlan::Recompute)
-            .await?;
-        Ok(EventCompletion {
-            work: due_work_result,
-            publication,
-        })
-    }
-
     pub async fn publish_engine_alarm(
         &self,
         plan: EngineAlarmPlan,
@@ -204,14 +172,11 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
         }
     }
 
-    async fn run_due_batch(&self, now: EngineTime) -> AlarmResult {
+    pub(super) async fn run_due_batch(&self, now: EngineTime, horizon: EngineTime) -> DuePass {
         let policy = DueBatchPolicy::DEFAULT;
-        let Some(horizon) = now
-            .checked_add_signed(policy.look_ahead)
-            .filter(|time| central_engine_model::supported_time(*time))
-        else {
-            return AlarmResult::default();
-        };
+        #[cfg(feature = "test-support")]
+        self.due_batch_state()
+            .record_batch_start(now.timestamp_millis());
         let mut units = Vec::new();
         let mut more_timed_rows_due = false;
         let mut central_down = false;
@@ -236,7 +201,7 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
                 DueCutoff::LookAheadHorizon => horizon,
             };
             match timed_due_dispatch
-                .discover_due_rows(self.0, kind, cutoff, policy.per_kind_cap + 1)
+                .discover_due_rows(self.0, kind, cutoff, now, policy.per_kind_cap + 1)
                 .await
             {
                 Ok(mut rows) => {
@@ -291,6 +256,7 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
             }
         }
         let mut due_work_result = AlarmResult::default();
+        let mut timed_progress = false;
         if !central_down {
             units.extend(
                 self.0
@@ -304,27 +270,36 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
                     let stop_after_store_failure = &stop_after_store_failure;
                     async move {
                         if stop_after_store_failure.load(Ordering::Acquire) {
-                            return AlarmResult::default();
+                            return (AlarmResult::default(), false);
                         }
                         #[cfg(feature = "test-support")]
                         self.due_batch_state()
                             .record_unit_start(unit.build_due_unit_start_receipt(now));
-                        let (due_work_result, central_store_failed) =
+                        let (due_work_result, progress, central_store_failed) =
                             self.dispatch_due_batch_unit(unit, now).await;
                         if central_store_failed {
                             stop_after_store_failure.store(true, Ordering::Release);
                         }
-                        due_work_result
+                        (due_work_result, progress)
                     }
                 })
                 .buffer_unordered(8);
-            while let Some(done) = completed.next().await {
+            while let Some((done, progressed)) = completed.next().await {
                 due_work_result += done;
+                timed_progress |= progressed;
             }
+            central_down = stop_after_store_failure.load(Ordering::Acquire);
         }
-        self.due_batch_state()
-            .finish(now.timestamp_millis(), more_timed_rows_due);
-        due_work_result
+        let ending = match (central_down, more_timed_rows_due, timed_progress) {
+            (true, _, _) => DuePassEnding::StoreFault,
+            (false, true, false) => DuePassEnding::FullWithoutProgress,
+            (false, true, true) => DuePassEnding::FullWithProgress,
+            (false, false, _) => DuePassEnding::Short,
+        };
+        DuePass {
+            work: due_work_result,
+            ending,
+        }
     }
 
     async fn dispatch_due_batch_unit(
@@ -334,7 +309,7 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
             Host::WholeUnitKind,
         >,
         now: EngineTime,
-    ) -> (AlarmResult, bool) {
+    ) -> (AlarmResult, bool, bool) {
         match unit {
             DueBatchUnit::TimedMachineRow(kind, _, row) => {
                 match self
@@ -343,13 +318,15 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
                     .dispatch_timed_due_row(self, self.0, kind, row)
                     .await
                 {
-                    TimedRowOutcome::Handled(work) => (work, false),
-                    TimedRowOutcome::CentralStoreFailed => (AlarmResult::default(), true),
+                    TimedRowOutcome::Handled { work, progressed } => (work, progressed, false),
+                    TimedRowOutcome::CentralStoreFailed => (AlarmResult::default(), false, true),
                 }
             }
             DueBatchUnit::Whole(kind, unit) => {
-                self.run_whole_unit_with_attempt_control(kind, unit, now)
-                    .await
+                let (work, failed) = self
+                    .run_whole_unit_with_attempt_control(kind, unit, now)
+                    .await;
+                (work, false, failed)
             }
         }
     }
@@ -417,149 +394,5 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
                 None => (empty, false),
             },
         }
-    }
-
-    /// Direct sends and changing direct receipts request an alarm recomputation
-    /// with their applying write. The due mark and the failure charge each settle
-    /// independently, then this batch recomputes once to avoid paying for the
-    /// alarm query (318 rows in the sparse fixture) per due item. System receipts
-    /// keep their existing post-event completion path.
-    /// Returns the completion and Central failure flags for the due dispatch.
-    pub async fn run_checked_due_machine_instance<Rejected, Charge>(
-        &self,
-        subject: &EngineSubject,
-        apply: impl std::future::Future<Output = Result<CheckedDueUnit<Rejected>, CheckedDueFailure>>,
-        charge: impl FnOnce(Rejected, EngineTime) -> Charge,
-    ) -> (bool, bool)
-    where
-        Charge: std::future::Future<
-                Output = Result<Option<central_engine_model::FailureRecord>, CheckedDueFailure>,
-            >,
-    {
-        let failure = match apply.await {
-            Ok(CheckedDueUnit::Applied { ready }) => {
-                if let Some(ready) = ready {
-                    self.0.offer_ready_mail(ready);
-                }
-                #[cfg(feature = "test-support")]
-                self.engine_test_pause_points()
-                    .reached_engine(fleet_runtime::PausePoint::AfterEngineCommit, &subject.key.0)
-                    .await;
-                return (true, false);
-            }
-            Ok(CheckedDueUnit::Stale) => return (false, false),
-            Ok(CheckedDueUnit::Failed(record)) => Ok(Some(record)),
-            Ok(CheckedDueUnit::Rejected(rejected)) => {
-                #[cfg(feature = "test-support")]
-                self.engine_test_pause_points()
-                    .reached_engine(
-                        fleet_runtime::PausePoint::BeforeEngineFailureWrite,
-                        &subject.key.0,
-                    )
-                    .await;
-                match self.current_engine_time() {
-                    Ok(now) => charge(rejected, now).await,
-                    Err(failure) => Err(CheckedDueFailure::from_store(failure)),
-                }
-            }
-            Err(failure) => Err(failure),
-        };
-        let failure = match failure {
-            Ok(Some(record)) => {
-                self.observe_recorded_attempt_failure(subject, &record, &[]);
-                return (false, false);
-            }
-            Ok(None) | Err(CheckedDueFailure::AnswerLost) => return (false, false),
-            Err(CheckedDueFailure::Unavailable) => StoreFailure::Unavailable,
-            Err(CheckedDueFailure::Corrupt { reason }) => StoreFailure::Corrupt { reason },
-        };
-        self.observe_engine_store_down(subject, failure);
-        (false, true)
-    }
-
-    pub async fn run_due_machine_instance<SubjectMachine, SubjectStore>(
-        &self,
-        adapter: &SubjectStore,
-        row: DueRow,
-        due_column: &'static str,
-        due_event: fn(EngineTime) -> SubjectMachine::Event,
-    ) -> (bool, bool)
-    where
-        SubjectMachine: central_engine_model::Machine,
-        SubjectMachine::State: Send + Sync,
-        SubjectMachine::Event: Send + Sync,
-        SubjectMachine::Effect: Send + Sync,
-        SubjectMachine::Error: Send + Sync,
-        SubjectStore: super::machine_store_adapter::MachineStoreAdapter<SubjectMachine>,
-    {
-        let subject = adapter.failure_attempt_subject(&row.key);
-        let outcome = match EngineTime::from_timestamp_millis(row.occurrence_ms) {
-            Some(occurrence) => {
-                self.apply_machine_event::<SubjectMachine, SubjectStore, _>(
-                    adapter,
-                    row.key.clone(),
-                    due_event(occurrence),
-                    &super::event_source_policy::DueEventSource,
-                )
-                .await
-            }
-            // The due SQL clamps unreadable times, so this is defensive: the item
-            // fails alone as CorruptRow and the batch continues (P3).
-            None => {
-                self.record_invalid_due_occurrence(adapter, &row.key, due_column)
-                    .await
-            }
-        };
-        match outcome {
-            MachineEventOutcome::TransitionCommitted(_) => (true, false),
-            MachineEventOutcome::StorageFailed(failure) => {
-                self.observe_engine_store_down(&subject, failure);
-                (false, true)
-            }
-            MachineEventOutcome::AttemptFailureRecorded(_)
-            | MachineEventOutcome::RequestItemFailed(_)
-            | MachineEventOutcome::SubjectMissing
-            | MachineEventOutcome::TransitionRefused(_)
-            | MachineEventOutcome::Superseded
-            | MachineEventOutcome::StorageAnswerLost => (false, false),
-        }
-    }
-
-    async fn record_invalid_due_occurrence<SubjectMachine, SubjectStore>(
-        &self,
-        adapter: &SubjectStore,
-        key: &InstanceKey,
-        due_column: &'static str,
-    ) -> MachineEventOutcome<SubjectMachine::State, SubjectMachine::Error>
-    where
-        SubjectMachine: central_engine_model::Machine,
-        SubjectStore: super::machine_store_adapter::MachineStoreAdapter<SubjectMachine>,
-    {
-        let version = match adapter.load_subject_state(key).await {
-            Ok(Some(loaded)) => loaded.observed_subject_version,
-            Ok(None) => return MachineEventOutcome::SubjectMissing,
-            Err(super::machine_store_adapter::SubjectLoadFailure::CorruptSubjectRow {
-                observed_subject_version: version,
-                ..
-            }) => *version,
-            Err(super::machine_store_adapter::SubjectLoadFailure::StorageAnswerLost) => {
-                return MachineEventOutcome::StorageAnswerLost;
-            }
-            Err(super::machine_store_adapter::SubjectLoadFailure::StoreReadFailed(failure)) => {
-                return MachineEventOutcome::StorageFailed(failure);
-            }
-        };
-        self.record_attempt_failure(
-            &adapter.failure_attempt_subject(key),
-            adapter.attempt_failure_writer(),
-            &version,
-            central_engine_model::ItemFailureClass::CorruptRow {
-                column: due_column.into(),
-                raw_value: None,
-            },
-            SubjectMachine::retirement_threshold(),
-        )
-        .await
-        .into()
     }
 }

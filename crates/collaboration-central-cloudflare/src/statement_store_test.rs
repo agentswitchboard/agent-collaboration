@@ -124,13 +124,7 @@ fn only_allowlisted_statement_rejections_are_charged_to_an_item() {
 
 #[test]
 fn engine_publication_uses_both_pending_columns_and_the_supplied_clock() {
-    let state = std::sync::Arc::new(fleet_runtime::DueBatchState::default());
-    assert!(
-        state
-            .try_claim(300_000, chrono::Duration::seconds(30))
-            .unwrap()
-    );
-    let decide = fleet_runtime::engine_alarm_decider(state);
+    let decide = fleet_runtime::engine_alarm_decider();
     let inputs = EngineAlarmTimes {
         earliest_on_grid_due_unix_millis: Some(300_000),
         earliest_legacy_due_unix_millis: Some(305_000),
@@ -138,9 +132,9 @@ fn engine_publication_uses_both_pending_columns_and_the_supplied_clock() {
     let mut published = None;
     assert_eq!(
         decide(inputs, 300_000, &mut |time| published = Some(time)),
-        Ok(Some(330_000))
+        Ok(Some(600_000))
     );
-    assert_eq!(published, Some(Some(330_000)));
+    assert_eq!(published, Some(Some(600_000)));
 
     let max = collaboration_central_core::MAX_ALARM_UNIX_MILLIS;
     let inputs = EngineAlarmTimes {

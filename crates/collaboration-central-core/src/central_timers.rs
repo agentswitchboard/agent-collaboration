@@ -2,7 +2,7 @@
 use crate::WorkspaceRuntime;
 use central_engine_model::{DueBatchPolicy, DueRow, EngineTime, InstanceKey};
 use central_storage::{AlarmPublicationFailure, EngineAlarmPlan, StoreFailure};
-use fleet_engine::{DueDiscoveryError, FleetEngine};
+use fleet_engine::{DueDiscoveryError, FleetEngine, TimedUnitOutcome};
 use fleet_runtime_ports::workspace_decode_error::corrupt;
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
 use fleet_wakes::{WakeStore, WakeTimer};
@@ -30,7 +30,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         &self,
         engine: &FleetEngine<'_, Self>,
         row: DueRow,
-    ) -> (bool, bool) {
+    ) -> TimedUnitOutcome {
         engine
             .run_due_machine_instance::<WakeTimer, _>(
                 &WakeStore::new(self, fleet_mail::insert_message),
@@ -94,7 +94,10 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
                 machine_kind: "wake_timer".to_owned(),
                 subject_key: row.key.0.clone(),
             });
-        self.dispatch_due_wake(engine, row).await.1
+        matches!(
+            self.dispatch_due_wake(engine, row).await,
+            TimedUnitOutcome::CentralStoreFailed
+        )
     }
 
     async fn overdue_wake_rows(
@@ -102,7 +105,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         cutoff: EngineTime,
         limit: usize,
     ) -> Result<Vec<DueRow>, StoreFailure> {
-        fleet_wakes::due_wakes(self.execution.statement_host(), cutoff, limit)
+        fleet_wakes::due_wakes(self.execution.statement_host(), cutoff, cutoff, limit)
             .await
             .map_err(|error| match error {
                 DueDiscoveryError::ReadFailed(failure) => failure,

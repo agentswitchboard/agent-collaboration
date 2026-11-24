@@ -28,7 +28,7 @@ use hegel::{TestCase, generators as gs};
 use router_clock::RuntimeClock;
 use workspace_model::central_mail::{CentralMailAnswer, CentralMailOperation, CentralMailResult};
 
-const SPACING_MS: i64 = 30_000;
+const FALLBACK_MARK_MS: i64 = 300_000;
 /// Scheduler turns `settle` gives the alarm driver to make visible progress.
 /// A live driver needs a handful per store round trip; a stalled or dead one
 /// never progresses, so the budget turns a hang into a failing case without
@@ -92,12 +92,8 @@ struct EngineModel {
     runtime: tokio::runtime::Runtime,
     engine: Option<EngineOrg>,
     subjects: Vec<Subject>,
-    /// Every due batch claimed in this process lifetime (the floor is in
-    /// memory), one entry per batch even at the same millisecond.
-    batch_starts: Vec<i64>,
     /// How many unit starts and batch claims of this runtime were observed.
     seen_units: usize,
-    seen_batches: usize,
     /// The armed one-shot commit fault and its subject (arming replaces it).
     armed_fault: Option<(String, ArmedFault)>,
     /// Whether the armed fault was still pending when last observed.
@@ -161,10 +157,6 @@ impl EngineModel {
     }
     fn observe(&mut self) {
         let runtime = self.block(self.engine().runtime());
-        let batches = runtime.runtime().due_batch_starts();
-        self.batch_starts
-            .extend_from_slice(&batches[self.seen_batches.min(batches.len())..]);
-        self.seen_batches = batches.len();
         let units = runtime.runtime().due_unit_starts();
         let new_units = units[self.seen_units.min(units.len())..].to_vec();
         self.seen_units = units.len();
@@ -276,6 +268,7 @@ async fn within_progress_budget<T>(what: &str, mut check: impl FnMut() -> Option
 /// re-checks a future alarm at the current manual time. A failed, stalled or
 /// dead driver fails the case.
 async fn settle(engine: &EngineOrg) {
+    engine.settle_reply_drains().await;
     let runtime = engine.runtime().await;
     assert!(
         runtime.runtime().alarm_failures().is_empty(),
@@ -289,7 +282,7 @@ async fn settle(engine: &EngineOrg) {
             panic!(
                 "the alarm driver failed: {:?}; due batch {:?}",
                 runtime.runtime().alarm_failures(),
-                runtime.runtime().due_batch_snapshot()
+                runtime.runtime().due_batch_starts()
             )
         };
         let now = engine.now().timestamp_millis();
@@ -601,10 +594,8 @@ impl EngineModel {
         let mut engine = self.engine.take().expect("engine open");
         self.runtime.block_on(engine.f.reopen()).unwrap();
         self.engine = Some(engine);
-        // A new process: the floor, the receipts and armed faults are in memory.
-        self.batch_starts.clear();
+        // A new process starts fresh visit receipts and fault controls.
         self.seen_units = 0;
-        self.seen_batches = 0;
         self.armed_fault = None;
         self.fault_pending = false;
         self.block(self.engine().after_event());
@@ -651,7 +642,7 @@ impl EngineModel {
             };
             if let Some(deadline) = deadline {
                 assert!(
-                    deadline + SPACING_MS > now,
+                    (deadline.div_euclid(FALLBACK_MARK_MS) + 1) * FALLBACK_MARK_MS > now,
                     "{} due {} ({:?}) was never worked by {now}",
                     subject.key,
                     subject.due,
@@ -737,32 +728,6 @@ impl EngineModel {
             assert_eq!(reference_list.rows, projected);
         });
     }
-
-    #[invariant(always_run)]
-    fn the_thirty_second_floor_holds(&self, _: TestCase) {
-        let mut starts = self.batch_starts.clone();
-        starts.sort_unstable();
-        for pair in starts.windows(2) {
-            assert!(
-                pair[1] - pair[0] >= SPACING_MS,
-                "due batches started {} ms apart: {pair:?}",
-                pair[1] - pair[0]
-            );
-        }
-        let snapshot = self
-            .block(self.engine().runtime())
-            .runtime()
-            .due_batch_snapshot();
-        if let (Some(alarm), Some(start)) = (
-            self.block(self.engine().alarm_ms()),
-            snapshot.last_start_unix_millis,
-        ) {
-            assert!(
-                alarm >= start + SPACING_MS,
-                "the alarm {alarm} is inside the floor after the batch at {start}"
-            );
-        }
-    }
 }
 
 impl Drop for EngineModel {
@@ -842,9 +807,7 @@ fn the_engine_keeps_its_invariants_under_random_requests_faults_and_restarts(tc:
         runtime,
         engine: Some(engine),
         subjects: Vec::new(),
-        batch_starts: Vec::new(),
         seen_units: 0,
-        seen_batches: 0,
         armed_fault: None,
         fault_pending: false,
     };

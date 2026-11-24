@@ -28,7 +28,7 @@ pub use machine_event_engine::checked_attempts::{
 };
 pub use machine_event_engine::due_batch_execution::{
     DueCutoff, DueDiscoveryError, TimedDueDispatch, TimedRowOutcome, TimedSourceSchedule,
-    WholeDueUnitControl, WholeUnitOutcome, read_due_rows,
+    WholeDueUnitControl, WholeUnitOutcome, read_due_rows, read_due_rows_with_retry_cutoff,
 };
 pub use machine_event_engine::engine_host_binding::{EngineHost, FleetEngine};
 pub use machine_event_engine::machine_event_execution::MachineEventOutcome;
@@ -40,6 +40,7 @@ pub use machine_event_engine::machine_store_adapter::{
 };
 #[cfg(feature = "test-support")]
 pub use machine_event_engine::request_receipt_store::{EngineReceipt, EngineRefusal};
+pub use machine_event_engine::timed_due_execution::TimedUnitOutcome;
 
 #[doc(hidden)]
 pub mod owner_sql;
@@ -56,4 +57,4 @@ pub use due_table_planner::{
 
 mod central_queries;
 pub use central_queries::{DueItemTimes, DueTableDifference, InvalidDueEntry, compare_due_table};
-pub use central_queries::{read_alarm_inputs, read_timed_due_rows};
+pub use central_queries::{read_alarm_inputs, read_engine_due_times, read_timed_due_rows};

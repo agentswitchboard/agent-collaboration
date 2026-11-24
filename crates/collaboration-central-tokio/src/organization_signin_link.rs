@@ -1,6 +1,9 @@
 //! A dedicated owner-only Unix listener for the modern private sign-in routes.
 
-use crate::TokioWorkspaceHost;
+use crate::{
+    TokioWorkspaceHost,
+    workspace_reply_due_work::{ReplyAwareSignInListener, SignInReplyWriter},
+};
 use futures_util::FutureExt;
 use std::{
     io,
@@ -65,13 +68,21 @@ impl OrganizationSignInLink {
             remove_owned_socket(socket, metadata.dev(), metadata.ino())?;
             return Err(error.into());
         }
-        let router = collaboration_central_core::organization_signin_router(host);
+        let router = collaboration_central_core::organization_signin_router(host.clone()).layer(
+            axum::middleware::from_fn_with_state(
+                host,
+                crate::workspace_reply_due_work::handoff_signin_reply,
+            ),
+        );
         let stop = CancellationToken::new();
         let stopped = stop.clone();
         let task = tokio::spawn(async move {
-            axum::serve(listener, router)
-                .with_graceful_shutdown(stopped.cancelled_owned())
-                .await
+            axum::serve(
+                ReplyAwareSignInListener(listener),
+                router.into_make_service_with_connect_info::<SignInReplyWriter>(),
+            )
+            .with_graceful_shutdown(stopped.cancelled_owned())
+            .await
         });
         Ok(Self {
             socket: socket.to_owned(),

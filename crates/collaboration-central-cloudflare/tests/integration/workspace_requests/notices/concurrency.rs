@@ -177,13 +177,15 @@ async fn sustained_other_workspace_writes_do_not_postpone_pending_drain_alarm() 
         ));
         assert_eq!(runtime.read(read_due()).await.unwrap().rows, original.rows);
         // Kept with the floor allowance: the alarm is no later than the drain's
-        // +5 s, raised only by the 30 s floor after a batch. Workerd exposes no
-        // due-batch snapshot, so the floor follows from the claims this loop
-        // makes: setup claimed at T0, then W2's requests at seconds 30 and 60.
-        let floor = start + 30_000 * (i64::from(second) / 30) + 30_000;
+        let now = start + i64::from(second) * 1_000;
+        let expected = if due > now {
+            due
+        } else {
+            (now.div_euclid(300_000) + 1) * 300_000
+        };
         let alarm: Option<i64> = runtime.control("raw-alarm-time", &()).await.unwrap();
         assert!(
-            alarm.is_some_and(|at| at <= due.max(floor)),
+            alarm.is_some_and(|at| at <= expected),
             "W2 postponed W1's drain alarm at second {second}: {alarm:?}"
         );
     }

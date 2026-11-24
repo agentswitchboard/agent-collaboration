@@ -22,6 +22,11 @@ pub enum PausePoint {
     AfterWorkspaceExecute,
     /// The engine has entered completion and has yet to drive work.
     EngineCompletionEntered,
+    BeforeDueContinuation,
+    BeforeDeferredDueWork,
+    BeforeLinkReplyWrite,
+    BeforePrivateReplySinkReads,
+    BeforeDueAlarmPublication,
     /// After the notices committed.
     AfterNoticesCommitted,
     BeforeDrainCommit,
@@ -85,6 +90,7 @@ pub struct PausePoints {
     armed: Arc<Mutex<BTreeMap<PauseKey, ArmedPause>>>,
     held: Arc<Mutex<BTreeMap<WorkspaceId, Vec<PausePoint>>>>,
     central: Arc<Mutex<BTreeMap<PausePoint, ArmedPause>>>,
+    release_when_pass_finishes: Arc<Mutex<Option<HeldPause>>>,
     central_counts: Arc<Mutex<BTreeMap<PausePoint, watch::Sender<u64>>>>,
     /// Several holds may be armed on one key; arrivals take them in arming order,
     /// so two callers on one instance or request can each be held.
@@ -138,6 +144,13 @@ impl PausePoints {
         HeldPause { arrived, release }
     }
 
+    pub fn central_pause_armed(&self, point: PausePoint) -> bool {
+        self.central
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains_key(&point)
+    }
+
     pub fn central_count(&self, point: PausePoint) -> u64 {
         self.central_counts
             .lock()
@@ -157,6 +170,22 @@ impl PausePoints {
         let _ = count.wait_for(|count| *count >= minimum).await;
     }
 
+    pub fn release_reply_when_pass_finishes(&self, held: HeldPause) {
+        *self
+            .release_when_pass_finishes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(held);
+    }
+
+    pub fn pass_finished(&self) {
+        let waiting_reply = self
+            .release_when_pass_finishes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        drop(waiting_reply);
+    }
+
     pub async fn reached_central(&self, point: PausePoint) {
         if matches!(
             point,
@@ -167,6 +196,8 @@ impl PausePoints {
                 | PausePoint::MacEndingRecoveryStarted
                 | PausePoint::MacEndingRecoveryFinished
                 | PausePoint::MacEndingRegistrationRecoveryScheduled
+                | PausePoint::BeforeDeferredDueWork
+                | PausePoint::BeforeDueContinuation
         ) {
             self.central_counts
                 .lock()

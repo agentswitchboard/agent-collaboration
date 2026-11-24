@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT\n    subject_key AS \"subject_key?: String\",\n    occurrence_ms AS \"occurrence_ms!: i64\",\n    effective_due_ms AS \"effective_due_ms!: i64\"\nFROM engine_due_entries\nWHERE work_kind = ?1 AND entry_role = 'item'\n    AND effective_due_ms IS NOT NULL AND effective_due_ms <= ?2\nORDER BY effective_due_ms, subject_key\nLIMIT ?3\n",
+  "query": "SELECT\n    item.subject_key AS \"subject_key?: String\",\n    occurrence_ms AS \"occurrence_ms!: i64\",\n    effective_due_ms AS \"effective_due_ms!: i64\"\nFROM engine_due_entries item\nWHERE work_kind = ?1 AND entry_role = 'item'\n    AND effective_due_ms IS NOT NULL AND effective_due_ms <= ?2\n    AND (item.effective_due_ms <= ?4 OR NOT EXISTS (\n        SELECT 1 FROM engine_work_attempts attempt\n        WHERE attempt.machine_kind = item.work_kind AND attempt.subject_key = item.subject_key\n    ))\nORDER BY effective_due_ms, item.subject_key\nLIMIT ?3\n",
   "describe": {
     "columns": [
       {
@@ -38,7 +38,7 @@
       }
     ],
     "parameters": {
-      "Right": 3
+      "Right": 4
     },
     "nullable": [
       false,
@@ -46,5 +46,5 @@
       true
     ]
   },
-  "hash": "7a11361edbdf2bb44b2236d7a80488e708c00b7010316e89f7093a7d68f8434a"
+  "hash": "758aa4c1a00d9752ea2373bc4c8bb34d35443c75bac1021e071057a10275ebe5"
 }

@@ -380,21 +380,14 @@ async fn another_workspace_cannot_extend_a_pending_drain_deadline() {
             .timestamp_millis(),
         f.clock.utc_now().timestamp_millis() + 5_000
     );
-    // Kept, with the table's allowance: the clock sits inside the 30 s floor
-    // after the setup's due batch at this same held time, so the expected
-    // physical alarm is the backstop raised to that floor.
     assert_eq!(
         original_alarm.unix_millis(),
-        (f.clock.utc_now().timestamp_millis() + 5_000)
-            .max(f.clock.utc_now().timestamp_millis() + 30_000)
+        f.clock.utc_now().timestamp_millis() + 5_000
     );
     let completed = runtime.runtime().alarm_completion_count();
     for second in 1..=60 {
         f.advance(Duration::from_secs(1)).await;
-        // The backstop alarm is raised to the 30 s floor (allowance above). P5
-        // change 6: the driver's due batch skips W1, whose turn the held write
-        // holds, and completes instead of queueing behind it.
-        if second == 30 {
+        if second == 5 {
             runtime.runtime().until_alarm_completed(completed + 1).await;
         }
         let caller = f.fresh_caller(&f.caller).await;
@@ -423,22 +416,19 @@ async fn another_workspace_cannot_extend_a_pending_drain_deadline() {
                 .rows,
             original.rows
         );
-        // Kept, oracle per Lead ruling: W2's writes never move W1's deadline
-        // beyond what the floor rule gives after the latest due batch.
-        let floor = runtime
+        let observed = runtime
             .runtime()
-            .due_batch_snapshot()
-            .last_start_unix_millis
-            .map_or(i64::MIN, |start| start + 30_000);
-        assert_eq!(
-            runtime
-                .runtime()
-                .statement_host()
-                .alarm()
-                .map(|at| at.unix_millis()),
-            Some(original_alarm.unix_millis().max(floor)),
-            "W2 moved W1's retained alarm at second {second}"
-        );
+            .statement_host()
+            .alarm()
+            .unwrap()
+            .unix_millis();
+        let now = f.clock.utc_now().timestamp_millis();
+        let expected = if original_alarm.unix_millis() > now {
+            original_alarm.unix_millis()
+        } else {
+            (now.div_euclid(300_000) + 1) * 300_000
+        };
+        assert_eq!(observed, expected, "W2 moved W1's retained alarm");
     }
     let mut drained = runtime
         .runtime()

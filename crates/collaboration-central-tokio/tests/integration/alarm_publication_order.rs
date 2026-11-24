@@ -168,18 +168,16 @@ fn project_widget(
 }
 
 #[tokio::test]
-async fn a_batch_prepared_before_a_new_claim_publishes_the_latest_floor() {
+async fn a_batch_publishes_the_exact_durable_deadline() {
     let root = tempfile::tempdir().unwrap();
     let clock = HeldClock::at(32_000);
-    let state = Arc::new(fleet_runtime::DueBatchState::default());
     let storage = Arc::new(
         ObjectStorage::new(
             root.path().join("latest-floor.sqlite"),
             Arc::new(engine_widgets_migrator()),
         )
-        .with_engine_publication(clock, fleet_runtime::engine_alarm_decider(state.clone())),
+        .with_engine_publication(clock, fleet_runtime::engine_alarm_decider()),
     );
-    assert!(state.try_claim(0, chrono::Duration::seconds(30)).unwrap());
     let mut held = storage.hold_alarm_publication();
     let applying = storage.clone();
     let prepared = StatementBatch {
@@ -217,22 +215,17 @@ async fn a_batch_prepared_before_a_new_claim_publishes_the_latest_floor() {
         1
     );
     assert_eq!(storage.alarm(), None);
-    assert!(
-        state
-            .try_claim(31_000, chrono::Duration::seconds(30))
-            .unwrap()
-    );
     held.release();
     assert_eq!(
         pending.await.unwrap(),
         BatchOutcome::Applied {
             rows_affected: vec![1, 1, 1],
             publication: central_storage::AlarmPublication::Set {
-                unix_millis: 61_000
+                unix_millis: 35_000
             }
         }
     );
-    assert_eq!(storage.alarm(), Some(SyncTime::from_unix_millis(61_000)));
+    assert_eq!(storage.alarm(), Some(SyncTime::from_unix_millis(35_000)));
     storage.close().await;
 }
 
@@ -247,10 +240,7 @@ async fn publication_uses_the_shared_clock_after_both_committed_publication_hold
             root.path().join("publication-clock.sqlite"),
             Arc::new(engine_widgets_migrator()),
         )
-        .with_engine_publication(
-            clock.clone(),
-            fleet_runtime::engine_alarm_decider(Arc::new(fleet_runtime::DueBatchState::default())),
-        )
+        .with_engine_publication(clock.clone(), fleet_runtime::engine_alarm_decider())
         .with_publication_pause(workspace.clone(), pauses.clone()),
     );
     let mut central_hold = storage.hold_alarm_publication();
@@ -324,10 +314,7 @@ async fn postcommit_upper_edge_failure_preserves_applied_rows_and_the_previous_a
             root.path().join("publication-failure.sqlite"),
             Arc::new(engine_widgets_migrator()),
         )
-        .with_engine_publication(
-            clock.clone(),
-            fleet_runtime::engine_alarm_decider(Arc::new(fleet_runtime::DueBatchState::default())),
-        ),
+        .with_engine_publication(clock.clone(), fleet_runtime::engine_alarm_decider()),
     );
     assert_eq!(
         storage

@@ -27,31 +27,6 @@ use std::{
 
 type Runtime = WorkspaceRuntime<ObjectStorage, TokioWorkspaceStores>;
 
-#[derive(Clone, Default)]
-pub(super) struct ApprovalDeadlineTasks {
-    tasks: tokio_util::task::TaskTracker,
-    stop: tokio_util::sync::CancellationToken,
-}
-
-impl ApprovalDeadlineTasks {
-    pub(super) fn schedule(&self, completion: collaboration_central_core::LinkCallCompletion) {
-        let stop = self.stop.clone();
-        self.tasks.spawn(async move {
-            tokio::select! {
-                biased;
-                () = stop.cancelled() => {}
-                () = completion => {}
-            }
-        });
-    }
-
-    pub(super) async fn close(&self) {
-        self.stop.cancel();
-        self.tasks.close();
-        self.tasks.wait().await;
-    }
-}
-
 pub(crate) struct NativeApprovalDelivery {
     registry: MachinePushRegistry,
     clock: Arc<dyn RuntimeClock>,

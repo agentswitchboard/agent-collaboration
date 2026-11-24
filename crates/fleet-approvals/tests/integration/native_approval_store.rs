@@ -483,21 +483,14 @@ impl NativeApprovalStoreFixture {
         };
         let inputs = AlarmInputs {
             now,
-            last_batch_start: None,
-            leftovers_beyond_cap: false,
             earliest_on_grid_due: None,
             earliest_legacy_due: None,
         };
         let policy = DueBatchPolicy::DEFAULT;
-        let differences = fleet_engine::compare_due_table(
-            &mut transaction,
-            cutoff,
-            policy.per_kind_cap,
-            inputs,
-            &policy,
-        )
-        .await
-        .unwrap();
+        let differences =
+            fleet_engine::compare_due_table(&mut transaction, cutoff, policy.per_kind_cap, inputs)
+                .await
+                .unwrap();
         transaction.transaction.rollback().await.unwrap();
         pool.close().await;
         differences

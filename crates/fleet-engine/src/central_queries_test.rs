@@ -20,6 +20,7 @@ fn indexed_queries_describe_the_shipped_rows() {
         check_due,
         crate::DueKind::WakeTimer.tag().to_owned(),
         0_i64,
-        1_i64
+        1_i64,
+        0_i64
     );
 }

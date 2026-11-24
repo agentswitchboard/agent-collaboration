@@ -1,11 +1,12 @@
 //! Hibernating machine connections dispatch independent requests through the owning core.
+use super::workspace_link_frame::send;
 use super::workspace_socket_attachment::SocketAttachment;
 use super::workspace_typed_link::{PendingMacCalls, SOCKET_TAG_PREFIX};
 use super::{CentralObject, OrgRuntime, OrganizationId};
 use central_link_protocol::{
     CentralCall, CorrelationId, DataFrame, FrameDirection, LinkFrame, LinkRequest,
     LinkRequestBatch, ProtocolError, ReceiptBatch, ReceiptResult, ReplyPayload, RequestPayload,
-    RequestRefusal, RequestStatusAnswer, RequestStatusQuery, TimeLeft,
+    RequestRefusal, RequestStatusAnswer, RequestStatusQuery,
 };
 use collaboration_central_core::WorkspaceCaller;
 use collaboration_central_core::{
@@ -319,37 +320,45 @@ impl CentralObject {
                 correlation_id,
                 receipts,
             } => {
-                let mut results = Vec::with_capacity(receipts.receipts().len());
-                for receipt in receipts.receipts() {
-                    match runtime
-                        .apply_delivery_receipt(
-                            &attachment,
-                            &receipt.message_id,
-                            receipt.kind.clone(),
-                        )
-                        .await
-                    {
-                        Ok(MailReceiptSettlement::Applied) => results.push(ReceiptResult::Recorded),
-                        Ok(MailReceiptSettlement::Stop(result)) => results.push(result),
-                        Ok(MailReceiptSettlement::AuthorityLapsed(cause)) => {
-                            return self.close_machine_authority(&socket, cause);
-                        }
-                        Err(_) => {
-                            return self.close_machine_link(
-                                &socket,
-                                1011,
-                                Some("central unavailable"),
-                            );
+                let (reply, work) = fleet_runtime::collect_reply_due_work(async {
+                    let mut results = Vec::with_capacity(receipts.receipts().len());
+                    for receipt in receipts.receipts() {
+                        match runtime
+                            .apply_delivery_receipt(
+                                &attachment,
+                                &receipt.message_id,
+                                receipt.kind.clone(),
+                            )
+                            .await
+                        {
+                            Ok(MailReceiptSettlement::Applied) => {
+                                results.push(ReceiptResult::Recorded)
+                            }
+                            Ok(MailReceiptSettlement::Stop(result)) => results.push(result),
+                            Ok(MailReceiptSettlement::AuthorityLapsed(cause)) => {
+                                self.close_machine_authority(&socket, cause)?;
+                                return Ok(None);
+                            }
+                            Err(_) => {
+                                self.close_machine_link(
+                                    &socket,
+                                    1011,
+                                    Some("central unavailable"),
+                                )?;
+                                return Ok(None);
+                            }
                         }
                     }
-                }
-                send(
-                    &socket,
-                    DataFrame::ReceiptResults {
+                    Ok::<_, worker::Error>(Some(DataFrame::ReceiptResults {
                         correlation_id,
                         results,
-                    },
-                )
+                    }))
+                })
+                .await;
+                if let Some(reply) = reply? {
+                    self.send_earned_reply(runtime, &socket, reply, work)?;
+                }
+                Ok(())
             }
             IncomingRequests::Status {
                 correlation_id,
@@ -446,17 +455,31 @@ impl CentralObject {
                 reply
             }
             IncomingRequests::Single(request) => {
-                match self
-                    .dispatch_machine_request(runtime.as_ref(), &attachment, &request)
-                    .await?
-                {
-                    MachineRequestResult::Reply(reply) => {
-                        self.send_reply_and_close_if_lapsed(&socket, &request, reply, None)
-                    }
+                let (result, work) = fleet_runtime::collect_reply_due_work(
+                    self.dispatch_machine_request(runtime.as_ref(), &attachment, &request),
+                )
+                .await;
+                #[cfg(feature = "test-support")]
+                runtime
+                    .runtime()
+                    .pause_points()
+                    .reached_central(fleet_runtime::PausePoint::BeforeLinkReplyWrite)
+                    .await;
+                match result? {
+                    MachineRequestResult::Reply(reply) => self.send_reply_and_close_if_lapsed(
+                        runtime, &socket, &request, reply, work, None,
+                    ),
                     // The request is answered before the close, as on the native host.
                     MachineRequestResult::AuthorityRefused(cause) => {
                         let reply = ReplyPayload::authority_refused(request.payload(), cause);
-                        self.send_reply_and_close_if_lapsed(&socket, &request, reply, Some(cause))
+                        self.send_reply_and_close_if_lapsed(
+                            runtime,
+                            &socket,
+                            &request,
+                            reply,
+                            work,
+                            Some(cause),
+                        )
                     }
                     MachineRequestResult::Unavailable => self.close_machine_link(
                         &socket,
@@ -471,10 +494,11 @@ impl CentralObject {
                 while let Some(request) = members.next() {
                     // Every member restores live provenance and enters its own applying turn.
                     // Semantic refusals are replies, so they cannot skip later members.
-                    let reply = match self
-                        .dispatch_machine_request(runtime.as_ref(), &attachment, request)
-                        .await?
-                    {
+                    let (result, work) = fleet_runtime::collect_reply_due_work(
+                        self.dispatch_machine_request(runtime.as_ref(), &attachment, request),
+                    )
+                    .await;
+                    let reply = match result? {
                         MachineRequestResult::Reply(reply) => reply,
                         MachineRequestResult::AuthorityRefused(cause) => {
                             lapsed = lapsed.or(Some(cause));
@@ -490,10 +514,18 @@ impl CentralObject {
                     } else {
                         None
                     };
+                    #[cfg(feature = "test-support")]
+                    runtime
+                        .runtime()
+                        .pause_points()
+                        .reached_central(fleet_runtime::PausePoint::BeforeLinkReplyWrite)
+                        .await;
                     self.send_reply_and_close_if_lapsed(
+                        runtime,
                         &socket,
                         request,
                         reply,
+                        work,
                         close_after_reply,
                     )?;
                 }
@@ -527,6 +559,7 @@ impl CentralObject {
             let count = rows.len();
             for row in rows {
                 if !self
+                    .due_work_mail()
                     .offer_windowed_mail(runtime, socket, attachment, &row.message.message_id)
                     .await?
                 {
@@ -535,94 +568,6 @@ impl CentralObject {
             }
             if count < WELCOME_PAGE_SIZE {
                 return Ok(());
-            }
-        }
-    }
-
-    pub(super) async fn flush_ready_mail(&self, runtime: &OrgRuntime) {
-        let ready = std::mem::take(
-            &mut *self
-                .mail_pushes
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        );
-        for message in ready {
-            for socket in self
-                .state
-                .get_websockets_with_tag(message.machine_id.as_str())
-            {
-                if socket.as_ref().ready_state() != web_sys::WebSocket::OPEN {
-                    continue;
-                }
-                if let Ok(Some(attachment)) = SocketAttachment::read(&socket)
-                    && let Err(error) = self
-                        .offer_windowed_mail(
-                            runtime,
-                            &socket,
-                            &attachment.authority,
-                            &message.message_id,
-                        )
-                        .await
-                {
-                    worker::console_warn!("central delivery offer failed: {error}");
-                }
-            }
-        }
-    }
-
-    async fn offer_windowed_mail(
-        &self,
-        runtime: &OrgRuntime,
-        socket: &WebSocket,
-        attachment: &MachineConnectionAttachment,
-        message_id: &workspace_ids::MessageId,
-    ) -> Result<bool> {
-        use fleet_contracts::mail_link::WindowedDeliveryDecision;
-        let decision = runtime
-            .prepare_windowed_delivery(attachment, message_id)
-            .await
-            .map_err(|error| worker::Error::RustError(error.to_string()))?;
-        match decision {
-            WindowedDeliveryDecision::Ready(delivery) => {
-                if socket.as_ref().ready_state() != web_sys::WebSocket::OPEN {
-                    return Ok(false);
-                }
-                let now = chrono::DateTime::from_timestamp_millis(self.clock.now().unix_millis())
-                    .ok_or_else(|| {
-                    worker::Error::RustError("offer clock unavailable".into())
-                })?;
-                if now >= delivery.expires_at {
-                    return Ok(true);
-                }
-                let time_left = if matches!(
-                    delivery.message.body,
-                    workspace_model::central_mail::MessageBody::Direct { .. }
-                ) {
-                    let Some(time_left) =
-                        TimeLeft::at_handoff(delivery.message.created_at, delivery.expires_at, now)
-                    else {
-                        return Ok(true);
-                    };
-                    Some(time_left)
-                } else {
-                    None
-                };
-                send(
-                    socket,
-                    DataFrame::Deliver {
-                        message: Box::new(central_link_protocol::DeliveryMessage::from(
-                            *delivery.message,
-                        )),
-                        sender: delivery.sender,
-                        time_left,
-                    },
-                )?;
-                Ok(true)
-            }
-            WindowedDeliveryDecision::Ineligible => Ok(true),
-            WindowedDeliveryDecision::AuthorityLapsed(cause) => {
-                self.close_machine_authority(socket, cause)?;
-                Ok(false)
             }
         }
     }
@@ -689,19 +634,37 @@ impl CentralObject {
         }
     }
 
+    fn send_earned_reply(
+        &self,
+        runtime: &std::sync::Arc<OrgRuntime>,
+        socket: &WebSocket,
+        reply: DataFrame,
+        work: fleet_runtime::ReplyDueWork,
+    ) -> Result<()> {
+        send(socket, reply)?;
+        if !work.is_empty() {
+            work.handoff(self.reply_due_work_owner(runtime));
+        }
+        Ok(())
+    }
+
     fn send_reply_and_close_if_lapsed(
         &self,
+        runtime: &std::sync::Arc<OrgRuntime>,
         socket: &WebSocket,
         request: &LinkRequest,
         reply: ReplyPayload,
+        work: fleet_runtime::ReplyDueWork,
         close_after_reply: Option<central_link_protocol::MachineLinkCloseCode>,
     ) -> Result<()> {
-        let sent = send(
+        let sent = self.send_earned_reply(
+            runtime,
             socket,
             DataFrame::Reply {
                 correlation_id: request.correlation_id().clone(),
                 result: Box::new(reply),
             },
+            work,
         );
         sent.and(
             close_after_reply.map_or(Ok(()), |cause| self.close_machine_authority(socket, cause)),
@@ -714,12 +677,7 @@ impl CentralObject {
         Ok(())
     }
 }
-pub(super) fn send(socket: &WebSocket, frame: DataFrame) -> Result<()> {
-    let text =
-        central_link_protocol::encode_text(&LinkFrame::Data(frame), FrameDirection::ToRouter)
-            .map_err(|error| worker::Error::RustError(error.to_string()))?;
-    socket.send_with_str(text)
-}
+
 pub(super) fn close_enrollment_sockets(
     state: &worker::State,
     pending_mac_calls: &PendingMacCalls,

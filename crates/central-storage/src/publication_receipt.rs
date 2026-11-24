@@ -8,10 +8,9 @@ pub struct EngineAlarmTimes {
 }
 
 /// Called synchronously at publication with the host's freshly sampled clock.
-/// The callback reads the engine's current batch state and performs no I/O.
-/// Native hosts provide the synchronous alarm write, performed before the state
-/// owner releases its publication guard. Cloudflare sets its storage alarm
-/// immediately after the decision, without an intervening await.
+/// The callback uses the durable due times and performs no I/O. Native hosts
+/// provide the synchronous alarm write under their storage ordering guard.
+/// Cloudflare sets the alarm inside its storage transaction.
 pub type EngineAlarmDecider = std::sync::Arc<
     dyn Fn(
             EngineAlarmTimes,

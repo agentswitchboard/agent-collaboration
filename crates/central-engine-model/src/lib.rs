@@ -2,6 +2,8 @@
 mod attempts;
 mod due;
 mod due_batch_policy;
+mod due_drain_machine;
+mod due_drain_transitions;
 mod engine_context;
 mod machine;
 mod next_alarm;
@@ -11,6 +13,7 @@ mod transition_check;
 pub use attempts::*;
 pub use due::*;
 pub use due_batch_policy::*;
+pub use due_drain_machine::*;
 pub use engine_context::*;
 pub use machine::*;
 pub use next_alarm::*;

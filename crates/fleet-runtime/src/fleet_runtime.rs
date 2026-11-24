@@ -17,6 +17,17 @@ pub struct TurnGuard<'a> {
     _held: tokio::sync::MutexGuard<'a, ()>,
 }
 
+/// A test witness spanning reply handoff, any due passes and final publication.
+#[cfg(feature = "test-support")]
+pub struct PendingReplyDrain(tokio::sync::watch::Sender<usize>);
+
+#[cfg(feature = "test-support")]
+impl Drop for PendingReplyDrain {
+    fn drop(&mut self) {
+        self.0.send_modify(|pending| *pending -= 1);
+    }
+}
+
 pub struct FleetRuntime<Host: CentralStore, Stores: WorkspaceStores> {
     organization: OrganizationId,
     host: Arc<Host>,
@@ -29,6 +40,8 @@ pub struct FleetRuntime<Host: CentralStore, Stores: WorkspaceStores> {
     central_turn: tokio::sync::Mutex<()>,
     #[cfg(feature = "test-support")]
     completed_alarms: tokio::sync::watch::Sender<u64>,
+    #[cfg(feature = "test-support")]
+    pending_reply_drains: tokio::sync::watch::Sender<usize>,
     #[cfg(feature = "test-support")]
     completion_attempts: std::sync::atomic::AtomicU64,
     #[cfg(feature = "test-support")]
@@ -73,6 +86,8 @@ impl<Host: CentralStore, Stores: WorkspaceStores> FleetRuntime<Host, Stores> {
             #[cfg(feature = "test-support")]
             completed_alarms: tokio::sync::watch::channel(0).0,
             #[cfg(feature = "test-support")]
+            pending_reply_drains: tokio::sync::watch::channel(0).0,
+            #[cfg(feature = "test-support")]
             completion_attempts: Default::default(),
             #[cfg(feature = "test-support")]
             engine_completion_entries: Default::default(),
@@ -99,6 +114,19 @@ impl<Host: CentralStore, Stores: WorkspaceStores> FleetRuntime<Host, Stores> {
         &self.test_faults
     }
 
+    #[cfg(feature = "test-support")]
+    pub fn record_pending_reply_drain(&self) -> PendingReplyDrain {
+        self.pending_reply_drains
+            .send_modify(|pending| *pending += 1);
+        PendingReplyDrain(self.pending_reply_drains.clone())
+    }
+
+    #[cfg(feature = "test-support")]
+    pub async fn until_reply_drains_settle(&self) {
+        let mut pending = self.pending_reply_drains.subscribe();
+        let _ = pending.wait_for(|count| *count == 0).await;
+    }
+
     pub fn organization(&self) -> &OrganizationId {
         &self.organization
     }
@@ -108,8 +136,8 @@ impl<Host: CentralStore, Stores: WorkspaceStores> FleetRuntime<Host, Stores> {
     pub fn ids(&self) -> &dyn IdSource {
         self.ids.as_ref()
     }
-    pub fn due_batches(&self) -> &DueBatchState {
-        self.due_batches.as_ref()
+    pub fn due_batches(&self) -> &Arc<DueBatchState> {
+        &self.due_batches
     }
 
     pub fn try_central_turn(&self) -> Option<TurnGuard<'_>> {
@@ -127,10 +155,14 @@ impl<Host: CentralStore, Stores: WorkspaceStores> FleetRuntime<Host, Stores> {
         &self,
         hook: &impl EventCompletionHook,
     ) -> Result<EventCompletion, AlarmNotPublished> {
+        self.record_completion_attempt();
+        hook.complete_event().await
+    }
+
+    pub fn record_completion_attempt(&self) {
         #[cfg(feature = "test-support")]
         self.completion_attempts
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        hook.complete_event().await
     }
 
     /// Counts requests and alarm callbacks that enter the borrowed completion hook.
@@ -168,11 +200,6 @@ impl<Host: CentralStore, Stores: WorkspaceStores> FleetRuntime<Host, Stores> {
     pub fn statement_host(&self) -> &Host {
         &self.host
     }
-    /// The due-batch start and backlog bit the next publication will use.
-    #[cfg(feature = "test-support")]
-    pub fn due_batch_snapshot(&self) -> crate::DueBatchSnapshot {
-        self.due_batches.snapshot()
-    }
     /// Every unit the due batches started, in start order (R2/R3 visit order).
     #[cfg(feature = "test-support")]
     pub fn due_unit_starts(&self) -> Vec<crate::DueUnitStart> {
@@ -181,7 +208,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> FleetRuntime<Host, Stores> {
     /// Test-support record of every claimed due-batch start, one per batch.
     #[cfg(feature = "test-support")]
     pub fn due_batch_starts(&self) -> Vec<i64> {
-        self.due_batches.claimed_starts()
+        self.due_batches.batch_starts()
     }
     #[cfg(feature = "test-support")]
     pub fn legacy_unit_invocations(&self) -> LegacyUnitInvocations {

@@ -52,11 +52,11 @@ async fn dispatch_to(f: &Fixture, at: m::Timestamp) {
         () = r.runtime().until_alarm_failed(failures + 1) => panic!(
             "the alarm driver failed at {at} instead of completing: {:?}; published alarm {published:?}; due batch {:?}",
             r.runtime().alarm_failures(),
-            r.runtime().due_batch_snapshot()
+            r.runtime().due_batch_starts()
         ),
         () = not_due => panic!(
             "the published alarm {published:?} is after the dispatch time {at}; due batch {:?}",
-            r.runtime().due_batch_snapshot()
+            r.runtime().due_batch_starts()
         ),
     }
     assert_eq!(r.runtime().alarm_completion_count(), count + 1);

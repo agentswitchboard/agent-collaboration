@@ -139,7 +139,7 @@ impl<H: fleet_runtime_ports::CentralStore, S: fleet_runtime_ports::WorkspaceStor
     /// central turn is released, it runs the due batch and re-arms. An alarm
     /// problem never replaces the entry's answer; it is observed.
     async fn after_signin_event(&self) {
-        let _ = self.after_event().await;
+        self.after_request_event().await;
     }
 }
 

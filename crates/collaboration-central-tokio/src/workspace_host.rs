@@ -69,6 +69,10 @@ impl CentralStore for ObjectStorage {
         ObjectStorage::engine_alarm_inputs(self).await
     }
 
+    async fn engine_due_times(&self) -> Result<fleet_runtime_ports::EngineDueTimes, StoreFailure> {
+        ObjectStorage::engine_due_times(self).await
+    }
+
     async fn published_alarm(&self) -> Result<Option<chrono::DateTime<chrono::Utc>>, StoreFailure> {
         ObjectStorage::published_alarm(self)
     }
@@ -161,7 +165,7 @@ pub struct TokioWorkspaceHost {
         Mutex<BTreeMap<OrganizationId, Arc<WorkspaceRuntime<ObjectStorage, TokioWorkspaceStores>>>>,
     alarms: Mutex<Vec<WorkspaceAlarmOwner>>,
     pub(crate) push_registry: MachinePushRegistry,
-    approval_deadline_tasks: workspace_approval_delivery::ApprovalDeadlineTasks,
+    pub(crate) background_tasks: crate::workspace_background_tasks::WorkspaceBackgroundTasks,
     #[cfg(feature = "test-support")]
     fixture_link_calls: bool,
 }
@@ -199,7 +203,7 @@ impl TokioWorkspaceHost {
             orgs: Default::default(),
             alarms: Default::default(),
             push_registry: MachinePushRegistry::default(),
-            approval_deadline_tasks: Default::default(),
+            background_tasks: Default::default(),
             #[cfg(feature = "test-support")]
             fixture_link_calls: false,
         };
@@ -253,10 +257,7 @@ impl TokioWorkspaceHost {
                     .join(format!("{}.sqlite", organization.as_str())),
                 Arc::new(fleet_storage_schema::workspace_migrations::central_migrator()),
             )
-            .with_engine_publication(
-                clock.clone(),
-                fleet_runtime::engine_alarm_decider(due_batches.clone()),
-            ),
+            .with_engine_publication(clock.clone(), fleet_runtime::engine_alarm_decider()),
         );
         let central = WorkspaceRuntime::new(
             FleetRuntime::open(
@@ -310,11 +311,14 @@ impl TokioWorkspaceHost {
         let organization_key = organization.clone();
         let revocation_registry = self.push_registry.clone();
         let revocation_org = organization.clone();
-        let deadline_tasks = self.approval_deadline_tasks.clone();
+        let background_tasks = self.background_tasks.clone();
         let central = Arc::new(
             central
+                .with_due_batch_yield(Arc::new(
+                    crate::workspace_reply_due_work::yield_tokio_due_batches,
+                ))
                 .with_approval_delivery_completion(Arc::new(move |work| {
-                    deadline_tasks.schedule(work)
+                    background_tasks.schedule(work)
                 }))
                 .with_mail_delivery_observer(Arc::new(move |delivery| {
                     registry.offer(&organization_key, &delivery.machine_id, delivery.message_id);
@@ -323,6 +327,7 @@ impl TokioWorkspaceHost {
                     revocation_registry.invalidate_enrollment(&revocation_org, &invalidation);
                 })),
         );
+        central.enable_reply_due_work();
         ending_transport.install_runtime(&central);
         Box::pin(central.recover_cold_alarm()).await?;
         self.alarms.lock().await.push(WorkspaceAlarmOwner::start(
@@ -451,7 +456,7 @@ impl TokioWorkspaceHost {
             .cloned()
             .ok_or(StoreFailure::Unavailable)?;
         if let Some(completion) = runtime.fixture_decide_approval(decision).await? {
-            self.approval_deadline_tasks.schedule(completion);
+            self.background_tasks.schedule(completion);
         }
         Ok(())
     }
@@ -461,7 +466,7 @@ impl TokioWorkspaceHost {
         for alarm in alarms {
             alarm.close().await;
         }
-        self.approval_deadline_tasks.close().await;
+        self.background_tasks.close().await;
         for runtime in self.orgs.lock().await.values() {
             runtime.runtime().statement_host().close().await;
         }

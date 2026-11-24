@@ -180,9 +180,8 @@ async fn the_window_unit_recovers_restarts_its_period_retires_at_60_days_and_ret
     // Retired stays retired, even repaired.
     repair_window(&engine, items).await;
     let stopped = engine.invocations().await.windows;
-    let mut last = first_failure + days(60);
     for step in 1..=4 {
-        last = first_failure + days(60) + minutes(5 * step);
+        let last = first_failure + days(60) + minutes(5 * step);
         engine.set(last).await;
         engine.after_event().await;
     }
@@ -199,17 +198,7 @@ async fn the_window_unit_recovers_restarts_its_period_retires_at_60_days_and_ret
         json!({"result":"engineRetried"})
     );
     assert!(unit_record(&engine, WINDOWS).await.is_empty());
-    let alarm = engine.alarm_ms().await.expect("the alarm is published");
-    assert_eq!(
-        alarm,
-        (last + chrono::Duration::seconds(30)).timestamp_millis(),
-        "P4 floor after the last batch"
-    );
-    assert_eq!(engine.invocations().await.windows, stopped);
-    engine
-        .set(chrono::DateTime::from_timestamp_millis(alarm).unwrap())
-        .await;
-    engine.after_event().await;
+    engine.settle_reply_drains().await;
     assert_eq!(engine.invocations().await.windows, stopped + 1, "runs once");
     assert_eq!(
         notices(&engine, &recipient).await,
@@ -383,9 +372,8 @@ async fn the_drain_unit_recovers_restarts_its_period_retires_at_60_days_and_retu
     repair_drain(&engine, cursor).await;
     let stopped = engine.invocations().await;
     let pending = drain_row(&engine).await;
-    let mut last = first_failure + days(60);
     for step in 1..=4 {
-        last = first_failure + days(60) + minutes(5 * step);
+        let last = first_failure + days(60) + minutes(5 * step);
         engine.set(last).await;
         engine.after_event().await;
     }
@@ -405,15 +393,7 @@ async fn the_drain_unit_recovers_restarts_its_period_retires_at_60_days_and_retu
         json!({"result":"engineRetried"})
     );
     assert!(unit_record(&engine, DRAINS).await.is_empty());
-    let alarm = engine.alarm_ms().await.expect("the alarm is published");
-    assert_eq!(
-        alarm,
-        (last + chrono::Duration::seconds(30)).timestamp_millis()
-    );
-    engine
-        .set(chrono::DateTime::from_timestamp_millis(alarm).unwrap())
-        .await;
-    engine.after_event().await;
+    engine.settle_reply_drains().await;
     assert_eq!(
         engine.invocations().await.drains,
         stopped.drains + 1,
@@ -482,9 +462,8 @@ async fn a_retired_engine_source_is_never_read_until_retry_and_other_kinds_run()
     let later = engine
         .automation(first + minutes(15), "later other kind")
         .await;
-    let mut last = first + minutes(5);
     for step in 2..=5 {
-        last = first + minutes(5 * step);
+        let last = first + minutes(5 * step);
         engine.set(last).await;
         engine.after_event().await;
     }
@@ -517,6 +496,11 @@ async fn a_retired_engine_source_is_never_read_until_retry_and_other_kinds_run()
         refused("discardUnsupported")
     );
 
+    let current = engine.runtime().await;
+    let held = current
+        .runtime()
+        .pause_points()
+        .hold_central(fleet_runtime::PausePoint::BeforeDeferredDueWork);
     assert_eq!(
         engine.retry(&attempt).await,
         json!({"result":"engineRetried"})
@@ -527,15 +511,8 @@ async fn a_retired_engine_source_is_never_read_until_retry_and_other_kinds_run()
             .await
             .is_empty()
     );
-    let alarm = engine.alarm_ms().await.expect("alarm published");
-    assert_eq!(
-        alarm,
-        (last + chrono::Duration::seconds(30)).timestamp_millis()
-    );
-    engine
-        .set(chrono::DateTime::from_timestamp_millis(alarm).unwrap())
-        .await;
-    engine.after_event().await;
+    held.release();
+    engine.settle_reply_drains().await;
     assert_eq!(
         engine.record("engine_source", "wake_timer").await[0][..2],
         [text("failing"), integer(1)],
@@ -563,6 +540,7 @@ async fn a_retired_engine_source_is_never_read_until_retry_and_other_kinds_run()
 async fn grid_source_failure_projects_retry(kind: &str) {
     let engine = EngineOrg::new().await;
     let first = next_mark(engine.now());
+    let _trigger_wake = engine.wake(first, "eligible discovery fixture").await;
     let runtime = engine.runtime().await;
     runtime
         .runtime()

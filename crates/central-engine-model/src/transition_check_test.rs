@@ -185,11 +185,8 @@ fn equal_inputs_with_replayed_identifiers_give_equal_effects() {
 }
 
 #[test]
-fn due_batch_policy_is_the_owner_selected_thirty_fifty_two_hundred_fifty() {
-    assert_eq!(
-        DueBatchPolicy::DEFAULT.spacing,
-        chrono::Duration::seconds(30)
-    );
+fn due_batch_policy_matches_the_owner_selected_limits() {
+    assert_eq!(DueBatchPolicy::DEFAULT.max_batches_per_wake, 4);
     assert_eq!(
         DueBatchPolicy::DEFAULT.look_ahead,
         chrono::Duration::seconds(50)

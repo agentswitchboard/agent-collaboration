@@ -13,6 +13,7 @@ mod receipt;
 mod receipt_enrollment_clock;
 mod receipt_frames;
 mod renewal;
+mod reply_due_work;
 mod request_authority;
 mod request_status;
 mod revocation;

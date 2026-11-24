@@ -51,11 +51,6 @@ async fn held_request_publishes_after_a_newer_batch(
         send_message(fixture, 35002).await.unwrap(),
         CentralMailResult::Done(_)
     ));
-    assert_eq!(
-        alarm_ms(runtime).await,
-        ms(at(start, 5, 28, 0)),
-        "B published its floor"
-    );
     set_now(fixture, at(start, 4, 59, 0));
     held.release().await;
     assert!(matches!(
@@ -65,7 +60,7 @@ async fn held_request_publishes_after_a_newer_batch(
 }
 
 #[tokio::test]
-async fn a_request_held_across_a_newer_due_batch_publishes_the_newer_floor() {
+async fn overlapping_publications_keep_the_exact_window_deadline() {
     let fixture = Fixture::new().await;
     let runtime = runtime(&fixture).await;
     let start = now(&fixture);
@@ -79,8 +74,8 @@ async fn a_request_held_across_a_newer_due_batch_publishes_the_newer_floor() {
 
     assert_eq!(
         alarm_ms(&runtime).await,
-        ms(at(start, 5, 28, 0)),
-        "A, published last, used B's floor and never 10:05:00"
+        ms(at(start, 5, 0, 0)),
+        "later publication kept the notice window’s exact deadline"
     );
     assert_eq!(
         window_due(&runtime).await,
@@ -91,7 +86,7 @@ async fn a_request_held_across_a_newer_due_batch_publishes_the_newer_floor() {
 }
 
 #[tokio::test]
-async fn a_request_held_across_a_capped_batch_publishes_the_continuation() {
+async fn a_request_held_across_a_capped_drain_does_not_rearm_finished_work() {
     let fixture = Fixture::new().await;
     let runtime = runtime(&fixture).await;
     let start = now(&fixture);
@@ -119,13 +114,13 @@ async fn a_request_held_across_a_capped_batch_publishes_the_continuation() {
             vec![text(group)]
         )
         .await,
-        250,
-        "B's batch left one item beyond the cap"
+        251,
+        "the capped drain reached the tail"
     );
     assert_eq!(
         alarm_ms(&runtime).await,
-        ms(at(start, 5, 28, 0)),
-        "A kept the continuation, not the 10:05:00 due"
+        ms(at(start, 20, 0, 0)),
+        "only the competing direct-mail request’s own deadline remains"
     );
     fixture.host.close().await;
 }
@@ -136,6 +131,14 @@ async fn two_simultaneous_requests_run_exactly_one_due_batch() {
     let runtime = runtime(&fixture).await;
     let start = now(&fixture);
     due_batch_at(&fixture, &runtime, at(start, 4, 0, 0)).await;
+    seed_probe(
+        &runtime,
+        probe_id(35402),
+        probe_id(35403),
+        Some(at(start, 5, 0, 0)),
+        "single due claim",
+    )
+    .await;
     let before = runtime.legacy_unit_invocations().await;
     set_now(&fixture, at(start, 4, 31, 0));
 
@@ -226,10 +229,10 @@ async fn a_wake_due_with_a_window_fires_early_and_the_window_waits_for_its_slot(
         "20 s early"
     );
     assert_eq!(notices(&runtime).await, 0, "the window is not run early");
-    assert_eq!(alarm_ms(&runtime).await, ms(at(start, 15, 10, 0)));
-    set_now(&fixture, at(start, 15, 9, 999));
+    assert_eq!(alarm_ms(&runtime).await, ms(at(start, 15, 0, 0)));
+    set_now(&fixture, at(start, 14, 59, 999));
     assert!(runtime.dispatch_due_alarm().await.unwrap().is_none());
-    set_now(&fixture, at(start, 15, 10, 0));
+    set_now(&fixture, at(start, 15, 0, 0));
     assert!(runtime.dispatch_due_alarm().await.unwrap().is_some());
     assert_eq!(
         notices(&runtime).await,
@@ -342,4 +345,96 @@ async fn another_valid_stamp_refuses_every_event_and_touches_nothing() {
         "unprovisioned: the request's event cleared the alarm"
     );
     fixture.host.close().await;
+}
+
+#[tokio::test]
+async fn a_future_text_key_cannot_mask_a_corrupt_legacy_deadline() {
+    let malformed = ["now", "2050-02-30T15:00:00.000Z", "2050-02-25T15:00:00.000"];
+    for (notices, corrupt_deadline) in [true, false].into_iter().flat_map(|notices| {
+        malformed
+            .into_iter()
+            .map(move |deadline| (notices, deadline))
+    }) {
+        let fixture = Fixture::new().await;
+        let runtime = runtime(&fixture).await;
+        let start = now(&fixture);
+        let future = at(start, 15, 0, 0);
+        let now = at(start, 4, 20, 0);
+        let (healthy, invalid) = (probe_id(43852), probe_id(43853));
+        let (work_kind, read_deadlines) = if notices {
+            raw(
+                &runtime,
+                "INSERT INTO mail_notification_windows VALUES (?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?)",
+                vec![
+                    text(healthy), text(probe_id(43854)), stamp(start), stamp(future), stamp(start), stamp(start),
+                    text(invalid), text(probe_id(43855)), stamp(start), text(corrupt_deadline), stamp(start), stamp(start),
+                ],
+            ).await;
+            (
+                "legacy_notice_windows",
+                "SELECT due_at FROM mail_notification_windows ORDER BY due_at",
+            )
+        } else {
+            raw(
+                &runtime,
+                "INSERT INTO directory_workspaces(workspace_id,name,state,created_at,updated_at) VALUES (?,'fixture one','active',?,?), (?,'fixture two','active',?,?)",
+                vec![text(healthy), stamp(start), stamp(start), text(invalid), stamp(start), stamp(start)],
+            ).await;
+            raw(
+                &runtime,
+                "INSERT INTO mail_workspace_drains VALUES (?,0,?,?,?), (?,0,?,?,?)",
+                vec![
+                    text(healthy),
+                    stamp(future),
+                    stamp(start),
+                    stamp(start),
+                    text(invalid),
+                    text(corrupt_deadline),
+                    stamp(start),
+                    stamp(start),
+                ],
+            )
+            .await;
+            (
+                "legacy_workspace_drains",
+                "SELECT drain_due_at FROM mail_workspace_drains WHERE drain_due_at IS NOT NULL ORDER BY drain_due_at",
+            )
+        };
+
+        due_batch_at(&fixture, &runtime, now).await;
+
+        let next_try = at(start, 5, 0, 0);
+        let store = runtime.statement_host();
+        let attempts = store.read(super::super::Statement {
+            sql: "SELECT state,failure_count,next_try_at FROM engine_work_attempts WHERE machine_kind=? AND subject_key='all'",
+            args: vec![text(work_kind)],
+        }).await.unwrap().rows;
+        assert_eq!(
+            attempts,
+            vec![vec![text("failing"), integer(1), stamp(next_try)]],
+            "{work_kind}"
+        );
+        assert_eq!(alarm_ms(&runtime).await, ms(next_try), "{work_kind}");
+        let stored = store
+            .read(super::super::Statement {
+                sql: read_deadlines,
+                args: vec![],
+            })
+            .await
+            .unwrap()
+            .rows;
+        assert_eq!(
+            stored,
+            vec![vec![stamp(future)], vec![text(corrupt_deadline)]],
+            "{work_kind}"
+        );
+        due_batch_at(&fixture, &runtime, at(start, 4, 59, 0)).await;
+        assert_eq!(
+            count(&runtime, "SELECT COUNT(*) FROM engine_work_attempts WHERE machine_kind=? AND failure_count=1", vec![text(work_kind)]).await,
+            1,
+            "the source control overrides the corrupt item until the exact retry"
+        );
+        assert_eq!(alarm_ms(&runtime).await, ms(next_try));
+        fixture.host.close().await;
+    }
 }

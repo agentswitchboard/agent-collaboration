@@ -138,6 +138,16 @@ impl EngineOrg {
             BatchOutcome::Applied { .. }
         ));
     }
+    pub async fn settle_reply_drains(&self) {
+        let settled: bool = self
+            .runtime()
+            .await
+            .control("until-reply-drains-settle", &())
+            .await
+            .unwrap();
+        assert!(settled);
+    }
+
     pub async fn after_event(&self) {
         self.runtime().await.after_event().await.unwrap();
     }

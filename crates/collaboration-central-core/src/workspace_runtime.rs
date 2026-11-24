@@ -22,6 +22,8 @@ pub struct WorkspaceRuntime<Host: CentralStore, Stores: WorkspaceStores> {
     #[cfg(feature = "test-support")]
     pub(crate) fixture_link_calls: bool,
     pub(crate) person_approval_transactions: Option<Arc<dyn crate::PersonApprovalTransactions>>,
+    pub(crate) reply_due_owner: std::sync::OnceLock<std::sync::Weak<Self>>,
+    pub(crate) yield_due_batches: Arc<dyn Fn() -> fleet_runtime::DueBatchYield + Send + Sync>,
     pub(crate) signin_authority: crate::organization_authority_cache::OrganizationAuthority,
     #[cfg(feature = "test-support")]
     pub(crate) machine_restore_failure:
@@ -43,6 +45,8 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             link_call_dispatcher: None,
             #[cfg(feature = "test-support")]
             fixture_link_calls: false,
+            reply_due_owner: Default::default(),
+            yield_due_batches: Arc::new(|| Box::pin(std::future::ready(Ok(())))),
             signin_authority: Default::default(),
             person_approval_transactions: None,
             mail_delivery_ready: Arc::new(|_| {}),

@@ -29,10 +29,8 @@ fn catalog(production: bool, include_due_views: bool, include_due_table: bool) -
 }
 
 fn central(path: &Path, migrator: Migrator) -> ObjectStorage {
-    ObjectStorage::new(path.to_path_buf(), Arc::new(migrator)).with_engine_publication(
-        HeldClock::at(0),
-        fleet_runtime::engine_alarm_decider(Arc::new(fleet_runtime::DueBatchState::default())),
-    )
+    ObjectStorage::new(path.to_path_buf(), Arc::new(migrator))
+        .with_engine_publication(HeldClock::at(0), fleet_runtime::engine_alarm_decider())
 }
 
 fn batch(statements: &[&'static str], alarm: AlarmUpdate) -> StatementBatch {
@@ -58,8 +56,12 @@ impl StatementTrace {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .drain(..)
             .filter(|sql| {
-                let sql = sql.trim_start();
-                sql.starts_with("SELECT") || sql.starts_with("WITH ")
+                sql.lines()
+                    .map(str::trim_start)
+                    .find(|line| !line.is_empty() && !line.starts_with("--"))
+                    .is_some_and(|statement_line| {
+                        statement_line.starts_with("SELECT") || statement_line.starts_with("WITH ")
+                    })
             })
             .collect()
     }

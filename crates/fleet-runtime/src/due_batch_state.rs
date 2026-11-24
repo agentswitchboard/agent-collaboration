@@ -1,189 +1,153 @@
-use central_storage::AlarmPublicationFailure;
-use std::sync::{
-    Mutex, MutexGuard, PoisonError,
-    atomic::{AtomicI64, Ordering},
+use central_engine_model::{
+    DueDrainEffect, DueDrainEvent, DueDrainMachine, DueDrainPass, DueDrainState, DueDrainWakeId,
 };
+use std::sync::{Arc, Mutex, PoisonError};
 
-const EMPTY: i64 = i64::MIN;
+type ScheduleDueHandoff = Box<dyn FnOnce(DueBatchClaim) + Send>;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct DueBatchSnapshot {
-    pub last_start_unix_millis: Option<i64>,
-    pub leftovers_pending: bool,
+#[cfg(feature = "test-support")]
+#[derive(Default)]
+struct ReplyDrainOrder {
+    discoveries_started: usize,
+    discoveries_at_each_reply: Vec<usize>,
 }
 
-/// Test-support receipt of one unit a due batch started, in start order
-/// (acceptance R2/R3 visit order). Never built without `test-support`.
+#[derive(Default)]
+struct DueDrainHolder {
+    machine: DueDrainState,
+    pending_handoff: Option<ScheduleDueHandoff>,
+}
+
+/// One due-drain state machine and its waiting reply's transport handoff.
+#[derive(Default)]
+pub struct DueBatchState {
+    drain: Mutex<DueDrainHolder>,
+    #[cfg(feature = "test-support")]
+    reply_order: Mutex<ReplyDrainOrder>,
+    #[cfg(feature = "test-support")]
+    unit_starts: Mutex<Vec<DueUnitStart>>,
+    #[cfg(feature = "test-support")]
+    batch_starts: Mutex<Vec<i64>>,
+}
+
+pub struct DueBatchClaim {
+    owner: Arc<DueBatchState>,
+    wake_id: DueDrainWakeId,
+}
+
+pub enum AlarmDrainAdmission {
+    RunPass {
+        claim: DueBatchClaim,
+        pass: DueDrainPass,
+    },
+    PublishWhileOwned,
+}
+
+/// Test-support receipt of one due unit, in visit order.
 #[cfg(feature = "test-support")]
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DueUnitStart {
-    /// The start time of the due batch that started this unit.
     pub batch_start_unix_millis: i64,
     pub machine_kind: String,
     pub subject_key: String,
 }
 
-/// The start and backlog bit share one CAS, so a publisher reads one coherent
-/// snapshot. The portable timestamp range leaves room for the backlog bit.
-pub struct DueBatchState {
-    encoded: AtomicI64,
-    publication_order: Mutex<()>,
-    #[cfg(feature = "test-support")]
-    claim_waiting: tokio::sync::watch::Sender<usize>,
-    #[cfg(feature = "test-support")]
-    unit_starts: Mutex<Vec<DueUnitStart>>,
-    /// One entry per claimed batch, so two batches at one millisecond stay two.
-    #[cfg(feature = "test-support")]
-    claimed_starts: Mutex<Vec<i64>>,
-}
-
-impl Default for DueBatchState {
-    fn default() -> Self {
-        Self {
-            encoded: AtomicI64::new(EMPTY),
-            publication_order: Mutex::new(()),
-            #[cfg(feature = "test-support")]
-            claim_waiting: tokio::sync::watch::channel(0).0,
-            #[cfg(feature = "test-support")]
-            unit_starts: Mutex::new(Vec::new()),
-            #[cfg(feature = "test-support")]
-            claimed_starts: Mutex::new(Vec::new()),
-        }
-    }
-}
-
-fn snapshot(encoded: i64) -> DueBatchSnapshot {
-    if encoded == EMPTY {
-        DueBatchSnapshot {
-            last_start_unix_millis: None,
-            leftovers_pending: false,
-        }
-    } else {
-        DueBatchSnapshot {
-            last_start_unix_millis: Some(encoded.div_euclid(2)),
-            leftovers_pending: encoded.rem_euclid(2) == 1,
-        }
-    }
-}
-
-fn encode(start: i64, leftovers: bool) -> Option<i64> {
-    start.checked_mul(2)?.checked_add(i64::from(leftovers))
-}
-
 impl DueBatchState {
-    pub fn snapshot(&self) -> DueBatchSnapshot {
-        snapshot(self.encoded.load(Ordering::Acquire))
-    }
-
-    /// The spacing check and new start claim happen before any caller awaits.
-    pub fn try_claim(
-        &self,
-        now_unix_millis: i64,
-        spacing: chrono::Duration,
-    ) -> Result<bool, AlarmPublicationFailure> {
-        let _publication = self.claim_lock();
-        if !(-central_engine_model::MAX_ALARM_UNIX_MILLIS
-            ..=central_engine_model::MAX_ALARM_UNIX_MILLIS)
-            .contains(&now_unix_millis)
-        {
-            return Err(AlarmPublicationFailure::NowOutOfRange);
-        }
-        let mut prior = self.encoded.load(Ordering::Acquire);
-        loop {
-            let current = snapshot(prior);
-            if current.last_start_unix_millis.is_some_and(|start| {
-                now_unix_millis.saturating_sub(start) < spacing.num_milliseconds()
-            }) {
-                return Ok(false);
-            }
-            let next = encode(now_unix_millis, current.leftovers_pending)
-                .ok_or(AlarmPublicationFailure::NowOutOfRange)?;
-            match self.encoded.compare_exchange_weak(
-                prior,
-                next,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => {
-                    #[cfg(feature = "test-support")]
-                    self.claimed_starts
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .push(now_unix_millis);
-                    return Ok(true);
-                }
-                Err(actual) => prior = actual,
-            }
-        }
-    }
-
-    /// An old, slow batch cannot overwrite the newest batch's backlog result.
-    pub fn finish(&self, started_at_unix_millis: i64, leftovers_pending: bool) -> bool {
-        let _publication = self
-            .publication_order
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let mut prior = self.encoded.load(Ordering::Acquire);
-        loop {
-            if snapshot(prior).last_start_unix_millis != Some(started_at_unix_millis) {
-                return false;
-            }
-            let Some(next) = encode(started_at_unix_millis, leftovers_pending) else {
-                return false;
+    pub fn accept_reply(
+        self: &Arc<Self>,
+        wake_id: DueDrainWakeId,
+        schedule: impl FnOnce(DueBatchClaim) + Send + 'static,
+    ) {
+        let discarded_handoff = {
+            let mut drain = self.drain.lock().unwrap_or_else(PoisonError::into_inner);
+            let Ok((next, effects)) =
+                DueDrainMachine::reduce(&drain.machine, DueDrainEvent::ReplyAccepted(wake_id))
+            else {
+                return;
             };
-            match self.encoded.compare_exchange_weak(
-                prior,
-                next,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => return true,
-                Err(actual) => prior = actual,
+            drain.machine = next;
+            if matches!(effects.as_slice(), [DueDrainEffect::ScheduleHandoff(_)]) {
+                drop(drain);
+                schedule(self.claim_for(wake_id));
+                return;
             }
+            drain.pending_handoff.replace(Box::new(schedule))
+        };
+        drop(discarded_handoff);
+    }
+
+    pub fn alarm_fired(self: &Arc<Self>, wake_id: DueDrainWakeId) -> Option<AlarmDrainAdmission> {
+        match self.reduce(DueDrainEvent::AlarmFired(wake_id))? {
+            DueDrainEffect::RunPass { wake_id, pass } => Some(AlarmDrainAdmission::RunPass {
+                claim: self.claim_for(wake_id),
+                pass,
+            }),
+            DueDrainEffect::PublishDurableAlarm(_) => Some(AlarmDrainAdmission::PublishWhileOwned),
+            _ => None,
         }
     }
 
-    pub(super) fn with_publication<R>(&self, publish: impl FnOnce(DueBatchSnapshot) -> R) -> R {
-        let _publication = self
-            .publication_order
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        publish(self.snapshot())
+    fn claim_for(self: &Arc<Self>, wake_id: DueDrainWakeId) -> DueBatchClaim {
+        DueBatchClaim {
+            owner: self.clone(),
+            wake_id,
+        }
     }
 
-    fn claim_lock(&self) -> MutexGuard<'_, ()> {
-        #[cfg(not(feature = "test-support"))]
-        {
-            self.publication_order
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-        }
-        #[cfg(feature = "test-support")]
-        {
-            match self.publication_order.try_lock() {
-                Ok(guard) => guard,
-                Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
-                Err(std::sync::TryLockError::WouldBlock) => {
-                    self.claim_waiting.send_modify(|count| *count += 1);
-                    let guard = self
-                        .publication_order
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner);
-                    self.claim_waiting.send_modify(|count| *count -= 1);
-                    guard
-                }
+    fn reduce(self: &Arc<Self>, event: DueDrainEvent) -> Option<DueDrainEffect> {
+        let mut drain = self.drain.lock().unwrap_or_else(PoisonError::into_inner);
+        let (next, effects) = DueDrainMachine::reduce(&drain.machine, event).ok()?;
+        let effect = effects.into_iter().next();
+        let previous_pending = drain.machine.pending_discovery();
+        drain.machine = next;
+        if previous_pending != next.pending_discovery() {
+            let pending_handoff = drain.pending_handoff.take();
+            drop(drain);
+            if let (Some(schedule), Some(DueDrainEffect::TransferHandoff { next, .. })) =
+                (pending_handoff, effect)
+            {
+                schedule(self.claim_for(next));
             }
         }
+        effect
     }
 
     #[cfg(feature = "test-support")]
-    pub async fn until_claim_waiting(&self) {
-        let mut waiting = self.claim_waiting.subscribe();
-        let _ = waiting.wait_for(|count| *count > 0).await;
+    pub fn record_discovery_start(&self) {
+        self.reply_order
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .discoveries_started += 1;
     }
 
-    /// Called by the due batch as each unit starts, before its first await.
+    #[cfg(feature = "test-support")]
+    pub fn record_reply_accepted(&self) {
+        let mut order = self
+            .reply_order
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let discoveries_started = order.discoveries_started;
+        order.discoveries_at_each_reply.push(discoveries_started);
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn discoveries_at_each_reply(&self) -> Vec<usize> {
+        self.reply_order
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .discoveries_at_each_reply
+            .clone()
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn record_batch_start(&self, milliseconds: i64) {
+        self.batch_starts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(milliseconds);
+    }
+
     #[cfg(feature = "test-support")]
     pub fn record_unit_start(&self, start: DueUnitStart) {
         self.unit_starts
@@ -192,22 +156,40 @@ impl DueBatchState {
             .push(start);
     }
 
-    /// The start time of every due batch this object claimed, in claim order.
     #[cfg(feature = "test-support")]
-    pub fn claimed_starts(&self) -> Vec<i64> {
-        self.claimed_starts
+    pub fn batch_starts(&self) -> Vec<i64> {
+        self.batch_starts
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
     }
 
-    /// Every unit started by this object's due batches, in start order.
     #[cfg(feature = "test-support")]
     pub fn unit_starts(&self) -> Vec<DueUnitStart> {
         self.unit_starts
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
+    }
+}
+
+impl DueBatchClaim {
+    pub fn wake_id(&self) -> DueDrainWakeId {
+        self.wake_id
+    }
+
+    pub fn transition(
+        &self,
+        event: impl FnOnce(DueDrainWakeId) -> DueDrainEvent,
+    ) -> Option<DueDrainEffect> {
+        self.owner.reduce(event(self.wake_id))
+    }
+}
+
+impl Drop for DueBatchClaim {
+    fn drop(&mut self) {
+        self.owner
+            .reduce(DueDrainEvent::HandoffDropped(self.wake_id));
     }
 }
 
