@@ -54,7 +54,12 @@ async fn live_enrollment_sends_through_central_restarts_and_drains_in_order() {
         .unwrap();
     let store = open_store(&root, machine_id.clone(), clock.clone()).await;
     let writer = open_store(&root, machine_id.clone(), clock.clone()).await;
-    let (enrollment_id, bearer) = grant_at_central(&central, &machine_id).await;
+    let (enrollment_id, bearer) = grant_at_central(
+        &central,
+        &machine_id,
+        "019f0000-0000-7000-8000-00000000cd11".parse().unwrap(),
+    )
+    .await;
     let sender = SessionRef {
         machine_id: machine_id.clone(),
         session_id: "fixture-sender".parse().unwrap(),

@@ -11,49 +11,11 @@ use switchboard_machine_core_store::{
     DirectHandoff, DirectHandoffChange, HandoffCommit, InboxStore, NoticeAttemptId,
     SeenReceiptState,
 };
-use switchboard_message_custody::{
-    flush_marks::next_mark_after,
-    handover::NoticeWriteOutcome,
-    handover_notice::{
-        ClaimedNotice, IdleClaudeRun, ManagedClaudeNoticePort, NoticeDeferred, NoticeFuture,
-    },
-};
+use switchboard_message_custody::flush_marks::next_mark_after;
 use workspace_ids::SessionRef;
 use workspace_model::{Timestamp, central_mail::MessageStatus};
 
-#[derive(Clone)]
-struct ManagedPromptPort {
-    clock: Arc<dyn RuntimeClock>,
-    enabled: Arc<AtomicBool>,
-    calls: Arc<AtomicUsize>,
-    offers: tokio::sync::mpsc::UnboundedSender<ClaimedNotice>,
-}
-
-impl ManagedClaudeNoticePort for ManagedPromptPort {
-    fn ready<'a>(
-        &'a self,
-        _target: &'a SessionRef,
-    ) -> NoticeFuture<'a, Result<Box<dyn IdleClaudeRun>, NoticeDeferred>> {
-        Box::pin(async {
-            if self.enabled.load(Ordering::SeqCst) {
-                Ok(Box::new(self.clone()) as Box<dyn IdleClaudeRun>)
-            } else {
-                Err(NoticeDeferred::Busy)
-            }
-        })
-    }
-}
-
-impl IdleClaudeRun for ManagedPromptPort {
-    fn offer(self: Box<Self>, claimed: ClaimedNotice) -> NoticeFuture<'static, NoticeWriteOutcome> {
-        Box::pin(async move {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            let taken_at = self.clock.utc_now();
-            assert!(self.offers.send(claimed).is_ok());
-            NoticeWriteOutcome::Written { taken_at }
-        })
-    }
-}
+use crate::managed_prompt_fixture::{ManagedPromptPort, NoticeResultScript};
 
 #[test]
 fn a_kept_message_yields_one_managed_notice_and_an_owned_seen_status_at_central() {
@@ -66,6 +28,7 @@ fn a_kept_message_yields_one_managed_notice_and_an_owned_seen_status_at_central(
             enabled: enabled.clone(),
             calls: takes.clone(),
             offers,
+            result: NoticeResultScript::ReturnWriterTake,
         });
         let (mut case, ()) = NetworkCustody::setup_with_custody(
             link,
@@ -169,6 +132,7 @@ fn recovered_writing_is_suppressed_and_only_an_admitted_read_owes_seen() {
             enabled: Arc::new(AtomicBool::new(true)),
             calls: takes.clone(),
             offers,
+            result: NoticeResultScript::ReturnWriterTake,
         });
         let path = link.central.root_path().join("simulated-custody.sqlite");
         let recipient = SessionRef {

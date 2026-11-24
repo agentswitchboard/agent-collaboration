@@ -36,6 +36,9 @@ mod custody_journey;
 #[cfg(debug_assertions)]
 mod enrolled_lease_journey;
 #[cfg(debug_assertions)]
+mod first_message_local;
+mod managed_prompt_fixture;
+#[cfg(debug_assertions)]
 mod message_unit_fixture;
 #[cfg(debug_assertions)]
 mod message_unit_journey;
