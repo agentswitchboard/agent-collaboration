@@ -20,7 +20,7 @@ impl RefreshSource for RefusedRefresh {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum History {
     Remove,
     LostAcknowledgement,
@@ -31,9 +31,31 @@ enum History {
     QueuedDefinitive,
 }
 
-#[hegel::test(test_cases = 20)]
+// Seven explicit histories guarantee branch coverage. The 56 generated cases
+// give eight draws per branch on average while opening one fixture per draw.
+// TooSlow measures elapsed time across real SQLite commits and reopen I/O.
+#[hegel::test(test_cases = 56, suppress_health_check = [hegel::HealthCheck::TooSlow])]
+#[hegel::explicit_test_case(history = History::Remove, revoke = true, rotations = 1_u64)]
+#[hegel::explicit_test_case(history = History::LostAcknowledgement, revoke = false, rotations = 1_u64)]
+#[hegel::explicit_test_case(history = History::MarkUnusable, revoke = true, rotations = 1_u64)]
+#[hegel::explicit_test_case(history = History::AlreadyEnded, revoke = false, rotations = 1_u64)]
+#[hegel::explicit_test_case(history = History::DifferentKey, revoke = true, rotations = 1_u64)]
+#[hegel::explicit_test_case(history = History::StaleOwner, revoke = false, rotations = 1_u64)]
+#[hegel::explicit_test_case(history = History::QueuedDefinitive, revoke = true, rotations = 4_u64)]
 fn generated_retirement_histories_reopen_the_exact_resulting_row(case: TestCase) {
-    let why = if case.draw(gs::booleans()) {
+    let history = case.draw(gs::sampled_from(vec![
+        History::Remove,
+        History::LostAcknowledgement,
+        History::MarkUnusable,
+        History::AlreadyEnded,
+        History::DifferentKey,
+        History::StaleOwner,
+        History::QueuedDefinitive,
+    ]));
+    let revoke = case.draw(gs::booleans());
+    let rotations = case.draw(gs::integers::<u64>().min_value(1).max_value(4));
+    case.note(&format!("retirement history: {history:?}"));
+    let why = if revoke {
         EnrollmentEnd::Revoked
     } else {
         EnrollmentEnd::Inactive
@@ -43,24 +65,11 @@ fn generated_retirement_histories_reopen_the_exact_resulting_row(case: TestCase)
     } else {
         EnrollmentEnd::Revoked
     };
-    let rotations = case.draw(gs::integers::<u64>().min_value(1).max_value(4));
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap()
-        .block_on(async {
-            for history in [
-                History::Remove,
-                History::LostAcknowledgement,
-                History::MarkUnusable,
-                History::AlreadyEnded,
-                History::DifferentKey,
-                History::StaleOwner,
-                History::QueuedDefinitive,
-            ] {
-                run_history(history, why, other_reason, rotations).await;
-            }
-        });
+        .block_on(run_history(history, why, other_reason, rotations));
 }
 
 async fn run_history(

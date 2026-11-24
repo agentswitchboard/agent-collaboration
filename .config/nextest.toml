@@ -33,6 +33,12 @@ filter = "(package(=codex-router-host) & binary(=integration) & test(/^update_re
 test-group = "process-runtime"
 threads-required = "num-test-threads"
 
+# The owned Router copy probes the replacement with the product's two-second budget.
+[[profile.ci.overrides]]
+filter = "package(=codex-router-host) & binary(=integration) & test(=router_executable_status::host_status_reports_a_router_replaced_since_start_with_no_timer)"
+test-group = "process-runtime"
+threads-required = "num-test-threads"
+
 # These real central/child cases also need an exclusive scheduling window;
 # starving the archive or Serve child crosses their unchanged request and
 # shutdown deadlines. The renewal proof gates its NotWriter reply explicitly.

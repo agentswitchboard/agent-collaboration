@@ -170,7 +170,7 @@ async fn host_status_reports_a_router_replaced_since_start_with_no_timer() -> Pr
     )
     .kill_on_drop(true)
     .stdout(Stdio::null())
-    .stderr(Stdio::piped());
+    .stderr(Stdio::inherit());
     let mut host = host.spawn()?;
 
     let proof_result: ProofResult = async {
@@ -207,6 +207,13 @@ async fn owned_copy_host_child_entrypoint() -> ProofResult {
     let Some(directory) = std::env::var_os("CODEX_HOST_STATUS_CHILD_DIRECTORY") else {
         return Ok(());
     };
+    // Inherit the parent's stderr so Nextest reports the probe diagnosis beside a failure.
+    tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_max_level(tracing::Level::WARN)
+        .with_writer(std::io::stderr)
+        .try_init()
+        .map_err(|error| -> Box<dyn std::error::Error> { error })?;
     let directory = PathBuf::from(directory);
     let router_endpoint = std::env::var("CODEX_HOST_STATUS_CHILD_ROUTER")?.parse()?;
     let launch_path = std::env::current_exe()?;
