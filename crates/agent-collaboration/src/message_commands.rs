@@ -4,9 +4,9 @@ use clap::{Args, Parser, Subcommand};
 use collaboration_client::{
     CollaborationClient,
     protocol::message_tools::{
-        MessageCallerRefusal, MessageSendArguments, MessageSendOutcome, MessageStatusArguments,
-        MessageToolRefusal, MessageToolResult, MessageWriteStatus, SessionId, message_send_text,
-        message_status_text,
+        MessageCallerRefusal, MessageInboxArguments, MessageSendArguments, MessageSendOutcome,
+        MessageStatusArguments, MessageToolRefusal, MessageToolResult, MessageWriteStatus,
+        SessionId, message_inbox_text, message_send_text, message_status_text,
     },
 };
 
@@ -29,6 +29,7 @@ struct MessageArguments {
 enum MessageCommand {
     Send(SendArguments),
     Status(StatusArguments),
+    Inbox(InboxArguments),
 }
 
 #[derive(Args)]
@@ -47,9 +48,18 @@ struct StatusArguments {
     request_id: String,
 }
 
+#[derive(Args)]
+struct InboxArguments {
+    #[arg(long)]
+    limit: Option<u16>,
+    #[arg(long)]
+    acknowledge: Option<String>,
+}
+
 enum PreparedMessageCommand {
     Send(MessageSendArguments),
     Status(MessageStatusArguments),
+    Inbox(MessageInboxArguments),
 }
 
 impl MessageCommand {
@@ -94,19 +104,24 @@ impl MessageCommand {
                     .map_err(|_| MessageToolRefusal::InvalidRequestId)?,
                 caller_session_id: Some(caller()?),
             })),
+            Self::Inbox(args) => Ok(PreparedMessageCommand::Inbox(MessageInboxArguments {
+                caller_session_id: Some(caller()?),
+                limit: args.limit,
+                acknowledge: args.acknowledge,
+            })),
         }
     }
 }
 
-/// Whether the CLI arguments name one of the two active message commands.
+/// Whether the CLI arguments name a Fleet message command.
 pub fn is_message_command(arguments: &[OsString]) -> bool {
     arguments.first().is_some_and(|group| group == "message")
         && arguments
             .get(1)
-            .is_some_and(|verb| verb == "send" || verb == "status")
+            .is_some_and(|verb| verb == "send" || verb == "status" || verb == "inbox")
 }
 
-/// Runs the send or status command through the collaboration API socket.
+/// Runs a Fleet message command through the collaboration API socket.
 pub fn run_message_command(arguments: Vec<OsString>) -> i32 {
     let args =
         match crate::automation_argument_feedback::parse_arguments::<MessageArguments>(arguments) {
@@ -147,6 +162,10 @@ pub fn run_message_command(arguments: Vec<OsString>) -> i32 {
             },
             PreparedMessageCommand::Status(input) => match client.message_status(input).await {
                 Ok(result) => report_status(result, args.json),
+                Err(_) => report_transport(args.json),
+            },
+            PreparedMessageCommand::Inbox(input) => match client.message_inbox(input).await {
+                Ok(result) => report(&result, args.json, 3, || message_inbox_text(&result)),
                 Err(_) => report_transport(args.json),
             },
         }

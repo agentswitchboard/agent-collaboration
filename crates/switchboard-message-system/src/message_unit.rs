@@ -20,6 +20,7 @@ use switchboard_message_custody::{
     custody_link::CustodyLink,
     custody_task::{CustodyEventSink, CustodyRunGroup, CustodyTaskHandle, custody_task},
     flush_clock::MachineFlushJitter,
+    handover_notice::ManagedClaudeNoticePort,
     outbox_work::OutboxWork,
     recipient_inbox::RecipientInbox,
     recipient_sessions::RecipientSessionDirectory,
@@ -37,6 +38,7 @@ pub(crate) struct UnitBuildInputs {
     pub(crate) clock: Arc<dyn RuntimeClock>,
     pub(crate) recipients: Arc<dyn RecipientSessionDirectory>,
     pub(crate) custody_events: Arc<dyn CustodyEventSink>,
+    pub(crate) notice_port: Option<Arc<dyn ManagedClaudeNoticePort>>,
     pub(crate) link_status: watch::Sender<LinkStatus>,
 }
 
@@ -134,6 +136,7 @@ impl MessageUnit {
             clock,
             recipients,
             custody_events,
+            notice_port,
             link_status,
         } = inputs;
         let UnitLinkInputs {
@@ -170,6 +173,10 @@ impl MessageUnit {
                 clock.clone(),
             ),
         );
+        let custody = match notice_port {
+            Some(port) => custody.with_notice_port(port),
+            None => custody,
+        };
         let excluded = Arc::new(excluded);
         let (settings_source, settings_updates) = LinkSettingsSource::with_discovery(
             store.clone(),

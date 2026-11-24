@@ -7,8 +7,8 @@ use crate::api_connection::{
     ApiConnection, DEFAULT_CALL_TIMEOUT, ToolAnswer, rejection_from_tool_failure,
 };
 use collaboration_protocol::message_tools::{
-    MessageSendArguments, MessageSendOutcome, MessageStatusArguments, MessageToolResult,
-    MessageWriteStatus,
+    MessageInboxArguments, MessageInboxPage, MessageSendArguments, MessageSendOutcome,
+    MessageStatusArguments, MessageToolResult, MessageWriteStatus,
 };
 use collaboration_protocol::{
     EndpointInventory, MachineLabel, SERVICE_MANIFEST_VERSION, SchemaDigest, ServiceManifest,
@@ -125,6 +125,14 @@ impl CollaborationClient {
         arguments: MessageStatusArguments,
     ) -> Result<MessageToolResult<MessageWriteStatus>, ClientError> {
         self.message_call("message_status", &arguments).await
+    }
+
+    /// Reads the admitted session's current inbox and optionally acknowledges a prior page.
+    pub async fn message_inbox(
+        &self,
+        arguments: MessageInboxArguments,
+    ) -> Result<MessageToolResult<MessageInboxPage>, ClientError> {
+        self.message_call("message_inbox", &arguments).await
     }
 
     async fn message_call<Args: Serialize, Outcome: DeserializeOwned>(

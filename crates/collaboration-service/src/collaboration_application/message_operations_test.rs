@@ -30,6 +30,16 @@ struct HeldUnit {
 }
 
 impl MessageUnitPort for HeldUnit {
+    fn read_inbox<'call>(
+        &'call self,
+        _: &'call AdmittedLocalSession,
+        _: MessageInboxRead,
+    ) -> MessageOperationFuture<'call, MessageInboxPage> {
+        Box::pin(std::future::ready(Err(
+            MessageToolRefusal::InboxUnavailable,
+        )))
+    }
+
     fn submit<'call>(
         &'call self,
         caller: &'call AdmittedLocalSession,

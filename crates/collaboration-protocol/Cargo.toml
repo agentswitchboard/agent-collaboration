@@ -10,6 +10,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+base64.workspace = true
 workspace-ids.workspace = true
 workspace-model.workspace = true
 fleet-identity-protocol = { path = "../fleet-identity-protocol", version = "0.1.118" }
