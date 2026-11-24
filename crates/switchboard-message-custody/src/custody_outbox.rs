@@ -19,6 +19,8 @@ use workspace_model::Caller;
 
 #[path = "outbox_driver/batch.rs"]
 mod batch;
+#[path = "outbox_driver/claim_recovery.rs"]
+mod claim_recovery;
 #[path = "outbox_driver/recovery.rs"]
 mod recovery;
 #[path = "outbox_driver/report.rs"]
@@ -37,7 +39,8 @@ pub use schedule::{FlushEffect, FlushEvent, FlushTransitionError, OutboxFlushSta
 pub use work::{FlushSelection, OutboxWork, OutboxWorkError};
 
 use batch::FrameWindow;
-use recovery::{ClaimRecovery, OrphanTurn, prepare_orphan_turn, settle_orphan_probe};
+use claim_recovery::{ClaimRecovery, ClaimRecoveryEvent};
+use recovery::{OrphanTurn, prepare_orphan_turn, settle_orphan_probe};
 use schedule::advance_schedule;
 use work::{RebasedMarks, WaitingCutoffSchedule};
 
@@ -151,7 +154,9 @@ impl CustodyLink {
         if self.outbox_driver.schedule.draining_mark() != mark_in_window(now)
             || self.outbox_driver.schedule.draining_mark().is_none()
         {
-            self.outbox_driver.claim_recovery = ClaimRecovery::Clear;
+            self.outbox_driver
+                .claim_recovery
+                .observe(ClaimRecoveryEvent::DrainReset);
         }
         if matches!(
             self.outbox_driver.claim_recovery,
@@ -239,10 +244,11 @@ impl CustodyLink {
             deferred,
         )
         .await?;
-        self.outbox_driver.claim_recovery = self
-            .outbox_driver
+        self.outbox_driver
             .claim_recovery
-            .after_scan(self.outbox_driver.dispatcher.owes_local_settlement());
+            .observe(ClaimRecoveryEvent::ScanFinished {
+                owes_local_return: self.outbox_driver.dispatcher.owes_local_settlement(),
+            });
         Ok(turn)
     }
 
@@ -276,11 +282,11 @@ impl CustodyLink {
             .dispatcher
             .retry_local_settlements(&mut self.outbox_driver.work)
             .await;
-        if self.outbox_driver.claim_recovery == ClaimRecovery::ParkedForReturn
-            && !self.outbox_driver.dispatcher.owes_local_settlement()
-        {
-            self.outbox_driver.claim_recovery = ClaimRecovery::Clear;
-        }
+        self.outbox_driver
+            .claim_recovery
+            .observe(ClaimRecoveryEvent::LocalRetryFinished {
+                owes_local_return: self.outbox_driver.dispatcher.owes_local_settlement(),
+            });
         report
     }
 
@@ -372,7 +378,9 @@ impl CustodyLink {
         let prepared = match prepared {
             Ok(prepared) => prepared,
             Err(error) => {
-                self.outbox_driver.claim_recovery = ClaimRecovery::ScanOwed;
+                self.outbox_driver
+                    .claim_recovery
+                    .observe(ClaimRecoveryEvent::ClaimFailed);
                 self.defer_write_turn();
                 self.apply_flush_event(FlushEvent::BatchEnded {
                     earliest_due,
@@ -382,8 +390,9 @@ impl CustodyLink {
             }
         };
         let Some(batch) = prepared else {
-            self.outbox_driver.claim_recovery =
-                self.outbox_driver.claim_recovery.park_after_empty();
+            self.outbox_driver
+                .claim_recovery
+                .observe(ClaimRecoveryEvent::ClaimEmpty);
             self.release_flush_slot(
                 report,
                 self.outbox_driver.claim_recovery != ClaimRecovery::Clear,
@@ -462,7 +471,9 @@ impl CustodyLink {
             self.apply_flush_event(FlushEvent::DrainFenced)?;
             self.outbox_driver.drain_connection = None;
             self.outbox_driver.write_retry_at = None;
-            self.outbox_driver.claim_recovery = ClaimRecovery::Clear;
+            self.outbox_driver
+                .claim_recovery
+                .observe(ClaimRecoveryEvent::DrainReset);
         }
         Ok(())
     }
@@ -472,7 +483,9 @@ impl CustodyLink {
             self.apply_flush_event(FlushEvent::LinkLost)?;
         }
         self.outbox_driver.write_retry_at = None;
-        self.outbox_driver.claim_recovery = ClaimRecovery::Clear;
+        self.outbox_driver
+            .claim_recovery
+            .observe(ClaimRecoveryEvent::DrainReset);
         Ok(())
     }
 
