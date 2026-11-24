@@ -361,10 +361,10 @@ where
                 Err(reason) => return self.interrupted_attempt(&attempt, reason),
             };
             match result {
-                Ok((mut socket, writes)) => {
-                    let done = self
-                        .open_socket(
-                            &mut socket,
+                Ok((socket, writes)) => {
+                    if let Err(reason) = self
+                        .drive_socket(
+                            socket,
                             &attempt,
                             binding,
                             SocketAttemptTiming {
@@ -374,10 +374,8 @@ where
                             control,
                             lane_owner,
                         )
-                        .await;
-                    lane_owner.reject_queued();
-                    finish_socket(&mut socket, &writes);
-                    if let Err(reason) = done {
+                        .await
+                    {
                         return self.interrupted_attempt(&attempt, reason);
                     }
                 }
@@ -409,6 +407,28 @@ where
             });
         }
         Err(reason)
+    }
+
+    async fn drive_socket(
+        &mut self,
+        mut socket: (
+            impl Stream<Item = Result<Message, WebSocketError>>
+            + Sink<Message, Error = WebSocketError>
+            + Unpin
+        ),
+        attempt: &ConnectionAttempt,
+        binding: &Binding,
+        timing: SocketAttemptTiming<'_>,
+        control: &mut Control<'_, Binding>,
+        lane_owner: &mut LinkLaneOwner,
+    ) -> Result<(), Interrupted> {
+        let writes = timing.writes;
+        let done = self
+            .open_socket(&mut socket, attempt, binding, timing, control, lane_owner)
+            .await;
+        lane_owner.reject_queued();
+        finish_socket(&mut socket, writes);
+        done
     }
 
     async fn open_socket(

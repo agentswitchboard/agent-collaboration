@@ -20,6 +20,9 @@ use crate::{
 #[path = "renewal_lane_test.rs"]
 mod renewal_lane;
 
+#[path = "control_write_test.rs"]
+mod control_write;
+
 struct NoLeaseSource;
 
 impl LeaseSource<u8> for NoLeaseSource {

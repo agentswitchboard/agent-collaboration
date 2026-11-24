@@ -27,9 +27,11 @@ pub(super) enum FrameWrite {
 
 impl SendFence {
     fn first_byte_deadline(&self) -> ClockInstant {
-        self.send_before
-            .min(self.authority_until)
-            .min(self.write_until)
+        self.send_before.min(self.finish_deadline())
+    }
+
+    fn finish_deadline(&self) -> ClockInstant {
+        self.authority_until.min(self.write_until)
     }
 
     fn untouched_at(&self, now: ClockInstant) -> UntouchedCommand {
@@ -67,7 +69,8 @@ pub(super) async fn write_fenced_frame(
         return FrameWrite::Untouched(fence.untouched_at(now));
     }
 
-    let guard = boundary.watch_first_byte(deadline);
+    let finish_deadline = fence.finish_deadline();
+    let guard = boundary.watch_frame(deadline, finish_deadline);
     match socket.start_send_unpin(Message::Text(wire.into())) {
         Ok(()) => {}
         Err(SocketError::WriteBufferFull(_)) => {
@@ -82,11 +85,10 @@ pub(super) async fn write_fenced_frame(
         }
     }
 
-    let flush_deadline = fence.authority_until.min(fence.write_until);
     let mut flush = pin!(socket.flush());
     let flush_result = tokio::select! {
         biased;
-        () = clock.sleep_until(flush_deadline) => None,
+        () = clock.sleep_until(finish_deadline) => None,
         () = async {
             clock.sleep_until(deadline).await;
             if guard.crossed() { pending::<()>().await; }
