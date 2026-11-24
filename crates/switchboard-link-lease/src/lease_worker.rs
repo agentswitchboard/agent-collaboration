@@ -19,7 +19,7 @@ use tokio::{
     task::{Id, JoinError, JoinSet},
 };
 
-use crate::LeaseWorkerFailure;
+use crate::{LeaseWorkerFailure, WorkerExitPublication};
 
 const RETRY_RETIREMENT: Duration = Duration::from_secs(5);
 
@@ -106,6 +106,7 @@ pub(crate) async fn run<Store, Source>(
     commands: mpsc::UnboundedReceiver<LeaseCommand>,
     closing: watch::Receiver<Option<ClockInstant>>,
     excluded: Arc<BTreeSet<EnrollmentId>>,
+    publication: WorkerExitPublication,
 ) -> Result<(), LeaseWorkerFailure>
 where
     Store: CredentialStore + 'static,
@@ -120,7 +121,7 @@ where
         excluded,
         children.clone(),
     ));
-    reap_worker(worker, &children, clock.as_ref(), closing).await
+    reap_worker(worker, &children, clock.as_ref(), closing, &publication).await
 }
 
 async fn reap_worker(
@@ -128,8 +129,10 @@ async fn reap_worker(
     children: &ChildTasks,
     clock: &dyn RuntimeClock,
     closing: watch::Receiver<Option<ClockInstant>>,
+    publication: &WorkerExitPublication,
 ) -> Result<(), LeaseWorkerFailure> {
     let outcome = worker.await.map_err(LeaseWorkerFailure::from);
+    publication.publish(outcome);
     // Child ownership survives a failed worker and only the supplied cutoff
     // can cancel unfinished tasks while the adapter is still retained.
     children.reap(clock, closing).await;
@@ -165,6 +168,12 @@ async fn work<Store, Source>(
 
         changes.borrow_and_update();
         for key in fence.pending_keys() {
+            if matches!(
+                attempt_window(clock.as_ref(), &closing),
+                AttemptWindow::CutoffReached
+            ) {
+                return;
+            }
             if excluded.contains(&key.enrollment_id)
                 || final_attempts.contains(&key)
                 || started
@@ -195,7 +204,7 @@ async fn work<Store, Source>(
             }
             _ = changes.changed() => {}
             command = commands.recv(), if cutoff.is_none() => match command {
-                Some(command) => dispatch(command, &owner, &closing, &excluded, &tasks, &mut started),
+                Some(command) => dispatch(command, &owner, &clock, &closing, &excluded, &tasks, &mut started),
                 None => return,
             },
         }
@@ -215,6 +224,27 @@ fn observed_cutoff(
     })
 }
 
+enum AttemptWindow {
+    Open,
+    Draining,
+    CutoffReached,
+}
+
+fn attempt_window(
+    clock: &dyn RuntimeClock,
+    closing: &watch::Receiver<Option<ClockInstant>>,
+) -> AttemptWindow {
+    // Keep the cutoff stable through the clock comparison. This check does
+    // not acknowledge a stop update that the parent still needs to process.
+    let deadline = closing.borrow();
+    match *deadline {
+        Some(cutoff) if clock.monotonic_now() >= cutoff => AttemptWindow::CutoffReached,
+        Some(_) => AttemptWindow::Draining,
+        None if closing.has_changed().is_err() => AttemptWindow::CutoffReached,
+        None => AttemptWindow::Open,
+    }
+}
+
 async fn wait_until(clock: &dyn RuntimeClock, cutoff: Option<ClockInstant>) {
     if let Some(cutoff) = cutoff {
         clock.sleep_until(cutoff).await;
@@ -226,6 +256,7 @@ async fn wait_until(clock: &dyn RuntimeClock, cutoff: Option<ClockInstant>) {
 fn dispatch<Store, Source>(
     command: LeaseCommand,
     owner: &Arc<RefreshOwner<Store, Source>>,
+    clock: &Arc<dyn RuntimeClock + Send + Sync>,
     closing: &watch::Receiver<Option<ClockInstant>>,
     excluded: &BTreeSet<EnrollmentId>,
     tasks: &ChildTasks,
@@ -239,8 +270,8 @@ fn dispatch<Store, Source>(
         newer_than,
         reply,
     } = command;
-    let closing = closing.borrow();
-    if closing.is_some() || reply.is_closed() {
+    let stop = closing.borrow();
+    if stop.is_some() || reply.is_closed() {
         return;
     }
     if excluded.contains(&key.enrollment_id) || owner.retirement_fence().is_fenced(&key) {
@@ -248,11 +279,34 @@ fn dispatch<Store, Source>(
         return;
     }
     let owner = Arc::clone(owner);
+    let clock = Arc::clone(clock);
+    let closing = closing.clone();
     let id = tasks.spawn(async move {
-        let _ = reply.send(acquire(&owner, &key, newer_than).await);
+        let _ =
+            reply.send(acquire_unless_due(&owner, clock.as_ref(), closing, &key, newer_than).await);
         FinishedWork::Acquired
     });
     started.push((id, StartedWork::Acquire));
+}
+
+async fn acquire_unless_due<Store, Source>(
+    owner: &RefreshOwner<Store, Source>,
+    clock: &dyn RuntimeClock,
+    closing: watch::Receiver<Option<ClockInstant>>,
+    key: &EnrollmentKey,
+    newer_than: Option<LeaseVersion>,
+) -> LeaseAnswer
+where
+    Store: CredentialStore + 'static,
+    Source: RefreshSource + 'static,
+{
+    if matches!(
+        attempt_window(clock, &closing),
+        AttemptWindow::CutoffReached
+    ) {
+        return Err(LeaseFailure::Fault);
+    }
+    acquire(owner, key, newer_than).await
 }
 
 async fn acquire<Store, Source>(
@@ -322,7 +376,12 @@ where
     Source: RefreshSource + 'static,
 {
     loop {
-        let final_attempt = closing.borrow_and_update().is_some() || closing.has_changed().is_err();
+        closing.borrow_and_update();
+        let final_attempt = match attempt_window(clock, &closing) {
+            AttemptWindow::Open => false,
+            AttemptWindow::Draining => true,
+            AttemptWindow::CutoffReached => return FinishedWork::StillPending,
+        };
         match owner.finish_retirement(key).await {
             Ok(_) => return FinishedWork::Retired,
             Err(_) if final_attempt => return FinishedWork::StillPending,

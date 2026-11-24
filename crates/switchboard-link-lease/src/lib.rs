@@ -1,6 +1,9 @@
 //! Adapts one enrollment context to the Central driver's lease and retirement port.
 
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, Mutex, PoisonError},
+};
 
 use central_link_client::EnrollmentEnd;
 use router_clock::{ClockInstant, RuntimeClock};
@@ -26,6 +29,8 @@ pub struct EnrollmentLeaseSource {
     commands: mpsc::UnboundedSender<LeaseCommand>,
     retirements: RetirementFence,
     closing: watch::Sender<Option<ClockInstant>>,
+    admission: Arc<Mutex<Admission>>,
+    worker_exit: watch::Receiver<Option<LeaseWorkerExit>>,
     excluded: Arc<BTreeSet<EnrollmentId>>,
     completion: AsyncMutex<Completion>,
 }
@@ -39,8 +44,84 @@ pub struct LeaseJoin {
 
 enum Completion {
     Running(JoinHandle<Result<(), LeaseWorkerFailure>>),
-    Joined(LeaseJoin),
+    Finished(Result<LeaseJoin, LeaseJoinUnconfirmed>),
 }
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Admission {
+    Open,
+    Sealed,
+}
+
+/// The worker exited before the lease's physical join was necessarily ready.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LeaseWorkerExit {
+    Stopped,
+    Failed(LeaseWorkerFailure),
+    Unconfirmed,
+}
+
+struct WorkerExitPublication {
+    admission: Arc<Mutex<Admission>>,
+    observed: watch::Sender<Option<LeaseWorkerExit>>,
+}
+
+impl WorkerExitPublication {
+    fn seal(&self) {
+        *self
+            .admission
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Admission::Sealed;
+    }
+
+    fn publish(&self, outcome: Result<(), LeaseWorkerFailure>) {
+        self.seal();
+        self.observed.send_replace(Some(match outcome {
+            Ok(()) => LeaseWorkerExit::Stopped,
+            Err(error) => LeaseWorkerExit::Failed(error),
+        }));
+    }
+}
+
+impl Drop for WorkerExitPublication {
+    fn drop(&mut self) {
+        self.seal();
+    }
+}
+
+/// The reaper was lost before it certified the physical join.
+///
+/// The executor keeps this piece outstanding and starts no replacement.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LeaseJoinUnconfirmed {
+    ReaperPanicked,
+    ReaperCancelled,
+}
+
+impl From<tokio::task::JoinError> for LeaseJoinUnconfirmed {
+    fn from(error: tokio::task::JoinError) -> Self {
+        if error.is_panic() {
+            Self::ReaperPanicked
+        } else {
+            Self::ReaperCancelled
+        }
+    }
+}
+
+impl std::fmt::Display for LeaseJoinUnconfirmed {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ReaperPanicked => {
+                formatter.write_str("the lease reaper panicked before confirming the join")
+            }
+            Self::ReaperCancelled => {
+                formatter.write_str("the lease reaper was cancelled before confirming the join")
+            }
+        }
+    }
+}
+
+impl std::error::Error for LeaseJoinUnconfirmed {}
 
 /// Diagnostic outcome of the lease worker.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -83,13 +164,28 @@ impl EnrollmentLeaseSource {
     {
         let (commands, work) = mpsc::unbounded_channel();
         let (closing, stopped) = watch::channel(None);
+        let (observed, worker_exit) = watch::channel(None);
+        let admission = Arc::new(Mutex::new(Admission::Open));
+        let publication = WorkerExitPublication {
+            admission: admission.clone(),
+            observed,
+        };
         owner.supervise_retirement();
         let retirements = owner.retirement_fence();
-        let task = tokio::spawn(run(owner, clock, work, stopped, excluded.clone()));
+        let task = tokio::spawn(run(
+            owner,
+            clock,
+            work,
+            stopped,
+            excluded.clone(),
+            publication,
+        ));
         Self {
             commands,
             retirements,
             closing,
+            admission,
+            worker_exit,
             excluded,
             completion: AsyncMutex::new(Completion::Running(task)),
         }
@@ -97,6 +193,11 @@ impl EnrollmentLeaseSource {
 
     /// Closes admission and requests the earliest supplied shutdown cutoff.
     pub fn request_stop_by(&self, cutoff: ClockInstant) {
+        let mut admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        *admission = Admission::Sealed;
         self.closing.send_if_modified(|deadline| {
             if deadline.is_some_and(|previous| previous <= cutoff) {
                 return false;
@@ -106,26 +207,35 @@ impl EnrollmentLeaseSource {
         });
     }
 
-    /// Waits for physical completion. Cancelling a wait leaves the join available.
-    pub async fn join(&self) -> LeaseJoin {
+    /// Observes the worker's retained exit before waiting for its children.
+    pub async fn worker_exit(&self) -> LeaseWorkerExit {
+        let mut observed = self.worker_exit.clone();
+        match observed.wait_for(Option::is_some).await {
+            Ok(outcome) => outcome.unwrap_or(LeaseWorkerExit::Unconfirmed),
+            Err(_) => LeaseWorkerExit::Unconfirmed,
+        }
+    }
+
+    /// Waits for physical completion. Cancelling a wait leaves the receipt available.
+    pub async fn join(&self) -> Result<LeaseJoin, LeaseJoinUnconfirmed> {
         let mut completion = self.completion.lock().await;
         match &mut *completion {
             Completion::Running(task) => {
-                let worker = task
+                let joined = task
                     .await
-                    .map_err(LeaseWorkerFailure::from)
-                    .and_then(|result| result);
-                // An admitted retirement write is store-owned and can finish after
-                // its child stops waiting. A pending entry here stays fenced even
-                // when the store has already written, or will write, the ending.
-                let joined = LeaseJoin {
-                    unsettled_retirements: self.retirements.pending_keys(),
-                    worker,
-                };
-                *completion = Completion::Joined(joined.clone());
+                    .map_err(LeaseJoinUnconfirmed::from)
+                    .map(|worker| {
+                        // An admitted retirement write is store-owned and can finish
+                        // after its child stops waiting. Pending here stays fenced.
+                        LeaseJoin {
+                            unsettled_retirements: self.retirements.pending_keys(),
+                            worker,
+                        }
+                    });
+                *completion = Completion::Finished(joined.clone());
                 joined
             }
-            Completion::Joined(joined) => joined.clone(),
+            Completion::Finished(joined) => joined.clone(),
         }
     }
 }
@@ -139,11 +249,14 @@ impl LeaseSource<EnrollmentKey> for EnrollmentLeaseSource {
         Box::pin(async move {
             let (reply, result) = oneshot::channel();
             {
-                let closing = self.closing.borrow();
+                let admission = self
+                    .admission
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
                 if self.excluded.contains(&key.enrollment_id) || self.retirements.is_fenced(key) {
                     return Err(LeaseFailure::EnrollmentEnded);
                 }
-                if closing.is_some() {
+                if *admission == Admission::Sealed {
                     return Err(LeaseFailure::Fault);
                 }
                 self.commands
@@ -163,8 +276,11 @@ impl LeaseSource<EnrollmentKey> for EnrollmentLeaseSource {
     }
 
     fn end(&self, key: &EnrollmentKey, cause: EnrollmentEnd) {
-        let closing = self.closing.borrow();
-        if closing.is_some() || self.excluded.contains(&key.enrollment_id) {
+        let admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if *admission == Admission::Sealed || self.excluded.contains(&key.enrollment_id) {
             return;
         }
         let why = match cause {

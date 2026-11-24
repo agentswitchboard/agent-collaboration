@@ -232,7 +232,7 @@ async fn excluded_lease_is_refused_before_acquisition_or_retirement() {
     lease.end(&excluded, central_link_client::EnrollmentEnd::Revoked);
     assert!(!fence.is_fenced(&excluded));
     lease.request_stop_by(clock.monotonic_now());
-    let joined = lease.join().await;
+    let joined = lease.join().await.unwrap();
     assert_eq!(joined.worker, Ok(()));
     assert!(joined.unsettled_retirements.is_empty());
 }
@@ -301,10 +301,10 @@ async fn join_replaces_the_pending_timeout_sample_with_the_settled_fence() {
     })
     .await;
     admitted.commit(&store);
-    let joined = late_join.await;
+    let joined = late_join.await.unwrap();
     assert_eq!(joined.worker, Ok(()));
     assert!(joined.unsettled_retirements.is_empty());
-    assert_eq!(source.join().await, joined);
+    assert_eq!(source.join().await.unwrap(), joined);
 }
 
 #[tokio::test]
@@ -319,7 +319,7 @@ async fn an_admitted_retirement_can_finish_in_the_store_after_the_child_is_joine
     } = admit_retirement().await;
     source.request_stop_by(clock.monotonic_now());
 
-    let joined = source.join().await;
+    let joined = source.join().await.unwrap();
     assert_eq!(joined.worker, Ok(()));
     assert_eq!(joined.unsettled_retirements, vec![key.clone()]);
     assert!(admitted.reply.is_closed());
@@ -333,5 +333,5 @@ async fn an_admitted_retirement_can_finish_in_the_store_after_the_child_is_joine
         &*store.row.borrow(),
         EnrollmentMetadata::Ended { key: ended, why: EnrollmentEnd::Revoked, .. } if ended == &key
     ));
-    assert_eq!(source.join().await, joined);
+    assert_eq!(source.join().await.unwrap(), joined);
 }

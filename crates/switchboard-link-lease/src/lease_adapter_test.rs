@@ -14,16 +14,20 @@ use super::*;
 #[path = "retirement_history_test.rs"]
 mod history;
 
+#[path = "lease_reaper_loss_test.rs"]
+mod reaper_loss;
+
 #[derive(Clone)]
 pub(crate) struct RowStore {
     pub(crate) row: watch::Sender<StoredEnrollment>,
     pub(crate) fail_end: watch::Sender<bool>,
-    end_attempts: watch::Sender<u64>,
+    pub(crate) end_attempts: watch::Sender<u64>,
     pub(crate) fail_metadata: watch::Sender<bool>,
+    pub(crate) metadata_reads: watch::Sender<u64>,
     credential_read: OperationCheckpoint,
     before_credential_sample: OperationCheckpoint,
     fail_credential: watch::Sender<bool>,
-    credential_opens: watch::Sender<u64>,
+    pub(crate) credential_opens: watch::Sender<u64>,
     pub(crate) metadata_read: OperationCheckpoint,
     credential_replace: OperationCheckpoint,
 }
@@ -100,6 +104,7 @@ impl CredentialStore for RowStore {
     }
 
     async fn read_metadata(&self) -> Result<EnrollmentMetadata, CredentialStoreError> {
+        self.metadata_reads.send_modify(|reads| *reads += 1);
         if *self.fail_metadata.borrow() {
             return Err(CredentialStoreError::Read);
         }
@@ -221,6 +226,7 @@ impl Fixture {
             fail_end: watch::channel(false).0,
             end_attempts: watch::channel(0).0,
             fail_metadata: watch::channel(false).0,
+            metadata_reads: watch::channel(0).0,
             credential_read: OperationCheckpoint::default(),
             before_credential_sample: OperationCheckpoint::default(),
             fail_credential: watch::channel(false).0,
@@ -273,7 +279,7 @@ pub(crate) async fn stop_lease(
     clock: &dyn RuntimeClock,
 ) -> LeaseJoin {
     source.request_stop_by(clock.monotonic_now().after(Duration::from_secs(5)));
-    source.join().await
+    source.join().await.unwrap()
 }
 
 async fn start_acquire<'a>(
@@ -321,7 +327,7 @@ async fn stop_cancels_a_held_refresh_at_the_cutoff() {
     }
     fixture.clock.advance(Duration::from_secs(5)).unwrap();
 
-    assert_eq!(close.await, clean_join());
+    assert_eq!(close.await.unwrap(), clean_join());
     assert_eq!(acquire.await, Err(LeaseFailure::Fault));
     assert!(held_sign_in.is_closed());
 }
@@ -601,7 +607,7 @@ async fn forced_close_abandons_a_rotated_credential_held_before_storage() {
     held_sign_in.send(fixture.rotated()).unwrap();
     writing.await.unwrap();
     fixture.clock.advance(Duration::from_secs(1)).unwrap();
-    assert_eq!(close.await, clean_join());
+    assert_eq!(close.await.unwrap(), clean_join());
     assert_eq!(acquire.await, Err(LeaseFailure::Fault));
 
     assert!(release_write.send(Box::new(|| {})).is_err());
@@ -625,7 +631,7 @@ async fn an_earlier_stop_tightens_the_live_cutoff_and_a_later_one_does_not() {
     fixture.clock.advance(Duration::from_secs(3)).unwrap();
 
     let (first, repeated) = tokio::join!(fixture.source.join(), fixture.source.join());
-    assert_eq!(first, clean_join());
+    assert_eq!(first, Ok(clean_join()));
     assert_eq!(repeated, first);
     assert_eq!(acquire.await, Err(LeaseFailure::Fault));
     assert!(held_sign_in.is_closed());
