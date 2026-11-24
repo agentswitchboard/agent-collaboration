@@ -33,6 +33,7 @@ fn read_reply(reply: ReplyKind) {
             },
             LocalApprovalRefusal::RaiseRefused(reason) => match reason {
                 TerminalRaiseRefusal::AlreadyStopped
+                | TerminalRaiseRefusal::AlreadyEnded(_)
                 | TerminalRaiseRefusal::SessionEnded
                 | TerminalRaiseRefusal::ContentsDiffer
                 | TerminalRaiseRefusal::TooManyOutstanding => {}

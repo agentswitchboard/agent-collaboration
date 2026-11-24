@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT router_run_id FROM approval_router_runs\nWHERE organization_id = ?1 AND enrollment_id = ?2 AND router_run_id <> ?3\nORDER BY registration_order LIMIT 1\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "router_run_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_router_runs",
+            "name": "router_run_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "0d156dae4b7a337f4f2102adcd6064b4cdd17b858907361b26caba94998ebd60"
+}

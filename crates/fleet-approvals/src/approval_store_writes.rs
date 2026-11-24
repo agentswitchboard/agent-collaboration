@@ -141,26 +141,40 @@ pub(crate) fn plan_register_approval_deadline(
     deadline: CentralTime,
     at: CentralTime,
 ) -> Result<Vec<GuardedStatement>, StoreFailure> {
-    let mark = if central_engine_model::on_five_minute_grid(deadline) {
-        deadline
+    plan_approval_due(approval_due_key(row_id), deadline, at)
+}
+
+pub(crate) fn plan_approval_due(
+    key: DueItemKey,
+    occurrence: CentralTime,
+    at: CentralTime,
+) -> Result<Vec<GuardedStatement>, StoreFailure> {
+    let mark = approval_grid_mark(occurrence)?;
+    plan_approval_due_at(key, occurrence, mark, at)
+}
+
+pub(crate) fn approval_grid_mark(at: CentralTime) -> Result<CentralTime, StoreFailure> {
+    if central_engine_model::on_five_minute_grid(at) {
+        Ok(at)
     } else {
-        central_engine_model::next_five_minute_mark(deadline)
-            .map_err(|_| corrupt("approval_requests.deadline_mark"))?
-    };
-    let mut timing = DueOwnerTiming::at(approval_due_key(row_id), deadline)?;
+        central_engine_model::next_five_minute_mark(at)
+            .map_err(|_| corrupt("approval_requests.due_mark"))
+    }
+}
+
+pub(crate) fn plan_approval_due_at(
+    key: DueItemKey,
+    occurrence: CentralTime,
+    mark: CentralTime,
+    at: CentralTime,
+) -> Result<Vec<GuardedStatement>, StoreFailure> {
+    let mut timing = DueOwnerTiming::at(key, occurrence)?;
     timing.base_due = fleet_engine::DueMillis::try_from(mark.timestamp_millis())
-        .map_err(|_| corrupt("approval_requests.deadline_mark"))?;
+        .map_err(|_| corrupt("approval_requests.due_mark"))?;
     plan_due_table_change(&DueTableChange::PublishItem(timing), at)
 }
 
-pub(crate) fn plan_remove_approval_deadline(
-    row_id: &ApprovalRequestRowId,
-    at: CentralTime,
-) -> Result<Vec<GuardedStatement>, StoreFailure> {
-    plan_due_table_change(&DueTableChange::RemoveItem(approval_due_key(row_id)), at)
-}
-
-fn approval_due_key(row_id: &ApprovalRequestRowId) -> DueItemKey {
+pub(crate) fn approval_due_key(row_id: &ApprovalRequestRowId) -> DueItemKey {
     DueItemKey {
         kind: DueKind::ApprovalRequestExpiry,
         subject: InstanceKey(row_id.as_str().to_owned()),
@@ -272,7 +286,15 @@ fn plan_first_ending(
         [],
         "src/queries/finish_waiting_approval.sql",
         ended_at = format_utc_millis(closed.ended_at),
+        erase_after = portable_integer(
+            crate::approval_retention::cutoff_at(closed.ended_at)?.timestamp_millis(),
+            "approval_requests.erase_after_ms"
+        )?,
         ending = encode_stored_json(&closed.ending, "approval_requests.ending_json")?,
+        compact = encode_stored_json(
+            &crate::approval_lifecycle_effects::standing(&closed.ending.clone().into_ending()),
+            "approval_requests.compact_ending_json"
+        )?,
         operation = closed
             .decided_operation_id
             .as_ref()
@@ -340,7 +362,10 @@ fn expect_one(statement: Statement) -> GuardedStatement {
     }
 }
 
-fn encode_stored_json(value: &impl serde::Serialize, column: &str) -> Result<String, StoreFailure> {
+pub(crate) fn encode_stored_json(
+    value: &impl serde::Serialize,
+    column: &str,
+) -> Result<String, StoreFailure> {
     serde_json::to_string(value).map_err(|_| corrupt(column))
 }
 

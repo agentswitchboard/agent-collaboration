@@ -1,4 +1,4 @@
-use approval_request_protocol::{PrivateEnding, ProviderStopCause};
+use approval_request_protocol::{PrivateEnding, ProviderStopCause, StopReceiptEnding};
 use workspace_ids::RequestId;
 
 use crate::{
@@ -119,6 +119,7 @@ pub enum ReplyableStopCause {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TerminalRaiseRefusal {
     AlreadyStopped,
+    AlreadyEnded(StopReceiptEnding),
     SessionEnded,
     ContentsDiffer,
     TooManyOutstanding,

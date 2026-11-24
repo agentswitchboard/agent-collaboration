@@ -35,8 +35,9 @@ where
         request_id: &ApprovalRequestId,
     ) -> Result<SessionReadApply, ApprovalApplyFailure> {
         let (organization, session, address) = approval_session_address(admitted);
+        let at = self.sample_applying_time()?;
         let record =
-            read_parent_approval_request(self.transaction, organization, request_id, &session)
+            read_parent_approval_request(self.transaction, organization, request_id, &session, at)
                 .await?;
         let Some(record) = record else {
             return Ok(SessionReadApply::Unchanged(self.stage_reply(
@@ -44,7 +45,6 @@ where
                 ApprovalTransitionOutput::with_reply(ReadApprovalForSessionReply::NotVisible {}),
             )));
         };
-        let at = self.sample_applying_time()?;
         let actor = ApprovalActor::Session(session.clone());
         let applied = self.read_selected_approval(&record, &actor, at).await?;
         let mut changed = matches!(&record.state, ApprovalState::Waiting { saved } if at >= saved.window.deadline());
@@ -96,17 +96,18 @@ where
         cursor: Option<&ApprovalRequestId>,
     ) -> Result<PendingApprovalReply<ListApprovalsForSessionReply>, ApprovalApplyFailure> {
         let (organization, session, address) = approval_session_address(admitted);
+        let at = self.sample_applying_time()?;
         let mut records = read_session_approval_page(
             self.transaction,
             organization,
             &session,
             cursor,
+            at,
             SESSION_APPROVAL_PAGE_SIZE + 1,
         )
         .await?;
         let has_more = records.len() > SESSION_APPROVAL_PAGE_SIZE;
         records.truncate(SESSION_APPROVAL_PAGE_SIZE);
-        let at = self.sample_applying_time()?;
         let actor = ApprovalActor::Session(session);
         let mut items = Vec::with_capacity(records.len());
         let mut ending_offers = Vec::new();

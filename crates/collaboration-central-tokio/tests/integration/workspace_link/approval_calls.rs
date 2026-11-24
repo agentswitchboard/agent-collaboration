@@ -1,3 +1,6 @@
+#[path = "approval_erasure_cases.rs"]
+mod approval_erasure_cases;
+
 #[path = "approval_publication_failure.rs"]
 mod approval_publication_failure;
 
@@ -124,6 +127,13 @@ impl ApprovalLinkFixture for NativeApprovalFixture {
         self.link
             .clock
             .set_utc(time + chrono::Duration::seconds(seconds - time.timestamp()));
+        Ok(())
+    }
+
+    async fn set_wall_millis(&self, millis: i64) -> Result<()> {
+        self.link.clock.set_utc(
+            chrono::DateTime::from_timestamp_millis(millis).ok_or("fixture milliseconds")?,
+        );
         Ok(())
     }
 

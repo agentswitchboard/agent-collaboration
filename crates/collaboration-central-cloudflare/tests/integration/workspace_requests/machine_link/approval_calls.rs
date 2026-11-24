@@ -1,3 +1,6 @@
+#[path = "approval_erasure_cases.rs"]
+mod approval_erasure_cases;
+
 #[path = "approval_login_settlement.rs"]
 mod approval_login_settlement;
 
@@ -124,6 +127,17 @@ impl ApprovalLinkFixture for Fixture {
             .await?
         {
             return Err("worker did not set the corrected wall clock".into());
+        }
+        Ok(())
+    }
+
+    async fn set_wall_millis(&self, millis: i64) -> Result<()> {
+        self.clock.set_utc(
+            chrono::DateTime::from_timestamp_millis(millis).ok_or("fixture milliseconds")?,
+        );
+        self.host.set_external_time_ms(millis).await?;
+        if !self.runtime().control::<bool>("clock", &millis).await? {
+            return Err("worker did not set approval fixture milliseconds".into());
         }
         Ok(())
     }

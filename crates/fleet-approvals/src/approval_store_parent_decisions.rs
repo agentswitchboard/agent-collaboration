@@ -37,11 +37,13 @@ where
         if matches!(request.value, Answer::UnprovenCall { .. }) {
             return Ok(SessionDecisionApply::PersonRequired);
         }
+        let at = self.sample_applying_time()?;
         let record = read_parent_approval_request(
             self.transaction,
             organization,
             &request.request_id,
             &session,
+            at,
         )
         .await?;
         let Some(record) = record else {
@@ -50,7 +52,6 @@ where
                 ApprovalTransitionOutput::with_reply(DecideApprovalAsSessionReply::NotVisible {}),
             )));
         };
-        let at = self.sample_applying_time()?;
         let actor = ApprovalActor::Session(session.clone());
         let input = ApprovalDecideInput {
             request_id: request.request_id,

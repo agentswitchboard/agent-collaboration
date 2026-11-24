@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM approval_router_runs\nWHERE router_run_id = ?1 AND organization_id = ?2 AND enrollment_cleanup_ms = ?3\n  AND NOT EXISTS (\n      SELECT 1 FROM approval_erased_requests WHERE router_run_id = ?1\n  )\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "412fa6e66cceff7fb61b447a8efa86331fbb4d059187636a68d5ebc122f60e55"
+}

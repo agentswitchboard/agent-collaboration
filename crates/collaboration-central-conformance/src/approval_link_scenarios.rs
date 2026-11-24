@@ -38,6 +38,7 @@ pub trait ApprovalLinkFixture {
         async { Ok(()) }
     }
     fn set_wall_seconds(&self, seconds: i64) -> impl Future<Output = Result<()>>;
+    fn set_wall_millis(&self, millis: i64) -> impl Future<Output = Result<()>>;
     fn connect_without_capabilities(&self) -> impl Future<Output = Result<WebSocket>>;
     fn connect(&self) -> impl Future<Output = Result<WebSocket>> {
         async {

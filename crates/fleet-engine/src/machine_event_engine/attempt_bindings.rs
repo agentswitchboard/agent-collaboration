@@ -46,6 +46,18 @@ impl AttemptBind for SafeInteger {
     }
 }
 
+impl AttemptBind for Option<SafeInteger> {
+    type SqlxValue = Option<i64>;
+
+    fn sqlx_value(&self) -> Self::SqlxValue {
+        self.map(SafeInteger::get)
+    }
+
+    fn into_storage(self) -> SqlValue {
+        self.map_or(SqlValue::Null, SqlValue::Integer)
+    }
+}
+
 /// SQLx checks the slot against the normal column type. The host must bind
 /// the actual cell verbatim, including a damaged cell's other storage class.
 pub struct ObservedBind<Value> {

@@ -1,0 +1,110 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT requests.approval_row_id, requests.organization_id, requests.machine_id, requests.enrollment_id,\n       requests.router_run_id, requests.request_id, requests.record_state, requests.ended_at\nFROM approval_request_destinations AS destination INDEXED BY approval_destinations_session_reads\nCROSS JOIN approval_requests AS requests\nWHERE destination.organization_id = ?1\n  AND destination.request_id = ?2\n  AND destination.destination_kind = 'parent_session'\n  AND destination.session_machine_id = ?3\n  AND destination.session_enrollment_id = ?4\n  AND destination.session_id = ?5\n  AND requests.approval_row_id = destination.approval_row_id\n  AND requests.organization_id = destination.organization_id\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "approval_row_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "approval_row_id"
+          }
+        }
+      },
+      {
+        "name": "organization_id",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "organization_id"
+          }
+        }
+      },
+      {
+        "name": "machine_id",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "machine_id"
+          }
+        }
+      },
+      {
+        "name": "enrollment_id",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "enrollment_id"
+          }
+        }
+      },
+      {
+        "name": "router_run_id",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "router_run_id"
+          }
+        }
+      },
+      {
+        "name": "request_id",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "request_id"
+          }
+        }
+      },
+      {
+        "name": "record_state",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "record_state"
+          }
+        }
+      },
+      {
+        "name": "ended_at",
+        "ordinal": 7,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "ended_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "a70f47afd4c384661a5ee69f7d6111b015cdca91d891258593c6600fdc4912f6"
+}

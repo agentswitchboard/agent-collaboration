@@ -29,7 +29,7 @@ test("Workerd Decide replays accepted and refused answers through the shared 24-
       database,
       atMs: 1,
       command: invalid,
-      writes: 2,
+      writes: 3,
     });
     assert.deepEqual(typedResult(refusal), { kind: "invalid" });
     const accepted = await assertRollbackAtEachWrite({
@@ -37,7 +37,7 @@ test("Workerd Decide replays accepted and refused answers through the shared 24-
       database,
       atMs: 1,
       command: chose,
-      writes: 4,
+      writes: 6,
     });
     assert.equal(z.object({ kind: z.string() }).parse(typedResult(accepted)).kind, "savedDecision");
     const logRows = (await snapshot(central, database))
@@ -78,7 +78,7 @@ test("Workerd Decide replays accepted and refused answers through the shared 24-
       command: chose,
     });
     assert.equal(z.object({ kind: z.string() }).parse(typedResult(expired)).kind, "standing");
-    assert.equal(expired.writes, 2);
+    assert.equal(expired.writes, 3);
   } finally {
     await central.close();
   }

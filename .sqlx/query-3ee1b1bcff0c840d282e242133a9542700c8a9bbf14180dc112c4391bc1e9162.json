@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE approval_router_runs SET marker_cleanup_due_ms = ?1\nWHERE router_run_id = ?2 AND retired_at IS NOT NULL\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "3ee1b1bcff0c840d282e242133a9542700c8a9bbf14180dc112c4391bc1e9162"
+}

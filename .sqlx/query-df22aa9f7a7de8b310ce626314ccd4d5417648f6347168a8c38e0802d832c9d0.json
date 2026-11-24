@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT compact_ending_json FROM approval_requests WHERE approval_row_id = ?1\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "compact_ending_json",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "compact_ending_json"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "df22aa9f7a7de8b310ce626314ccd4d5417648f6347168a8c38e0802d832c9d0"
+}

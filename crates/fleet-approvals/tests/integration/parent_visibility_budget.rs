@@ -114,6 +114,10 @@ fn sqlite_lookup(database: &Path, arguments: [&str; 5]) -> LookupWork {
         "{stdout}"
     );
     let (plan, observed) = stdout.split_once("DATA\n").unwrap();
+    assert!(
+        !observed.contains("malformed"),
+        "admission must only project ownership and timing"
+    );
     let steps = observed
         .lines()
         .find_map(|line| {
@@ -133,7 +137,11 @@ fn sqlite_lookup(database: &Path, arguments: [&str; 5]) -> LookupWork {
         plan: plan.lines().map(str::to_owned).collect(),
         rows: observed
             .lines()
-            .filter(|line| line.contains("|malformed|"))
+            .filter(|line| {
+                line.split('|')
+                    .next()
+                    .is_some_and(|id| id.parse::<workspace_ids::RequestId>().is_ok())
+            })
             .count(),
         steps,
         request_loops,

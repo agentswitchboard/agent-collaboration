@@ -1,5 +1,6 @@
 use approval_request_protocol::{
-    DeliverEndingReply, DeliverEndingRequest, Raise, RaiseReply, RunRefusal, StopReply, StopRequest,
+    DeliverEndingReply, DeliverEndingRequest, ErasedApprovalMarker, Raise, RaiseReply, RunRefusal,
+    StopReply, StopRequest,
 };
 use fleet_runtime_ports::workspace_decode_error::corrupt;
 use workspace_ids::ApprovalRequestId;
@@ -10,6 +11,7 @@ use crate::{
     ApprovalRouting, ApprovalSession, ApprovalSessionFacts, ApprovalState, PendingApprovalReply,
     ProviderSessionAvailability, RaiseAdmission,
     approval_lifecycle_admission::stop_binding,
+    approval_retention::read_erased_approval,
     approval_store_reads::{
         ScopedHolderRequest, count_outstanding_approvals, read_holder_request,
         read_recoverable_approval_rows,
@@ -60,6 +62,16 @@ impl ApprovalHolderCommand {
         match self {
             Self::Raise(_) => ApprovalHolderReply::Raised(RaiseReply::AuthorityRefused { refusal }),
             Self::Stop(_) => ApprovalHolderReply::Stopped(StopReply::AuthorityRefused { refusal }),
+            Self::DeliveryReply { .. } | Self::Reoffer { .. } => ApprovalHolderReply::NoReply,
+        }
+    }
+
+    fn erased_request(&self, marker: ErasedApprovalMarker) -> ApprovalHolderReply {
+        match self {
+            Self::Raise(_) => ApprovalHolderReply::Raised(RaiseReply::AlreadyEnded { marker }),
+            Self::Stop(_) => ApprovalHolderReply::Stopped(StopReply::Stands {
+                ending: marker.ending,
+            }),
             Self::DeliveryReply { .. } | Self::Reoffer { .. } => ApprovalHolderReply::NoReply,
         }
     }
@@ -168,19 +180,44 @@ where
             ));
         }
 
+        let at = self.sample_applying_time()?;
         let request_id = command.approval_request_id();
         let key = ApprovalRequestKey {
             run: scope.run.clone(),
             request_id: request_id.clone(),
         };
-        let record = match read_holder_request(self.transaction, scope, request_id).await? {
+        let record = match read_holder_request(self.transaction, scope, request_id, at).await? {
             ScopedHolderRequest::OtherHolder => {
                 return Ok(ApprovalTransitionOutput::with_reply(
                     command.request_belongs_to_other_holder(),
                 ));
             }
-            ScopedHolderRequest::Unseen => None,
+            ScopedHolderRequest::Unseen => {
+                match read_erased_approval(self.transaction, scope, request_id).await? {
+                    crate::approval_retention::ErasedApprovalLookup::Missing => None,
+                    crate::approval_retention::ErasedApprovalLookup::OtherHolder => {
+                        return Ok(ApprovalTransitionOutput::with_reply(
+                            command.request_belongs_to_other_holder(),
+                        ));
+                    }
+                    crate::approval_retention::ErasedApprovalLookup::Owned(marker) => {
+                        return Ok(ApprovalTransitionOutput::with_reply(
+                            command.erased_request(marker),
+                        ));
+                    }
+                }
+            }
             ScopedHolderRequest::Retained(record) => Some(record),
+            ScopedHolderRequest::PastCutoff(cutoff) => {
+                let reply = match &command {
+                    ApprovalHolderCommand::Raise(_) | ApprovalHolderCommand::Stop(_) => {
+                        command.erased_request(cutoff.marker(self.transaction).await?)
+                    }
+                    ApprovalHolderCommand::DeliveryReply { .. }
+                    | ApprovalHolderCommand::Reoffer { .. } => ApprovalHolderReply::NoReply,
+                };
+                return Ok(ApprovalTransitionOutput::with_reply(reply));
+            }
         };
         let prior = record
             .as_ref()
@@ -188,7 +225,7 @@ where
         let event = match command {
             ApprovalHolderCommand::Raise(raise) => {
                 let (routing, admission) = if record.is_none() {
-                    self.resolve_first_raise(scope, &raise).await?
+                    self.resolve_first_raise(scope, &raise, at).await?
                 } else {
                     // The reducer replays the frozen row with its original route and admission.
                     (
@@ -216,7 +253,6 @@ where
             }
             ApprovalHolderCommand::Reoffer { .. } => ApprovalEvent::Reoffer,
         };
-        let at = self.sample_applying_time()?;
         let row_id = record.as_ref().map(|saved| &saved.row_id);
         let applied = self
             .apply_request_event(row_id, scope, prior, event, at)
@@ -240,10 +276,19 @@ where
         holder: &ApprovalHolderScope,
         request_id: &approval_request_protocol::ApprovalRequestId,
     ) -> Result<bool, central_storage::StoreFailure> {
-        let record = read_holder_request(self.transaction, holder, request_id).await?;
-        Ok(matches!(record, ScopedHolderRequest::Retained(record)
-            if matches!(&record.state, ApprovalState::Ended { closed, .. }
-                if closed.delivery == (approval_request_protocol::Delivery::Owed {}))))
+        let at = self.sample_applying_time()?;
+        let record = read_holder_request(self.transaction, holder, request_id, at).await?;
+        let ScopedHolderRequest::Retained(record) = record else {
+            return Ok(false);
+        };
+        match &record.state {
+            ApprovalState::Ended { closed, .. } => {
+                Ok(closed.delivery == (approval_request_protocol::Delivery::Owed {}))
+            }
+            ApprovalState::Unraised
+            | ApprovalState::StoppedBeforeRaise { .. }
+            | ApprovalState::Waiting { .. } => Ok(false),
+        }
     }
 
     /// Recover all current Owed endings for the exact admitted run.
@@ -300,6 +345,7 @@ where
         &mut self,
         scope: &ApprovalHolderScope,
         raise: &Raise,
+        at: approval_request_protocol::CentralTime,
     ) -> Result<(ApprovalRouting, RaiseAdmission), ApprovalApplyFailure> {
         let (routing, provider_session) = match raise.requesting_session() {
             None => (
@@ -335,7 +381,7 @@ where
                 (route, ProviderSessionAvailability::Live)
             }
         };
-        let outstanding = count_outstanding_approvals(self.transaction, scope).await?;
+        let outstanding = count_outstanding_approvals(self.transaction, scope, at).await?;
         Ok((
             routing,
             RaiseAdmission {

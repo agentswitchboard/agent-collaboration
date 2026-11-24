@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM approval_requests\nWHERE organization_id = ?1 AND approval_row_id = ?2\n  AND record_state = 'ended' AND erase_after_ms = ?3\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "d947b5d5327622516b9e17b7830e804b0c37ce1c3e263a4c36b0faf0703425c9"
+}

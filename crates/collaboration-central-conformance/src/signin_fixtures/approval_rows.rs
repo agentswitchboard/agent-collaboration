@@ -129,6 +129,7 @@ pub(super) enum InitialApproval {
     PastDeadline,
     DeadlineInOneSecond,
     Cancelled,
+    CancelledAt(CentralTime),
 }
 
 pub(super) async fn seed(
@@ -153,6 +154,7 @@ pub(super) async fn seed_in_organization(
     let raise = class.raise(&request_id)?;
     let raised = match initial {
         InitialApproval::WaitingAt(at) => at,
+        InitialApproval::CancelledAt(at) => at - chrono::Duration::seconds(5),
         InitialApproval::PastDeadline => time(-3600)?,
         InitialApproval::DeadlineInOneSecond => time(-3599)?,
         InitialApproval::Waiting | InitialApproval::Hidden | InitialApproval::Cancelled => {
@@ -160,27 +162,47 @@ pub(super) async fn seed_in_organization(
         }
     };
     let window = ApprovalWindow::from_first_save(raised)?;
-    let (state, ended_at, ending, delivery) = match initial {
-        InitialApproval::Cancelled => (
-            "ended",
-            text(stored_time(time(-5)?)),
-            text(serde_json::to_string(&DeliverEndingRequest::from_raise(
-                &raise,
-                Ending::Cancelled {
-                    reason: CancelReason::Stopped {
-                        cause: HolderStopCause::TurnStopped,
+    let (state, ended_at, ending, delivery, erase_after, compact) = match initial {
+        InitialApproval::Cancelled | InitialApproval::CancelledAt(_) => {
+            let ended_at = if let InitialApproval::CancelledAt(at) = initial {
+                at
+            } else {
+                time(-5)?
+            };
+            (
+                "ended",
+                text(stored_time(ended_at)),
+                text(serde_json::to_string(&DeliverEndingRequest::from_raise(
+                    &raise,
+                    Ending::Cancelled {
+                        reason: CancelReason::Stopped {
+                            cause: HolderStopCause::TurnStopped,
+                        },
                     },
-                },
-            )?)?),
-            text("closed_without_receipt"),
-        ),
+                )?)?),
+                text("closed_without_receipt"),
+                SqlValue::Integer((ended_at.timestamp_millis() + 5_184_000_000).try_into()?),
+                text(serde_json::to_string(
+                    &approval_request_protocol::StopReceiptEnding::Cancelled {
+                        reason: CancelReason::Stopped {
+                            cause: HolderStopCause::TurnStopped,
+                        },
+                    },
+                )?),
+            )
+        }
         InitialApproval::Waiting
         | InitialApproval::WaitingAt(_)
         | InitialApproval::Hidden
         | InitialApproval::PastDeadline
-        | InitialApproval::DeadlineInOneSecond => {
-            ("waiting", SqlValue::Null, SqlValue::Null, SqlValue::Null)
-        }
+        | InitialApproval::DeadlineInOneSecond => (
+            "waiting",
+            SqlValue::Null,
+            SqlValue::Null,
+            SqlValue::Null,
+            SqlValue::Null,
+            SqlValue::Null,
+        ),
     };
     let kind = match raise.kind() {
         RequestKind::ProviderApproval => "provider_approval",
@@ -195,14 +217,14 @@ pub(super) async fn seed_in_organization(
         "INSERT INTO approval_requests
          (approval_row_id,organization_id,machine_id,enrollment_id,router_run_id,request_id,contents_digest,
           record_state,request_kind,holder_session_id,offer_json,invocation_digest,waiting_status,
-          first_saved_at,deadline_ms,ended_at,ending_json,delivery_state,created_at,updated_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'pending',?13,?14,?15,?16,?17,?13,COALESCE(?15,?13))",
+          first_saved_at,deadline_ms,ended_at,ending_json,delivery_state,created_at,updated_at,erase_after_ms,compact_ending_json)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'pending',?13,?14,?15,?16,?17,?13,COALESCE(?15,?13),?18,?19)",
         vec![text(&row_id), text(organization), text(MACHINE), text(ENROLLMENT), text(ROUTER_RUN),
             text(&request_id), text(raise.contents_digest()?.as_str()), text(state), text(kind),
             raise.requesting_session().map_or(SqlValue::Null, |id|text(id.as_str())),
             text(serde_json::to_string(&raise.offer_view())?), invocation,
             text(stored_time(raised)), SqlValue::Integer(window.deadline().timestamp_millis().try_into()?),
-            ended_at, ending, delivery],
+            ended_at, ending, delivery, erase_after, compact],
     ).await?;
     if matches!(initial, InitialApproval::Hidden) {
         host.write(

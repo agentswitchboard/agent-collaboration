@@ -30,7 +30,7 @@ async fn admitted_refusal_and_acceptance_replay_their_first_answers_until_the_st
         })
         .await;
     assert_eq!(invalid.0.unwrap().reply, ApprovalDecisionReply::Invalid {});
-    assert_eq!(invalid.1.sql_writes.len(), 2);
+    assert_eq!(invalid.1.sql_writes.len(), 3);
     let replayed_refusal = fixture
         .apply(None, async |store| {
             store
@@ -88,7 +88,7 @@ async fn admitted_refusal_and_acceptance_replay_their_first_answers_until_the_st
         first_at_cutoff,
         ApprovalDecisionReply::Standing { .. }
     ));
-    assert_eq!(evidence.sql_writes.len(), 2);
+    assert_eq!(evidence.sql_writes.len(), 3);
     let retained_standing = fixture
         .apply(None, async |store| {
             store
@@ -110,7 +110,7 @@ async fn admitted_refusal_and_acceptance_replay_their_first_answers_until_the_st
         expired_acceptance.unwrap().reply,
         ApprovalDecisionReply::Standing { .. }
     ));
-    assert_eq!(evidence.sql_writes.len(), 2);
+    assert_eq!(evidence.sql_writes.len(), 3);
     assert_eq!(
         fixture
             .inspect_rows("SELECT decided_operation_id FROM approval_requests")
@@ -127,7 +127,7 @@ async fn shared_request_log_conflicts_and_expired_operation_id_can_be_new_proven
     let actor = person(11);
     fixture
         .alter_fixture(
-            "INSERT INTO runtime_request_log VALUES (
+            "INSERT INTO runtime_request_log (request_id,caller,content_digest,answer,created_at,updated_at) VALUES (
             '019ac19f-aa00-7000-8000-000000000065', '019ac19f-aa00-7000-8000-00000000000b',
             'the digest of another Central operation', '{\"kind\":\"unrelated\"}',
             '1970-01-01T00:00:00+00:00', '1970-01-01T00:00:00+00:00')",

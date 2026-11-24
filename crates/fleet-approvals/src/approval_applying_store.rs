@@ -10,12 +10,15 @@ use crate::{
     approval_store_scope::{ApprovalHolderScope, ApprovalRequestRowId},
     approval_store_transaction::ApprovalStoreTransaction,
     approval_store_writes::{
-        plan_approval_state_change, plan_register_approval_deadline, plan_remove_approval_deadline,
+        approval_due_key, plan_approval_due, plan_approval_state_change,
+        plan_register_approval_deadline,
     },
 };
 
 #[path = "approval_store_destination_commands.rs"]
 mod destination_commands;
+#[path = "approval_store_erasure.rs"]
+mod erasure;
 #[path = "approval_store_fixture_destinations.rs"]
 #[cfg(feature = "test-support")]
 mod fixture_destinations;
@@ -215,7 +218,13 @@ where
                     if prior.key() != Some(&key) {
                         return Err(corrupt("approval_requests.due_key").into());
                     }
-                    due_writes.extend(plan_remove_approval_deadline(row_id, at)?);
+                    let ApprovalState::Ended { closed, .. } = &next else {
+                        return Err(corrupt("approval_requests.erase_after_ms").into());
+                    };
+                    let cutoff = crate::approval_retention::cutoff_at(closed.ended_at)?;
+                    let key = approval_due_key(row_id);
+                    due_writes.push(fleet_engine::plan_due_item_attempt_clear(&key));
+                    due_writes.extend(plan_approval_due(key, cutoff, at)?);
                 }
             }
         }
