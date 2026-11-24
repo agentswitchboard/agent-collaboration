@@ -17,6 +17,7 @@ use switchboard_machine_enrollment::{
 };
 use tokio::sync::{mpsc, oneshot, watch};
 
+mod enrollment_row_machine;
 mod enrollment_row_mapping;
 mod enrollment_status_read;
 mod enrollment_worker;

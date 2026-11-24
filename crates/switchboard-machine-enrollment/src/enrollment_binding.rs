@@ -96,6 +96,18 @@ pub struct EnrollmentContext {
     pub machine_id: MachineId,
 }
 
+impl EnrollmentContext {
+    /// Whether a binding can be replaced within its existing sign-in scope.
+    #[must_use]
+    pub fn matches_scope(
+        &self,
+        organization: OrganizationId,
+        deployment: &SignInDeployment,
+    ) -> bool {
+        self.organization_id == organization && &self.deployment == deployment
+    }
+}
+
 /// Enrollment and renewal assemble this complete binding for one atomic store transition.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EnrollmentBinding {
