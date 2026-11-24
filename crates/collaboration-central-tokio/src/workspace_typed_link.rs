@@ -124,8 +124,9 @@ async fn send_central_call_result(
         result: Box::new(result),
     });
     if let Some(cause) = lapsed {
-        writes.attempt_terminal_refusal(socket, &reply).await;
-        writes.close_authority(socket, cause).await;
+        writes
+            .send_terminal_refusal_then_close(socket, Some(&reply), cause)
+            .await;
         return false;
     }
     writes.send(socket, &reply).await

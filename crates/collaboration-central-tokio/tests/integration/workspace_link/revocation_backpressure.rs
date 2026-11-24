@@ -286,6 +286,10 @@ async fn revoke_while_reply_is_blocked(
         // cancellation wakes the pending send and the typed close may flush.
         gate.blocked.store(false, Ordering::SeqCst);
     }
+    let close_deadline = fixture
+        .clock
+        .monotonic_now()
+        .after(Duration::from_millis(250));
     revocation
         .expect(
             &owner,
@@ -293,8 +297,19 @@ async fn revoke_while_reply_is_blocked(
             json!({"result":"revoked"}),
         )
         .await?;
-    // A typed close attempt may poll Pending once. The transport must still drop.
     gate.wake_writer();
+    if matches!(settlement, WriteSettlement::Unwritable) {
+        tokio::select! {
+            () = fixture.clock.not_due_check_now(close_deadline) => {}
+            () = gate.dropped.notified() => return Err("the transport dropped before arming the authority close budget".into()),
+        }
+        fixture.clock.advance(Duration::from_millis(249))?;
+        tokio::select! {
+            () = fixture.clock.not_due_check_now(close_deadline) => {}
+            () = gate.dropped.notified() => return Err("the transport dropped before the authority close budget elapsed".into()),
+        }
+        fixture.clock.advance(Duration::from_millis(1))?;
+    }
     gate.dropped.notified().await;
     if matches!(settlement, WriteSettlement::Writable) {
         let first = socket.next().await;

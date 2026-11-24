@@ -457,11 +457,12 @@ async fn serve_link(
                         && runtime.take_idle_renewal_send_failure();
                     #[cfg(not(feature = "test-support"))]
                     let fail_send = false;
-                    if !fail_send {
-                        writes.attempt_terminal_refusal(&mut socket, &answer).await;
-                    }
                     writes
-                        .close_authority(&mut socket, termination.cause())
+                        .send_terminal_refusal_then_close(
+                            &mut socket,
+                            (!fail_send).then_some(&answer),
+                            termination.cause(),
+                        )
                         .await;
                     if let RenewalTermination::EndEnrollment(ended) = termination {
                         #[cfg(feature = "test-support")]

@@ -14,7 +14,7 @@ use collaboration_central_core::{
 };
 use fleet_contracts::mail_link::{WELCOME_PAGE_SIZE, WelcomeDeliveryPage};
 use futures_util::FutureExt;
-use router_clock::RuntimeClock;
+use router_clock::{ClockInstant, RuntimeClock};
 use std::{
     future::{Future, poll_fn},
     sync::OnceLock,
@@ -356,22 +356,40 @@ impl LinkWrites<'_> {
         }
     }
 
-    pub(super) async fn attempt_terminal_refusal(&self, socket: &mut WebSocket, frame: &LinkFrame) {
-        const REFUSAL_SEND_BUDGET: Duration = Duration::from_millis(250);
-        let Ok(encoded) = encode_central_egress(frame) else {
-            return;
-        };
-        tokio::select! {
-            biased;
-            () = self.stop.cancelled() => {}
-            _ = router_clock::timeout(self.clock, REFUSAL_SEND_BUDGET, socket.send(Message::Text(encoded.text.into()))) => {}
+    /// The correlated refusal and authority close share one terminal I/O budget.
+    pub(super) async fn send_terminal_refusal_then_close(
+        &self,
+        socket: &mut WebSocket,
+        refusal: Option<&LinkFrame>,
+        cause: MachineLinkCloseCode,
+    ) {
+        let deadline = self.clock.monotonic_now().after(AUTHORITY_CLOSE_BUDGET);
+        if let Some(refusal) = refusal
+            && let Ok(encoded) = encode_central_egress(refusal)
+        {
+            tokio::select! {
+                biased;
+                () = self.stop.cancelled() => {}
+                _ = router_clock::timeout_at(self.clock, deadline, socket.send(Message::Text(encoded.text.into()))) => {}
+            }
         }
+        self.close_authority_until(socket, cause, deadline).await;
     }
 
     pub(super) async fn close_authority(
         &self,
         socket: &mut WebSocket,
         cause: MachineLinkCloseCode,
+    ) {
+        let deadline = self.clock.monotonic_now().after(AUTHORITY_CLOSE_BUDGET);
+        self.close_authority_until(socket, cause, deadline).await;
+    }
+
+    async fn close_authority_until(
+        &self,
+        socket: &mut WebSocket,
+        cause: MachineLinkCloseCode,
+        deadline: ClockInstant,
     ) {
         let cause = self.authority_close.get().copied().unwrap_or(cause);
         let close = async {
@@ -381,7 +399,7 @@ impl LinkWrites<'_> {
                 .await;
             socket.send(authority_close_frame(cause)).await
         };
-        let _ = router_clock::timeout(self.clock, AUTHORITY_CLOSE_BUDGET, close).await;
+        let _ = router_clock::timeout_at(self.clock, deadline, close).await;
     }
 
     pub(super) async fn close(&self, socket: &mut WebSocket, code: u16, reason: &'static str) {
