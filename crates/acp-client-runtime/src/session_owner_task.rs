@@ -32,6 +32,14 @@ pub enum OwnerTaskError {
     CompletionCapacity,
     #[error("an executor needed by the session owner stopped")]
     ExecutorStopped,
+    #[error("the session owner refused the current turn settlement deadline: {settlement:?}")]
+    TurnSettlementDeadlineRefused { settlement: TurnSettlement },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TurnSettlementStep {
+    Deadline,
+    Continuation,
 }
 
 #[derive(Debug)]
@@ -136,12 +144,12 @@ impl OwnerCompletion {
 /// accepting work it will carry out separately. Synchronous results such as
 /// revoke are returned directly and reduced before reading another command.
 pub trait SessionOwnerPorts {
-    fn turn_settlement_continuation_refused(
+    fn turn_settlement_refused(
         &mut self,
-        _settlement: TurnSettlement,
-        _reason: &SessionOwnerRejection,
-    ) {
-    }
+        step: TurnSettlementStep,
+        settlement: TurnSettlement,
+        reason: &SessionOwnerRejection,
+    );
 
     fn execute(
         &mut self,
@@ -223,7 +231,12 @@ pub struct SessionOwnerTask {
     snapshots: watch::Sender<SessionSnapshot>,
     deadlines: BTreeMap<ClockInstant, VecDeque<ArmedDeadline>>,
     clock: Arc<dyn RuntimeClock>,
+    #[cfg(feature = "test-observation")]
+    settle_deadline_fault: Option<SettleDeadlineFault>,
 }
+
+#[cfg(feature = "test-observation")]
+type SettleDeadlineFault = Box<dyn Fn(TurnSettlement) -> Option<SessionOwnerRejection> + Send>;
 
 impl SessionOwnerTask {
     pub fn new(
@@ -245,6 +258,8 @@ impl SessionOwnerTask {
             snapshots,
             deadlines: BTreeMap::new(),
             clock,
+            #[cfg(feature = "test-observation")]
+            settle_deadline_fault: None,
         };
         let handle = SessionOwnerHandle {
             commands,
@@ -252,6 +267,16 @@ impl SessionOwnerTask {
             snapshots: snapshot_rx,
         };
         (task, handle)
+    }
+
+    #[cfg(feature = "test-observation")]
+    #[must_use]
+    pub fn with_settle_deadline_fault_for_test(
+        mut self,
+        refuse: impl Fn(TurnSettlement) -> Option<SessionOwnerRejection> + Send + 'static,
+    ) -> Self {
+        self.settle_deadline_fault = Some(Box::new(refuse));
+        self
     }
 
     pub async fn run(
@@ -305,12 +330,32 @@ impl SessionOwnerTask {
                 OwnerEvent::ContinueAfterTurnSettlement(settlement) => Some(*settlement),
                 _ => None,
             };
+            let settle_deadline = match &event.event {
+                OwnerEvent::Deadline(deadline @ OwnerDeadline::SettleTurn { settlement, .. }) => {
+                    Some((deadline.clone(), *settlement))
+                }
+                _ => None,
+            };
             let observed_at_ms = self.clock.utc_now().timestamp_millis();
-            let outbox = match self.machine.handle(event, observed_at_ms) {
+            let outbox = match self.reduce(event, observed_at_ms) {
                 Ok(outbox) => outbox,
                 Err(reason) => {
+                    if let Some((deadline, settlement)) = settle_deadline
+                        && self.machine.has_pending_deadline(&deadline)
+                    {
+                        ports.turn_settlement_refused(
+                            TurnSettlementStep::Deadline,
+                            settlement,
+                            &reason,
+                        );
+                        return Err(OwnerTaskError::TurnSettlementDeadlineRefused { settlement });
+                    }
                     if let Some(settlement) = continuation {
-                        ports.turn_settlement_continuation_refused(settlement, &reason);
+                        ports.turn_settlement_refused(
+                            TurnSettlementStep::Continuation,
+                            settlement,
+                            &reason,
+                        );
                         self.publish_snapshot();
                     }
                     if let Some(accepted) = accepted {
@@ -337,6 +382,23 @@ impl SessionOwnerTask {
             }
         }
         Ok(())
+    }
+
+    fn reduce(
+        &mut self,
+        event: OwnerMailboxEvent,
+        observed_at_ms: i64,
+    ) -> Result<OwnerOutbox, SessionOwnerRejection> {
+        #[cfg(feature = "test-observation")]
+        if let OwnerEvent::Deadline(OwnerDeadline::SettleTurn { settlement, .. }) = &event.event
+            && let Some(reason) = self
+                .settle_deadline_fault
+                .as_ref()
+                .and_then(|refuse| refuse(*settlement))
+        {
+            return Err(reason);
+        }
+        self.machine.handle(event, observed_at_ms)
     }
 
     fn execute_outbox(

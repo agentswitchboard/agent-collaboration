@@ -19,6 +19,14 @@ struct PromptPorts {
 }
 
 impl SessionOwnerPorts for PromptPorts {
+    fn turn_settlement_refused(
+        &mut self,
+        _: crate::session_owner_task::TurnSettlementStep,
+        _: provider_session_machines::session_turn_machine::TurnSettlement,
+        _: &provider_session_machines::session_owner::SessionOwnerRejection,
+    ) {
+    }
+
     fn execute(
         &mut self,
         _: OwnerAddress,

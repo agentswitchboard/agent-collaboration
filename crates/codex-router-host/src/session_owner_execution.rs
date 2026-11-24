@@ -14,6 +14,7 @@ use acp_client_runtime::{
     owner_wire::OwnerAcpWire,
     session_owner_task::{
         OwnerCallerWakes, OwnerCompletionPort, OwnerTaskError, SessionOwnerPorts,
+        TurnSettlementStep,
     },
 };
 use collaboration_protocol::{ProviderIdentity, SessionRef};
@@ -521,8 +522,9 @@ impl SessionOwnerExecution {
 }
 
 impl SessionOwnerPorts for SessionOwnerExecution {
-    fn turn_settlement_continuation_refused(
+    fn turn_settlement_refused(
         &mut self,
+        step: TurnSettlementStep,
         settlement: provider_session_machines::session_turn_machine::TurnSettlement,
         reason: &provider_session_machines::session_owner::SessionOwnerRejection,
     ) {
@@ -530,8 +532,9 @@ impl SessionOwnerPorts for SessionOwnerExecution {
             session = %String::from(self.target.session_id.clone()),
             endpoint = %String::from(self.target.endpoint.endpoint_id.clone()),
             turn = %settlement.turn.0,
+            ?step,
             ?reason,
-            "session owner refused turn settlement continuation"
+            "session owner refused turn settlement"
         );
     }
 

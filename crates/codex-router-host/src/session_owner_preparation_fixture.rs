@@ -6,6 +6,14 @@ use std::sync::{
 };
 use tokio::sync::oneshot;
 
+#[cfg(test)]
+use {
+    acp_client_runtime::session_owner_task::OwnerTaskError,
+    provider_session_machines::{
+        session_owner::SessionOwnerRejection, session_turn_machine::TurnSettlement,
+    },
+};
+
 #[derive(Default)]
 pub(crate) struct PreparationFixture {
     restore_pause: Mutex<Option<PreparationPause>>,
@@ -17,8 +25,17 @@ pub(crate) struct PreparationFixture {
     #[cfg(test)]
     notice_untaken: Mutex<Option<oneshot::Sender<()>>>,
     #[cfg(test)]
+    settling_deadline_fault: Mutex<Option<SettlementDeadlineFault>>,
+    #[cfg(test)]
     refuse_replacement: AtomicBool,
     restore_fault: AtomicBool,
+}
+
+#[cfg(test)]
+struct SettlementDeadlineFault {
+    settlement: TurnSettlement,
+    refusal: Option<SessionOwnerRejection>,
+    stopped: oneshot::Sender<OwnerTaskError>,
 }
 
 struct PreparationPause {
@@ -73,6 +90,55 @@ impl DeliveryAckPause {
 }
 
 impl PreparationFixture {
+    #[cfg(test)]
+    pub(crate) fn refuse_settlement_deadline(
+        &self,
+        settlement: TurnSettlement,
+        refusal: SessionOwnerRejection,
+    ) -> oneshot::Receiver<OwnerTaskError> {
+        let (stopped, observed) = oneshot::channel();
+        let previous = self
+            .settling_deadline_fault
+            .lock()
+            .expect("settlement fault")
+            .replace(SettlementDeadlineFault {
+                settlement,
+                refusal: Some(refusal),
+                stopped,
+            });
+        assert!(previous.is_none(), "prior settlement fault is pending");
+        observed
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_settlement_deadline_refusal(
+        &self,
+        settlement: TurnSettlement,
+    ) -> Option<SessionOwnerRejection> {
+        self.settling_deadline_fault
+            .lock()
+            .expect("settlement fault")
+            .as_mut()
+            .filter(|fault| fault.settlement == settlement)?
+            .refusal
+            .take()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn observe_settlement_deadline_failure(&self, error: &OwnerTaskError) {
+        let OwnerTaskError::TurnSettlementDeadlineRefused { settlement } = error else {
+            return;
+        };
+        if let Some(fault) = self
+            .settling_deadline_fault
+            .lock()
+            .expect("settlement fault")
+            .take_if(|fault| fault.settlement == *settlement && fault.refusal.is_none())
+        {
+            let _fixture_stopped = fault.stopped.send(error.clone());
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn observe_untaken_notice_offer(&self) -> oneshot::Receiver<()> {
         let (offered, seen) = oneshot::channel();

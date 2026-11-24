@@ -130,6 +130,14 @@ impl ScenarioPorts {
 }
 
 impl SessionOwnerPorts for ScenarioPorts {
+    fn turn_settlement_refused(
+        &mut self,
+        _: acp_client_runtime::session_owner_task::TurnSettlementStep,
+        _: provider_session_machines::session_turn_machine::TurnSettlement,
+        _: &provider_session_machines::session_owner::SessionOwnerRejection,
+    ) {
+    }
+
     fn execute(
         &mut self,
         address: OwnerAddress,

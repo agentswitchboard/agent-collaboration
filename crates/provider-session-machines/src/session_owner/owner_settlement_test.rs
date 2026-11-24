@@ -83,6 +83,26 @@ fn close_waits_for_settlement_and_does_not_cancel_an_ended_turn() {
 }
 
 #[test]
+fn missing_witness_refuses_the_exact_deadline_and_leaves_it_pending() {
+    let mut state = fresh();
+    let run = restore_live(&mut state, 1);
+    let prompt = input(run.generation, 2);
+    let wire = send_prompt(&mut state, &prompt);
+    apply_pending(&mut state, provider_finished(wire));
+    let deadline = OwnerDeadline::SettleTurn {
+        run: run.generation,
+        settlement: settlement(&prompt),
+    };
+    state.ports.settling_witness = None;
+
+    assert!(matches!(
+        decide(&state, OwnerEvent::Deadline(deadline.clone())),
+        Err(SessionOwnerRejection::IgnoredLate)
+    ));
+    assert!(state.has_pending_deadline(&deadline));
+}
+
+#[test]
 fn retiring_a_settling_generation_publishes_the_witnessed_end_before_unload() {
     let mut state = fresh();
     let run = restore_live(&mut state, 1);

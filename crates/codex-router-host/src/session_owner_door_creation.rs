@@ -105,9 +105,21 @@ impl SessionOwnerDoor {
         };
         let door = Arc::downgrade(self);
         let incarnation = launch.owner.address.incarnation;
+        #[cfg(test)]
+        let fixture = Arc::clone(&self.preparation_fixture);
         self.tasks.spawn(async move {
-            let outcome = launch.task.run(ports, stop).await;
+            let task = launch.task;
+            #[cfg(test)]
+            let task = {
+                let fault = Arc::clone(&fixture);
+                task.with_settle_deadline_fault_for_test(move |key| {
+                    fault.take_settlement_deadline_refusal(key)
+                })
+            };
+            let outcome = task.run(ports, stop).await;
             if let Err(error) = &outcome {
+                #[cfg(test)]
+                fixture.observe_settlement_deadline_failure(error);
                 tracing::debug!(%error, "ACP create owner stopped");
             }
             if let Some(door) = door.upgrade() {
@@ -374,6 +386,19 @@ impl ProvisionalCreate {
 }
 
 impl SessionOwnerPorts for ProvisionalCreate {
+    fn turn_settlement_refused(
+        &mut self,
+        step: acp_client_runtime::session_owner_task::TurnSettlementStep,
+        settlement: provider_session_machines::session_turn_machine::TurnSettlement,
+        reason: &provider_session_machines::session_owner::SessionOwnerRejection,
+    ) {
+        let Some(ports) = self.adopted.as_mut() else {
+            // A turn cannot be settling before the session exists.
+            return;
+        };
+        ports.turn_settlement_refused(step, settlement, reason);
+    }
+
     fn execute(
         &mut self,
         address: OwnerAddress,

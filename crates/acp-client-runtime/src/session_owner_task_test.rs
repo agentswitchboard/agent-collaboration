@@ -14,6 +14,14 @@ struct RecordingPorts {
 }
 
 impl SessionOwnerPorts for RecordingPorts {
+    fn turn_settlement_refused(
+        &mut self,
+        _: crate::session_owner_task::TurnSettlementStep,
+        _: provider_session_machines::session_turn_machine::TurnSettlement,
+        _: &provider_session_machines::session_owner::SessionOwnerRejection,
+    ) {
+    }
+
     fn execute(
         &mut self,
         _: OwnerAddress,
@@ -109,6 +117,27 @@ impl Fixture {
         self.stop.cancel();
         assert_eq!(self.worker.await.expect("owner task joined"), Ok(()));
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_stale_settle_deadline_keeps_the_owner_task_available() {
+    use provider_session_machines::{SessionGeneration, session_turn_machine::TurnId};
+
+    let mut fixture = Fixture::start(false);
+    fixture
+        .handle
+        .completion_port()
+        .reserve(fixture.address)
+        .expect("completion slot")
+        .send(OwnerEvent::Deadline(OwnerDeadline::SettleTurn {
+            run: SessionGeneration::from_number(1),
+            settlement: TurnSettlement {
+                turn: TurnId(Uuid::now_v7()),
+                operation: Uuid::now_v7(),
+            },
+        }));
+    let _ = fixture.begin_create().await;
+    fixture.finish().await;
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -231,6 +260,14 @@ struct CreateReplySnapshotProbe {
 }
 
 impl SessionOwnerPorts for CreateReplySnapshotProbe {
+    fn turn_settlement_refused(
+        &mut self,
+        _: crate::session_owner_task::TurnSettlementStep,
+        _: provider_session_machines::session_turn_machine::TurnSettlement,
+        _: &provider_session_machines::session_owner::SessionOwnerRejection,
+    ) {
+    }
+
     fn execute(
         &mut self,
         _: OwnerAddress,
@@ -362,6 +399,14 @@ struct OutboxOrderProbe {
 }
 
 impl SessionOwnerPorts for OutboxOrderProbe {
+    fn turn_settlement_refused(
+        &mut self,
+        _: crate::session_owner_task::TurnSettlementStep,
+        _: provider_session_machines::session_turn_machine::TurnSettlement,
+        _: &provider_session_machines::session_owner::SessionOwnerRejection,
+    ) {
+    }
+
     fn execute(
         &mut self,
         _: OwnerAddress,
@@ -541,6 +586,14 @@ struct FailingEffectProbe {
 }
 
 impl SessionOwnerPorts for FailingEffectProbe {
+    fn turn_settlement_refused(
+        &mut self,
+        _: crate::session_owner_task::TurnSettlementStep,
+        _: provider_session_machines::session_turn_machine::TurnSettlement,
+        _: &provider_session_machines::session_owner::SessionOwnerRejection,
+    ) {
+    }
+
     fn execute(
         &mut self,
         _: OwnerAddress,

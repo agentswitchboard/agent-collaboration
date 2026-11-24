@@ -426,6 +426,9 @@ async fn a_dead_settling_owner_fails_its_waiting_caller_and_uses_normal_recovery
     Ok(())
 }
 
+#[path = "session_turn_settlement_deadline_test.rs"]
+mod refused_deadline;
+
 struct HeldNativeTurn {
     _root: tempfile::TempDir,
     runtime: CollaborationRuntime,
@@ -440,10 +443,29 @@ struct HeldNativeTurn {
 }
 
 async fn hold_native_turn() -> FixtureResult<HeldNativeTurn> {
+    hold_native_turn_with("session-1", |root| {
+        vec![
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../acp-client-runtime/tests/support/behavior-agent.ts"
+            )
+            .to_owned(),
+            root.join("wire.jsonl").display().to_string(),
+            "manual".to_owned(),
+            "cursor_login".to_owned(),
+        ]
+    })
+    .await
+}
+
+async fn hold_native_turn_with(
+    session_id: &str,
+    fixture_args: impl FnOnce(&Path) -> Vec<String>,
+) -> FixtureResult<HeldNativeTurn> {
     let root = tempfile::tempdir()?;
     std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))?;
     let clock = Arc::new(ManualClock::new(chrono::DateTime::UNIX_EPOCH));
-    let runtime = start_fixture(root.path(), clock.clone()).await?;
+    let runtime = start_fixture_with(root.path(), clock.clone(), fixture_args(root.path())).await?;
     let mut native = connect_native(root.path()).await?;
     let thread = open_native_thread(&mut native, 1, root.path()).await?;
 
@@ -456,7 +478,7 @@ async fn hold_native_turn() -> FixtureResult<HeldNativeTurn> {
             service_id: runtime.service_id.clone(),
             endpoint_id: EndpointId::try_from("cursor-local".to_owned())?,
         },
-        session_id: SessionId::try_from("session-1".to_owned())?,
+        session_id: SessionId::try_from(session_id.to_owned())?,
     };
     let actor: ProviderIdentity = serde_json::from_value(json!({"humanId":"fixture-owner"}))?;
     let first = OperationId::generate();
@@ -546,27 +568,6 @@ async fn assert_deadline_fence(held: HeldNativeTurn, hold_store: bool) -> Fixtur
     native.close(None).await?;
     runtime.shutdown().await?;
     Ok(())
-}
-
-async fn start_fixture(
-    root: &Path,
-    clock: Arc<ManualClock>,
-) -> FixtureResult<CollaborationRuntime> {
-    start_fixture_with(
-        root,
-        clock,
-        vec![
-            concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../acp-client-runtime/tests/support/behavior-agent.ts"
-            )
-            .to_owned(),
-            root.join("wire.jsonl").display().to_string(),
-            "manual".to_owned(),
-            "cursor_login".to_owned(),
-        ],
-    )
-    .await
 }
 
 async fn start_fixture_with(

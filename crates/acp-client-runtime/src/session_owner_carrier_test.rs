@@ -50,6 +50,14 @@ fn poll_once<Output>(future: Pin<&mut (impl Future<Output = Output> + ?Sized)>) 
 }
 
 impl SessionOwnerPorts for TracingPorts {
+    fn turn_settlement_refused(
+        &mut self,
+        _: crate::session_owner_task::TurnSettlementStep,
+        _: provider_session_machines::session_turn_machine::TurnSettlement,
+        _: &provider_session_machines::session_owner::SessionOwnerRejection,
+    ) {
+    }
+
     fn execute(
         &mut self,
         owner: OwnerAddress,
