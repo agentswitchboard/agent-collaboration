@@ -16,7 +16,8 @@ use switchboard_machine_enrollment::{
 };
 use switchboard_machine_enrollment_store::{EnrollmentWorkerExit, MachineEnrollmentStore};
 use switchboard_message_custody::{
-    custody_task::CustodyEventSink, recipient_sessions::RecipientSessionDirectory,
+    custody_task::CustodyEventSink, handover_notice::ManagedClaudeNoticePort,
+    recipient_sessions::RecipientSessionDirectory,
 };
 use tokio::sync::{mpsc, watch};
 
@@ -26,7 +27,7 @@ use crate::{
     UnitPiece, message_system_status,
 };
 use crate::{
-    message_front::FrontPublication,
+    message_front::{ForwardingMessageFront, FrontPublication},
     message_unit::{MessageUnit, MessageUnitBuildError, OwnedLinkTask, UnitBuildInputs},
     stop_part::stop_part,
 };
@@ -45,15 +46,33 @@ impl MessageRoots {
     }
 }
 
-/// Existing operator events emitted by the message system's pieces.
+type ManagedNoticeForMachine = dyn Fn(&MachineId) -> Arc<dyn ManagedClaudeNoticePort> + Send + Sync;
+
+/// The Host supplies operator events and, for managed Claude, a notice port factory.
 pub struct MessageSystemEvents {
     custody: Arc<dyn CustodyEventSink>,
+    notice_for_machine: Option<Box<ManagedNoticeForMachine>>,
 }
 
 impl MessageSystemEvents {
     #[must_use]
     pub fn new(custody: Arc<dyn CustodyEventSink>) -> Self {
-        Self { custody }
+        Self {
+            custody,
+            notice_for_machine: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_managed_notice(
+        mut self,
+        notice_for_machine: impl Fn(&MachineId) -> Arc<dyn ManagedClaudeNoticePort>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.notice_for_machine = Some(Box::new(notice_for_machine));
+        self
     }
 }
 
@@ -265,18 +284,25 @@ impl Interpreter {
             Effect::PublishFront(front) => {
                 let door = match front {
                     Front::Refusing(reason) => Err(reason),
-                    Front::Forwarding(requested) => match self.unit.as_ref() {
-                        Some((held, unit)) if *held == requested => Ok(unit.front.clone()),
-                        held => {
-                            tracing::error!(
-                                class = "forwarding_generation_mismatch",
-                                requested_generation = requested.0.get(),
-                                held_generation = ?held.map(|(generation, _)| generation.0.get()),
-                                "Mac message system could not publish the Supervisor's forwarding front"
-                            );
-                            Err(FrontRefusal::CouldNotStart)
+                    Front::Forwarding(requested) => {
+                        match (self.unit.as_ref(), self.enrollment.as_ref()) {
+                            (Some((held, unit)), Some(enrollment)) if *held == requested => {
+                                Ok(ForwardingMessageFront {
+                                    calls: unit.front.clone(),
+                                    machine_id: enrollment.machine_id.clone(),
+                                })
+                            }
+                            (held, _) => {
+                                tracing::error!(
+                                    class = "forwarding_generation_mismatch",
+                                    requested_generation = requested.0.get(),
+                                    held_generation = ?held.map(|(generation, _)| generation.0.get()),
+                                    "Mac message system could not publish the Supervisor's forwarding front"
+                                );
+                                Err(FrontRefusal::CouldNotStart)
+                            }
                         }
-                    },
+                    }
                 };
                 let _ = self.front.send_replace(door);
             }
@@ -374,6 +400,12 @@ impl Interpreter {
             clock: self.inputs.clock.clone(),
             recipients: self.inputs.recipients.clone(),
             custody_events: self.inputs.events.custody.clone(),
+            notice_port: self
+                .inputs
+                .events
+                .notice_for_machine
+                .as_ref()
+                .map(|build| build(&opened.machine_id)),
             link_status: self.link_publication.clone(),
         })
     }

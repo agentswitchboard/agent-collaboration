@@ -10,7 +10,7 @@ use crate::{MachineLocalStore, RowCorruptionReason};
 use uuid::Uuid;
 use workspace_model::{
     Timestamp,
-    central_mail::{MessageBody, MessageRecord},
+    central_mail::{MessageBody, MessageDelivery, MessageRecord},
 };
 
 const ARRIVAL: i64 = 1_000;
@@ -33,6 +33,65 @@ async fn keep(store: &mut InboxStore, delivery: &MessageRecord) {
         )
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn inbox_page_is_recent_ordered_limited_and_notice_selection_only_returns_waiting_auto() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("machine_local.sqlite");
+    let mut store = InboxStore::new(MachineLocalStore::open(&path).await.unwrap());
+    let expired = message(1);
+    let waiting = message(2);
+    let completed = message(3);
+    let mut queued = message(4);
+    if let MessageBody::Direct { delivery, .. } = &mut queued.body {
+        *delivery = MessageDelivery::Queue;
+    }
+    for (row, arrival) in [
+        (&expired, ARRIVAL),
+        (&waiting, ARRIVAL + 1),
+        (&completed, ARRIVAL + 2),
+        (&queued, ARRIVAL + 3),
+    ] {
+        store
+            .record_delivery(
+                row,
+                InboxDecision::Accepted,
+                arrival,
+                fixture_expiry(arrival),
+            )
+            .await
+            .unwrap();
+    }
+    store
+        .record_handoff(&completed.message_id, ARRIVAL + 3)
+        .await
+        .unwrap();
+    let target = &waiting.target;
+    let page = store
+        .direct_inbox_messages(target, 2)
+        .await
+        .unwrap()
+        .expect_clean();
+    assert_eq!(page, [queued.clone(), completed.clone()]);
+    let page = store
+        .direct_inbox_messages(target, 20)
+        .await
+        .unwrap()
+        .expect_clean();
+    assert_eq!(page, [queued, completed, waiting.clone(), expired.clone()]);
+
+    let rows = store
+        .scan_waiting_notice_handoffs()
+        .await
+        .unwrap()
+        .expect_clean();
+    assert_eq!(
+        rows.into_iter()
+            .map(|row| row.message_id)
+            .collect::<Vec<_>>(),
+        [expired.message_id, waiting.message_id]
+    );
 }
 
 #[tokio::test]

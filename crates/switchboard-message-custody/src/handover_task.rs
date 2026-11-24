@@ -92,7 +92,7 @@ impl HandoverRunner {
     async fn visit_mark(&mut self, following: SyncTime) -> Result<(), HandoverError> {
         let mut inbox = self.inbox.lock().await;
         let directory = inbox.recipient_directory();
-        let rows = inbox.direct_handoffs().await?;
+        let rows = inbox.waiting_notice_handoffs().await?;
         drop(inbox);
         let waiting = rows.into_iter().filter(|row| {
             row.delivery == MessageDelivery::Auto && row.handoff == DirectHandoff::Waiting

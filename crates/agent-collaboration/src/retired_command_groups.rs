@@ -41,7 +41,8 @@ const RETIRED_COMMAND_GROUPS: &[&str] = &[
 const NOT_AVAILABLE: &str = "not available in this build";
 const USAGE_EXIT: i32 = 2;
 
-/// Refuses `arguments` when the first word of its first argument names a retired group, and
+/// After the active message commands have been dispatched, refuses `arguments` when the first word
+/// of its first argument names a retired group, and
 /// returns the exit code. The first argument may hold the whole command as one quoted string
 /// (`"wake send --json"`); its words count as arguments, so `--help` and `--json` inside it are
 /// honoured. Returns `None` for every other command.

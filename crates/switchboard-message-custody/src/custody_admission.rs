@@ -19,7 +19,10 @@ use crate::{
         Submission, SubmissionPayload, SubmissionRoute, SubmitRefusal, choose_submission_route,
         wire_scope,
     },
-    inbox_read::{AdmittedLocalSession, InboxReadError, RecipientInboxPage, RecipientInboxRead},
+    inbox_read::{
+        AdmittedLocalSession, InboxReadError, InboxReadSettlement, RecipientInboxPage,
+        RecipientInboxRead,
+    },
 };
 
 /// Custody's command queue has stopped accepting work.
@@ -84,12 +87,13 @@ pub(super) enum CustodyCommand {
     },
     ReadInbox {
         session: AdmittedLocalSession,
+        limit: usize,
         reply: oneshot::Sender<Result<RecipientInboxPage, InboxReadError>>,
     },
     RecordInboxRead {
         session: AdmittedLocalSession,
         read: RecipientInboxRead,
-        reply: oneshot::Sender<Result<(), InboxReadError>>,
+        reply: oneshot::Sender<Result<InboxReadSettlement, InboxReadError>>,
     },
 }
 
@@ -160,11 +164,12 @@ impl CustodyTaskHandle {
     pub async fn read_inbox(
         &self,
         session: AdmittedLocalSession,
+        limit: usize,
     ) -> Result<RecipientInboxPage, InboxReadError> {
         self.reserve()
             .await
             .map_err(|_| InboxReadError::Closed)?
-            .read_inbox(session)
+            .read_inbox(session, limit)
             .resolve()
             .await
     }
@@ -173,7 +178,7 @@ impl CustodyTaskHandle {
         &self,
         session: AdmittedLocalSession,
         read: RecipientInboxRead,
-    ) -> Result<(), InboxReadError> {
+    ) -> Result<InboxReadSettlement, InboxReadError> {
         self.reserve()
             .await
             .map_err(|_| InboxReadError::Closed)?
@@ -306,9 +311,14 @@ impl CustodyAdmission {
     pub fn read_inbox(
         self,
         session: AdmittedLocalSession,
+        limit: usize,
     ) -> PendingCustodyReply<Result<RecipientInboxPage, InboxReadError>> {
         self.commit(
-            move |reply| CustodyCommand::ReadInbox { session, reply },
+            move |reply| CustodyCommand::ReadInbox {
+                session,
+                limit,
+                reply,
+            },
             Err(InboxReadError::Closed),
             Err(InboxReadError::Closed),
         )
@@ -318,7 +328,7 @@ impl CustodyAdmission {
         self,
         session: AdmittedLocalSession,
         read: RecipientInboxRead,
-    ) -> PendingCustodyReply<Result<(), InboxReadError>> {
+    ) -> PendingCustodyReply<Result<InboxReadSettlement, InboxReadError>> {
         self.commit(
             move |reply| CustodyCommand::RecordInboxRead {
                 session,

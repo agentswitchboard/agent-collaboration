@@ -3,11 +3,18 @@
 //! A client reads the published version 3 manifest for the Router's identity and version,
 //! then calls tools over the owner-only API socket. There is no handshake: each call stands
 //! alone, and nothing is replayed after an uncertain answer.
-use crate::api_connection::{ApiConnection, DEFAULT_CALL_TIMEOUT};
+use crate::api_connection::{
+    ApiConnection, DEFAULT_CALL_TIMEOUT, ToolAnswer, rejection_from_tool_failure,
+};
+use collaboration_protocol::message_tools::{
+    MessageInboxArguments, MessageInboxPage, MessageSendArguments, MessageSendOutcome,
+    MessageStatusArguments, MessageToolResult, MessageWriteStatus,
+};
 use collaboration_protocol::{
     EndpointInventory, MachineLabel, SERVICE_MANIFEST_VERSION, SchemaDigest, ServiceManifest,
     UuidIdentity,
 };
+use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use std::{
     io::{self, Read},
@@ -104,6 +111,51 @@ pub struct CollaborationClient {
 }
 
 impl CollaborationClient {
+    /// Submits one direct write through the Router's collaboration API.
+    pub async fn message_send(
+        &self,
+        arguments: MessageSendArguments,
+    ) -> Result<MessageToolResult<MessageSendOutcome>, ClientError> {
+        self.message_call("message_send", &arguments).await
+    }
+
+    /// Reads one sender-scoped write result without resubmitting the write.
+    pub async fn message_status(
+        &self,
+        arguments: MessageStatusArguments,
+    ) -> Result<MessageToolResult<MessageWriteStatus>, ClientError> {
+        self.message_call("message_status", &arguments).await
+    }
+
+    /// Reads the admitted session's current inbox and optionally acknowledges a prior page.
+    pub async fn message_inbox(
+        &self,
+        arguments: MessageInboxArguments,
+    ) -> Result<MessageToolResult<MessageInboxPage>, ClientError> {
+        self.message_call("message_inbox", &arguments).await
+    }
+
+    async fn message_call<Args: Serialize, Outcome: DeserializeOwned>(
+        &self,
+        tool: &str,
+        arguments: &Args,
+    ) -> Result<MessageToolResult<Outcome>, ClientError> {
+        let arguments = serde_json::to_value(arguments)
+            .map_err(|_| ClientError::InvalidRequest("invalid message arguments"))?;
+        match self
+            .connection
+            .answer_with_timeout(tool, arguments, DEFAULT_CALL_TIMEOUT)
+            .await?
+        {
+            ToolAnswer::Success(value) => serde_json::from_value(value)
+                .map_err(|_| ClientError::Protocol("invalid message result")),
+            ToolAnswer::Failure(value) => {
+                <MessageToolResult<Outcome> as serde::Deserialize>::deserialize(&value)
+                    .map_err(|_| rejection_from_tool_failure(value))
+            }
+        }
+    }
+
     /// Reads the manifest in `directory` and checks the API socket it names is reachable.
     pub async fn connect(directory: &Path, name: &str, version: &str) -> Result<Self, ClientError> {
         Self::connect_with_clock(

@@ -11,49 +11,11 @@ use switchboard_machine_core_store::{
     DirectHandoff, DirectHandoffChange, HandoffCommit, InboxStore, NoticeAttemptId,
     SeenReceiptState,
 };
-use switchboard_message_custody::{
-    flush_marks::next_mark_after,
-    handover::NoticeWriteOutcome,
-    handover_notice::{
-        ClaimedNotice, IdleClaudeRun, ManagedClaudeNoticePort, NoticeDeferred, NoticeFuture,
-    },
-};
+use switchboard_message_custody::flush_marks::next_mark_after;
 use workspace_ids::SessionRef;
 use workspace_model::{Timestamp, central_mail::MessageStatus};
 
-#[derive(Clone)]
-struct ManagedPromptPort {
-    clock: Arc<dyn RuntimeClock>,
-    enabled: Arc<AtomicBool>,
-    calls: Arc<AtomicUsize>,
-    offers: tokio::sync::mpsc::UnboundedSender<ClaimedNotice>,
-}
-
-impl ManagedClaudeNoticePort for ManagedPromptPort {
-    fn ready<'a>(
-        &'a self,
-        _target: &'a SessionRef,
-    ) -> NoticeFuture<'a, Result<Box<dyn IdleClaudeRun>, NoticeDeferred>> {
-        Box::pin(async {
-            if self.enabled.load(Ordering::SeqCst) {
-                Ok(Box::new(self.clone()) as Box<dyn IdleClaudeRun>)
-            } else {
-                Err(NoticeDeferred::Busy)
-            }
-        })
-    }
-}
-
-impl IdleClaudeRun for ManagedPromptPort {
-    fn offer(self: Box<Self>, claimed: ClaimedNotice) -> NoticeFuture<'static, NoticeWriteOutcome> {
-        Box::pin(async move {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            let taken_at = self.clock.utc_now();
-            assert!(self.offers.send(claimed).is_ok());
-            NoticeWriteOutcome::Written { taken_at }
-        })
-    }
-}
+use crate::managed_prompt_fixture::{ManagedPromptPort, NoticeResultScript};
 
 #[test]
 fn a_kept_message_yields_one_managed_notice_and_an_owned_seen_status_at_central() {
@@ -66,6 +28,7 @@ fn a_kept_message_yields_one_managed_notice_and_an_owned_seen_status_at_central(
             enabled: enabled.clone(),
             calls: takes.clone(),
             offers,
+            result: NoticeResultScript::ReturnWriterTake,
         });
         let (mut case, ()) = NetworkCustody::setup_with_custody(
             link,
@@ -153,7 +116,9 @@ fn a_kept_message_yields_one_managed_notice_and_an_owned_seen_status_at_central(
 fn recovered_writing_is_suppressed_and_only_an_admitted_read_owes_seen() {
     use super::MACHINE_LINK_FIXTURE_MACHINE;
     use switchboard_machine_core_store::{InboxDecision, InboxOfferExpiry, MachineLocalStore};
-    use switchboard_message_custody::inbox_read::{AdmittedLocalSession, InboxReadError};
+    use switchboard_message_custody::inbox_read::{
+        AdmittedLocalSession, InboxReadError, RecipientInboxRead,
+    };
     use workspace_model::{
         PostText,
         central_mail::{MessageBody, MessageDelivery, MessageRecord},
@@ -167,6 +132,7 @@ fn recovered_writing_is_suppressed_and_only_an_admitted_read_owes_seen() {
             enabled: Arc::new(AtomicBool::new(true)),
             calls: takes.clone(),
             offers,
+            result: NoticeResultScript::ReturnWriterTake,
         });
         let path = link.central.root_path().join("simulated-custody.sqlite");
         let recipient = SessionRef {
@@ -237,42 +203,75 @@ fn recovered_writing_is_suppressed_and_only_an_admitted_read_owes_seen() {
             .await;
         assert_eq!(takes.load(Ordering::SeqCst), 0);
 
-        let admitted = AdmittedLocalSession::new(recipient.clone());
+        let admitted = AdmittedLocalSession::admitted_by_local_session_directory(recipient.clone());
         let mut other = recipient;
         other.session_id = "another-managed-session".parse().unwrap();
-        let another = AdmittedLocalSession::new(other);
+        let another = AdmittedLocalSession::admitted_by_local_session_directory(other);
         assert!(
             case.calls
-                .read_inbox(another.clone())
+                .read_inbox(another.clone(), 20)
                 .await
                 .unwrap()
                 .messages()
                 .is_empty()
         );
-        let read = case.calls.read_inbox(admitted.clone()).await.unwrap();
-        assert_eq!(read.messages(), [message]);
+        let read = case.calls.read_inbox(admitted.clone(), 20).await.unwrap();
+        assert_eq!(read.messages(), std::slice::from_ref(&message));
         assert!(matches!(
             case.calls
-                .record_inbox_read(another, read.into_acknowledgment())
+                .record_inbox_read(another.clone(), read.into_acknowledgment())
                 .await,
             Err(InboxReadError::RecipientChanged)
         ));
-        let read = case.calls.read_inbox(admitted.clone()).await.unwrap();
+        let copied = RecipientInboxRead::for_session(&another, vec![message.message_id.clone()]);
+        assert!(matches!(
+            case.calls.record_inbox_read(another, copied).await,
+            Err(InboxReadError::MessageNotKept)
+        ));
+        let mixed = RecipientInboxRead::for_session(
+            &admitted,
+            vec![
+                message.message_id.clone(),
+                "019f0000-0000-7000-8000-000000000089".parse().unwrap(),
+            ],
+        );
+        assert!(matches!(
+            case.calls.record_inbox_read(admitted.clone(), mixed).await,
+            Err(InboxReadError::MessageNotKept)
+        ));
         assert_eq!(
             case.inbox.scan_direct_handoffs().await.unwrap().healthy[0].handoff,
             DirectHandoff::NotKnown
         );
         let taken_at = case.link.clock.utc_now();
-        case.calls
-            .record_inbox_read(admitted, read.into_acknowledgment())
+        let receipt = RecipientInboxRead::for_session(&admitted, vec![message.message_id.clone()]);
+        let recorded = case
+            .calls
+            .record_inbox_read(admitted.clone(), receipt)
             .await
             .unwrap();
+        assert_eq!((recorded.changed, recorded.unchanged), (1, 0));
         assert_eq!(
             case.inbox.scan_direct_handoffs().await.unwrap().healthy[0].handoff,
             DirectHandoff::Seen {
                 completed_at: taken_at,
                 receipt: SeenReceiptState::Owed
             }
+        );
+        let repeated = RecipientInboxRead::for_session(&admitted, vec![message.message_id.clone()]);
+        let recorded = case
+            .calls
+            .record_inbox_read(admitted.clone(), repeated)
+            .await
+            .unwrap();
+        assert_eq!((recorded.changed, recorded.unchanged), (0, 1));
+        assert_eq!(
+            case.calls
+                .read_inbox(admitted, 20)
+                .await
+                .unwrap()
+                .messages(),
+            [message]
         );
         case.close().await;
     });

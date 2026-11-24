@@ -12,6 +12,7 @@
 //! (`codex_session_inventory`, `provider_session_inventory`).
 mod conversation_operations;
 mod journal_operations;
+pub mod message_operations;
 mod observation_call_driver;
 mod observation_call_machine;
 mod observation_failure;
@@ -43,6 +44,7 @@ pub(crate) use session_operations::{
 };
 
 use collaboration_contracts::RouterIdentity;
+use message_operations::MessageOperations;
 
 /// Constructed operation families serving one Router installation and run.
 #[derive(Clone)]
@@ -51,6 +53,7 @@ pub struct CollaborationApplication {
     conversations: std::sync::Arc<ConversationOperations>,
     observation: std::sync::Arc<ObservationOperations>,
     sessions: std::sync::Arc<SessionOperations>,
+    messages: MessageOperations,
 }
 impl CollaborationApplication {
     #[must_use]
@@ -65,7 +68,18 @@ impl CollaborationApplication {
             conversations: std::sync::Arc::new(conversations),
             observation: std::sync::Arc::new(observation),
             sessions: std::sync::Arc::new(sessions),
+            messages: MessageOperations::default(),
         }
+    }
+    #[must_use]
+    pub fn with_messages(mut self, messages: MessageOperations) -> Self {
+        self.messages = messages;
+        self
+    }
+
+    #[must_use]
+    pub fn messages(&self) -> &MessageOperations {
+        &self.messages
     }
     #[must_use]
     pub fn service_id(&self) -> &collaboration_protocol::UuidIdentity {

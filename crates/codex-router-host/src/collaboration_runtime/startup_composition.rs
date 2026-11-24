@@ -7,6 +7,7 @@ use super::{
     SchemaDigest, SocketAddr, create_private_socket_directory, io, load_installation_peer,
     load_service_identity, new_service_uuid,
 };
+use collaboration_service::collaboration_application::message_operations::MessageOperations;
 use std::sync::Arc;
 use switchboard_message_custody::recipient_sessions::{
     CombinedRecipientSessionDirectory, RecipientSessionSources,
@@ -233,6 +234,19 @@ impl CollaborationRuntime {
         )
         .await?;
         let provider_face_endpoints = startup.endpoints.clone();
+        let claude_endpoint_id =
+            EndpointId::try_from("claude-local".to_owned()).map_err(io::Error::other)?;
+        let managed_claude_endpoint = startup
+            .endpoints
+            .iter()
+            .find(|description| {
+                description.endpoint.endpoint_id == claude_endpoint_id
+                    && matches!(
+                        description.availability,
+                        collaboration_protocol::EndpointAvailability::Available { .. }
+                    )
+            })
+            .map(|description| description.endpoint.clone());
         let provider_retirements = startup.retirements;
         let external_provider_supervisor = startup.supervisor;
         let provider_session_hub = startup.hub;
@@ -490,7 +504,7 @@ impl CollaborationRuntime {
                 router_proxy_endpoint,
             },
         )?;
-        let message_system = match message_roots {
+        let (message_system, message_tools) = match message_roots {
             Some(roots) => {
                 let custody_events = Arc::new(HostCustodyEvents);
                 let recipient_directory = Arc::new(CombinedRecipientSessionDirectory::new(
@@ -519,15 +533,42 @@ impl CollaborationRuntime {
                         ),
                     },
                 ));
-                Some(MessageSystem::start(
+                let events = MessageSystemEvents::new(custody_events);
+                let events = match (
+                    external_provider_supervisor.clone(),
+                    managed_claude_endpoint,
+                ) {
+                    (Some(supervisor), Some(endpoint)) => {
+                        events.with_managed_notice(move |machine| {
+                            Arc::new(crate::ManagedClaudeNoticeAdapter::new(
+                                supervisor.clone(),
+                                machine.clone(),
+                                endpoint.clone(),
+                            ))
+                        })
+                    }
+                    _ => events,
+                };
+                let system = MessageSystem::start(
                     roots,
                     worker_clock.clone(),
+                    recipient_directory.clone(),
+                    events,
+                );
+                let front = system.front();
+                let admission = super::message_startup::v0_message_admission(
+                    front.clone(),
                     recipient_directory,
-                    MessageSystemEvents::new(custody_events),
-                ))
+                    worker_clock.clone(),
+                );
+                (
+                    Some(system),
+                    MessageOperations::new(admission, Arc::new(front), worker_clock.clone()),
+                )
             }
-            None => None,
+            None => (None, MessageOperations::default()),
         };
+        let application = application.with_messages(message_tools);
         let shutdown = CancellationToken::new();
         let collaboration_api =
             collaboration_api.serve(&collaboration_mcp::CollaborationApiConfig {

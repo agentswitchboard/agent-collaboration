@@ -14,7 +14,7 @@ use crate::{
     AddressError,
     lease_source::{LeaseFailure, LeaseFuture, LeaseSource},
     link_policy::{LeaseVersion, LinkState, LinkStatus},
-    wire_write_fence::default_http_connector,
+    wire_write_fence::{WireWriteFence, default_http_connector},
 };
 
 #[path = "renewal_lane_test.rs"]
@@ -22,6 +22,9 @@ mod renewal_lane;
 
 #[path = "control_write_test.rs"]
 mod control_write;
+
+#[path = "write_cancellation_test.rs"]
+mod write_cancellation;
 
 struct NoLeaseSource;
 
@@ -271,7 +274,8 @@ fn correlated_reply_at_the_authority_boundary_cannot_settle_the_writer() {
             .is_some()
     );
     let (_user, owner) = link_lane_channel();
-    let mut lane = AdmittedSocketLane::new(&owner);
+    let write_fence = WireWriteFence::new(fixture.clock.clone());
+    let mut lane = AdmittedSocketLane::new(&owner, &write_fence);
     assert!(lane.admit(AdmittedConnection {
         connection: attempt.clone(),
         clock_anchor: WelcomeClockAnchor {

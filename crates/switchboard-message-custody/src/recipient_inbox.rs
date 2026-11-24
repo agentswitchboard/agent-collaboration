@@ -302,6 +302,13 @@ impl RecipientInbox {
         Ok(inbox_scan(scan, &mut self.operator_events))
     }
 
+    pub(crate) async fn waiting_notice_handoffs(
+        &mut self,
+    ) -> Result<Vec<switchboard_machine_core_store::DirectHandoffRow>, InboxCustodyError> {
+        let scan = self.store.scan_waiting_notice_handoffs().await?;
+        Ok(inbox_scan(scan, &mut self.operator_events))
+    }
+
     pub(crate) async fn commit_direct_handoffs(
         &mut self,
         target: &SessionRef,
@@ -316,11 +323,12 @@ impl RecipientInbox {
     pub(crate) async fn read_inbox(
         &mut self,
         session: &crate::inbox_read::AdmittedLocalSession,
+        limit: usize,
     ) -> Result<crate::inbox_read::RecipientInboxPage, crate::inbox_read::InboxReadError> {
-        let target = session.session();
+        let target = session.address();
         let scan = self
             .store
-            .direct_inbox_messages(target)
+            .direct_inbox_messages(target, limit)
             .await
             .map_err(InboxCustodyError::from)?;
         let messages = inbox_scan(scan, &mut self.operator_events);
@@ -334,35 +342,46 @@ impl RecipientInbox {
         &mut self,
         session: &crate::inbox_read::AdmittedLocalSession,
         read: crate::inbox_read::RecipientInboxRead,
-    ) -> Result<(), crate::inbox_read::InboxReadError> {
-        use crate::inbox_read::InboxReadError;
+    ) -> Result<crate::inbox_read::InboxReadSettlement, crate::inbox_read::InboxReadError> {
+        use crate::inbox_read::{InboxReadError, InboxReadSettlement};
         use switchboard_machine_core_store::{DirectHandoff, HandoffCommit};
 
-        let target = session.session();
+        let target = session.address();
         if &read.target != target {
             return Err(InboxReadError::RecipientChanged);
         }
-        let returned: std::collections::BTreeSet<_> = read.returned.into_iter().collect();
-        let rows: Vec<_> = self
-            .direct_handoffs()
-            .await?
-            .into_iter()
-            .filter(|row| {
-                &row.target == target
-                    && row.handoff == DirectHandoff::NotKnown
-                    && returned.contains(&row.message_id)
-            })
-            .collect();
+        let unique: std::collections::BTreeSet<_> = read.returned.iter().collect();
+        if unique.len() != read.returned.len() {
+            return Err(InboxReadError::MessageNotKept);
+        }
+        let mut rows = Vec::new();
+        for message_id in &read.returned {
+            let row = self
+                .store
+                .direct_handoff_for_recipient(target, message_id)
+                .await
+                .map_err(InboxCustodyError::from)?
+                .ok_or(InboxReadError::MessageNotKept)?;
+            if matches!(
+                row.handoff,
+                DirectHandoff::Waiting | DirectHandoff::NotKnown
+            ) {
+                rows.push(row);
+            }
+        }
         let (changes, _) = crate::handover::changes_for(
             &rows,
-            crate::handover::HandoffEvent::InboxRead {
+            crate::handover::HandoffEvent::ReadAcknowledged {
                 completed_at: self.clock.utc_now(),
             },
         )?;
         if self.commit_direct_handoffs(target, &changes).await? != HandoffCommit::Committed {
             return Err(InboxReadError::ChangedSinceRead);
         }
-        Ok(())
+        Ok(InboxReadSettlement {
+            changed: changes.len(),
+            unchanged: read.returned.len() - changes.len(),
+        })
     }
 
     pub(crate) async fn pending_sender_notices(

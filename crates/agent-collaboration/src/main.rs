@@ -16,6 +16,9 @@ fn main() {
         print!("{}", agent_collaboration::command_help());
         return;
     }
+    if agent_collaboration::is_message_command(&arguments) {
+        std::process::exit(agent_collaboration::run_message_command(arguments));
+    }
     if let Some(exit) = agent_collaboration::refuse_retired_command_group(&arguments) {
         std::process::exit(exit);
     }
