@@ -95,6 +95,7 @@ impl ProviderAcpDeliveryRoute {
         if !self.serves(&target) {
             return Err(ProviderQueueAdmissionError::SessionNotFound.into());
         }
+        let start_owner = self.supervisor.observe_prompt_start_owner(&target);
         match self.claim.claim(&target).await.into_claim() {
             RouteClaim::Holds | RouteClaim::CanLoad => {}
             RouteClaim::Rejected { .. } | RouteClaim::LiveElsewhere { .. } => {
@@ -162,11 +163,15 @@ impl ProviderAcpDeliveryRoute {
             .supervisor
             .runtime_for(&target.endpoint)
             .ok_or(ProviderQueueAdmissionError::Unavailable)?;
-        if self
-            .supervisor
-            .owner_session_snapshot(&target)
-            .is_some_and(|snapshot| snapshot.settings_block_input)
-        {
+        // A cold load or a replaced owner can supply a different observation
+        // by the time the usual validation runs.
+        let current_owner = self.supervisor.observe_prompt_start_owner(&target);
+        let owner = current_owner.map(|current| {
+            start_owner
+                .filter(|observed| observed.same_channel(&current))
+                .unwrap_or(current)
+        });
+        if owner.is_some_and(|owner| owner.borrow().settings_block_input) {
             return Err(ProviderQueueAdmissionError::SettingsUnresolved.into());
         }
         let capabilities = runtime

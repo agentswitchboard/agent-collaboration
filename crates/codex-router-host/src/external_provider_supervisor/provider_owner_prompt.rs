@@ -77,7 +77,8 @@ impl ExternalProviderSupervisor {
                 &request.operation_id,
                 Some(target.clone()),
             )?;
-            let snapshot = backend.owner_session_snapshot(&target);
+            let owner = backend.observe_prompt_start_owner(&target);
+            let snapshot = owner.map(|owner| owner.borrow().clone());
             let class = match request.busy {
                 PromptBusyPolicy::RefuseBusy => snapshot
                     .as_ref()

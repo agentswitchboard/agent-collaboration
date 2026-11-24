@@ -231,14 +231,27 @@ impl ExternalProviderSupervisor {
         &self,
         target: &SessionRef,
     ) -> Option<provider_session_machines::session_owner::SessionSnapshot> {
-        let owner = self
-            .inner
-            .bindings
-            .get(&target.endpoint)?
-            .owners
-            .existing(target)?;
-        let snapshot = owner.snapshots().borrow().clone();
+        let owner = self.observe_prompt_start_owner(target)?;
+        let snapshot = owner.borrow().clone();
         Some(snapshot)
+    }
+
+    /// Observe the resident owner without opening the operation store or
+    /// loading a cold session.
+    pub(crate) fn observe_prompt_start_owner(
+        &self,
+        target: &SessionRef,
+    ) -> Option<
+        tokio::sync::watch::Receiver<provider_session_machines::session_owner::SessionSnapshot>,
+    > {
+        Some(
+            self.inner
+                .bindings
+                .get(&target.endpoint)?
+                .owners
+                .existing(target)?
+                .snapshots(),
+        )
     }
 
     pub(crate) fn owner_session_catalog(
