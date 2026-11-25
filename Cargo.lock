@@ -879,6 +879,7 @@ name = "central-link-client"
 version = "0.1.158"
 dependencies = [
  "central-link-protocol",
+ "fleet-identity-protocol",
  "router-clock",
  "serde_json",
  "thiserror 2.0.18",

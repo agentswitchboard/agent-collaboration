@@ -4,6 +4,7 @@ mod link_state;
 mod pending_calls;
 mod ready_lane;
 mod reply_matcher;
+mod session_lifecycle_link;
 mod workspace_miss;
 
 pub use reply_matcher::ReplyExpectation;
@@ -26,3 +27,7 @@ pub use ready_lane::{
 };
 
 pub use error::ClientError;
+pub use session_lifecycle_link::{
+    AdmittedLifecycleLink, LifecycleCallError, LifecycleCallFuture, LifecycleCallNotSent,
+    LifecycleLinkReadiness, SessionLifecycleScope,
+};

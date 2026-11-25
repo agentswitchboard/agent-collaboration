@@ -91,6 +91,8 @@ workspace_identifiers!(
     /// One operation on a session, made by the caller before it sends, so a repeat can be recognised.
     #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
     SessionOperationId => SessionOperationIdError,
+    /// One local managed-tool binding, replaced when a provider owner is reattached.
+    ManagedToolBindingId,
     PersonId,
     AreaId,
     ProjectId,

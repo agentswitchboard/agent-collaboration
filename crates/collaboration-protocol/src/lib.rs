@@ -1,9 +1,15 @@
 //! Public communication contracts without process, storage or transport ownership.
 mod cli_output_contract;
+mod managed_session_tools;
 pub mod message_tools;
 pub use cli_output_contract::{
     ConversationRecord, ConversationTerminalReason, EffortChange, FiniteCommandRecord,
     NativeObservationRecord, ObservationCloseReason,
+};
+pub use managed_session_tools::{
+    ManagedSessionToolBinding, ManagedStartResolver, ManagedToolAdmissionLease, ManagedToolBearer,
+    ManagedToolDescriptor, ManagedToolPreparationError, ManagedToolResolution,
+    ManagedToolResolveError, PrepareManagedToolDescriptor, ResolveManagedStartFuture,
 };
 mod operation_failure_contract;
 pub use operation_failure_contract::{
