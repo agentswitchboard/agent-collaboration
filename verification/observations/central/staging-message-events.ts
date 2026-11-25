@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { sessionSchema, type Session } from "../../declaration.ts";
 
-const noticeText = "You have 1 new message. Read them with message_inbox.";
+const noticeText = /^You have (\d+) new messages?\. Read them with message_inbox\.$/u;
 const eventSchema = z.looseObject({
   kind: z.string(),
   turnId: z.string().optional(),
@@ -33,6 +33,7 @@ export interface NoticeObservation {
   readonly turnId: string | null;
   readonly itemId: string;
   readonly sequence: number;
+  readonly messageCount: number;
 }
 
 interface TurnTiming {
@@ -55,6 +56,7 @@ export class StagingMessageEvents {
   readonly ends: string[] = [];
   readonly endObservedAt = new Map<string, number>();
   readonly notices: NoticeObservation[] = [];
+  readonly historyNoticeIds = new Set<string>();
   readonly answeringTurns = new Set<string>();
   readonly toolTurns = new Set<string>();
   readonly timings = new Map<string, TurnTiming>();
@@ -62,9 +64,16 @@ export class StagingMessageEvents {
   private owner: string | undefined;
   private epoch: number | undefined;
   private sequence: number | undefined;
+  private readonly noticeIds = new Set<string>();
 
   constructor(target: Session) {
     this.target = target;
+  }
+
+  checkpoint(): number {
+    if (!this.ready || this.sequence === undefined)
+      throw new Error("recipient stream has no event checkpoint");
+    return this.sequence;
   }
 
   ingest(line: string): void {
@@ -106,7 +115,11 @@ export class StagingMessageEvents {
       ["resyncRequired", "eventTooLarge"].includes(event.kind)
     )
       throw new Error("recipient stream cannot prove contiguous coverage");
-    if (!this.ready) return;
+    if (!this.ready) {
+      if (noticeCount(event) !== undefined && event.item !== undefined)
+        this.historyNoticeIds.add(event.item.itemId);
+      return;
+    }
     // Hub snapshots retain the latest representation of each item. A reset or
     // overrun is a separate, explicit resync event.
     if (sequence <= (this.sequence ?? 0))
@@ -159,10 +172,22 @@ export class StagingMessageEvents {
     }
     if (item?.kind.kind === "toolCall" && this.activeTurn !== null)
       this.toolTurns.add(this.activeTurn);
-    if (kind === "itemStarted" && item?.kind.kind === "userMessage" && item.text === noticeText) {
-      this.notices.push({ turnId: this.activeTurn, itemId: item.itemId, sequence });
+    const messageCount = noticeCount(event);
+    if (item !== undefined && messageCount !== undefined && !this.noticeIds.has(item.itemId)) {
+      this.noticeIds.add(item.itemId);
+      this.notices.push({ turnId: this.activeTurn, itemId: item.itemId, sequence, messageCount });
       const timing = this.activeTurn === null ? undefined : this.timings.get(this.activeTurn);
       if (timing !== undefined) timing.noticeAt ??= Date.now();
     }
   }
+}
+
+function noticeCount(event: Event): number | undefined {
+  if (
+    (event.kind !== "itemStarted" && event.kind !== "itemUpdated") ||
+    event.item?.kind.kind !== "userMessage"
+  )
+    return undefined;
+  const count = noticeText.exec(event.item.text ?? "")?.[1];
+  return count === undefined ? undefined : Number(count);
 }

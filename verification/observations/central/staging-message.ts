@@ -4,10 +4,13 @@ import { mkdir, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { setTimeout } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
-import { privateDirectory } from "../../machines/owned-process.ts";
+import { command, privateDirectory } from "../../machines/owned-process.ts";
 import { ObservationFailure, Receipt } from "../../receipt.ts";
 import { StagingMessageEvents } from "./staging-message-events.ts";
+import { checkDelivery, sendCheckpoint } from "./staging-message-delivery.ts";
+import { cleanupManagedHold } from "./staging-message-cleanup.ts";
 import { awaitRemoteSend, readRemoteReceipt } from "./staging-message-sender.ts";
 import {
   cli,
@@ -28,28 +31,6 @@ const sendSchema = z.object({
     flushAt: z.string().optional(),
     messageId: z.uuid().optional(),
   }),
-});
-const statusSchema = z.object({
-  kind: z.string(),
-  value: z
-    .object({
-      kind: z.string(),
-      messageId: z.uuid().optional(),
-      delivery: z
-        .object({
-          kind: z.string(),
-          value: z
-            .object({
-              kind: z.string(),
-              arrivedAt: z.iso.datetime().optional(),
-              completedAt: z.iso.datetime().optional(),
-              deadlinePassed: z.boolean().optional(),
-            })
-            .optional(),
-        })
-        .optional(),
-    })
-    .optional(),
 });
 function holdPrompt(answerLines: number): string {
   return (
@@ -171,19 +152,8 @@ async function observe(plan: Plan, receipt: Receipt): Promise<void> {
     if (plan.timing !== undefined && runningTurn !== undefined)
       await recordNaturalTurn(plan, receipt, stream, runningTurn);
   } finally {
-    const runTurn = runningTurn ?? (hold === undefined ? undefined : view.starts[0]);
-    if (runTurn !== undefined && view.activeTurn === runTurn) {
-      const cleanup = await cli(plan, [
-        "turn",
-        "interrupt",
-        "--to",
-        JSON.stringify(plan.recipient),
-        "--turn",
-        runTurn,
-        "--json",
-      ]).catch(() => undefined);
-      await receipt.record("interrupt-own-hold", { turnId: runTurn, exit: cleanup?.exit ?? null });
-    }
+    if (holdOperationId !== undefined)
+      await cleanupManagedHold(plan, receipt, holdOperationId, view, runningTurn);
     if (hold !== undefined) {
       const settled = await hold;
       await receipt.record("hold-command-settlement", {
@@ -211,8 +181,29 @@ async function driveNotice(
   const requestId = randomUUIDv7();
   await receipt.record("send-attempt", { requestId, runningTurn });
   assertStream();
-  await sendMessage(plan, receipt, requestId, runningTurn);
-  await checkDelivery({ plan, receipt, view, requestId, runningTurn, startCount, assertStream });
+  const checkpoint = sendCheckpoint(view);
+  const send = sendMessage(plan, receipt, requestId, runningTurn);
+  const [answeredId] = await Promise.all([
+    send,
+    receipt.record("send-checkpoint", { requestId, sequence: checkpoint }),
+  ]);
+  await checkDelivery({
+    receipt,
+    view,
+    requestId,
+    checkpoint,
+    answeredId,
+    runningTurn,
+    startCount,
+    assertStream,
+    seenWindowMs: plan.senderHandoff === undefined ? 125_000 : 600_000,
+    readStatus: () => senderStatus(plan, requestId),
+    clock: {
+      monotonic: () => performance.now(),
+      utc: () => Date.now(),
+      poll: () => setTimeout(2500),
+    },
+  });
 }
 
 async function recordNaturalTurn(
@@ -258,7 +249,7 @@ async function sendMessage(
   receipt: Receipt,
   requestId: string,
   runningTurn: string | undefined,
-): Promise<void> {
+): Promise<string | undefined> {
   const to = { machineId: plan.machineId, sessionId: plan.recipient.sessionId };
   const body = `Staging notice verification ${requestId}`;
   let output: unknown;
@@ -300,7 +291,10 @@ async function sendMessage(
   }
   const send = sendSchema.parse(output);
   if (send.value.requestId !== requestId) throw new Error("send returned another request ID");
+  if (send.value.kind === "answered" && send.value.messageId === undefined)
+    throw new ObservationFailure("Answered send omitted the Central message identity");
   await receipt.record("send", send);
+  return send.value.messageId;
 }
 
 async function requireIdleObservation(plan: Plan, stream: RecipientStream): Promise<void> {
@@ -347,122 +341,6 @@ async function holdPermissionRejected(
   }
 }
 
-interface DeliveryCheck {
-  readonly plan: Plan;
-  readonly receipt: Receipt;
-  readonly view: StagingMessageEvents;
-  readonly requestId: string;
-  readonly runningTurn: string | undefined;
-  readonly startCount: number;
-  readonly assertStream: () => void;
-}
-
-// After the notice, allow the next minute mark, then receipt publication.
-async function checkDelivery(check: DeliveryCheck): Promise<void> {
-  const { plan, receipt, view, requestId, runningTurn, startCount, assertStream } = check;
-  let expires = performance.now() + 275_000;
-  const seenWindow = plan.senderHandoff === undefined ? 125_000 : 600_000;
-  let seen: string | undefined;
-  let messageId: string | undefined;
-  let arrivedAt: number | undefined;
-  let firstNoticeAt: number | undefined;
-  let previousStatus: string | undefined;
-  for (let elapsed = performance.now(); ; elapsed = performance.now()) {
-    if (view.notices.length > 0 && firstNoticeAt === undefined) {
-      firstNoticeAt = elapsed;
-      expires = Math.max(expires, firstNoticeAt + seenWindow);
-    }
-    if (elapsed >= expires) break;
-    assertStream();
-    const result = await senderStatus(plan, requestId);
-    if (result === undefined) {
-      await setTimeout(2500);
-      continue;
-    }
-    if (result.exit !== 0) throw new Error("sender status failed; do not replay the send");
-    const status = statusSchema.parse(result.output);
-    const encoded = JSON.stringify(status);
-    if (encoded !== previousStatus) {
-      await receipt.record("sender-status", {
-        requestId,
-        status,
-        exit: result.exit,
-        observedAt: result.observedAt,
-      });
-      previousStatus = encoded;
-    }
-    const delivery = status.value?.delivery?.value;
-    const observationId = status.value?.messageId;
-    if (observationId !== undefined) {
-      if (messageId !== undefined && messageId !== observationId)
-        throw new Error("sender reported inconsistent Central message identities");
-      messageId = observationId;
-    }
-    if (
-      status.kind !== "returned" ||
-      ["refused", "notSent", "notConfirmed", "notFound"].includes(status.value?.kind ?? "") ||
-      delivery?.kind === "refused"
-    )
-      throw new Error("sender reported refusal or broken custody");
-    if (delivery?.kind === "seen") seen = status.value?.messageId;
-    if (view.notices.length > 1)
-      throw new ObservationFailure("recipient received multiple notices");
-    const notice = view.notices[0];
-    if (runningTurn !== undefined) {
-      if (
-        notice === undefined &&
-        view.activeTurn === runningTurn &&
-        view.toolTurns.has(runningTurn)
-      )
-        throw new Error("the held turn used a tool");
-      if (delivery?.kind === "delivered" && delivery.arrivedAt !== undefined)
-        arrivedAt ??= Date.parse(delivery.arrivedAt);
-      if (view.ends.includes(runningTurn) && notice?.turnId !== runningTurn) {
-        const endObservedAt = view.endObservedAt.get(runningTurn);
-        if (
-          arrivedAt !== undefined &&
-          endObservedAt !== undefined &&
-          endObservedAt - arrivedAt >= 65_000
-        )
-          throw new ObservationFailure("accepted message did not enter the already-running turn");
-        if (arrivedAt !== undefined || seen !== undefined)
-          throw new Error("hold ended before a full notice window after recipient Mac custody");
-      } else if (
-        view.starts.length !== startCount ||
-        (notice !== undefined && notice.turnId !== runningTurn)
-      ) {
-        throw new ObservationFailure("notice was placed outside the active test turn");
-      }
-    } else if (
-      view.starts.length > 1 ||
-      (notice !== undefined && notice.turnId !== view.starts[0])
-    ) {
-      throw new ObservationFailure("idle recipient did not receive the notice in one new turn");
-    }
-    const noticeObserved =
-      notice?.turnId != null &&
-      (view.ends.includes(notice.turnId) ||
-        (firstNoticeAt !== undefined && performance.now() - firstNoticeAt >= 65_000));
-    if (seen !== undefined && noticeObserved) {
-      await receipt.record("pass", {
-        requestId,
-        messageId: seen,
-        notice,
-        starts: view.starts.length,
-      });
-      return;
-    }
-    await setTimeout(2500);
-  }
-  reportExpiredObservation(seen !== undefined, view.notices.length);
-}
-
-function reportExpiredObservation(seen: boolean, noticeCount: number): never {
-  if (seen && noticeCount === 0) throw new ObservationFailure("Seen without notice");
-  if (seen) throw new Error("observation ended during the notice window");
-  throw new Error("the observation bound ended without a sender Seen receipt");
-}
-
 async function senderStatus(
   plan: Plan,
   requestId: string,
@@ -486,6 +364,25 @@ export async function runStagingMessage(file: string): Promise<void> {
   const receipt = new Receipt(plan.evidence);
   await receipt.save("target.json", plan);
   try {
+    const root = fileURLToPath(new URL("../../../", import.meta.url));
+    const revision = await command("git", ["-C", root, "rev-parse", "HEAD"]);
+    const driverRevision = revision.stdout.trim();
+    const changes = await command("git", [
+      "-C",
+      root,
+      "status",
+      "--porcelain",
+      "--",
+      "verification",
+    ]);
+    if (
+      revision.exit !== 0 ||
+      !/^[a-f0-9]{40}$/u.test(driverRevision) ||
+      changes.exit !== 0 ||
+      changes.stdout.length !== 0
+    )
+      throw new Error("staging driver must run from an exact clean Git revision");
+    await receipt.save("driver.json", { driverRevision, productRevision: plan.source });
     await prepare(plan, receipt);
     await observe(plan, receipt);
     await receipt.save("outcome.json", { kind: "passed", journey: plan.journey });

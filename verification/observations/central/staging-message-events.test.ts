@@ -40,7 +40,14 @@ test("captures the exact notice under the live turn without counting item update
     sequence: 13,
     event: { kind: "turnEnded", turnId: "live-turn", outcome: { stop_reason: "endTurn" } },
   });
-  assert.deepEqual(view.notices, [{ turnId: "live-turn", itemId: "notice-item", sequence: 10 }]);
+  assert.deepEqual(view.notices, [
+    {
+      turnId: "live-turn",
+      itemId: "notice-item",
+      sequence: 10,
+      messageCount: 1,
+    },
+  ]);
   assert.deepEqual(view.ends, ["live-turn"]);
   const timing = view.timings.get("live-turn");
   assert.equal(timing?.answerUpdatesAfterNotice, 1);
