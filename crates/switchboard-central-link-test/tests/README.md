@@ -12,6 +12,10 @@ TCP segments to delay or drop a selected WebSocket frame and model connections
 that reset or outlive their requests. The existing fixture supplies the signed
 enrollment and JWKS service.
 
+The lifecycle cases use that real Central dispatch to Create, Bind and End.
+They cut committed replies, reopen the Central store, test replay and stale
+correlations, and hold a reply while the same Mac sends a due batch or renewal.
+
 The C5 transcript case observes one empty capability announcement before an
 ordinary request and reply on both the original and replacement sockets.
 

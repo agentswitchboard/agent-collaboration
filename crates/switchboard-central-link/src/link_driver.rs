@@ -32,6 +32,8 @@ use crate::{
     wire_write_fence::{LinkConnector, WireWriteFence, default_http_connector},
 };
 
+#[path = "link_driver_lifecycle.rs"]
+mod lifecycle;
 #[path = "link_driver_receive.rs"]
 mod receive;
 
@@ -232,6 +234,9 @@ where
             } else {
                 match self.run_attempts(&binding, control, lane_owner).await {
                     Ok(OpenExit::Final { binding, cause }) => {
+                        if let Some(scope) = self.lease_source.lifecycle_scope(&binding) {
+                            lane_owner.lifecycle.admission.end(&scope);
+                        }
                         self.lease_source.end(&binding, cause);
                         return (control.wait().await, true);
                     }
@@ -428,6 +433,7 @@ where
             .open_socket(&mut socket, attempt, binding, timing, control, lane_owner)
             .await;
         lane_owner.reject_queued();
+        lane_owner.lifecycle.reject_queued();
         finish_socket(&mut socket, writes);
         done
     }
@@ -449,12 +455,18 @@ where
         let mut renewal_sent_at = None;
         let mut priority = SocketPriority::ReadFrame;
         let mut admitted_lane = AdmittedSocketLane::new(lane_owner, timing.writes);
+        admitted_lane.lifecycle.set_scope(
+            self.lease_source
+                .lifecycle_scope(binding)
+                .filter(|scope| scope.machine == self.machine_id),
+        );
         let mut read_paused_at = None;
         let mut delivery_stall_at = None;
         let clock = self.clock.clone();
         loop {
             let now = self.clock.monotonic_now();
             admitted_lane.expire(now);
+            admitted_lane.lifecycle.expire(now);
             let effects = self.apply(LinkInput::Tick { now }).unwrap_or_default();
             for effect in effects {
                 match effect {
@@ -527,6 +539,7 @@ where
                 .into_iter()
                 .chain(self.state.next_deadline())
                 .chain(admitted_lane.reply_deadline())
+                .chain(admitted_lane.lifecycle.deadline())
                 .chain(delivery_stall_at)
                 .min();
             let input = control
@@ -534,17 +547,22 @@ where
                     tokio::select! {
                         biased;
                         () = sleep_if_due(self.clock.as_ref(), deadline) => SocketInput::Timer,
-                        input = next_socket_input(socket, &mut acquiring, &mut lane_owner.commands, admitted_lane.can_offer(), admitted_lane.read_admission(), priority) => input,
+                        input = next_socket_input(socket, &mut acquiring, lane_owner, &admitted_lane, priority) => input,
                     }
                 })
                 .await?;
-            // Rotate first poll across the three effect lanes. A Close already
+            // Rotate across the effect lanes. No lifecycle selection polls ahead
+            // of a ready renewal. A Close already
             // read below ends the attempt before another lane can run.
             priority = match &input {
                 SocketInput::Timer | SocketInput::EventSpace => priority,
                 SocketInput::Frame(..) => SocketPriority::AcquireLease,
                 SocketInput::Lease(_) => SocketPriority::AcceptCommand,
+                SocketInput::Command(_) if !lane_owner.lifecycle.commands.is_empty() => {
+                    SocketPriority::AcceptLifecycle
+                }
                 SocketInput::Command(_) => SocketPriority::ReadFrame,
+                SocketInput::Lifecycle(_) => SocketPriority::ReadFrame,
             };
             match input {
                 SocketInput::Timer => {}
@@ -563,6 +581,9 @@ where
                         .and_then(|frame| MachineLinkCloseCode::from_code(u16::from(frame.code)));
                     log::trace!("Central link received a close classified as {code:?}");
                     self.close(attempt, code);
+                    if self.state.ending().is_some() {
+                        admitted_lane.lifecycle.end(code);
+                    }
                     return Ok(());
                 }
                 SocketInput::Frame(Some(Ok(Message::Text(text))), permit) => {
@@ -663,6 +684,25 @@ where
                         }
                     }
                 }
+                SocketInput::Lifecycle(request) => {
+                    if !self
+                        .write_lifecycle_call(
+                            request,
+                            attempt,
+                            socket,
+                            control,
+                            &mut admitted_lane,
+                            lifecycle::LifecycleWriteContext {
+                                writes: timing.writes,
+                                delivery_stall_at,
+                            },
+                        )
+                        .await?
+                    {
+                        self.close(attempt, None);
+                        return Ok(());
+                    }
+                }
                 SocketInput::Lease(result) => {
                     acquiring = None;
                     match result {
@@ -715,6 +755,7 @@ where
                             let _ = self.apply(LinkInput::LeaseEnded {
                                 binding: binding.clone(),
                             });
+                            admitted_lane.lifecycle.end(None);
                             return Ok(());
                         }
                         Err(LeaseFailure::Fault | LeaseFailure::Unavailable { .. }) => {

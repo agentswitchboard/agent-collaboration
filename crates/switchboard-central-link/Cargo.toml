@@ -22,6 +22,8 @@ tokio-tungstenite.workspace = true
 tower-service = "0.3.3"
 central-link-client.workspace = true
 central-link-protocol.workspace = true
+fleet-identity-protocol = { path = "../fleet-identity-protocol", version = "0.1.158" }
+fleet-rpc.workspace = true
 router-clock.workspace = true
 state-machine-core.workspace = true
 workspace-ids.workspace = true

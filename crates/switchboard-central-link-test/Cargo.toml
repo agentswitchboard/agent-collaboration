@@ -21,6 +21,7 @@ switchboard-message-system = { workspace = true, features = ["test-support"] }
 collaboration-central-tokio = { workspace = true, features = ["test-support"] }
 collaboration-central-conformance = { workspace = true, features = ["signin-test-support"] }
 fleet-runtime = { workspace = true, features = ["test-support"] }
+fleet-identity-protocol = { path = "../fleet-identity-protocol", version = "0.1.158" }
 router-clock = { workspace = true, features = ["test-support"] }
 runtime-primitives.workspace = true
 reqwest.workspace = true

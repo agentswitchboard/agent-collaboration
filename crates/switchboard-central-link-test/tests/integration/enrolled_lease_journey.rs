@@ -1,4 +1,5 @@
 use super::*;
+use central_link_client::{AdmittedLifecycleLink, LifecycleLinkReadiness, SessionLifecycleScope};
 use std::collections::BTreeSet;
 use switchboard_link_lease::EnrollmentLeaseSource;
 use switchboard_machine_core_store::{MACHINE_LOCAL_DATABASE, load_or_create_machine_id};
@@ -56,6 +57,10 @@ struct ObservedLeases {
 }
 
 impl LeaseSource<EnrollmentKey> for ObservedLeases {
+    fn lifecycle_scope(&self, key: &EnrollmentKey) -> Option<SessionLifecycleScope> {
+        self.source.lifecycle_scope(key)
+    }
+
     fn acquire<'a>(
         &'a self,
         key: &'a EnrollmentKey,
@@ -183,7 +188,13 @@ async fn real_central_revocation_ends_the_sqlite_enrollment_and_never_redials_it
     let (stop, shutdown) = watch::channel(false);
     let mut changes = store.subscribe_enrollment_changes();
     let (status_tx, mut status) = watch::channel(LinkStatus::NotEnrolled);
-    let (_lane, lane) = link_lane_channel();
+    let (lane_handle, lane) = link_lane_channel();
+    let lifecycle = lane_handle.lifecycle_calls();
+    let scope = SessionLifecycleScope {
+        organization: central.organization_id.clone(),
+        machine: machine_id.clone(),
+        enrollment: enrollment.to_owned().try_into().unwrap(),
+    };
     let address = central
         .origin()
         .strip_prefix("http://")
@@ -239,6 +250,17 @@ async fn real_central_revocation_ends_the_sqlite_enrollment_and_never_redials_it
         .unwrap()
         .clone();
     assert!(matches!(seen, LinkStatus::Welcomed { .. }));
+    let admitted = lane_handle
+        .watch_admitted()
+        .wait_for(Option::is_some)
+        .await
+        .unwrap()
+        .clone()
+        .unwrap();
+    assert_eq!(
+        lifecycle.lifecycle_readiness(&scope),
+        LifecycleLinkReadiness::Ready(admitted)
+    );
 
     changes.borrow_and_update();
     let private = reqwest::Client::builder()
@@ -265,6 +287,10 @@ async fn real_central_revocation_ends_the_sqlite_enrollment_and_never_redials_it
         .await
         .unwrap();
     changes.changed().await.unwrap();
+    assert_eq!(
+        lifecycle.lifecycle_readiness(&scope),
+        LifecycleLinkReadiness::EnrollmentEnded
+    );
     assert_eq!(
         store.read_metadata().await.unwrap(),
         EnrollmentMetadata::Ended {

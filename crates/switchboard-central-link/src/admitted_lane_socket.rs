@@ -20,6 +20,7 @@ use crate::{
     admitted_lane_policy::{
         AdmittedLanePolicy, LaneEffect, LaneInput, LaneResult, LaneState, SocketReply,
     },
+    lifecycle_pending::LifecycleSocketCalls,
     link_lane::{CommandIntake, LaneRequest, LinkLaneOwner},
     wire_write_fence::WireWriteFence,
 };
@@ -38,6 +39,7 @@ pub(super) enum ReadAdmission {
 }
 
 pub(super) struct AdmittedSocketLane<'fence> {
+    pub(super) lifecycle: LifecycleSocketCalls,
     write_fence: &'fence WireWriteFence,
     state: LaneState,
     admitted: watch::Sender<Option<AdmittedConnection>>,
@@ -68,6 +70,7 @@ pub(super) enum FrameOffer {
 impl<'fence> AdmittedSocketLane<'fence> {
     pub(super) fn new(owner: &LinkLaneOwner, write_fence: &'fence WireWriteFence) -> Self {
         Self {
+            lifecycle: LifecycleSocketCalls::new(owner.lifecycle.admission.clone()),
             write_fence,
             state: LaneState::WaitingForAdmission,
             admitted: owner.admitted.clone(),
@@ -128,6 +131,7 @@ impl<'fence> AdmittedSocketLane<'fence> {
         // termination lossless even with a full delivery queue.
         self.withdrawal = Some(withdrawal);
         self.intake.open(admitted.connection.clone());
+        self.lifecycle.admit(&admitted);
         self.admitted.send_replace(Some(admitted.clone()));
         admission.send(LinkLaneEvent::ConnectionAdmitted(admitted));
         true

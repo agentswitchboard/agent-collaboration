@@ -14,6 +14,9 @@ mod handover_cases;
 #[path = "loss_cases.rs"]
 mod loss_cases;
 
+#[path = "lifecycle_isolation.rs"]
+mod lifecycle_isolation;
+
 #[path = "recovery_cases.rs"]
 mod recovery_cases;
 

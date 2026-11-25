@@ -8,17 +8,21 @@ use std::{
 };
 
 use central_link_client::{
-    AdmittedConnection, CheckedBatchResults, ConnectionAttempt, CorrelatedReceiptResults,
-    CorrelatedRequestReply, CorrelatedStatusReply, ImmediateRequestCommand, LINK_LANE_FRAME_BYTES,
-    LinkLaneDisposition, LinkLaneEvent, ReadyLinkLane, RegisteredConnection, RequestStatusCommand,
-    SubmitReceiptsCommand, UntouchedCommand, WRITE_BATCH_ENVELOPE_BYTES, WriteBatchCommand,
-    WriteBatchDisposition, WriteBatchMemberDisposition, encoded_request_size,
+    AdmittedConnection, AdmittedLifecycleLink, CheckedBatchResults, ConnectionAttempt,
+    CorrelatedReceiptResults, CorrelatedRequestReply, CorrelatedStatusReply,
+    ImmediateRequestCommand, LINK_LANE_FRAME_BYTES, LinkLaneDisposition, LinkLaneEvent,
+    ReadyLinkLane, RegisteredConnection, RequestStatusCommand, SubmitReceiptsCommand,
+    UntouchedCommand, WRITE_BATCH_ENVELOPE_BYTES, WriteBatchCommand, WriteBatchDisposition,
+    WriteBatchMemberDisposition, encoded_request_size,
 };
 use central_link_protocol::{DataFrame, LinkRequestBatch};
 use router_clock::ClockInstant;
 use tokio::sync::{Mutex as AsyncMutex, mpsc, oneshot, watch};
 
-use crate::admitted_lane_policy::{ExpectedReply, LaneAnswer, LaneResult};
+use crate::{
+    admitted_lane_policy::{ExpectedReply, LaneAnswer, LaneResult},
+    lifecycle_lane::{LifecycleCallHandle, LifecycleQueue, lifecycle_channel},
+};
 
 const OPERATION_CAPACITY: usize = 16;
 const EVENT_CAPACITY: usize = 64;
@@ -28,6 +32,7 @@ type LaneFuture<'handle, Answer> = Pin<Box<dyn Future<Output = Answer> + Send + 
 /// The user-side handle created by `link_lane_channel` for one driver lifetime.
 #[derive(Clone)]
 pub struct LinkLaneHandle {
+    lifecycle: LifecycleCallHandle,
     commands: mpsc::Sender<LaneRequest>,
     intake: Arc<CommandIntake>,
     events: Arc<AsyncMutex<mpsc::Receiver<LinkLaneEvent>>>,
@@ -37,6 +42,7 @@ pub struct LinkLaneHandle {
 
 /// The socket-side endpoint created by `link_lane_channel` for one running driver.
 pub struct LinkLaneOwner {
+    pub(super) lifecycle: LifecycleQueue,
     pub(super) commands: mpsc::Receiver<LaneRequest>,
     pub(super) intake: Arc<CommandIntake>,
     pub(super) events: mpsc::Sender<LinkLaneEvent>,
@@ -46,6 +52,7 @@ pub struct LinkLaneOwner {
 
 /// Create the paired user handle and socket endpoint for one driver lifetime.
 pub fn link_lane_channel() -> (LinkLaneHandle, LinkLaneOwner) {
+    let (lifecycle_handle, lifecycle) = lifecycle_channel();
     let (commands_out, commands) = mpsc::channel(OPERATION_CAPACITY);
     let (events, events_in) = mpsc::channel(EVENT_CAPACITY);
     let (admitted, watch_admitted) = watch::channel(None);
@@ -53,6 +60,7 @@ pub fn link_lane_channel() -> (LinkLaneHandle, LinkLaneOwner) {
     let intake = Arc::new(CommandIntake::default());
     (
         LinkLaneHandle {
+            lifecycle: lifecycle_handle,
             commands: commands_out,
             intake: intake.clone(),
             events: Arc::new(AsyncMutex::new(events_in)),
@@ -60,6 +68,7 @@ pub fn link_lane_channel() -> (LinkLaneHandle, LinkLaneOwner) {
             registered: watch_registered,
         },
         LinkLaneOwner {
+            lifecycle,
             commands,
             intake,
             events,
@@ -175,7 +184,7 @@ impl io::Write for FrameBuffer {
     }
 }
 
-fn encode_user_frame(frame: &DataFrame) -> Result<String, UntouchedCommand> {
+pub(super) fn encode_user_frame(frame: &DataFrame) -> Result<String, UntouchedCommand> {
     let mut buffer = FrameBuffer(Vec::new());
     serde_json::to_writer(&mut buffer, frame).map_err(|error| {
         if error.is_io() {
@@ -202,6 +211,11 @@ fn check_batch_budget(requests: &LinkRequestBatch) -> Result<(), UntouchedComman
 }
 
 impl LinkLaneHandle {
+    /// Hand out the typed lifecycle port without retaining any mail handles.
+    pub fn lifecycle_calls(&self) -> impl AdmittedLifecycleLink + Clone + use<> {
+        self.lifecycle.clone()
+    }
+
     fn is_admitted(&self, connection: &ConnectionAttempt) -> bool {
         self.admitted
             .borrow()

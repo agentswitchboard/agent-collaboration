@@ -270,6 +270,22 @@ where
             ClientEvent::CallMac { correlation_id, .. } if admitted_lane.is_admitted() => {
                 SocketReceive::RefuseCall(correlation_id)
             }
+            ClientEvent::CentralCallReply {
+                correlation_id,
+                result,
+            } if admitted_lane.is_admitted() => {
+                let now = self.clock.monotonic_now();
+                if self
+                    .state
+                    .renewal_deadline()
+                    .is_some_and(|deadline| now < deadline)
+                {
+                    admitted_lane
+                        .lifecycle
+                        .answer(attempt, &correlation_id, *result, now);
+                }
+                SocketReceive::Continue
+            }
             ClientEvent::CallMac { .. }
             | ClientEvent::CentralCallReply { .. }
             | ClientEvent::ReceiptResults { .. }

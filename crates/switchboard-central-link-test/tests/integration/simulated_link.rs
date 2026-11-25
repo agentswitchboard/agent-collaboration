@@ -9,7 +9,9 @@ use std::{
 };
 
 use axum::serve::Listener;
-use central_link_client::{AdmittedConnection, EnrollmentEnd, ReadyLinkLane};
+use central_link_client::{
+    AdmittedConnection, EnrollmentEnd, ReadyLinkLane, SessionLifecycleScope,
+};
 use collaboration_central_tokio::{
     WorkspaceLink,
     test_support::{MACHINE_LINK_FIXTURE_MACHINE, MachineLinkFixture, start_session_link_fixture},
@@ -36,6 +38,7 @@ use self::{
 };
 
 mod custody_cases;
+mod lifecycle_cases;
 mod mac_capabilities;
 mod packet_flight;
 mod simulation_clock;
@@ -112,6 +115,10 @@ struct SimulatedLink {
 }
 
 impl SimulatedLink {
+    fn lifecycle_send_deadline(&self) -> ClockInstant {
+        self.clock.monotonic_now().after(Duration::from_secs(10))
+    }
+
     async fn start(
         clock: Arc<ManualClock>,
         network: PacketFlight,
@@ -313,6 +320,10 @@ struct SimulatedLeases {
 }
 
 impl LeaseSource<u8> for SimulatedLeases {
+    fn lifecycle_scope(&self, binding: &u8) -> Option<SessionLifecycleScope> {
+        (*binding == 1).then(|| lifecycle_cases::fixture_scope(&self.central))
+    }
+
     fn acquire<'lease>(
         &'lease self,
         binding: &'lease u8,

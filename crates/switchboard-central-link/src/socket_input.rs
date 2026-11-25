@@ -7,9 +7,10 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::{Error as WebSocketError, Message};
 
 use crate::{
-    admitted_lane_socket::{EventPermit, ReadAdmission},
+    admitted_lane_socket::{AdmittedSocketLane, EventPermit, ReadAdmission},
     lease_source::{LeaseFailure, LeaseFuture, LinkLease},
-    link_lane::LaneRequest,
+    lifecycle_lane::LifecycleRequest,
+    link_lane::{LaneRequest, LinkLaneOwner},
 };
 
 pub(super) enum SocketInput<Binding> {
@@ -18,6 +19,7 @@ pub(super) enum SocketInput<Binding> {
     EventSpace,
     Lease(Result<LinkLease<Binding>, LeaseFailure>),
     Command(LaneRequest),
+    Lifecycle(LifecycleRequest),
 }
 
 #[derive(Clone, Copy)]
@@ -25,23 +27,29 @@ pub(super) enum SocketPriority {
     ReadFrame,
     AcquireLease,
     AcceptCommand,
+    AcceptLifecycle,
 }
 
 pub(super) async fn next_socket_input<Binding>(
     socket: &mut (impl Stream<Item = Result<Message, WebSocketError>> + Unpin),
     acquisition: &mut Option<LeaseFuture<'_, Binding>>,
-    commands: &mut mpsc::Receiver<LaneRequest>,
-    can_offer: bool,
-    read_admission: ReadAdmission,
+    lanes: &mut LinkLaneOwner,
+    admitted: &AdmittedSocketLane<'_>,
     priority: SocketPriority,
 ) -> SocketInput<Binding> {
-    let reading = read_socket(socket, read_admission);
+    let reading = read_socket(socket, admitted.read_admission());
     let leasing = acquire_if_pending(acquisition).map(SocketInput::Lease);
-    let command = receive_command(commands, can_offer).map(SocketInput::Command);
+    let command =
+        receive_command(&mut lanes.commands, admitted.can_offer()).map(SocketInput::Command);
+    let lifecycle = receive_command(&mut lanes.lifecycle.commands, admitted.is_admitted())
+        .map(SocketInput::Lifecycle);
     match priority {
-        SocketPriority::ReadFrame => poll_in_order(reading, leasing, command).await,
-        SocketPriority::AcquireLease => poll_in_order(leasing, command, reading).await,
-        SocketPriority::AcceptCommand => poll_in_order(command, reading, leasing).await,
+        SocketPriority::ReadFrame => poll_in_order(reading, leasing, command, lifecycle).await,
+        SocketPriority::AcquireLease => poll_in_order(leasing, command, lifecycle, reading).await,
+        SocketPriority::AcceptCommand => poll_in_order(command, reading, leasing, lifecycle).await,
+        SocketPriority::AcceptLifecycle => {
+            poll_in_order(leasing, lifecycle, reading, command).await
+        }
     }
 }
 
@@ -68,19 +76,21 @@ async fn poll_in_order<Output>(
     first: impl Future<Output = Output>,
     second: impl Future<Output = Output>,
     third: impl Future<Output = Output>,
+    fourth: impl Future<Output = Output>,
 ) -> Output {
     tokio::select! {
         biased;
         result = first => result,
         result = second => result,
         result = third => result,
+        result = fourth => result,
     }
 }
 
-async fn receive_command(
-    commands: &mut mpsc::Receiver<LaneRequest>,
+async fn receive_command<Command>(
+    commands: &mut mpsc::Receiver<Command>,
     can_offer: bool,
-) -> LaneRequest {
+) -> Command {
     if can_offer && let Some(command) = commands.recv().await {
         return command;
     }

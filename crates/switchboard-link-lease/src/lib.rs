@@ -5,7 +5,7 @@ use std::{
     sync::{Arc, Mutex, PoisonError},
 };
 
-use central_link_client::EnrollmentEnd;
+use central_link_client::{EnrollmentEnd, SessionLifecycleScope};
 use router_clock::{ClockInstant, RuntimeClock};
 use switchboard_central_link::{
     lease_source::{LeaseFailure, LeaseFuture, LeaseSource},
@@ -270,6 +270,14 @@ impl EnrollmentLeaseSource {
 }
 
 impl LeaseSource<EnrollmentKey> for EnrollmentLeaseSource {
+    fn lifecycle_scope(&self, key: &EnrollmentKey) -> Option<SessionLifecycleScope> {
+        Some(SessionLifecycleScope {
+            organization: key.organization_id.to_string().try_into().ok()?,
+            machine: key.machine_id.clone(),
+            enrollment: key.enrollment_id.to_string().try_into().ok()?,
+        })
+    }
+
     fn acquire<'source>(
         &'source self,
         key: &'source EnrollmentKey,

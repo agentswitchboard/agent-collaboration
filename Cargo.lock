@@ -5889,6 +5889,8 @@ version = "0.1.158"
 dependencies = [
  "central-link-client",
  "central-link-protocol",
+ "fleet-identity-protocol",
+ "fleet-rpc",
  "futures-util",
  "hegeltest",
  "http-body-util",
@@ -5918,6 +5920,7 @@ dependencies = [
  "central-storage",
  "collaboration-central-conformance",
  "collaboration-central-tokio",
+ "fleet-identity-protocol",
  "fleet-runtime",
  "reqwest 0.12.28",
  "router-clock",

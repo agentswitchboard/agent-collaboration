@@ -2,7 +2,7 @@
 
 use std::{future::Future, pin::Pin, time::Duration};
 
-use central_link_client::EnrollmentEnd;
+use central_link_client::{EnrollmentEnd, SessionLifecycleScope};
 use central_link_protocol::MachineTokenText;
 
 use crate::link_policy::{LeaseVersion, LeaseWindow};
@@ -30,6 +30,11 @@ pub type LeaseFuture<'source, Binding> =
 /// binding (organization, machine and enrollment). That owner completes any
 /// already-started sign-in rotation even if a socket drops its waiting future.
 pub trait LeaseSource<Binding>: Send + Sync {
+    /// Project the exact enrollment authorized by this binding for typed calls.
+    fn lifecycle_scope(&self, _binding: &Binding) -> Option<SessionLifecycleScope> {
+        None
+    }
+
     fn acquire<'source>(
         &'source self,
         binding: &'source Binding,
