@@ -480,7 +480,7 @@ async fn run_discovery(scenario: &str) -> DiscoveryRun {
     wire.client.shutdown().await;
     DiscoveryRun {
         capture: wire.capture(),
-        metadata: catalog.model_reasoning,
+        metadata: catalog.into_model_reasoning(),
         reply_seen,
     }
 }

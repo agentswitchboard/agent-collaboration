@@ -26,6 +26,10 @@ use provider_session_machines::{
 use std::sync::Arc;
 use uuid::Uuid;
 
+#[cfg(test)]
+#[path = "owner_session_setting_test.rs"]
+mod tests;
+
 pub struct RestoreSettingPlan {
     pub mode: RestoredMode,
     pub accepted_mode_fallback: Option<String>,
@@ -274,14 +278,14 @@ impl CorrelatedSetting {
                     };
                     SettingObservation::AppliedWithReadback(Box::new(SettingReadback {
                         value,
-                        catalogue: Arc::new(shape.catalog),
+                        catalogue: shape.catalog.into_record(),
                         fast,
                         mode_reason,
                     }))
                 } else if refused || fast_refusal {
                     SettingObservation::Refused {
                         current,
-                        catalogue: fast_refusal.then(|| Arc::new(shape.catalog)),
+                        catalogue: fast_refusal.then(|| shape.catalog.into_record()),
                     }
                 } else {
                     SettingObservation::Unknown

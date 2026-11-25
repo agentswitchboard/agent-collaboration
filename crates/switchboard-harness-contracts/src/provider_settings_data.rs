@@ -1,6 +1,6 @@
 //! Provider setting catalogue values shared with the session controller.
 
-use crate::{ProviderSettingChoice, ProviderSettingKind};
+use crate::{ModelReasoningMetadata, ProviderSettingChoice, ProviderSettingKind};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ProviderConfigValue {
@@ -24,4 +24,14 @@ pub enum ProviderModeObservation {
     #[default]
     FromCatalogue,
     Unconfirmed,
+}
+
+/// The provider settings snapshot carried in a work readback.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ProviderSettingsCatalogRecord {
+    pub current_mode: Option<String>,
+    pub mode_observation: ProviderModeObservation,
+    pub modes: Vec<ProviderSettingChoice>,
+    pub config_options: Vec<ProviderConfigOption>,
+    pub model_reasoning: ModelReasoningMetadata,
 }

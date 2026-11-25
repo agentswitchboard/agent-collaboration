@@ -1,11 +1,12 @@
 //! Authorization and outcomes for work crossing the harness boundary.
 
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::{
-    AuthorizationTarget, InputId, OwnerIncarnation, PendingTurnResponse, SessionGeneration,
-    SettingApplication, TurnId,
+    AuthorizationTarget, InputId, OwnerIncarnation, PendingTurnResponse, PermissionModeReason,
+    ProviderSettingsCatalogRecord, SessionGeneration, SettingApplication, SettingValueId, TurnId,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -117,4 +118,68 @@ pub enum FastReadback {
         application: SettingApplication,
         input: InputId,
     },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DispatchResult {
+    CancelDrainFinished(DispatchAuthorization),
+    CancelTaken {
+        authorization: DispatchAuthorization,
+        drain: CancelDrainReport,
+    },
+    Taken(DispatchAuthorization),
+    Revoked(DispatchAuthorization),
+    AlreadyTaken(DispatchAuthorization),
+    PromptRequired {
+        authorization: DispatchAuthorization,
+        replacement_turn: TurnId,
+    },
+    DefinitelyUnsent(DispatchAuthorization),
+    StaleTarget(DispatchAuthorization),
+    PromptFinished {
+        authorization: DispatchAuthorization,
+        outcome: WireOutcome<PromptCompletion>,
+    },
+    PromptFailed {
+        authorization: DispatchAuthorization,
+        failure: ProviderWireFailure,
+    },
+    SteerFinished {
+        authorization: DispatchAuthorization,
+        outcome: WireOutcome<()>,
+    },
+    SteerInvalidReply(DispatchAuthorization),
+    SteerNeedsPrompt(DispatchAuthorization),
+    SteerStartedNewTurn {
+        authorization: DispatchAuthorization,
+        turn: TurnId,
+    },
+    SettingFinished {
+        authorization: DispatchAuthorization,
+        observation: SettingObservation,
+    },
+    SettingKept {
+        authorization: DispatchAuthorization,
+        reason: Option<PermissionModeReason>,
+    },
+}
+
+/// An observed setting result. The controller adds its catalogue operations at ingress.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SettingObservation<Catalogue = ProviderSettingsCatalogRecord> {
+    Applied(SettingValueId),
+    AppliedWithReadback(Box<SettingReadback<Catalogue>>),
+    Refused {
+        current: Option<SettingValueId>,
+        catalogue: Option<Arc<Catalogue>>,
+    },
+    Unknown,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SettingReadback<Catalogue = ProviderSettingsCatalogRecord> {
+    pub value: SettingValueId,
+    pub catalogue: Arc<Catalogue>,
+    pub fast: FastReadback,
+    pub mode_reason: Option<PermissionModeReason>,
 }

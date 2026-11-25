@@ -1,8 +1,8 @@
 use super::{
-    InputId, LastLiveTurn, OwnerInput, OwnerSetting, PromptCompletion, RunAttempt,
-    SessionGeneration, SessionLifecycle, SessionOwnerCommand, SessionOwnerReply,
-    SessionPublication, SessionStoreRequest, SessionStoreResult, SessionTurn, SessionWireRequest,
-    SessionWireResult, TurnId,
+    InputId, LastLiveTurn, OwnerInput, OwnerSetting, RunAttempt, SessionGeneration,
+    SessionLifecycle, SessionOwnerCommand, SessionOwnerReply, SessionPublication,
+    SessionStoreRequest, SessionStoreResult, SessionTurn, SessionWireRequest, SessionWireResult,
+    TurnId,
 };
 use crate::provider_settings_catalog::ProviderSettingsUpdate;
 use crate::session_lifecycle_machine::{CloseAttempt, LoadAttempt};
@@ -17,8 +17,8 @@ use std::time::Duration;
 use uuid::Uuid;
 
 pub use switchboard_harness_contracts::{
-    CancelDrainReport, ConnectionEpoch, FastReadback, OwnerAddress, OwnerIncarnation,
-    ProviderWireFailure, ProviderWireFailureKind,
+    CancelDrainReport, ConnectionEpoch, DispatchResult, FastReadback, OwnerAddress,
+    OwnerIncarnation, ProviderWireFailure, ProviderWireFailureKind, SettingReadback,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -162,50 +162,6 @@ impl RevokeReason {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DispatchResult {
-    CancelDrainFinished(DispatchAuthorization),
-    CancelTaken {
-        authorization: DispatchAuthorization,
-        drain: CancelDrainReport,
-    },
-    Taken(DispatchAuthorization),
-    Revoked(DispatchAuthorization),
-    AlreadyTaken(DispatchAuthorization),
-    PromptRequired {
-        authorization: DispatchAuthorization,
-        replacement_turn: TurnId,
-    },
-    DefinitelyUnsent(DispatchAuthorization),
-    StaleTarget(DispatchAuthorization),
-    PromptFinished {
-        authorization: DispatchAuthorization,
-        outcome: super::WireOutcome<PromptCompletion>,
-    },
-    PromptFailed {
-        authorization: DispatchAuthorization,
-        failure: ProviderWireFailure,
-    },
-    SteerFinished {
-        authorization: DispatchAuthorization,
-        outcome: super::WireOutcome<()>,
-    },
-    SteerInvalidReply(DispatchAuthorization),
-    SteerNeedsPrompt(DispatchAuthorization),
-    SteerStartedNewTurn {
-        authorization: DispatchAuthorization,
-        turn: TurnId,
-    },
-    SettingFinished {
-        authorization: DispatchAuthorization,
-        observation: super::SettingObservation,
-    },
-    SettingKept {
-        authorization: DispatchAuthorization,
-        reason: Option<PermissionModeReason>,
-    },
-}
-
 pub use switchboard_harness_contracts::PendingTurnResponse;
 
 pub use switchboard_harness_contracts::TurnMembership;
@@ -270,14 +226,6 @@ pub struct InitialSettingFailure {
 }
 
 pub use switchboard_harness_contracts::PermissionModeReason;
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SettingReadback {
-    pub value: SettingValueId,
-    pub catalogue: Arc<ProviderSettingsCatalog>,
-    pub fast: FastReadback,
-    pub mode_reason: Option<PermissionModeReason>,
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ModelFastOutcome {

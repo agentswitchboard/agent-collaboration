@@ -167,16 +167,7 @@ pub enum RestoreModeOutcome {
     Unconfirmed,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum SettingObservation {
-    Applied(SettingValueId),
-    AppliedWithReadback(Box<SettingReadback>),
-    Refused {
-        current: Option<SettingValueId>,
-        catalogue: Option<Arc<ProviderSettingsCatalog>>,
-    },
-    Unknown,
-}
+pub use switchboard_harness_contracts::SettingObservation;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SessionWireResult {

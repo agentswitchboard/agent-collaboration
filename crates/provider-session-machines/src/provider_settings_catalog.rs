@@ -1,5 +1,9 @@
 //! Protocol-neutral provider setting values and their advertised choices.
-use crate::{ModelReasoningMetadata, ProviderSettingChoice, ProviderSettingKind};
+use crate::{ModelReasoningMetadata, ProviderSettingKind};
+use std::{
+    ops::{Deref, DerefMut},
+    sync::Arc,
+};
 
 /// A select option's vendor-provided ID for turning fast off.
 pub fn is_fast_off_select_value(value: &str) -> bool {
@@ -25,15 +29,45 @@ pub struct EffectiveProviderSettings {
 
 pub use switchboard_harness_contracts::{
     ProviderConfigOption, ProviderConfigValue, ProviderModeObservation,
+    ProviderSettingsCatalogRecord,
 };
 
+/// Last options advertised by a provider session, with its catalogue operations.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ProviderSettingsCatalog {
-    pub current_mode: Option<String>,
-    pub mode_observation: ProviderModeObservation,
-    pub modes: Vec<ProviderSettingChoice>,
-    pub config_options: Vec<ProviderConfigOption>,
-    pub model_reasoning: ModelReasoningMetadata,
+pub struct ProviderSettingsCatalog(Arc<ProviderSettingsCatalogRecord>);
+
+impl Deref for ProviderSettingsCatalog {
+    type Target = ProviderSettingsCatalogRecord;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for ProviderSettingsCatalog {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        Arc::make_mut(&mut self.0)
+    }
+}
+
+impl ProviderSettingsCatalog {
+    #[must_use]
+    pub fn from_record(record: impl Into<Arc<ProviderSettingsCatalogRecord>>) -> Self {
+        Self(record.into())
+    }
+
+    #[must_use]
+    pub fn into_record(self) -> Arc<ProviderSettingsCatalogRecord> {
+        self.0
+    }
+
+    #[must_use]
+    pub fn into_model_reasoning(self) -> ModelReasoningMetadata {
+        match Arc::try_unwrap(self.0) {
+            Ok(record) => record.model_reasoning,
+            Err(record) => record.model_reasoning.clone(),
+        }
+    }
 }
 
 /// A live provider notification decoded before the owner receives it.

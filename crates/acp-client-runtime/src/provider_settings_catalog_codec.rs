@@ -8,6 +8,7 @@ use vendor_protocol::acp::settings_codec::{
 
 use provider_session_machines::{
     ProviderConfigOption, ProviderConfigValue, ProviderSettingChoice, ProviderSettingsCatalog,
+    ProviderSettingsCatalogRecord,
 };
 
 pub(crate) fn catalog_from_session_response(
@@ -31,13 +32,13 @@ pub(crate) fn catalog_from_session_response(
             )
         },
     );
-    let mut catalog = ProviderSettingsCatalog {
+    let mut catalog = ProviderSettingsCatalog::from_record(ProviderSettingsCatalogRecord {
         model_reasoning: connection_models.clone(),
         current_mode,
         mode_observation: provider_session_machines::ProviderModeObservation::FromCatalogue,
         modes,
         config_options: catalog_config_options(response.config_options.as_deref()),
-    };
+    });
     apply_model_metadata(&mut catalog, behavior, response.meta.as_ref());
     catalog
 }
