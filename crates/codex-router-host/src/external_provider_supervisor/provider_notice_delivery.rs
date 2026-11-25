@@ -157,7 +157,12 @@ impl ManagedNoticeRun for OwnedManagedNotice {
                 .submit_owned_notice(request, self.run, take.clone())
                 .await;
             if let Some(taken_at) = take.taken_at() {
-                return NoticeWriteOutcome::Written { taken_at };
+                return match (self.run.placement, &accepted) {
+                    (NoticePlacement::Direct, _) | (NoticePlacement::Steer(_), Ok(InputAcceptance::Steered { .. })) => NoticeWriteOutcome::Written { taken_at },
+                    (NoticePlacement::Steer(_), Ok(InputAcceptance::Unsent { reason: Some(provider_session_machines::session_owner::RevokeReason::ProviderSteerRefused) })) => NoticeWriteOutcome::SteerNotInjected,
+                    (NoticePlacement::Steer(_), Ok(InputAcceptance::ProviderStarted)) => NoticeWriteOutcome::NotKnown(NoticeUncertainty::UnexpectedSteerOutcome),
+                    (NoticePlacement::Steer(_), _) => NoticeWriteOutcome::NotKnown(NoticeUncertainty::WriterOutcomeLost),
+                };
             }
             match accepted {
                 Ok(InputAcceptance::Unsent { .. }) => {

@@ -263,6 +263,9 @@ impl NoticeHistory {
                     NoticeWriteOutcome::DefinitelyNotWritten(_) => {
                         self.expired_waiting = now.timestamp_millis() >= CUTOFF;
                     }
+                    NoticeWriteOutcome::SteerNotInjected => {
+                        self.expired_waiting = true;
+                    }
                     NoticeWriteOutcome::NotKnown(_) => {
                         self.cannot_offer_again = true;
                     }

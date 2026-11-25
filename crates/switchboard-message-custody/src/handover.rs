@@ -50,7 +50,11 @@ impl StateTag for Handoff {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NoticeWriteOutcome {
-    Written { taken_at: Timestamp },
+    Written {
+        taken_at: Timestamp,
+    },
+    /// The provider replied that the selected turn did not take the steer.
+    SteerNotInjected,
     DefinitelyNotWritten(NoticePreTakeRefusal),
     NotKnown(NoticeUncertainty),
 }
@@ -67,6 +71,7 @@ pub enum NoticePreTakeRefusal {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NoticeUncertainty {
     WriterOutcomeLost,
+    UnexpectedSteerOutcome,
     UnitRetiredBeforeOutcome,
 }
 
@@ -197,6 +202,7 @@ impl StateMachine for DirectHandoffMachine {
                         (Waiting, vec![])
                     }
                     NoticeWriteOutcome::DefinitelyNotWritten(_) => (NotSeen, vec![]),
+                    NoticeWriteOutcome::SteerNotInjected => (NotSeen, vec![]),
                     NoticeWriteOutcome::NotKnown(_) => (NotKnown, vec![]),
                 }
             }

@@ -14,6 +14,7 @@ enum NoticeScript {
     NoWrite,
     Direct,
     DirectThenSteer,
+    DirectThenProviderDeclinesSteer,
     DirectWithSteeringAvailable,
 }
 
@@ -80,7 +81,7 @@ async fn managed_notice_fixture(
                 "protocolVersion": 1,
                 "agentCapabilities": {"loadSession": true, "mcpCapabilities": {"http": true}},
                 "agentInfo": {"name": "managed-notice-fixture", "version": "1"},
-                "_meta": {"steering": {"supported": matches!(notices, NoticeScript::DirectThenSteer | NoticeScript::DirectWithSteeringAvailable)}}
+                "_meta": {"steering": {"supported": matches!(notices, NoticeScript::DirectThenSteer | NoticeScript::DirectThenProviderDeclinesSteer | NoticeScript::DirectWithSteeringAvailable)}}
             }),
         )
         .expect_request(
@@ -95,20 +96,41 @@ async fn managed_notice_fixture(
             "sessionId": "saved-notice-session",
             "prompt": [{"type": "text", "text": "You have 1 new message. Read them with message_inbox."}]
         })).write_marker(&receipt.with_extension("prompt"));
-        let script = if matches!(notices, NoticeScript::DirectThenSteer) {
-            script.expect_request("steer", "_session/steering", json!({
+        if matches!(notices, NoticeScript::DirectThenProviderDeclinesSteer) {
+            script
+                .expect_request(
+                    "steer",
+                    "_session/steering",
+                    json!({"sessionId": "saved-notice-session"}),
+                )
+                .write_marker(&receipt.with_extension("steer"))
+                .respond("steer", json!({"outcome":"promptRequired"}))
+                .respond("notice", json!({"stopReason": "end_turn"}))
+                // A fallback build completes this request, leaving explicit evidence
+                // of the prohibited second prompt instead of hanging on it.
+                .expect_request(
+                    "fallback",
+                    "session/prompt",
+                    json!({"sessionId": "saved-notice-session"}),
+                )
+                .write_marker(&receipt.with_extension("fallback"))
+                .respond("fallback", json!({"stopReason": "end_turn"}))
+        } else {
+            let script = if matches!(notices, NoticeScript::DirectThenSteer) {
+                script.expect_request("steer", "_session/steering", json!({
                 "sessionId": "saved-notice-session",
                 "prompt": [{"type": "text", "text": "You have 1 new message. Read them with message_inbox."}]
             })).write_marker(&receipt.with_extension("steer")).respond("steer", json!({"outcome": "injected"}))
-        } else {
+            } else {
+                script
+            };
             script
-        };
-        script
-            .expect_message(json!({
-                "jsonrpc": "2.0", "method": "session/cancel",
-                "params": {"sessionId": "saved-notice-session"}
-            }))
-            .respond("notice", json!({"stopReason": "cancelled"}))
+                .expect_message(json!({
+                    "jsonrpc": "2.0", "method": "session/cancel",
+                    "params": {"sessionId": "saved-notice-session"}
+                }))
+                .respond("notice", json!({"stopReason": "cancelled"}))
+        }
     } else {
         script
     };
@@ -147,6 +169,46 @@ async fn managed_notice_fixture(
         hub_target,
         supervisor,
     }
+}
+
+#[tokio::test]
+async fn managed_notice_provider_prompt_required_cannot_start_a_replacement_turn_or_report_seen() {
+    use provider_session_machines::session_turn_machine::SessionTurn;
+
+    let clock = Arc::new(ManualClock::new(chrono::DateTime::UNIX_EPOCH));
+    let rig = managed_notice_fixture(
+        clock.clone(),
+        NoticeScript::DirectThenProviderDeclinesSteer,
+        collaboration_protocol::ProviderKind::ClaudeCode,
+    )
+    .await;
+    let authority = Arc::new(NoticeAuthority::new());
+    let (adapter, recipient, initial) = prepare_notice(&rig, &clock, authority.clone());
+    assert!(matches!(
+        adapter
+            .ready(&recipient)
+            .await
+            .unwrap()
+            .offer(initial)
+            .await,
+        NoticeWriteOutcome::Written { .. }
+    ));
+    let exact = adapter.ready(&recipient).await.unwrap();
+    assert_eq!(
+        exact
+            .offer(second_notice(&recipient, &clock, authority))
+            .await,
+        NoticeWriteOutcome::SteerNotInjected
+    );
+    let owner = rig.supervisor.session_owner_for(&rig.target).unwrap();
+    owner
+        .snapshots()
+        .wait_for(|snapshot| snapshot.turn == SessionTurn::Idle)
+        .await
+        .unwrap();
+    assert!(rig.receipt.with_extension("steer").is_file());
+    assert!(!rig.receipt.with_extension("fallback").exists());
+    rig.supervisor.shutdown().await.unwrap();
 }
 
 fn prepare_notice(
