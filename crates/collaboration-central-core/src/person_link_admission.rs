@@ -262,7 +262,10 @@ fn approval_reply(
         PersonApprovalAnswer::List(body) => {
             ListPersonApprovalsRpc::reply(Envelope { target, body })
         }
-        PersonApprovalAnswer::Read(body) => ReadPersonApprovalRpc::reply(Envelope { target, body }),
+        PersonApprovalAnswer::Read(body) => ReadPersonApprovalRpc::reply(Envelope {
+            target,
+            body: Box::new(body),
+        }),
         PersonApprovalAnswer::Decide(body) => {
             DecidePersonApprovalRpc::reply(Envelope { target, body })
         }

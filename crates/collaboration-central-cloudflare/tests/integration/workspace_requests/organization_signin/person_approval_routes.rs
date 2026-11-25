@@ -49,32 +49,27 @@ impl PersonApprovalHarness for ApprovalFixture<'_> {
         if !runtime.control::<bool>("hold-central", &point).await? {
             return Err("could not arm the C3 post-verification hold".into());
         }
-        let advance = async {
-            if !runtime
-                .control::<bool>("until-held-central", &point)
-                .await?
-            {
-                return Err("C3 request never reached the post-verification hold".into());
-            }
-            let clock_ms = NOW_SECONDS * 1000 + i64::try_from(advance_ms)?;
-            self.fixture.clock.set_utc(
-                chrono::DateTime::from_timestamp_millis(clock_ms)
-                    .ok_or("fixture clock after C3 verification")?,
-            );
-            self.fixture.runtime().await;
-            if !runtime.control::<bool>("release-central", &point).await? {
-                return Err("could not release the C3 post-verification hold".into());
-            }
-            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-        };
         tokio::pin!(send);
-        tokio::select! {
-            early = &mut send => { early?; Err("approval request completed before the applying sample hold".into()) },
-            advanced = advance => {
-                advanced?;
-                send.await
-            }
+        let reached = tokio::select! {
+            early = &mut send => {
+                early?;
+                return Err("approval request completed before the applying sample hold".into());
+            },
+            reached = runtime.control::<bool>("until-held-central", &point) => reached?,
+        };
+        if !reached {
+            return Err("approval request never reached the applying sample hold".into());
         }
+        let clock_ms = NOW_SECONDS * 1000 + i64::try_from(advance_ms)?;
+        self.fixture.clock.set_utc(
+            chrono::DateTime::from_timestamp_millis(clock_ms)
+                .ok_or("fixture clock before the approval applying sample")?,
+        );
+        self.fixture.runtime().await;
+        if !runtime.control::<bool>("release-central", &point).await? {
+            return Err("could not release the approval applying sample hold".into());
+        }
+        send.await
     }
 
     async fn write(&self, statement: &'static str, args: Vec<SqlValue>) -> ConformanceResult<()> {

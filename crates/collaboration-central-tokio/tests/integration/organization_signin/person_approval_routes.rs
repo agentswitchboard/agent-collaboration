@@ -56,23 +56,20 @@ impl PersonApprovalHarness for ApprovalFixture<'_> {
             .runtime()
             .pause_points()
             .hold_central(PausePoint::BeforeSignInSample);
-        let advance = async {
-            held.until_held().await;
-            self.fixture
-                .clock
-                .advance(Duration::from_millis(advance_ms))
-                .await?;
-            held.release();
-            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-        };
         tokio::pin!(send);
         tokio::select! {
-            early = &mut send => { early?; Err("approval request completed before the applying sample hold".into()) },
-            advanced = advance => {
-                advanced?;
-                send.await
-            }
+            early = &mut send => {
+                early?;
+                return Err("approval request completed before the applying sample hold".into());
+            },
+            () = held.until_held() => {}
         }
+        self.fixture
+            .clock
+            .advance(Duration::from_millis(advance_ms))
+            .await?;
+        held.release();
+        send.await
     }
 
     async fn write(&self, statement: &'static str, args: Vec<SqlValue>) -> Result {

@@ -104,7 +104,7 @@ impl IndependentReplyRpc for ReadPersonApprovalRpc {}
 impl Rpc for ReadPersonApprovalRpc {
     type Target = OrganizationId;
     type Request = ReadPersonApproval;
-    type Reply = approval_request_protocol::ApprovalReadReply;
+    type Reply = Box<approval_request_protocol::ApprovalReadReply>;
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
