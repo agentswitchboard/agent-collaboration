@@ -7,7 +7,7 @@ use router_clock::RuntimeClock;
 use switchboard_message_custody::{
     handover::NoticeWriteOutcome,
     handover_notice::{
-        ClaimedNotice, IdleClaudeRun, ManagedClaudeNoticePort, NoticeDeferred, NoticeFuture,
+        ClaimedNotice, ManagedNoticePort, ManagedNoticeRun, NoticeDeferred, NoticeFuture,
     },
 };
 use workspace_ids::SessionRef;
@@ -30,22 +30,22 @@ pub(super) struct ManagedPromptPort {
     pub(super) result: NoticeResultScript,
 }
 
-impl ManagedClaudeNoticePort for ManagedPromptPort {
+impl ManagedNoticePort for ManagedPromptPort {
     fn ready<'a>(
         &'a self,
         _target: &'a SessionRef,
-    ) -> NoticeFuture<'a, Result<Box<dyn IdleClaudeRun>, NoticeDeferred>> {
+    ) -> NoticeFuture<'a, Result<Box<dyn ManagedNoticeRun>, NoticeDeferred>> {
         Box::pin(async {
             if self.enabled.load(Ordering::SeqCst) {
-                Ok(Box::new(self.clone()) as Box<dyn IdleClaudeRun>)
+                Ok(Box::new(self.clone()) as Box<dyn ManagedNoticeRun>)
             } else {
-                Err(NoticeDeferred::Busy)
+                Err(NoticeDeferred::WaitingForSession)
             }
         })
     }
 }
 
-impl IdleClaudeRun for ManagedPromptPort {
+impl ManagedNoticeRun for ManagedPromptPort {
     fn offer(self: Box<Self>, claimed: ClaimedNotice) -> NoticeFuture<'static, NoticeWriteOutcome> {
         Box::pin(async move {
             self.calls.fetch_add(1, Ordering::SeqCst);

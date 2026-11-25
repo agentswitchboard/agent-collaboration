@@ -51,6 +51,9 @@ impl OwnerTransition {
         input: OwnerInput,
         admission: PromptAdmission,
     ) -> OwnerResult {
+        if admission == PromptAdmission::DirectWhenIdle {
+            return self.admit_idle_prompt(input);
+        }
         self.admit_prompt_on_run(input, admission, false)
     }
 

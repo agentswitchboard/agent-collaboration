@@ -32,6 +32,7 @@ pub use switchboard_harness_contracts::OwnerSetting;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PromptAdmission {
     Direct,
+    DirectWhenIdle,
     Queue,
     Auto { steering_supported: bool },
     DeliveryAuto { steering_supported: bool },
@@ -67,7 +68,6 @@ pub enum SessionOwnerCommand {
         run: RunAttempt<LoadAttempt>,
     },
     WarmPrompt(OwnerInput),
-    NoticePrompt(OwnerInput),
     Prompt {
         input: OwnerInput,
         admission: PromptAdmission,

@@ -38,7 +38,7 @@ use switchboard_message_custody::{
     custody_task::CustodyTaskEvent,
     flush_clock::{FlushJitter, MachineFlushJitter, wake_for_mark},
     flush_marks::{earliest_open_mark, next_mark_after},
-    handover_notice::{ClaimedNotice, ManagedClaudeNoticePort},
+    handover_notice::{ClaimedNotice, ManagedNoticePort},
     receipt_delivery::ReceiptFrameOutcome,
     recipient_sessions::{RecipientSessionAnswer, RecipientSessionDirectory},
 };
@@ -134,8 +134,9 @@ impl EnrolledFixtureMac {
         let (events, observed) = mpsc::unbounded_channel();
         let events = MessageSystemEvents::new(Arc::new(RecordCustody(events)));
         let events = match notice {
-            Some(port) => events
-                .with_managed_notice(move |_| port.clone() as Arc<dyn ManagedClaudeNoticePort>),
+            Some(port) => {
+                events.with_managed_notice(move |_| port.clone() as Arc<dyn ManagedNoticePort>)
+            }
             None => events,
         };
         let address = central

@@ -87,10 +87,20 @@ pub enum DirectHandoff {
     },
     NotKnown,
     NotSeen,
+    NoticeRefused {
+        reason: NoticeRefusalReason,
+    },
     Seen {
         completed_at: Timestamp,
         receipt: SeenReceiptState,
     },
+}
+
+/// A definitive local refusal settles the notice without a final Central receipt.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NoticeRefusalReason {
+    CannotSteer,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -225,7 +235,7 @@ impl InboxStore {
                     json_extract(delivery_state_json, '$.family') IS NOT 'system' AND
                     CASE WHEN json_extract(delivery_state_json, '$.handoff.kind') = 'direct' THEN
                         COALESCE(json_extract(delivery_state_json, '$.handoff.state.kind')
-                            NOT IN ('writing', 'notKnown', 'notSeen', 'seen'), 1)
+                            NOT IN ('writing', 'notKnown', 'notSeen', 'noticeRefused', 'seen'), 1)
                     ELSE COALESCE(json_extract(delivery_state_json, '$.handoff.kind')
                             NOT IN ('completed', 'notRequired'), 1) END
                     ELSE 1 END

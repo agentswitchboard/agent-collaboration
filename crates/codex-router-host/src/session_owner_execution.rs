@@ -335,10 +335,10 @@ impl SessionOwnerExecution {
     ) -> Result<Option<OwnerEvent>, OwnerTaskError> {
         let provider_id = self.session_id();
         let notice = match &work {
-            AuthorizedWork::Prompt(input) => self.calls.notice(&input.input),
-            AuthorizedWork::Cancel(_)
-            | AuthorizedWork::Steer(_)
-            | AuthorizedWork::Setting { .. } => None,
+            AuthorizedWork::Prompt(input) | AuthorizedWork::Steer(input) => {
+                self.calls.notice(&input.input)
+            }
+            AuthorizedWork::Cancel(_) | AuthorizedWork::Setting { .. } => None,
         };
         let setting_operation = match &work {
             AuthorizedWork::Setting { setting, .. } => Some(setting.change.attempt.0),
