@@ -24,25 +24,22 @@ use codex_router_host::{
 };
 use futures_util::{SinkExt, StreamExt};
 use router_clock::{ManualClock, RuntimeClock};
-use switchboard_central_link::{
-    DialAddress,
-    link_driver::{DriverSettings, LinkDriver},
-    link_policy::LinkStatus,
-};
-use switchboard_link_lease::{DiscoverySource, EnrollmentLeaseSource};
+use switchboard_central_link::{link_driver::LinkDriver, link_policy::LinkStatus};
+use switchboard_link_lease::EnrollmentLeaseSource;
 use switchboard_machine_core_store::{MACHINE_LOCAL_DATABASE, load_or_create_machine_id};
 use switchboard_machine_enrollment::MachineId;
 use switchboard_machine_enrollment::{
-    BindingGeneration, ConditionalWrite, CredentialStore, DiscoveryAnswer, EnrollmentBinding,
-    EnrollmentContext, EnrollmentId, EnrollmentKey, EnrollmentMetadata, RefreshAnswer,
-    RefreshCredential, RefreshSource, SecretValue, SignInDeployment, SignInFailure, TokenGrant,
-    decode_discovery,
+    BindingGeneration, ConditionalWrite, CredentialStore, EnrollmentBinding, EnrollmentContext,
+    EnrollmentId, EnrollmentKey, EnrollmentMetadata, RefreshAnswer, RefreshCredential,
+    RefreshSource, SecretValue, SignInDeployment, SignInFailure, TokenGrant,
 };
 use switchboard_machine_enrollment_store::{
     MachineEnrollmentStore,
     test_support::{KeychainAccess, KeychainAccessError},
 };
-use switchboard_message_system::test_support::{LinkFixture, start_with_link_fixture};
+use switchboard_message_system::test_support::{
+    LinkFixture, metadata_reread, start_with_link_fixture,
+};
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::{mpsc, watch},
@@ -61,7 +58,10 @@ use super::{
 
 mod status_probe;
 
-use self::status_probe::{CapabilityHold, collect_status, exercise_refusal_through_renewal};
+use self::status_probe::{
+    CapabilityHold, ScriptedDiscovery, collect_status, discovered_address,
+    exercise_failed_metadata_read, exercise_refusal_through_renewal, run_loopback,
+};
 
 const ORGANIZATION: &str = "01890f2e-7b4c-7cc0-98c4-000000000090";
 const ENROLLMENT: &str = "01890f2e-7b4c-7cc0-98c4-000000000091";
@@ -83,6 +83,7 @@ async fn changed_native_schema_closes_the_old_socket_and_registers_a_new_run_in_
     let (status_publication, mut systems) = mpsc::unbounded_channel();
     let clock = Arc::new(ManualClock::new("2030-01-01T00:00:00Z".parse()?));
     let (capabilities, held, release) = CapabilityHold::new();
+    let (discovery, unavailable, available) = ScriptedDiscovery::held_then_retry();
     let fixture = system_fixture(
         root.path().to_owned(),
         address,
@@ -90,6 +91,7 @@ async fn changed_native_schema_closes_the_old_socket_and_registers_a_new_run_in_
         clock.clone(),
         capabilities,
         status_publication,
+        discovery,
     );
     let paths = HostCoordinationPaths::for_router_root(root.path());
     let collaboration = root.path().join("collaboration");
@@ -139,6 +141,35 @@ async fn changed_native_schema_closes_the_old_socket_and_registers_a_new_run_in_
             .await
             .ok_or("initial message system was not started")?;
         let driver = drivers.recv().await.ok_or("first driver not observed")?;
+        status
+            .wait_for(|sample| sample.reason != MessageSystemReason::NoReason)
+            .await?;
+        assert_operator_observation(
+            &paths,
+            MessageSystemStatus::Connecting,
+            MessageSystemReason::DiscoveryPending,
+        )
+        .await?;
+        unavailable
+            .send(Err(SignInFailure::Unavailable {
+                retry_after: Some(Duration::from_secs(1)),
+            }))
+            .map_err(|_| "discovery request dropped")?;
+        let retry_at = clock.monotonic_now().after(Duration::from_secs(1));
+        clock.not_due_check_now(retry_at).await;
+        status
+            .wait_for(|sample| sample.reason == MessageSystemReason::DiscoveryUnavailable)
+            .await?;
+        assert_operator_observation(
+            &paths,
+            MessageSystemStatus::Connecting,
+            MessageSystemReason::DiscoveryUnavailable,
+        )
+        .await?;
+        available
+            .send(Ok(discovered_address()))
+            .map_err(|_| "discovery retry dropped")?;
+        clock.advance(Duration::from_secs(1))?;
         let mut first_socket = accept_async(central.accept().await?.0).await?;
         let (stop_history, history_started, history) =
             collect_status(driver.clone(), status.clone());
@@ -211,6 +242,7 @@ async fn changed_native_schema_closes_the_old_socket_and_registers_a_new_run_in_
             mut status,
             mut drivers,
             hold_driver,
+            reread_metadata,
         } = systems
             .recv()
             .await
@@ -263,7 +295,10 @@ async fn changed_native_schema_closes_the_old_socket_and_registers_a_new_run_in_
             MessageSystemReason::EnrollmentRevoked,
         )
         .await?;
+        let metadata_result =
+            exercise_failed_metadata_read(root.path(), &paths, &clock, &*reread_metadata).await;
         hold_driver.send_replace(false);
+        metadata_result?;
         status
             .wait_for(|status| {
                 status.status == MessageSystemStatus::EnrollmentEnded
@@ -306,8 +341,16 @@ async fn assert_operator_observation(
     )
     .await?;
     let snapshot = terminal(&reply)?.snapshot();
-    assert_eq!(snapshot.message_system_status(), Some(expected));
-    assert_eq!(snapshot.message_system_reason(), Some(reason));
+    let observed = (
+        snapshot.message_system_status(),
+        snapshot.message_system_reason(),
+    );
+    if observed != (Some(expected), Some(reason)) {
+        return Err(std::io::Error::other(format!(
+            "expected operator observation {expected:?} with {reason:?}, got {observed:?}"
+        ))
+        .into());
+    }
     Ok(())
 }
 
@@ -404,6 +447,7 @@ struct SystemSamples {
     status: watch::Receiver<MessageSystemObservation>,
     drivers: mpsc::UnboundedReceiver<watch::Receiver<LinkStatus>>,
     hold_driver: watch::Sender<bool>,
+    reread_metadata: Box<dyn Fn() -> bool + Send>,
 }
 
 fn system_fixture(
@@ -413,6 +457,7 @@ fn system_fixture(
     clock: Arc<ManualClock>,
     capabilities: CapabilityHold,
     systems: mpsc::UnboundedSender<SystemSamples>,
+    discovery: ScriptedDiscovery,
 ) -> HostMessageSystemFixture {
     HostMessageSystemFixture::new(move |roots, _, recipients, events| {
         let root = root.clone();
@@ -420,6 +465,7 @@ fn system_fixture(
         let systems = systems.clone();
         let clock = clock.clone();
         let capabilities = capabilities.clone();
+        let discovery = discovery.clone();
         Box::pin(async move {
             let machine = load_or_create_machine_id(&root, clock.utc_now().timestamp_millis())
                 .await
@@ -435,7 +481,7 @@ fn system_fixture(
                 recipients,
                 events,
                 LinkFixture {
-                    discovery: ScriptedSignIn,
+                    discovery,
                     refresh: ScriptedSignIn,
                     run_driver: move |driver: LinkDriver<EnrollmentKey, EnrollmentLeaseSource>| {
                         assert!(driver_samples.send(driver.status.subscribe()).is_ok());
@@ -455,42 +501,13 @@ fn system_fixture(
                         status: system.status(),
                         drivers,
                         hold_driver,
+                        reread_metadata: Box::new(metadata_reread(&system)),
                     })
                     .is_ok()
             );
             system
         })
     })
-}
-
-async fn run_loopback(
-    mut driver: LinkDriver<EnrollmentKey, EnrollmentLeaseSource>,
-    address: String,
-    socket: SocketAddr,
-    capabilities: CapabilityHold,
-) {
-    let settings = {
-        let discovered = driver
-            .settings
-            .wait_for(|settings| settings.address.is_ok())
-            .await
-            .expect("scripted sign-in discovery");
-        DriverSettings {
-            binding: discovered.binding.clone(),
-            address: DialAddress::test_loopback(&address),
-        }
-    };
-    let (_settings, received) = watch::channel(settings);
-    driver.settings = received;
-    driver
-        .run_with_test_transport(move || {
-            let capabilities = capabilities.clone();
-            async move {
-                let (reader, writer) = TcpStream::connect(socket).await?.into_split();
-                Ok(tokio::io::join(reader, capabilities.wrap(writer)))
-            }
-        })
-        .await;
 }
 
 async fn open_enrollment(
@@ -545,13 +562,6 @@ fn scripted_refresh_credential(refresh: String) -> RefreshCredential {
 
 #[derive(Clone)]
 struct ScriptedSignIn;
-
-impl DiscoverySource for ScriptedSignIn {
-    async fn discover(&self) -> Result<DiscoveryAnswer, SignInFailure> {
-        Ok(decode_discovery(br#"{"client_id":"01890f2e-7b4c-7cc0-98c4-000000000091","link_url":"https://central.example/v1/organizations/{organization_id}/link"}"#)
-            .expect("scripted discovery"))
-    }
-}
 
 impl RefreshSource for ScriptedSignIn {
     async fn refresh(&self, _: &RefreshCredential) -> RefreshAnswer {

@@ -12,8 +12,8 @@ use switchboard_central_link::link_policy::LinkStatus;
 use switchboard_link_lease::LeaseWorkerExit;
 use switchboard_machine_core_store::{MACHINE_LOCAL_DATABASE, load_or_create_machine_id};
 use switchboard_machine_enrollment::{
-    CredentialStore as _, EnrollmentContext, EnrollmentEnd, EnrollmentMetadata, MachineId,
-    SignInDeployment,
+    CredentialStore as _, EnrollmentContext, EnrollmentEnd, EnrollmentKey, EnrollmentMetadata,
+    MachineId, SignInDeployment,
 };
 use switchboard_machine_enrollment_store::{EnrollmentWorkerExit, MachineEnrollmentStore};
 use switchboard_message_custody::{
@@ -123,7 +123,7 @@ pub(crate) struct Interpreter {
     link_publication: watch::Sender<LinkStatus>,
     link_status: watch::Receiver<LinkStatus>,
     enrollment: Option<OpenedEnrollment>,
-    stored_ending: Option<EnrollmentEnd>,
+    stored_ending: Option<(EnrollmentKey, EnrollmentEnd)>,
     unit: Option<(Generation, MessageUnit)>,
     timer: Option<BoxFuture<'static, ReadId>>,
     exits: FuturesUnordered<BoxFuture<'static, Option<Event>>>,
@@ -207,10 +207,14 @@ impl Interpreter {
                 };
                 if let Some(event) = event {
                     let ending_read = match &event {
-                        Event::MetadataObserved { metadata, .. } => Some(match metadata {
-                            Metadata::Ended { why, .. } => Some(*why),
-                            Metadata::Empty | Metadata::Active(_) | Metadata::ReadFailed => None,
-                        }),
+                        Event::MetadataObserved {
+                            metadata: Metadata::Ended { key, why },
+                            ..
+                        } => Some(Some((key.clone(), *why))),
+                        Event::MetadataObserved {
+                            metadata: Metadata::Empty | Metadata::Active(_),
+                            ..
+                        } => Some(None),
                         _ => None,
                     };
                     let tag = event.event_tag();
@@ -334,7 +338,7 @@ impl Interpreter {
         let status = MessageSystemObservation::project(
             state,
             &self.link_status.borrow(),
-            self.stored_ending,
+            self.stored_ending.as_ref().map(|(_, cause)| *cause),
         );
         self.status.send_if_modified(|published| {
             if *published == status {

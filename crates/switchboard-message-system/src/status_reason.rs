@@ -27,6 +27,8 @@ pub enum MessageSystemReason {
     AuthorityInactive,
     AnotherRunTookOver,
     MalformedAddress,
+    DiscoveryPending,
+    DiscoveryUnavailable,
     FreshCredentialRefused,
     LeaseSourceFault,
     EnrollmentEndingPending,

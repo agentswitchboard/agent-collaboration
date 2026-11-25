@@ -163,6 +163,8 @@ fn a_running_supervisor_projects_connected_if_and_only_if_the_link_is_connected(
             LinkStatus::Connected { .. } => true,
             LinkStatus::NotEnrolled
             | LinkStatus::Connecting
+            | LinkStatus::DiscoveryPending
+            | LinkStatus::DiscoveryUnavailable
             | LinkStatus::Welcomed { .. }
             | LinkStatus::Registering
             | LinkStatus::RegistrationFailed { .. }
@@ -179,7 +181,7 @@ fn a_running_supervisor_projects_connected_if_and_only_if_the_link_is_connected(
     }
 }
 
-fn status_inputs(machine_id: switchboard_machine_enrollment::MachineId) -> [LinkStatus; 10] {
+fn status_inputs(machine_id: switchboard_machine_enrollment::MachineId) -> [LinkStatus; 12] {
     let (bound, _) = LinkPolicy::transition(
         &LinkState::new(machine_id.clone()),
         LinkInput::BindingAvailable(1_u8),
@@ -189,6 +191,8 @@ fn status_inputs(machine_id: switchboard_machine_enrollment::MachineId) -> [Link
     [
         LinkStatus::NotEnrolled,
         LinkStatus::Connecting,
+        LinkStatus::DiscoveryPending,
+        LinkStatus::DiscoveryUnavailable,
         LinkStatus::Welcomed {
             machine_id: machine_id.clone(),
         },

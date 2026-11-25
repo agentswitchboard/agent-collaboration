@@ -56,7 +56,10 @@ pub fn message_system_status(state: &State, link: &LinkStatus) -> MessageSystemS
             LinkStatus::RunRetired => Status::RunRetired,
             LinkStatus::Fault { .. } => Status::Fault,
             LinkStatus::EnrollmentEnded { .. } => Status::EnrollmentEnded,
-            LinkStatus::NotEnrolled | LinkStatus::Connecting => Status::Connecting,
+            LinkStatus::NotEnrolled
+            | LinkStatus::Connecting
+            | LinkStatus::DiscoveryPending
+            | LinkStatus::DiscoveryUnavailable => Status::Connecting,
         },
         State::Quiescing(_) => Status::Stopping,
         State::Faulted { .. } => Status::EnrollmentMismatch,
@@ -97,6 +100,8 @@ impl MessageSystemObservation {
                 Reason::registration(RegistrationFailure::Refused(*reason))
             }
             (Status::Fault, LinkStatus::Fault { kind }) => Reason::link_fault(*kind),
+            (Status::Connecting, LinkStatus::DiscoveryPending) => Reason::DiscoveryPending,
+            (Status::Connecting, LinkStatus::DiscoveryUnavailable) => Reason::DiscoveryUnavailable,
             _ => Reason::NoReason,
         };
         Self { status, reason }

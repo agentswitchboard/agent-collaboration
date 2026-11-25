@@ -164,36 +164,48 @@ fn terminal_frames_preserve_busy_classification_and_live_snapshot()
     Ok(())
 }
 
+// Literal v1 responses pinned to the Host encoder at 97b37e636.
+const BASELINE_STATUS_REPLIES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../verification/fixtures/host-operator-status-97b37e636.ndjson"
+));
+
 #[test]
-fn status_reply_round_trips_the_optional_message_system_value()
+fn status_reply_decodes_frozen_main_host_bytes_without_a_reason()
 -> Result<(), Box<dyn std::error::Error>> {
-    for status in [Some(MessageSystemStatus::Connected), None] {
-        let reply = OperatorFrame::terminal(HostTerminalResponse::new(
-            OperatorRequest::Status,
-            TerminalClassification::Ready,
-            ready_snapshot().with_message_system_status(status),
-            "shared Codex host status".to_owned(),
-        ));
-        let encoded = encode_operator_frame(&reply)?;
-        let json: serde_json::Value = serde_json::from_slice(&encoded)?;
-        check_equal(
-            json.pointer("/frame/payload/snapshot/message_system_status")
-                .cloned(),
-            status.map(|_| serde_json::json!("connected")),
-            "only a present status is encoded, using the producer's wire name",
-        )?;
-        let OperatorFrame::Terminal(decoded) = decode_operator_frame(&encoded)? else {
-            return Err("status reply must be terminal".into());
+    use MessageSystemStatus as Status;
+    let expected = [
+        Some(Status::Starting),
+        Some(Status::NotEnrolled),
+        Some(Status::EnrollmentEnded),
+        Some(Status::EnrollmentUnreadable),
+        Some(Status::Connecting),
+        Some(Status::Connected),
+        Some(Status::Stopping),
+        Some(Status::Restarting),
+        Some(Status::EnrollmentMismatch),
+        Some(Status::Stopped),
+        None,
+    ];
+    let lines = BASELINE_STATUS_REPLIES.split_inclusive(|byte| *byte == b'\n');
+    check_equal(
+        lines.clone().count(),
+        expected.len(),
+        "frozen baseline response count",
+    )?;
+    for (bytes, status) in lines.zip(expected) {
+        let OperatorFrame::Terminal(decoded) = decode_operator_frame(bytes)? else {
+            return Err("the frozen Host v1 status reply must be terminal".into());
         };
         check_equal(
             decoded.snapshot().message_system_status(),
             status,
-            "status must survive the existing codec",
+            "baseline status spelling",
         )?;
         check_equal(
             decoded.snapshot().message_system_reason(),
             None,
-            "the baseline Host snapshot omits the reason field",
+            "baseline status has no reason",
         )?;
     }
     Ok(())

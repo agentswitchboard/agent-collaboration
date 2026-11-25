@@ -75,6 +75,8 @@ fn link_status_reason(reason: MessageSystemReason) -> &'static str {
         Reason::AuthorityInactive => "central reports the link authority became inactive",
         Reason::AnotherRunTookOver => "another run of this Router took over",
         Reason::MalformedAddress => "the central address is invalid",
+        Reason::DiscoveryPending => "waiting to discover the central address",
+        Reason::DiscoveryUnavailable => "central address discovery is temporarily unavailable",
         Reason::FreshCredentialRefused => "central refused the refreshed credential",
         Reason::LeaseSourceFault => "the enrollment lease could not be obtained",
         Reason::EnrollmentEndingPending => "waiting for the stored ending",

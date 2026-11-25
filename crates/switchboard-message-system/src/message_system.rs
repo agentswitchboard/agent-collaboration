@@ -35,6 +35,12 @@ impl Drop for CloseRequest {
 }
 
 impl MessageSystem {
+    #[cfg(all(feature = "test-support", debug_assertions))]
+    pub(crate) fn metadata_reread(&self) -> impl Fn() -> bool + Send + use<> {
+        let events = self.close.0.clone();
+        move || events.send(Event::EnrollmentMayHaveChanged).is_ok()
+    }
+
     /// Starts observation on the caller's Tokio runtime. Enrollment is observed
     /// asynchronously and can change while the Router is running.
     pub fn start(

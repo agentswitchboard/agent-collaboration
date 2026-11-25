@@ -246,9 +246,13 @@ where
     ) -> (Interrupted, bool) {
         let _ = self.apply(LinkInput::BindingAvailable(binding.clone()));
         loop {
-            let interruption = if self.address.is_err() {
-                self.status.send_replace(LinkStatus::Fault {
-                    kind: central_link_client::LinkFault::MalformedAddress,
+            let interruption = if let Err(reason) = self.address {
+                self.status.send_replace(match reason {
+                    AddressError::DiscoveryPending => LinkStatus::DiscoveryPending,
+                    AddressError::DiscoveryUnavailable => LinkStatus::DiscoveryUnavailable,
+                    AddressError::InvalidLocation => LinkStatus::Fault {
+                        kind: central_link_client::LinkFault::MalformedAddress,
+                    },
                 });
                 control.wait().await
             } else {

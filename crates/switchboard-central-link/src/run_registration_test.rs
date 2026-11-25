@@ -76,6 +76,8 @@ fn connected_requires_ready_exchange_and_welcomed_transport_and_parked_overrides
     let statuses = [
         LinkStatus::NotEnrolled,
         LinkStatus::Connecting,
+        LinkStatus::DiscoveryPending,
+        LinkStatus::DiscoveryUnavailable,
         LinkStatus::Welcomed {
             machine_id: machine.clone(),
         },
@@ -141,6 +143,8 @@ fn transport_is_welcomed(status: &LinkStatus) -> bool {
         LinkStatus::Welcomed { .. } => true,
         LinkStatus::NotEnrolled
         | LinkStatus::Connecting
+        | LinkStatus::DiscoveryPending
+        | LinkStatus::DiscoveryUnavailable
         | LinkStatus::Registering
         | LinkStatus::RegistrationFailed { .. }
         | LinkStatus::RegistrationFault { .. }

@@ -41,6 +41,8 @@ pub struct LeaseWindow<Binding> {
 pub enum LinkStatus {
     NotEnrolled,
     Connecting,
+    DiscoveryPending,
+    DiscoveryUnavailable,
     Welcomed { machine_id: MachineId },
     Registering,
     RegistrationFailed { reason: RegistrationFailure },
