@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn notice_admission_rejects_a_busy_current_owner_without_queueing_or_steering() {
+fn direct_when_idle_rejects_a_busy_current_owner_without_queueing_or_steering() {
     let mut state = fresh();
     let run = restore_live(&mut state, 1);
     let foreground = input(run.generation, 2);
@@ -12,7 +12,10 @@ fn notice_admission_rejects_a_busy_current_owner_without_queueing_or_steering() 
     assert!(matches!(
         decide(
             &state,
-            OwnerEvent::Command(SessionOwnerCommand::NoticePrompt(notice))
+            OwnerEvent::Command(SessionOwnerCommand::Prompt {
+                input: notice,
+                admission: PromptAdmission::DirectWhenIdle
+            })
         ),
         Err(SessionOwnerRejection::Refused(
             SessionOwnerRefusal::EffectInProgress(EffectInProgress::TurnInProgress)
@@ -22,14 +25,17 @@ fn notice_admission_rejects_a_busy_current_owner_without_queueing_or_steering() 
 }
 
 #[test]
-fn notice_admission_rejects_loading_and_uses_the_prompt_take_of_an_exact_idle_run() {
+fn direct_when_idle_rejects_loading_and_uses_the_prompt_take_of_an_exact_idle_run() {
     let mut state = fresh();
     let run = open_wire(&mut state, 1);
     let notice = input(run.generation, 2);
     assert!(matches!(
         decide(
             &state,
-            OwnerEvent::Command(SessionOwnerCommand::NoticePrompt(notice.clone()))
+            OwnerEvent::Command(SessionOwnerCommand::Prompt {
+                input: notice.clone(),
+                admission: PromptAdmission::DirectWhenIdle
+            })
         ),
         Err(SessionOwnerRejection::Refused(
             SessionOwnerRefusal::GenerationChanged
@@ -44,7 +50,10 @@ fn notice_admission_rejects_loading_and_uses_the_prompt_take_of_an_exact_idle_ru
     assert!(matches!(
         decide(
             &state,
-            OwnerEvent::Command(SessionOwnerCommand::NoticePrompt(other_run))
+            OwnerEvent::Command(SessionOwnerCommand::Prompt {
+                input: other_run,
+                admission: PromptAdmission::DirectWhenIdle
+            })
         ),
         Err(SessionOwnerRejection::Refused(
             SessionOwnerRefusal::GenerationChanged
@@ -53,7 +62,10 @@ fn notice_admission_rejects_loading_and_uses_the_prompt_take_of_an_exact_idle_ru
 
     let admitted = command(
         &mut state,
-        SessionOwnerCommand::NoticePrompt(notice.clone()),
+        SessionOwnerCommand::Prompt {
+            input: notice.clone(),
+            admission: PromptAdmission::DirectWhenIdle,
+        },
     );
     assert!(
         admitted.contains(&OwnerEffect::Store(SessionStoreRequest::MarkDispatch(

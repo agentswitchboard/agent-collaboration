@@ -51,6 +51,9 @@ impl OwnerTransition {
         input: OwnerInput,
         admission: PromptAdmission,
     ) -> OwnerResult {
+        if admission == PromptAdmission::DirectWhenIdle {
+            return self.admit_idle_prompt(input);
+        }
         self.admit_prompt_on_run(input, admission, false)
     }
 
@@ -849,6 +852,9 @@ impl OwnerTransition {
         input: &OwnerInput,
         outcome: WireOutcome<()>,
     ) -> OwnerResult {
+        if outcome == WireOutcome::Refused {
+            return self.refuse_steer(input, RevokeReason::ProviderSteerRefused);
+        }
         if !self.steer_is_pending(input, InputWait::Wire) {
             return Err(OwnerRejection::IgnoredLate);
         }
@@ -868,13 +874,17 @@ impl OwnerTransition {
                 .push(OwnerEffect::SteerSubmitted(input.clone()));
         }
         self.next.steer = None;
-        if outcome == WireOutcome::Refused {
-            self.next
-                .ports
-                .unsent_prompts
-                .insert(input.clone(), RevokeReason::ProviderSteerRefused);
-        }
         self.reply_input(input.clone(), remote_effect(&outcome));
+        Ok(())
+    }
+
+    pub(super) fn refuse_steer(&mut self, input: &OwnerInput, reason: RevokeReason) -> OwnerResult {
+        if !self.steer_is_pending(input, InputWait::Wire) {
+            return Err(OwnerRejection::IgnoredLate);
+        }
+        self.next.steer = None;
+        self.next.ports.unsent_prompts.insert(input.clone(), reason);
+        self.reply_input(input.clone(), RemoteEffect::None);
         Ok(())
     }
 

@@ -20,7 +20,7 @@ use switchboard_message_custody::{
     custody_link::CustodyLink,
     custody_task::{CustodyEventSink, CustodyRunGroup, CustodyTaskHandle, custody_task},
     flush_clock::MachineFlushJitter,
-    handover_notice::ManagedClaudeNoticePort,
+    handover_notice::ManagedNoticePort,
     outbox_work::OutboxWork,
     recipient_inbox::RecipientInbox,
     recipient_sessions::RecipientSessionDirectory,
@@ -38,7 +38,7 @@ pub(crate) struct UnitBuildInputs {
     pub(crate) clock: Arc<dyn RuntimeClock>,
     pub(crate) recipients: Arc<dyn RecipientSessionDirectory>,
     pub(crate) custody_events: Arc<dyn CustodyEventSink>,
-    pub(crate) notice_port: Option<Arc<dyn ManagedClaudeNoticePort>>,
+    pub(crate) notice_port: Option<Arc<dyn ManagedNoticePort>>,
     pub(crate) link_status: watch::Sender<LinkStatus>,
 }
 
