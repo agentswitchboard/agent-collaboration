@@ -192,3 +192,198 @@ fn a_cut_withdraws_readiness_and_registers_the_same_run_on_the_replacement_socke
         link.close().await;
     });
 }
+
+#[test]
+fn native_central_retires_the_old_run_after_its_committed_acknowledgement_is_lost() {
+    let network = PacketFlight::new();
+    network.hold_next(FrameKind::RegisterReply);
+    run_link_case_with_network(network, |mut old| async move {
+        let first = old.network.seen(0, FrameKind::RegisterRun).await;
+        let first_answer = old.network.seen(0, FrameKind::RegisterReply).await;
+        let (first_correlation, first_run) = request(&first);
+        assert!(is_registered_reply(&first_answer, first_correlation));
+        assert_eq!(
+            stored_runs(&old).await,
+            [vec![SqlValue::Text(first_run.to_string())]]
+        );
+
+        let new =
+            SimulatedLink::start(old.clock.clone(), old.network.clone(), old.central.clone()).await;
+        let fresh = new.network.seen_nth(0, FrameKind::RegisterRun, 1).await;
+        let (_, new_run) = request(&fresh);
+        assert_ne!(fresh.connection_port, first.connection_port);
+        assert_ne!(new_run, first_run);
+        drop(
+            new.lane
+                .watch_registered()
+                .wait_for(Option::is_some)
+                .await
+                .unwrap(),
+        );
+
+        let dropped = old.read_probe.discard_next_read();
+        old.network.release();
+        assert_eq!(
+            super::packet_flight::decode_segment(&dropped.await.unwrap(), false),
+            [first_answer.frame]
+        );
+        // Central replaces an existing carrier for the same machine. The
+        // old driver has to register its same run on its fresh socket.
+        drop(
+            old.lane
+                .watch_admitted()
+                .wait_for(Option::is_none)
+                .await
+                .unwrap(),
+        );
+        let retry = old.next_retry().await;
+        old.start_retry(retry);
+        assert_eq!(old.dial_results.recv().await, Some(true));
+        let redial = old.network.seen_nth(0, FrameKind::RegisterRun, 2).await;
+        assert_ne!(redial.connection_port, first.connection_port);
+        assert_eq!(request(&redial).1, first_run);
+        let retired = old
+            .network
+            .seen_matching(
+                0,
+                |frame| {
+                    frame.kind == FrameKind::RegisterReply
+                        && frame.connection_port == redial.connection_port
+                },
+                0,
+            )
+            .await;
+        assert!(matches!(
+            retired.frame, LinkFrame::Data(DataFrame::CentralCallReply { result, .. })
+                if matches!(result.as_ref(), TypedCallResult::Answered { reply: CentralCallReply::RegisterRun(reply) }
+                    if reply.body == RegisterRunReply::RunRetired {})
+        ));
+        old.status
+            .wait_for(|status| *status == LinkStatus::RunRetired)
+            .await
+            .unwrap();
+        drop(
+            old.lane
+                .watch_admitted()
+                .wait_for(Option::is_none)
+                .await
+                .unwrap(),
+        );
+        assert!(old.lane.watch_registered().borrow().is_none());
+        old.clock.advance(Duration::from_secs(120)).unwrap();
+        old.network.step().await;
+        assert_eq!(*old.status.borrow(), LinkStatus::RunRetired);
+        assert!(old.dial_results.try_recv().is_err());
+        new.close().await;
+        old.close().await;
+    });
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn native_run_not_registered_withdraws_only_the_denied_physical_socket() {
+    use crate::message_unit_fixture::{approve_at_central, grant_for_enrollment};
+
+    run_link_case(|allowed| async move {
+        let allowed_wire = allowed.network.seen(0, FrameKind::RegisterRun).await;
+        let (_, allowed_run) = request(&allowed_wire);
+        drop(
+            allowed
+                .lane
+                .watch_registered()
+                .wait_for(Option::is_some)
+                .await
+                .unwrap(),
+        );
+
+        let other_machine = "019f0000-0000-7000-8000-00000000ce81".parse().unwrap();
+        let other_enrollment = approve_at_central(
+            &allowed.central,
+            &other_machine,
+            "019f0000-0000-7000-8000-00000000ce83".parse().unwrap(),
+        )
+        .await;
+        let bearer = grant_for_enrollment(&allowed.central, &other_machine, other_enrollment).await;
+        let prior_run: RouterRunId = "019f0000-0000-7000-8000-00000000ce84".parse().unwrap();
+        let after = allowed.network.hold_next(FrameKind::RegisterReply);
+        let mut denied = SimulatedLink::start_enrolled(
+            allowed.clock.clone(),
+            allowed.network.clone(),
+            allowed.central.clone(),
+            other_machine,
+            bearer.expose_secret().to_owned(),
+            Some(prior_run.clone()),
+        )
+        .await;
+
+        let prefix = denied.network.seen(after, FrameKind::RegisterRun).await;
+        let original = denied
+            .network
+            .seen_nth(after, FrameKind::RegisterRun, 1)
+            .await;
+        assert_eq!(prefix.connection_port, original.connection_port);
+        assert_ne!(original.connection_port, allowed_wire.connection_port);
+        assert_eq!(request(&prefix).1, &prior_run);
+        let (correlation, run) = request(&original);
+        assert_ne!(run, &prior_run);
+
+        let acknowledgement = denied.network.seen(after, FrameKind::RegisterReply).await;
+        assert!(is_registered_reply(&acknowledgement, request(&prefix).0));
+        let refusal = denied
+            .network
+            .seen_nth(after, FrameKind::RegisterReply, 1)
+            .await;
+        assert_eq!(refusal.connection_port, original.connection_port);
+        assert!(matches!(
+            refusal.frame, LinkFrame::Data(DataFrame::CentralCallReply { correlation_id, result })
+                if &correlation_id == correlation
+                    && matches!(result.as_ref(), TypedCallResult::Answered { reply: CentralCallReply::RegisterRun(reply) }
+                        if reply.body == RegisterRunReply::RunNotRegistered {})
+        ));
+        denied.network.release_and_wait().await;
+        drop(
+            denied
+                .lane
+                .watch_admitted()
+                .wait_for(Option::is_none)
+                .await
+                .unwrap(),
+        );
+        assert!(denied.lane.watch_registered().borrow().is_none());
+        assert_eq!(*denied.status.borrow(), LinkStatus::Connecting);
+
+        denied.reconnect().await;
+        let redial = denied
+            .network
+            .seen_nth(after, FrameKind::RegisterRun, 2)
+            .await;
+        assert_ne!(redial.connection_port, original.connection_port);
+        assert_eq!(request(&redial).1, run);
+        drop(
+            denied
+                .lane
+                .watch_registered()
+                .wait_for(Option::is_some)
+                .await
+                .unwrap(),
+        );
+
+        allowed.clock.advance(Duration::from_secs(19)).unwrap();
+        allowed
+            .network
+            .seen_matching(
+                0,
+                |frame| {
+                    frame.kind == FrameKind::Pong
+                        && frame.connection_port == allowed_wire.connection_port
+                },
+                0,
+            )
+            .await;
+        let survivor = allowed.lane.watch_registered().borrow().clone().unwrap();
+        assert_eq!(survivor.admitted(), &allowed.admission);
+        assert_eq!(survivor.router_run(), allowed_run);
+        allowed.close().await;
+        denied.close().await;
+    });
+}

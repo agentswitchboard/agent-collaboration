@@ -5,6 +5,7 @@
 )]
 
 use std::{
+    net::SocketAddr,
     os::unix::fs::PermissionsExt as _,
     path::{Path, PathBuf},
     sync::Arc,
@@ -22,10 +23,11 @@ use codex_router_host::{
     TerminalClassification,
 };
 use futures_util::{SinkExt, StreamExt};
-use router_clock::RuntimeClock;
+use router_clock::{ManualClock, RuntimeClock};
 use switchboard_central_link::{
     DialAddress,
     link_driver::{DriverSettings, LinkDriver},
+    link_policy::LinkStatus,
 };
 use switchboard_link_lease::{DiscoverySource, EnrollmentLeaseSource};
 use switchboard_machine_core_store::{MACHINE_LOCAL_DATABASE, load_or_create_machine_id};
@@ -45,11 +47,21 @@ use tokio::{
     net::{TcpListener, TcpStream},
     sync::{mpsc, watch},
 };
-use tokio_tungstenite::{WebSocketStream, accept_async, tungstenite::Message};
+use tokio_tungstenite::{
+    WebSocketStream, accept_async,
+    tungstenite::{
+        Message,
+        protocol::{CloseFrame, frame::coding::CloseCode},
+    },
+};
 
 use super::{
     BOUND, GatedRouterProbe, TestResult, manifest, native_launch, terminal, write_native_executable,
 };
+
+mod status_probe;
+
+use self::status_probe::{CapabilityHold, collect_status, exercise_refusal_through_renewal};
 
 const ORGANIZATION: &str = "01890f2e-7b4c-7cc0-98c4-000000000090";
 const ENROLLMENT: &str = "01890f2e-7b4c-7cc0-98c4-000000000091";
@@ -63,12 +75,22 @@ async fn changed_native_schema_closes_the_old_socket_and_registers_a_new_run_in_
     std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))?;
     let router = GatedRouterProbe::start().await?;
     let central = TcpListener::bind("127.0.0.1:0").await?;
+    let central_address = central.local_addr()?;
     let address = format!(
         "ws://{}/v1/organizations/{ORGANIZATION}/link",
         central.local_addr()?
     );
     let (status_publication, mut systems) = mpsc::unbounded_channel();
-    let fixture = system_fixture(root.path().to_owned(), address, status_publication);
+    let clock = Arc::new(ManualClock::new("2030-01-01T00:00:00Z".parse()?));
+    let (capabilities, held, release) = CapabilityHold::new();
+    let fixture = system_fixture(
+        root.path().to_owned(),
+        address,
+        central_address,
+        clock.clone(),
+        capabilities,
+        status_publication,
+    );
     let paths = HostCoordinationPaths::for_router_root(root.path());
     let collaboration = root.path().join("collaboration");
     let socket = root.path().join("native.sock");
@@ -107,11 +129,29 @@ async fn changed_native_schema_closes_the_old_socket_and_registers_a_new_run_in_
             TerminalClassification::Ready
         );
         let original = manifest(&collaboration)?;
-        let (machine, mut status) = systems
+        let SystemSamples {
+            machine,
+            mut status,
+            mut drivers,
+            ..
+        } = systems
             .recv()
             .await
             .ok_or("initial message system was not started")?;
-        let (mut first_socket, first) = accept_registration(&central, &machine).await?;
+        let driver = drivers.recv().await.ok_or("first driver not observed")?;
+        let mut first_socket = accept_async(central.accept().await?.0).await?;
+        let (stop_history, history_started, history) =
+            collect_status(driver.clone(), status.clone());
+        history_started.await?;
+        send_welcome(&mut first_socket, &machine, "2030-01-01T00:00:10Z").await?;
+        held.await?;
+        assert!(!matches!(*driver.borrow(), LinkStatus::Connected { .. }));
+        assert_operator_status(&paths, MessageSystemStatus::Connecting).await?;
+        release
+            .send(())
+            .map_err(|_| "capability writer left its hold")?;
+        expect_capabilities(&mut first_socket).await?;
+        let first = read_registration(&mut first_socket).await?;
         let sampled = status
             .wait_for(|status| {
                 matches!(
@@ -123,7 +163,28 @@ async fn changed_native_schema_closes_the_old_socket_and_registers_a_new_run_in_
             .status;
         assert_eq!(sampled, MessageSystemStatus::Registering);
         assert_operator_status(&paths, MessageSystemStatus::Registering).await?;
-        send_registered(&mut first_socket, &first).await?;
+        exercise_refusal_through_renewal(&mut first_socket, &first, &paths, &clock, &mut status)
+            .await?;
+        stop_history
+            .send(())
+            .map_err(|_| "early status collector ended unexpectedly")?;
+        let early = history.await?;
+        assert!(
+            !early.saw_connected(),
+            "no early publication may claim Connected"
+        );
+        assert!(early.driver.contains(&LinkStatus::Registering));
+        assert!(
+            early
+                .message_system
+                .iter()
+                .any(|observed| observed.status == MessageSystemStatus::Registering)
+        );
+        clock.advance(Duration::from_secs(1))?;
+        let retried = read_registration(&mut first_socket).await?;
+        assert_eq!(retried.run, first.run);
+        assert_ne!(retried.correlation, first.correlation);
+        send_registered(&mut first_socket, &retried).await?;
         status
             .wait_for(|status| status.status == MessageSystemStatus::Connected)
             .await?;
@@ -145,11 +206,20 @@ async fn changed_native_schema_closes_the_old_socket_and_registers_a_new_run_in_
             Some(Ok(Message::Close(_))) | Some(Err(_)) | None
         ));
 
-        let (same_machine, mut status) = systems
+        let SystemSamples {
+            machine: same_machine,
+            mut status,
+            mut drivers,
+            hold_driver,
+        } = systems
             .recv()
             .await
             .ok_or("replacement message system was not started")?;
         assert_eq!(same_machine, machine);
+        let _replacement_driver = drivers
+            .recv()
+            .await
+            .ok_or("replacement driver not observed")?;
         let (mut replacement_socket, replacement) = accept_registration(&central, &machine).await?;
         let rebuilt = manifest(&collaboration)?;
         assert!(original.native_schema_digest.is_some());
@@ -174,6 +244,38 @@ async fn changed_native_schema_closes_the_old_socket_and_registers_a_new_run_in_
             .wait_for(|status| status.status == MessageSystemStatus::Connected)
             .await?;
         assert_operator_status(&paths, MessageSystemStatus::Connected).await?;
+        hold_driver.send_replace(true);
+        replacement_socket
+            .send(Message::Close(Some(CloseFrame {
+                code: CloseCode::from(central_link_protocol::MachineLinkCloseCode::Revoked.code()),
+                reason: "".into(),
+            })))
+            .await?;
+        status
+            .wait_for(|status| {
+                status.status == MessageSystemStatus::Stopping
+                    && status.reason == MessageSystemReason::EnrollmentRevoked
+            })
+            .await?;
+        assert_operator_observation(
+            &paths,
+            MessageSystemStatus::Stopping,
+            MessageSystemReason::EnrollmentRevoked,
+        )
+        .await?;
+        hold_driver.send_replace(false);
+        status
+            .wait_for(|status| {
+                status.status == MessageSystemStatus::EnrollmentEnded
+                    && status.reason == MessageSystemReason::EnrollmentRevoked
+            })
+            .await?;
+        assert_operator_observation(
+            &paths,
+            MessageSystemStatus::EnrollmentEnded,
+            MessageSystemReason::EnrollmentRevoked,
+        )
+        .await?;
         Ok::<(), Box<dyn std::error::Error>>(())
     }
     .await;
@@ -189,6 +291,14 @@ async fn assert_operator_status(
     paths: &HostCoordinationPaths,
     expected: MessageSystemStatus,
 ) -> TestResult {
+    assert_operator_observation(paths, expected, MessageSystemReason::NoReason).await
+}
+
+async fn assert_operator_observation(
+    paths: &HostCoordinationPaths,
+    expected: MessageSystemStatus,
+    reason: MessageSystemReason,
+) -> TestResult {
     let reply = crate::operator_client::send_operator_request(
         paths.operator_socket(),
         OperatorRequest::Status,
@@ -197,10 +307,7 @@ async fn assert_operator_status(
     .await?;
     let snapshot = terminal(&reply)?.snapshot();
     assert_eq!(snapshot.message_system_status(), Some(expected));
-    assert_eq!(
-        snapshot.message_system_reason(),
-        Some(MessageSystemReason::NoReason)
-    );
+    assert_eq!(snapshot.message_system_reason(), Some(reason));
     Ok(())
 }
 
@@ -215,23 +322,42 @@ async fn accept_registration(
     machine: &MachineId,
 ) -> TestResult<(WebSocketStream<TcpStream>, Registration)> {
     let mut socket = accept_async(listener.accept().await?.0).await?;
+    send_welcome(&mut socket, machine, "2030-01-01T00:10:00Z").await?;
+    expect_capabilities(&mut socket).await?;
+    let registration = read_registration(&mut socket).await?;
+    Ok((socket, registration))
+}
+
+async fn send_welcome(
+    socket: &mut WebSocketStream<TcpStream>,
+    machine: &MachineId,
+    effective_expires_at: &str,
+) -> TestResult {
     let welcome = serde_json::json!({
         "kind": "welcome",
         "machineId": machine,
         "centralTime": "2030-01-01T00:00:00Z",
-        "effectiveExpiresAt": "2030-01-01T00:10:00Z",
+        "effectiveExpiresAt": effective_expires_at,
     });
     socket
         .send(Message::Text(welcome.to_string().into()))
         .await?;
+    Ok(())
+}
+
+async fn expect_capabilities(socket: &mut WebSocketStream<TcpStream>) -> TestResult {
     assert!(matches!(
-        read_frame(&mut socket).await?,
+        read_frame(socket).await?,
         LinkFrame::Data(DataFrame::MacCapabilities(_))
     ));
+    Ok(())
+}
+
+async fn read_registration(socket: &mut WebSocketStream<TcpStream>) -> TestResult<Registration> {
     let LinkFrame::Data(DataFrame::CallCentral {
         correlation_id,
         request,
-    }) = read_frame(&mut socket).await?
+    }) = read_frame(socket).await?
     else {
         return Err("missing registration on the admitted socket".into());
     };
@@ -239,14 +365,11 @@ async fn accept_registration(
         return Err("the admitted socket sent the wrong call".into());
     };
     assert_eq!(request.target.organization_id.as_str(), ORGANIZATION);
-    Ok((
-        socket,
-        Registration {
-            correlation: correlation_id,
-            target: request.target,
-            run: request.body.router_run.to_string(),
-        },
-    ))
+    Ok(Registration {
+        correlation: correlation_id,
+        target: request.target,
+        run: request.body.router_run.to_string(),
+    })
 }
 
 async fn read_frame(socket: &mut WebSocketStream<TcpStream>) -> TestResult<LinkFrame> {
@@ -276,20 +399,34 @@ async fn send_registered(
     Ok(())
 }
 
+struct SystemSamples {
+    machine: MachineId,
+    status: watch::Receiver<MessageSystemObservation>,
+    drivers: mpsc::UnboundedReceiver<watch::Receiver<LinkStatus>>,
+    hold_driver: watch::Sender<bool>,
+}
+
 fn system_fixture(
     root: PathBuf,
     address: String,
-    systems: mpsc::UnboundedSender<(MachineId, watch::Receiver<MessageSystemObservation>)>,
+    socket: SocketAddr,
+    clock: Arc<ManualClock>,
+    capabilities: CapabilityHold,
+    systems: mpsc::UnboundedSender<SystemSamples>,
 ) -> HostMessageSystemFixture {
-    HostMessageSystemFixture::new(move |roots, clock, recipients, events| {
+    HostMessageSystemFixture::new(move |roots, _, recipients, events| {
         let root = root.clone();
         let address = address.clone();
         let systems = systems.clone();
+        let clock = clock.clone();
+        let capabilities = capabilities.clone();
         Box::pin(async move {
             let machine = load_or_create_machine_id(&root, clock.utc_now().timestamp_millis())
                 .await
                 .expect("fixture machine");
             let store = open_enrollment(&root, &machine, clock.clone()).await;
+            let (driver_samples, drivers) = mpsc::unbounded_channel();
+            let (hold_driver, held_driver) = watch::channel(false);
             let system = start_with_link_fixture(
                 roots,
                 machine.clone(),
@@ -300,10 +437,27 @@ fn system_fixture(
                 LinkFixture {
                     discovery: ScriptedSignIn,
                     refresh: ScriptedSignIn,
-                    run_driver: move |driver| run_loopback(driver, address.clone()),
+                    run_driver: move |driver: LinkDriver<EnrollmentKey, EnrollmentLeaseSource>| {
+                        assert!(driver_samples.send(driver.status.subscribe()).is_ok());
+                        let (address, capabilities, mut held) =
+                            (address.clone(), capabilities.clone(), held_driver.clone());
+                        async move {
+                            run_loopback(driver, address, socket, capabilities).await;
+                            let _ = held.wait_for(|hold| !*hold).await;
+                        }
+                    },
                 },
             );
-            assert!(systems.send((machine, system.status())).is_ok());
+            assert!(
+                systems
+                    .send(SystemSamples {
+                        machine,
+                        status: system.status(),
+                        drivers,
+                        hold_driver,
+                    })
+                    .is_ok()
+            );
             system
         })
     })
@@ -312,6 +466,8 @@ fn system_fixture(
 async fn run_loopback(
     mut driver: LinkDriver<EnrollmentKey, EnrollmentLeaseSource>,
     address: String,
+    socket: SocketAddr,
+    capabilities: CapabilityHold,
 ) {
     let settings = {
         let discovered = driver
@@ -326,7 +482,15 @@ async fn run_loopback(
     };
     let (_settings, received) = watch::channel(settings);
     driver.settings = received;
-    driver.run().await;
+    driver
+        .run_with_test_transport(move || {
+            let capabilities = capabilities.clone();
+            async move {
+                let (reader, writer) = TcpStream::connect(socket).await?.into_split();
+                Ok(tokio::io::join(reader, capabilities.wrap(writer)))
+            }
+        })
+        .await;
 }
 
 async fn open_enrollment(

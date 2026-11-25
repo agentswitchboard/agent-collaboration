@@ -1,3 +1,5 @@
+mod binding_replacement;
+
 use std::{
     future::ready, os::unix::fs::DirBuilderExt as _, path::Path, pin::pin, sync::Arc,
     time::Duration,

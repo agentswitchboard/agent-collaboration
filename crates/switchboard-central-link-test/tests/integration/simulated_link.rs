@@ -28,6 +28,7 @@ use tokio::{
     task::JoinHandle,
 };
 use turmoil::net::{TcpListener, TcpStream};
+use workspace_ids::{MachineId, RouterRunId};
 
 use self::{
     packet_flight::PacketFlight,
@@ -39,6 +40,7 @@ mod custody_cases;
 mod mac_capabilities;
 mod packet_flight;
 mod registration_cases;
+mod registration_preface;
 mod simulation_clock;
 mod write_readiness;
 
@@ -121,6 +123,19 @@ impl SimulatedLink {
         network: PacketFlight,
         central: Arc<MachineLinkFixture>,
     ) -> Self {
+        let machine = MACHINE_LINK_FIXTURE_MACHINE.parse().unwrap();
+        let token = central.token.clone();
+        Self::start_enrolled(clock, network, central, machine, token, None).await
+    }
+
+    async fn start_enrolled(
+        clock: Arc<ManualClock>,
+        network: PacketFlight,
+        central: Arc<MachineLinkFixture>,
+        machine: MachineId,
+        token: String,
+        prior_run: Option<RouterRunId>,
+    ) -> Self {
         let address = format!(
             "ws://127.0.0.1:{LINK_PORT}/v1/organizations/{}/link",
             central.organization_id.as_str(),
@@ -135,12 +150,12 @@ impl SimulatedLink {
         let (breaker, mut socket_breakers) = mpsc::unbounded_channel();
         let (dial_finished, mut dial_results) = mpsc::unbounded_channel();
         let driver_clock = Arc::new(ObservedClock::new(clock.clone()));
-        let (lease_token, token) = watch::channel(central.token.clone());
+        let (lease_token, token) = watch::channel(token);
         let writer_gate = WriterGate::new();
         let read_probe = ReadProbe::default();
         let driver = tokio::spawn(
             LinkDriver {
-                machine_id: MACHINE_LINK_FIXTURE_MACHINE.parse().unwrap(),
+                machine_id: machine,
                 clock: driver_clock.clone(),
                 lease_source: Arc::new(SimulatedLeases {
                     central: central.clone(),
@@ -155,11 +170,13 @@ impl SimulatedLink {
             .run_with_test_transport({
                 let writer_gate = writer_gate.clone();
                 let read_probe = read_probe.clone();
+                let prior_run = Arc::new(Mutex::new(prior_run));
                 move || {
                     let breaker = breaker.clone();
                     let dial_finished = dial_finished.clone();
                     let writer_gate = writer_gate.clone();
                     let read_probe = read_probe.clone();
+                    let prior_run = prior_run.clone();
                     async move {
                         let connected = TcpStream::connect((CENTRAL, LINK_PORT)).await;
                         dial_finished.send(connected.is_ok()).unwrap();
@@ -176,6 +193,11 @@ impl SimulatedLink {
                             HeldWriter {
                                 raw: writer,
                                 gate: writer_gate,
+                                registration_preface: prior_run
+                                    .lock()
+                                    .unwrap()
+                                    .take()
+                                    .map(registration_preface::RegistrationPreface::Waiting),
                             },
                         ))
                     }

@@ -2,10 +2,12 @@ use std::{
     io,
     pin::Pin,
     sync::{Arc, Mutex},
-    task::{Context, Poll, Waker},
+    task::{Context, Poll, Waker, ready},
 };
 
 use tokio::{io::AsyncWrite, sync::oneshot};
+
+use super::registration_preface::RegistrationPreface;
 
 #[derive(Clone)]
 pub(super) struct WriterGate(Arc<Mutex<Option<BlockedWrite>>>);
@@ -40,6 +42,7 @@ impl WriterGate {
 pub(super) struct HeldWriter<Writer> {
     pub(super) raw: Writer,
     pub(super) gate: WriterGate,
+    pub(super) registration_preface: Option<RegistrationPreface>,
 }
 
 impl<Writer: AsyncWrite + Unpin> AsyncWrite for HeldWriter<Writer> {
@@ -58,7 +61,17 @@ impl<Writer: AsyncWrite + Unpin> AsyncWrite for HeldWriter<Writer> {
                 return Poll::Pending;
             }
         }
-        Pin::new(&mut self.raw).poll_write(context, bytes)
+        let Self {
+            raw,
+            registration_preface,
+            ..
+        } = self.as_mut().get_mut();
+        if let Some(preface) = registration_preface
+            && ready!(preface.poll_before_write(Pin::new(&mut *raw), context, bytes))?
+        {
+            *registration_preface = None;
+        }
+        Pin::new(raw).poll_write(context, bytes)
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {

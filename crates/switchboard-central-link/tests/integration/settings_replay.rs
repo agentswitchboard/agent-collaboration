@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use central_link_client::LinkFault;
+use central_link_client::{LinkFault, ReadyLinkLane};
 use switchboard_central_link::{
     DialAddress,
     link_policy::{LeaseVersion, LinkStatus},
@@ -97,6 +97,21 @@ async fn replayed_settings_preserve_first_401_backoff_and_lease_floor() {
         fixture.acquired.recv().await,
         Some(Some(LeaseVersion(1))),
         "401 retry requires a newer lease"
+    );
+    let mut replacement = fixture.accept().await;
+    welcome(&mut replacement).await;
+    fixture
+        .status
+        .wait_for(|status| matches!(status, LinkStatus::Connected { .. }))
+        .await
+        .unwrap();
+    assert!(
+        fixture
+            .inbox_events
+            .lane
+            .watch_registered()
+            .borrow()
+            .is_some()
     );
     fixture.stop().await;
 }

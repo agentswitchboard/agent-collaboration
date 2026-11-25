@@ -39,17 +39,27 @@ impl HostMessageStartup {
         self
     }
 
+    #[cfg(all(debug_assertions, feature = "runtime-test-support"))]
     pub(super) async fn start(
         self,
         clock: Arc<dyn RuntimeClock>,
         directory: Arc<dyn RecipientSessionDirectory>,
         events: MessageSystemEvents,
     ) -> MessageSystem {
-        #[cfg(all(debug_assertions, feature = "runtime-test-support"))]
         if let Some(fixture) = self.fixture {
             return (fixture.0)(self.roots, clock, directory, events).await;
         }
         MessageSystem::start(self.roots, clock, directory, events)
+    }
+
+    #[cfg(not(all(debug_assertions, feature = "runtime-test-support")))]
+    pub(super) fn start(
+        self,
+        clock: Arc<dyn RuntimeClock>,
+        directory: Arc<dyn RecipientSessionDirectory>,
+        events: MessageSystemEvents,
+    ) -> std::future::Ready<MessageSystem> {
+        std::future::ready(MessageSystem::start(self.roots, clock, directory, events))
     }
 }
 
