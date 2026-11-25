@@ -24,6 +24,7 @@ enum NoticeScript {
     DirectWithLoggedOutReport,
     DirectThenSteer,
     HumanThenNoticeSteer,
+    HumanWithQueuedPrompt,
     DirectThenProviderDeclinesSteer,
     DirectThenProviderStartsTurn,
     DirectWithSteeringAvailable,
@@ -102,7 +103,7 @@ async fn managed_notice_fixture(
                 "protocolVersion": 1,
                 "agentCapabilities": {"loadSession": true, "mcpCapabilities": {"http": true}},
                 "agentInfo": {"name": "managed-notice-fixture", "version": "1"},
-                "_meta": {"steering": {"supported": matches!(notices, NoticeScript::DirectThenSteer | NoticeScript::HumanThenNoticeSteer | NoticeScript::DirectThenProviderDeclinesSteer | NoticeScript::DirectThenProviderStartsTurn | NoticeScript::DirectWithSteeringAvailable)}}
+                "_meta": {"steering": {"supported": matches!(notices, NoticeScript::DirectThenSteer | NoticeScript::HumanThenNoticeSteer | NoticeScript::HumanWithQueuedPrompt | NoticeScript::DirectThenProviderDeclinesSteer | NoticeScript::DirectThenProviderStartsTurn | NoticeScript::DirectWithSteeringAvailable)}}
             }),
         )
         .expect_request(
@@ -115,7 +116,7 @@ async fn managed_notice_fixture(
     let script = if !matches!(notices, NoticeScript::NoWrite) {
         let foreground = match notices {
             NoticeScript::DirectThenProviderStartsTurn => "Hold the foreground turn",
-            NoticeScript::HumanThenNoticeSteer => HUMAN_TEXT,
+            NoticeScript::HumanThenNoticeSteer | NoticeScript::HumanWithQueuedPrompt => HUMAN_TEXT,
             _ => NOTICE_TEXT,
         };
         let script = script
@@ -167,7 +168,9 @@ async fn managed_notice_fixture(
         } else {
             let script = if matches!(
                 notices,
-                NoticeScript::DirectThenSteer | NoticeScript::HumanThenNoticeSteer
+                NoticeScript::DirectThenSteer
+                    | NoticeScript::HumanThenNoticeSteer
+                    | NoticeScript::HumanWithQueuedPrompt
             ) {
                 script
                     .expect_request(
@@ -183,12 +186,17 @@ async fn managed_notice_fixture(
             } else {
                 script
             };
-            script
+            let script = script
                 .expect_message(json!({
                     "jsonrpc": "2.0", "method": "session/cancel",
                     "params": {"sessionId": "saved-notice-session"}
                 }))
-                .respond("notice", json!({"stopReason": "cancelled"}))
+                .respond("notice", json!({"stopReason": "cancelled"}));
+            if matches!(notices, NoticeScript::HumanWithQueuedPrompt) {
+                admission::expect_queued_prompt(script, &receipt)
+            } else {
+                script
+            }
         }
     } else {
         script

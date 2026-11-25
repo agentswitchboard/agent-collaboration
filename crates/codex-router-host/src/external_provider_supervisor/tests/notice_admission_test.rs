@@ -1,7 +1,14 @@
 use super::*;
-use crate::external_provider_supervisor::{AdmissionTestPause, PromptBusyPolicy};
-use collaboration_protocol::{MessageDelivery as ProviderMessageDelivery, ProviderKind};
-use provider_session_machines::session_turn_machine::SessionTurn;
+use crate::external_provider_supervisor::{AdmissionTestPause, PromptBusyPolicy, SessionQueuePlan};
+use crate::provider_test_support::AcpFixtureScript;
+use crate::session_owner_calls::InputAcceptance;
+use acp_client_runtime::acp_transport::TransportRun;
+use collaboration_protocol::{
+    ConversationOperationQueueState, MessageDelivery as ProviderMessageDelivery, ProviderKind,
+};
+use provider_session_machines::{
+    session_lifecycle_machine::SessionLifecycle, session_turn_machine::SessionTurn,
+};
 use runtime_primitives::Clock as _;
 use state_machine_core::StateMachine as _;
 use switchboard_machine_core_store::{
@@ -14,6 +21,132 @@ use switchboard_message_custody::{
 };
 
 const NOTICE_MESSAGE_ID: &str = "019f0000-0000-7000-8000-000000000017";
+const QUEUED_PROMPT_TEXT: &str = "prompt queued for the next turn";
+
+pub(super) fn expect_queued_prompt(
+    script: AcpFixtureScript,
+    receipt: &std::path::Path,
+) -> AcpFixtureScript {
+    script
+        .expect_recorded_request(
+            "queued",
+            "session/prompt",
+            serde_json::json!({
+                "sessionId": "saved-notice-session",
+                "prompt": [{"type": "text", "text": QUEUED_PROMPT_TEXT}]
+            }),
+            &receipt.with_extension("queued"),
+        )
+        .respond("queued", serde_json::json!({"stopReason": "end_turn"}))
+}
+
+#[tokio::test]
+async fn queued_prompt_leaves_the_running_turn_open_to_notice_steering() {
+    let clock = Arc::new(ManualClock::new(chrono::DateTime::UNIX_EPOCH));
+    let rig = managed_notice_fixture(
+        clock.clone(),
+        NoticeScript::HumanWithQueuedPrompt,
+        ProviderKind::ClaudeCode,
+    )
+    .await;
+    let (adapter, recipient, notice) =
+        prepare_notice(&rig, &clock, Arc::new(NoticeAuthority::new()));
+    rig.supervisor
+        .prompt_contents(human_prompt(
+            &rig,
+            OperationId::generate(),
+            PromptBusyPolicy::RefuseBusy,
+        ))
+        .await
+        .expect("start the foreground prompt");
+    let owner = rig.supervisor.session_owner_for(&rig.target).unwrap();
+    let snapshot = owner.snapshots().borrow().clone();
+    let (SessionLifecycle::Live { generation }, SessionTurn::Running { turn }) =
+        (snapshot.lifecycle, snapshot.turn)
+    else {
+        panic!("the foreground prompt must hold an open turn");
+    };
+    let operation_id = OperationId::generate();
+    let input_id = session_event_model::InputId::generate();
+    let placement = rig
+        .supervisor
+        .submit_queued_on_run(
+            ProviderPromptContentsRequest {
+                operation_id: operation_id.clone(),
+                input_id: input_id.clone(),
+                target: rig.target.clone(),
+                requested_by: rig.target.clone().into(),
+                approver: rig.target.clone().into(),
+                input: acp_client_runtime::ProviderTurnInput::Prompt(
+                    session_event_model::ProviderSubmission::plain(vec![
+                        session_event_model::PromptContent::text(QUEUED_PROMPT_TEXT.to_owned())
+                            .unwrap(),
+                    ]),
+                ),
+                busy: PromptBusyPolicy::Send(ProviderMessageDelivery::Queue),
+            },
+            SessionQueuePlan::OnRun(TransportRun {
+                incarnation: snapshot.owner.incarnation,
+                generation,
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(placement, InputAcceptance::Queued);
+    let queued_wire = rig.receipt.with_extension("queued");
+    assert!(!queued_wire.exists());
+
+    let outcome = adapter.ready(&recipient).await.unwrap().offer(notice).await;
+    assert_eq!(
+        outcome,
+        NoticeWriteOutcome::Written {
+            taken_at: clock.utc_now()
+        }
+    );
+    assert!(rig.receipt.with_extension("steer").is_file());
+    assert_eq!(
+        owner.snapshots().borrow().turn,
+        SessionTurn::Running { turn }
+    );
+    let queued = rig
+        .supervisor
+        .show(ConversationOperationShowRequest {
+            operation_id: operation_id.clone(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        queued.queue_state,
+        Some(ConversationOperationQueueState::RouterQueued)
+    );
+    assert_eq!(queued.input_id, Some(input_id));
+    assert!(!queued_wire.exists());
+
+    owner.cancel_turn(generation, turn).await.unwrap().unwrap();
+    let settled = rig
+        .supervisor
+        .wait(ConversationOperationWaitRequest {
+            operation_id,
+            timeout_seconds: PositiveSeconds::try_from(1).unwrap(),
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        settled.output,
+        ConversationOperationWaitOutput::Available {
+            settlement: ConversationOperationSettlement::PromptCompleted { .. }
+        }
+    ));
+    rig.supervisor.shutdown().await.unwrap();
+    let traffic = std::fs::read_to_string(queued_wire).unwrap();
+    let prompts = traffic
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .filter(|request| request["method"] == "session/prompt")
+        .count();
+    assert_eq!(prompts, 1, "{traffic}");
+    assert_wire_script_completed(&rig, true);
+}
 
 #[tokio::test]
 async fn pre_owner_notice_custody_yields_to_the_human_prompt() {

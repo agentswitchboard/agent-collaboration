@@ -190,14 +190,15 @@ struct ReservationEntry {
     admission_holder: bool,
 }
 
-fn prompt_entries(foreground: uuid::Uuid) -> [ReservationEntry; 18] {
+fn prompt_entries(foreground: uuid::Uuid) -> [ReservationEntry; 19] {
     use AdmissionClass::{Independent, Notice, OwnerPlaced, RefuseWhileRunning};
     [
         ("direct prompt", Independent, false, true),
         ("Compact", Independent, false, true),
         ("Warm", Independent, false, true),
         ("direct delivery", Independent, false, true),
-        ("notice", Notice { foreground: None }, false, false),
+        ("direct notice", Notice, false, false),
+        ("exact-steer notice", OwnerPlaced, false, false),
         ("idle API Auto", OwnerPlaced, false, false),
         ("idle Steer fallback", OwnerPlaced, false, false),
         ("rowless idle Auto", OwnerPlaced, true, false),
@@ -268,7 +269,7 @@ fn the_reservation_class_table_keeps_admission_and_dispatch_holds_distinct() {
     let second = OperationId::generate();
     let independent = AdmissionMode::deferred(AdmissionClass::Independent);
     let asks = prompt_request(&second, &session, independent);
-    let places = prompt_request(
+    let exact_steer_notice = prompt_request(
         &second,
         &session,
         AdmissionMode::deferred(AdmissionClass::OwnerPlaced),
@@ -276,14 +277,14 @@ fn the_reservation_class_table_keeps_admission_and_dispatch_holds_distinct() {
     let notice = prompt_request(
         &second,
         &session,
-        AdmissionMode::deferred(AdmissionClass::Notice { foreground: None }),
+        AdmissionMode::deferred(AdmissionClass::Notice),
     );
     for entry in prompt_entries(uuid::Uuid::now_v7()) {
         let mut index = LiveOperations::default();
         let holder = place_prompt(&mut index, &binding, &session, &first, &entry);
         let assert_hold_readers = |dispatch_hold: bool| {
-            // Notice admission yields to both reservations and dispatch holders.
-            // The lane still sees the dispatch mark on a notice.
+            // A direct notice yields to reservations and dispatch holders.
+            // The lane still sees its dispatch mark.
             assert_eq!(
                 index.admission_blockers(&binding, asks).contains(&first),
                 !entry.mode.class.is_notice() && (entry.admission_holder || dispatch_hold),
@@ -297,7 +298,9 @@ fn the_reservation_class_table_keeps_admission_and_dispatch_holds_distinct() {
                 entry.name
             );
             assert!(
-                index.admission_blockers(&binding, places).is_empty(),
+                index
+                    .admission_blockers(&binding, exact_steer_notice)
+                    .is_empty(),
                 "{}",
                 entry.name
             );
@@ -366,6 +369,12 @@ fn the_reservation_class_table_keeps_admission_and_dispatch_holds_distinct() {
         assert_eq!(
             index.admission_blockers(&binding, asks),
             vec![first.clone()],
+            "{kind:?}"
+        );
+        assert!(
+            index
+                .admission_blockers(&binding, exact_steer_notice)
+                .is_empty(),
             "{kind:?}"
         );
         assert_eq!(

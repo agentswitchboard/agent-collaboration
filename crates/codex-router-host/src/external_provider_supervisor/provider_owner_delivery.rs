@@ -274,17 +274,16 @@ impl ExternalProviderSupervisor {
         let class = match admission {
             DeliveryAdmission::Requested(_)
             | DeliveryAdmission::QueueOnRun(_)
+            | DeliveryAdmission::Notice(NoticeRun {
+                placement: NoticePlacement::Steer(_),
+                ..
+            })
             | DeliveryAdmission::SteerExisting(_) => AdmissionClass::OwnerPlaced,
             DeliveryAdmission::Warm(_) => AdmissionClass::Independent,
-            DeliveryAdmission::Notice(run) => AdmissionClass::Notice {
-                foreground: snapshot
-                    .foreground
-                    .as_ref()
-                    .filter(|input| {
-                        matches!(run.placement, NoticePlacement::Steer(turn) if turn == input.turn)
-                    })
-                    .map(|input| input.operation),
-            },
+            DeliveryAdmission::Notice(NoticeRun {
+                placement: NoticePlacement::Direct,
+                ..
+            }) => AdmissionClass::Notice,
             #[cfg(test)]
             DeliveryAdmission::Direct => AdmissionClass::Independent,
         };
