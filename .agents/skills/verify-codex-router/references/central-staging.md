@@ -4,7 +4,34 @@ For central-storage-reset D1, use [D1 central mail](d1-central-mail.md). O5 rese
 
 ## Current entry
 
-The two-Mac cross-machine/staging harness is unavailable until deliverable C. Ordinary `node verification/run.ts` invocation refuses with exit 2 before reading a declaration or launching setup. C will connect the retained non-import behavior cases to the new path. Independent D1 routes keep their declared scope. Staging attachment grants no deployment, login or enrollment authority.
+The staging notice journey uses the existing CLI and session event stream on a declared, already-running signed debug Host. It supports a local sender and a declared separate-Mac sender handoff through staging Central. The legacy staging entry still refuses with exit 2. Independent D1 routes retain their own scope. No staging access, enrollment, sign-in or deployment authority follows from this recipe.
+
+```sh
+node verification/run.ts --staging-message /absolute/private/staging-message.json
+```
+
+Create the declaration outside the checkout, mode `0600`, with a fresh `evidence` directory under an existing owner-private directory. Supply:
+
+- `journey` as `idle` or `running`, and the 40-character `source` pin. For `running`, optional `answerLines` chooses the bounded no-tools answer length from 4,000 to 20,000. The default is 8,000.
+- `router` and `collaboration`, each with canonical absolute `path`, `sha256`, signing `identifier` and `team`. Use the signed debug artifacts. Pin the approved `root`, loopback `port`, enrolled `machineId`, `hostPid`, and the expected HTTPS `signInOrigin` from the private staging allocation. The driver compares it with the product's enrollment read.
+- `claudeAdapter` with absolute `path` and `sha256`, and its actual `claudeAdapterPid` under that Host. The driver compares only the actual process's expected local Anthropic route and keeps no process arguments or environment in evidence. Use the normal Host launch path with its already authenticated debug-only account. Stop on a login or permission request.
+- `sender` and `recipient`, distinct exact SessionRef objects of the form `{endpoint: {serviceId, endpointId}, sessionId}`. Use the real current sender session's identity and an isolated idle managed Claude recipient created under this Host with model `haiku` (Haiku 5.5). Use the existing session create and inspect commands, and a fresh test recipient for each run. A failed or uncertain send is not replayed.
+
+The driver checks the debug process, staging enrollment, debug-account health, the sender and recipient identities, and effective Haiku before input. It attaches before the send and requires continuous coverage of the recipient stream. In the idle case the one notice must appear in one new turn. In the running case a real Claude session streams a bounded numbered answer without tools. The driver sends once the product shows the exact turn producing output and still running. The notice must appear within that exact turn. The sender must read `Seen` for the same request. That status records the notice write.
+
+Use a no-tools hold. The public prompt CLI refuses permission requests ([conversation command](../../../../crates/agent-collaboration/src/conversation_commands.rs#L50)), so a permissioned sleep can cancel the fixture before any message is sent. If the no-tools answer finishes before a complete notice window, retain that run as blocked. A notice that begins a turn after the session becomes idle can be valid delivery under the product contract. It cannot satisfy the running case. A fresh fixture can use a larger bounded answer on the same Haiku model.
+
+After observing the notice, the driver keeps reading sender status through the next minute mark and its publication window. Late status from a separate-Mac operator has a further bounded allowance. The driver requires its own matching sender read before it records a pass.
+
+For a bounded timing measurement, keep `journey: "running"` and set `timing: "notice"` or `timing: "control"`. Keep the same `answerLines` across specimens. A control starts the same answer and sends no message. A notice specimen keeps the normal sender and same-turn checks. Both wait for natural turn completion and record stream-observed start, end, duration, stop reason, and counts of answer updates before and after the notice. Coalesced event updates are observations of the stream, so their count does not measure generated tokens.
+
+The adopted expectations come from the messages design's recipient-state table and the notice slice's scope ruling. The idle-only baseline should reach recipient Mac custody and complete the held turn without the notice in it. Compare the reported custody time to the observed end of that turn so delayed status publication does not shorten the measured window. An unavailable hold, lost stream or wrong target is a setup failure and does not establish the baseline red. Run `running` on the declared old build and on the candidate, and `idle` on the candidate. Retain the private receipts for each. An interrupted test cleans up its own captured hold turn and observer, leaving the Host and fixture sessions to their allocator.
+
+### Separate-Mac sender
+
+After the local positives, allocate a distinct already-enrolled debug Mac, its signed candidate build at the same source pin and its actual sender session. Use the same command with the remote `sender` SessionRef and optional `senderHandoff: { machineId, directory }`. The sender operator qualifies the actual debug Host and sender with product reads and strict signatures. Stash the outcome as `sender-qualified.json` in the declaration's fresh private handoff directory. Its fields are `source`, `machineId`, `sender`, `debugOnly: true`, `enrolledConnected: true`, `routerSha256`, and `cliSha256`.
+
+When the recipient driver is armed, it emits the path to `sender-intent.json`. Relay it through the authorized operator channel. The sender operator uses the exact `to`, `body`, and `requestId` for one signed `agent-collaboration message send --json` from its debug service before `sendBefore`. Relay its CLI response as `<requestId>-send.json` in the private handoff directory. The driver grants four minutes for the relay while still requiring evidence that the send itself met its original deadline. Poll the same signed CLI's `message status --json --request-id` on the sender and relay changing outcomes through `<requestId>-status.json`. Each file is an atomic private publication with `requestId`, `machineId`, `sender`, UTC `observedAt`, process `exit`, and the actual CLI JSON as `output`. Use `null` if the send exit was lost but the exact structured reply survived. Completion still requires sender status with exit zero and the matching Central message ID. Do not retry uncertain sends or substitute a local sender. A missing allocation, timely send or matching sender readback blocks the two-Mac result. This route uses two authenticated operators and needs no SSH access.
 
 ## Retained obligations and historical evidence
 
