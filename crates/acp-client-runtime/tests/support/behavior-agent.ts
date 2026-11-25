@@ -23,12 +23,19 @@ const releaseSocket = process.argv[5] === undefined ? undefined : requireArgumen
 if (releaseSocket !== undefined && !isAbsolute(releaseSocket))
   throw new Error("release socket must be absolute");
 writeFileSync(receipt, "");
-const agent = new AcpExchange();
+const workFramesProfile = compactCase === "work-frames";
+const agent = new AcpExchange(
+  undefined,
+  workFramesProfile ? { wireCapture: `${receipt}.frames` } : {},
+);
 await agent.initialize("behavior-fixture", {
   agentCapabilities: {
     loadSession: true,
     ...(lifecycleProfile ? { sessionCapabilities: { resume: {}, close: {} } } : {}),
-    promptCapabilities: { image: true },
+    promptCapabilities: {
+      image: true,
+      ...(workFramesProfile ? { audio: true, embeddedContext: true } : {}),
+    },
     _meta: { steering: { supported: true } },
   },
   ...(requiresConnectionAuthentication

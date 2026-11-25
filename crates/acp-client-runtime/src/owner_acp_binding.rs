@@ -49,7 +49,7 @@ impl<Port: InteractionPort> HarnessBinding for OwnerAcpBinding<Port> {
             authorization,
             turn,
             self.provider_session.clone(),
-            acp_blocks_from_prompt_content(content.blocks().to_vec()),
+            acp_blocks_from_prompt_content(content.blocks()),
             matches!(content, HarnessContent::Compaction(_)),
             reply,
         )
@@ -65,7 +65,7 @@ impl<Port: InteractionPort> HarnessBinding for OwnerAcpBinding<Port> {
         self.wire.offer_work_steer(
             authorization,
             self.provider_session.clone(),
-            acp_blocks_from_prompt_content(content.blocks().to_vec()),
+            acp_blocks_from_prompt_content(content.blocks()),
             idle,
             reply,
         )

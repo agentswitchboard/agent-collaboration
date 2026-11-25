@@ -4,7 +4,7 @@ use super::*;
 /// shape at the single SDK decoding edge.
 #[test]
 fn audio_and_embedded_resources_keep_payload_and_capability_gate() {
-    let blocks = acp_blocks_from_prompt_content(vec![
+    let contents = vec![
         PromptContent::audio("audio/wav".to_owned(), "aGVsbG8=".to_owned()).expect("audio"),
         PromptContent::embedded_text(
             "file:///note.txt".to_owned(),
@@ -18,7 +18,8 @@ fn audio_and_embedded_resources_keep_payload_and_capability_gate() {
             "aGVsbG8=".to_owned(),
         )
         .expect("blob resource"),
-    ]);
+    ];
+    let blocks = acp_blocks_from_prompt_content(&contents);
     assert_eq!(
         serde_json::to_value(&blocks).expect("ACP blocks"),
         serde_json::json!([
@@ -30,7 +31,10 @@ fn audio_and_embedded_resources_keep_payload_and_capability_gate() {
         ])
     );
     assert!(matches!(
-        ProviderPromptContent::new(blocks.clone(), &ProviderCapabilityReport::default()),
+        ProviderPromptContent::from_session_contents(
+            contents.clone(),
+            &ProviderCapabilityReport::default(),
+        ),
         Err(ExternalProviderRuntimeError::UnsupportedContent {
             content_type: "audio"
         })
@@ -40,11 +44,11 @@ fn audio_and_embedded_resources_keep_payload_and_capability_gate() {
         ..ProviderCapabilityReport::default()
     };
     assert!(matches!(
-        ProviderPromptContent::new(blocks.clone(), &capabilities),
+        ProviderPromptContent::from_session_contents(contents.clone(), &capabilities),
         Err(ExternalProviderRuntimeError::UnsupportedContent {
             content_type: "embeddedResource"
         })
     ));
     capabilities.accepts_embedded_resource = true;
-    assert!(ProviderPromptContent::new(blocks, &capabilities).is_ok());
+    assert!(ProviderPromptContent::from_session_contents(contents, &capabilities).is_ok());
 }
