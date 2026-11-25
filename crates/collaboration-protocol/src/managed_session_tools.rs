@@ -1,9 +1,10 @@
 //! Contracts between the managed start owner and the session-only MCP listener.
 
-use std::{future::Future, pin::Pin};
+use std::{fmt, future::Future, pin::Pin};
 
-use fleet_identity_protocol::SessionSecret;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use workspace_ids::{ManagedToolBindingId, RouterRunId, SessionOperationId, SessionRef};
+use zeroize::Zeroizing;
 
 /// The identity of one proposed or live tool binding, even before the harness returns its ID.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -13,9 +14,30 @@ pub struct ManagedSessionToolBinding {
     pub binding: ManagedToolBindingId,
 }
 
-/// An independently minted local bearer. This is never the proof issued by Central.
-/// Its underlying value zeroizes and redacts debug output.
-pub struct ManagedToolBearer(pub SessionSecret);
+/// The local bearer the Router mints for one managed tool binding. Its header
+/// value zeroizes on drop and is omitted from debug output.
+#[derive(Clone)]
+pub struct ManagedToolBearer(Zeroizing<String>);
+
+impl ManagedToolBearer {
+    /// Encodes fresh bytes drawn from the Router's cryptographic random source.
+    #[must_use]
+    pub fn from_random_bytes(bytes: &[u8; 32]) -> Self {
+        Self(Zeroizing::new(URL_SAFE_NO_PAD.encode(bytes)))
+    }
+
+    /// Returns the bearer value for ACP header construction or request verification.
+    #[must_use]
+    pub fn expose_header_value(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl fmt::Debug for ManagedToolBearer {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ManagedToolBearer([REDACTED])")
+    }
+}
 
 /// A prepared loopback URL and its separate bearer header for harness session setup.
 /// The descriptor and bearer live in memory for this binding only.
@@ -91,3 +113,7 @@ pub trait ManagedStartResolver: Send + Sync {
         binding: &'lookup ManagedSessionToolBinding,
     ) -> ResolveManagedStartFuture<'lookup>;
 }
+
+#[cfg(test)]
+#[path = "managed_session_tools_test.rs"]
+mod tests;
