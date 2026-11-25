@@ -4,97 +4,10 @@
 mod connection_registry;
 pub use connection_registry::{PersonConnectionRegistry, RegisteredPersonConnection};
 
-use fleet_identity_protocol::{OrganizationId, UnixMillis};
-use fleet_signin::person_proof::{
-    CheckedPersonLink, OrganizationFloor, OrganizationFloorState, PersonFloor, PersonFloorState,
-    PersonLinkFacts, PersonLinkSecondFactor,
-};
-use fleet_signin::{FenceRevision, FleetPermission};
+use fleet_identity_protocol::OrganizationId;
+use fleet_signin::FleetPermission;
+pub use fleet_signin::person_proof::PersonSocketAttachment;
 use workspace_ids::PersonId;
-
-/// The private connection state accepted only from signed admission or the owning socket.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PersonSocketAttachment {
-    person_id: PersonId,
-    organization_id: OrganizationId,
-    permissions: Vec<FleetPermission>,
-    authorization_snapshot_at_ms: UnixMillis,
-    authorization_snapshot_valid_until_ms: UnixMillis,
-    person_revision: FenceRevision,
-    organization_revision: FenceRevision,
-    session_expires_at_ms: UnixMillis,
-    #[serde(deserialize_with = "Option::deserialize")]
-    second_factor: Option<PersonLinkSecondFactor>,
-}
-
-impl PersonSocketAttachment {
-    pub fn admit(
-        checked: &CheckedPersonLink,
-        organization: &OrganizationId,
-        now_ms: i64,
-        organization_floor: &OrganizationFloor,
-        person_floor: &PersonFloor,
-    ) -> Option<Self> {
-        let facts = checked.facts();
-        (now_ms < checked.upgrade_expires_at_ms()
-            && &facts.organization_id == organization
-            && accepts_floors(facts, organization_floor, person_floor))
-        .then(|| Self {
-            person_id: facts.person_id.clone(),
-            organization_id: facts.organization_id.clone(),
-            permissions: facts.permissions.clone(),
-            authorization_snapshot_at_ms: facts.authorization_snapshot_at_ms,
-            authorization_snapshot_valid_until_ms: facts.authorization_snapshot_valid_until_ms,
-            person_revision: facts.person_revision,
-            organization_revision: facts.organization_revision,
-            session_expires_at_ms: facts.session_expires_at_ms,
-            second_factor: facts.second_factor.clone(),
-        })
-    }
-
-    pub fn organization(&self) -> &OrganizationId {
-        &self.organization_id
-    }
-
-    pub fn person(&self) -> &PersonId {
-        &self.person_id
-    }
-
-    pub fn permits(&self, permission: FleetPermission) -> bool {
-        self.permissions.contains(&permission)
-    }
-
-    pub fn is_current(&self, now_ms: i64) -> bool {
-        now_ms
-            < self
-                .authorization_snapshot_valid_until_ms
-                .0
-                .min(self.session_expires_at_ms.0)
-    }
-
-    pub fn still_matches(&self, organization: &OrganizationFloor, person: &PersonFloor) -> bool {
-        organization.state == OrganizationFloorState::Active
-            && organization.revision.get() == self.organization_revision.get()
-            && person.state == PersonFloorState::Active
-            && person.revision.get() == self.person_revision.get()
-    }
-
-    pub fn is_well_formed(&self) -> bool {
-        let snapshot = self.authorization_snapshot_at_ms.0;
-        let snapshot_expiry = self.authorization_snapshot_valid_until_ms.0;
-        snapshot >= 0
-            && self.session_expires_at_ms.0 <= 9_007_199_254_740_991
-            && snapshot_expiry <= 9_007_199_254_740_991
-            && snapshot_expiry
-                .checked_sub(snapshot)
-                .is_some_and(|life| (1..=300_000).contains(&life))
-            && self.session_expires_at_ms.0 > snapshot
-            && self.second_factor.as_ref().is_none_or(|factor| {
-                !factor.method.is_empty() && (0..=9_007_199_254_740).contains(&factor.at.0)
-            })
-    }
-}
 
 /// The only transition is Admitted to Ended. The transport drops Ended sockets.
 #[derive(Clone)]
@@ -123,19 +36,6 @@ impl PersonConnectionState {
     }
 }
 
-pub fn accepts_floors(
-    facts: &PersonLinkFacts,
-    organization_floor: &OrganizationFloor,
-    person_floor: &PersonFloor,
-) -> bool {
-    organization_floor.state == OrganizationFloorState::Active
-        && organization_floor.revision.get() == facts.organization_revision.get()
-        && organization_floor.policy_digest == facts.permission_policy_digest
-        && person_floor.state == PersonFloorState::Active
-        && person_floor.revision.get() == facts.person_revision.get()
-        && person_floor.subject_id == facts.authorization_subject_id
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PersonRevision {
     Organization {
@@ -155,18 +55,15 @@ impl PersonRevision {
             Self::Organization {
                 organization,
                 revision,
-            } => {
-                organization == &facts.organization_id
-                    && *revision > facts.organization_revision.get()
-            }
+            } => organization == facts.organization() && *revision > facts.organization_revision(),
             Self::Person {
                 organization,
                 person,
                 revision,
             } => {
-                organization == &facts.organization_id
-                    && person == &facts.person_id
-                    && *revision > facts.person_revision.get()
+                organization == facts.organization()
+                    && person == facts.person()
+                    && *revision > facts.person_revision()
             }
         }
     }
@@ -181,6 +78,9 @@ use central_link_protocol::{
     },
 };
 use fleet_rpc::Envelope;
+use fleet_signin::approval_person_wire::{
+    ApprovalDecideRequest, ApprovalListRequest, ApprovalPersonOperation, ApprovalReadRequest,
+};
 
 pub enum PersonFrame {
     Reply(Vec<LinkFrame>),
@@ -196,7 +96,25 @@ pub enum PersonFrame {
         correlation: CorrelationId,
         request: Envelope<OrganizationId, ReadOrganizationChangeRecords>,
     },
+    Approval {
+        correlation: CorrelationId,
+        operation: ApprovalPersonOperation,
+    },
     ProtocolViolation,
+}
+
+fn approval(
+    connection: &PersonSocketAttachment,
+    correlation: CorrelationId,
+    operation: ApprovalPersonOperation,
+) -> PersonFrame {
+    if operation.organization() != connection.organization() {
+        return refusal(correlation, LinkCallRefusal::WrongTarget);
+    }
+    PersonFrame::Approval {
+        correlation,
+        operation,
+    }
 }
 
 pub fn dispatch(connection: &PersonSocketAttachment, text: &str) -> PersonFrame {
@@ -238,6 +156,33 @@ pub fn dispatch(connection: &PersonSocketAttachment, text: &str) -> PersonFrame 
                     request,
                 }
             }
+            CentralCall::ListPersonApprovals(request) => approval(
+                connection,
+                correlation_id,
+                ApprovalPersonOperation::List(ApprovalListRequest {
+                    organization: request.target,
+                    filter: request.body.filter,
+                    cursor: request.body.cursor,
+                }),
+            ),
+            CentralCall::ReadPersonApproval(request) => approval(
+                connection,
+                correlation_id,
+                ApprovalPersonOperation::Read(ApprovalReadRequest {
+                    organization: request.target,
+                    request_id: request.body.request_id,
+                }),
+            ),
+            CentralCall::DecidePersonApproval(request) => approval(
+                connection,
+                correlation_id,
+                ApprovalPersonOperation::Decide(ApprovalDecideRequest {
+                    organization: request.target,
+                    request_id: request.body.request_id,
+                    operation_id: request.body.operation_id,
+                    answer: request.body.answer,
+                }),
+            ),
             CentralCall::ListOrganizationWorkspaces(_)
             | CentralCall::LookupOrganizationWorkspace(_)
             | CentralCall::ReadOrganizationChangeRecords(_)

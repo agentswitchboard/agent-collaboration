@@ -1,4 +1,4 @@
-//! One signed HTTP and owning-store decision table, run by both hosts.
+//! The person approval outcome table and owning-store assertions on both hosts.
 use central_storage::SqlValue;
 use serde_json::{Value, json};
 
@@ -14,6 +14,8 @@ mod holder_delivery;
 mod request;
 mod retained_cases;
 mod retention_page;
+#[cfg(feature = "session-link-test-support")]
+mod socket_cases;
 pub use expanded_coverage::{ClockBoundary, ExpandedCase, SignedMutation};
 #[cfg(feature = "session-link-test-support")]
 use request::decide_in_organization;
@@ -22,7 +24,7 @@ pub use retained_cases::RetainedCase;
 
 #[cfg(feature = "session-link-test-support")]
 pub use holder_delivery::{
-    check_signed_holder_delivery, check_signed_holder_delivery_after_publication_failure,
+    check_signed_holder_delivery_after_publication_failure, check_socket_holder_delivery,
 };
 
 const REVISIONS: &str = "/internal/organization-authorization-revisions";
@@ -48,6 +50,14 @@ pub enum Case {
     Authentication(AuthenticationCase),
     ReplayedProof,
     Admission(AdmissionCase),
+    #[cfg(feature = "session-link-test-support")]
+    SocketRoundTrip,
+    #[cfg(feature = "session-link-test-support")]
+    SocketAuthority,
+    #[cfg(feature = "session-link-test-support")]
+    SocketRetainedSignedAnswer,
+    #[cfg(feature = "session-link-test-support")]
+    SocketExpiryAtApplyingSample,
 }
 
 pub enum ReplayCase {
@@ -102,7 +112,7 @@ pub async fn check(host: &impl PersonApprovalHarness, case: Case) -> Conformance
                 json!({"kind":"page","items":[summary(&first,"providerApproval")?],"next":null}),
             )?;
             assert_count(host, "SELECT COUNT(*) FROM actor_persons", 0).await?;
-            assert_count(host, "SELECT COUNT(*) FROM admin_used_requests", 2).await?;
+            assert_proof_count(host, 2).await?;
             assert_count(host, "SELECT COUNT(*) FROM approval_applying_time", 0).await?;
         }
         Case::ListDeadlinePrecedence => {
@@ -130,7 +140,7 @@ pub async fn check(host: &impl PersonApprovalHarness, case: Case) -> Conformance
             )?;
             require(view.to_string().contains("Private offer details"), &view)?;
             assert_count(host, "SELECT COUNT(*) FROM actor_persons", 0).await?;
-            assert_count(host, "SELECT COUNT(*) FROM admin_used_requests", 1).await?;
+            assert_proof_count(host, 1).await?;
         }
         Case::ReadDeadlinePrecedence => {
             let request = seed(host, 10, AnswerClass::Once, InitialApproval::PastDeadline).await?;
@@ -346,7 +356,7 @@ pub async fn check(host: &impl PersonApprovalHarness, case: Case) -> Conformance
                 ended == vec![vec![text(stored_at)]],
                 &json!({"expected":"ending at the retained approval floor"}),
             )?;
-            assert_count(host, "SELECT COUNT(*) FROM admin_used_requests", 1).await?;
+            assert_proof_count(host, 1).await?;
         }
         Case::AlreadyDecided => {
             let request = seed(host, 10, AnswerClass::Once, InitialApproval::Waiting).await?;
@@ -405,7 +415,7 @@ pub async fn check(host: &impl PersonApprovalHarness, case: Case) -> Conformance
                 400,
             )?;
             require(body.is_empty(), &json!({"expected":"empty 400 body"}))?;
-            assert_count(host, "SELECT COUNT(*) FROM admin_used_requests", 0).await?;
+            assert_proof_count(host, 0).await?;
         }
         Case::Authentication(case) => {
             let request = read(&id(10));
@@ -432,7 +442,7 @@ pub async fn check(host: &impl PersonApprovalHarness, case: Case) -> Conformance
             };
             let body = expect_status(host.post(request.path, &request.body, headers).await?, 401)?;
             require(body.is_empty(), &json!({"expected":"empty 401 body"}))?;
-            assert_count(host, "SELECT COUNT(*) FROM admin_used_requests", 0).await?;
+            assert_proof_count(host, 0).await?;
         }
         Case::ReplayedProof => {
             let request = read(&id(10));
@@ -447,7 +457,7 @@ pub async fn check(host: &impl PersonApprovalHarness, case: Case) -> Conformance
                 200,
                 refusal("requestReused"),
             )?;
-            assert_count(host, "SELECT COUNT(*) FROM admin_used_requests", 1).await?;
+            assert_proof_count(host, 1).await?;
         }
         Case::Admission(case) => {
             let mut owner = owner;
@@ -489,10 +499,20 @@ pub async fn check(host: &impl PersonApprovalHarness, case: Case) -> Conformance
                 200,
                 refusal(reason),
             )?;
-            assert_count(host, "SELECT COUNT(*) FROM admin_used_requests", 0).await?;
+            assert_proof_count(host, 0).await?;
         }
         Case::Expanded(case) => expanded_coverage::check_expanded(host, owner, case).await?,
         Case::Retained(case) => retained_cases::run_retained_case(host, &owner, case).await?,
+        #[cfg(feature = "session-link-test-support")]
+        Case::SocketRoundTrip => socket_cases::one_connection(host).await?,
+        #[cfg(feature = "session-link-test-support")]
+        Case::SocketAuthority => socket_cases::scoped_authority(host).await?,
+        #[cfg(feature = "session-link-test-support")]
+        Case::SocketRetainedSignedAnswer => socket_cases::shared_retained_answer(host).await?,
+        #[cfg(feature = "session-link-test-support")]
+        Case::SocketExpiryAtApplyingSample => {
+            socket_cases::expired_at_applying_sample(host).await?
+        }
     }
     Ok(())
 }
@@ -524,7 +544,7 @@ async fn check_replay(
                 1,
             )
             .await?;
-            assert_count(host, "SELECT COUNT(*) FROM admin_used_requests", 1).await?;
+            assert_proof_count(host, 1).await?;
             let rows = host.read("SELECT answer FROM runtime_request_log").await?;
             let [row] = rows.as_slice() else {
                 return Err("expected the only retained answer".into());
@@ -597,6 +617,24 @@ async fn publish_person_floor(
         "subjectId":OWNER_SUBJECT,"revision":revision,"state":state});
     expect_status(host.post(REVISIONS, &body, Vec::new()).await?, 200)?;
     Ok(())
+}
+
+async fn assert_proof_count(
+    host: &impl PersonApprovalHarness,
+    signed_count: i64,
+) -> ConformanceResult<()> {
+    #[cfg(feature = "session-link-test-support")]
+    let signed_count = if host.person_socket().is_some() {
+        0
+    } else {
+        signed_count
+    };
+    assert_count(
+        host,
+        "SELECT COUNT(*) FROM admin_used_requests",
+        signed_count,
+    )
+    .await
 }
 
 async fn assert_count(

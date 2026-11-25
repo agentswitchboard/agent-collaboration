@@ -17,7 +17,7 @@ use central_storage::{SqlValue, Statement};
 use collaboration_central_conformance::ConformanceResult as Result;
 use collaboration_central_conformance::{
     approval_authority_scenarios::approval_authority_refusals_leave_store_unchanged,
-    signin_fixtures::approval_routes::check_signed_holder_delivery,
+    signin_fixtures::approval_routes::check_socket_holder_delivery,
 };
 use collaboration_central_tokio::test_support::start_session_link_fixture;
 use fleet_rpc::Envelope;
@@ -367,7 +367,7 @@ fn fixture_decision(
 }
 
 #[tokio::test]
-async fn tokio_signed_person_decision_delivers_ending_to_holder() -> Result<()> {
+async fn tokio_socket_person_decision_delivers_one_ending_to_the_registered_holder() -> Result<()> {
     let fixture = NativeApprovalFixture {
         link: start_session_link_fixture(signed_clock()?).await?,
         before_alarm: Cell::new(0),
@@ -380,7 +380,14 @@ async fn tokio_signed_person_decision_delivers_ending_to_holder() -> Result<()> 
             .no_proxy()
             .unix_socket(fixture.link.signin_socket.clone())
             .build()?;
-        check_signed_holder_delivery(&fixture, async |path, body, headers| {
+        let public = fixture.link.client()?;
+        let origin = fixture.link.origin();
+        let endpoint = collaboration_central_conformance::signin_fixtures::approval_socket::PersonApprovalEndpoint {
+            client: &public,
+            origin: &origin,
+            now_seconds: fixture.now_seconds(),
+        };
+        check_socket_holder_delivery(&fixture, endpoint, async |path, body, headers| {
             let mut request = client
                 .post(format!("http://central.local{path}"))
                 .json(body);

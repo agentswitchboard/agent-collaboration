@@ -12,7 +12,7 @@ workspace = true
 [features]
 signin-test-support = ["dep:approval-request-protocol", "dep:central-storage", "dep:reqwest", "dep:chrono", "dep:tokio", "dep:sha2", "dep:ring", "dep:base64", "dep:axum", "dep:serde_json"]
 
-session-link-test-support = ["dep:tokio", "dep:approval-request-protocol", "dep:chrono","central-link-protocol/test-support", "dep:central-storage", "dep:fleet-identity-protocol", "dep:fleet-rpc", "dep:futures-util", "dep:reqwest-websocket", "dep:serde_json", "dep:workspace-ids", "dep:workspace-model"]
+session-link-test-support = ["dep:tokio", "dep:approval-request-protocol", "dep:chrono","central-link-protocol/test-support", "dep:central-storage", "dep:fleet-identity-protocol", "dep:fleet-rpc", "dep:futures-util", "dep:reqwest-websocket", "dep:serde", "dep:serde_json", "serde_json/raw_value", "dep:workspace-ids", "dep:workspace-model"]
 
 [dependencies]
 approval-request-protocol = { workspace = true, optional = true }
@@ -30,5 +30,6 @@ axum = { workspace = true, optional = true, features = ["http1", "tokio", "json"
 base64 = { version = "0.22.1", optional = true }
 ring = { version = "=0.17.14", optional = true }
 serde_json = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }

@@ -77,10 +77,11 @@ produce two consecutive changes, both are drained, and replay preserves the curs
   atomic directory/ledger/audit writes, and stored stamp facts outside both time
   bounds without granting live authority.
 
-- `organization_signin::person_approval_routes`: signed list, read and decide on
-  the Unix sign-in link. The shared decision table checks factor boundaries,
-  visibility and deadlines, retained replies, permission changes and proof replay. A signed
-  decision also reaches the live holder on the machine link.
+- `organization_signin::person_approval_routes` drives list, read and decide on
+  the person websocket and checks visibility, deadlines, authority and retained
+  replies in the owning store. The signed-route cases still check proof binding,
+  replay and admission. `workspace_link::approval_calls` checks that a socket
+  decision reaches the registered machine holder and settles once.
 
 - `organization_signin::machine_login`: the real private device/token decision
   routes, exact immutable three-field approval replies across reopen, both BA1

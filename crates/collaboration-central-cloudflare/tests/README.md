@@ -132,10 +132,11 @@ Setup cases exercise real signed create, non-null lookup, byte-identical replay,
 canonical name collisions, atomic directory/ledger/audit writes and facts-only
 digest reads outside both time bounds.
 
-`workspace_requests::organization_signin::person_approval_routes` runs the shared
-signed approval decision table on the private binding, including factor boundaries,
-visibility and deadlines, retained replies, permission changes and proof replay. A signed
-decision also reaches the live holder on the machine link.
+`workspace_requests::organization_signin::person_approval_routes` drives list,
+read and decide on the Workerd person websocket and checks visibility, deadlines,
+authority and retained replies in the owning store. The signed-route cases still
+check proof binding, replay and admission. `machine_link::approval_calls` checks
+that a socket decision reaches the registered machine holder and settles once.
 
 `workspace_requests::organization_signin::machine_login` drives the actual private
 Worker decision binding with exact approval snapshots, BA1 grant ordering and
