@@ -1,17 +1,23 @@
 //! Apply signed person-link authority to the owning organization's live floors.
 
+mod change_record_projection;
+
 use crate::{WorkspaceRuntime, organization_authority_cache::StampStanding};
 use central_link_protocol::{
-    CentralLinkRpc, DataFrame, LinkCallRefusal, LinkFrame, TypedCallResult,
+    CentralLinkRpc, CorrelationId, DataFrame, LinkCallRefusal, LinkFrame, TypedCallResult,
     person_link_rpc::{
-        ListOrganizationWorkspaces, ListOrganizationWorkspacesRpc, OrganizationWorkspace,
-        OrganizationWorkspacePage, OrganizationWorkspaceState,
+        ListOrganizationWorkspaces, ListOrganizationWorkspacesRpc, LookupOrganizationWorkspace,
+        LookupOrganizationWorkspaceResult, LookupOrganizationWorkspaceRpc, OrganizationReadRefusal,
+        OrganizationWorkspace, OrganizationWorkspacePage, OrganizationWorkspaceState,
+        ReadOrganizationChangeRecordsRpc,
     },
 };
 use central_person_link::{PersonFrame, PersonSocketAttachment, dispatch};
 use central_storage::StoreFailure;
+use fleet_rpc::Envelope;
 use fleet_runtime_ports::{CentralStore, WorkspaceStores, workspace_decode_error::corrupt};
 use fleet_signin::{
+    FleetPermission,
     authorization_floor_store::{read_organization_floor, read_person_floor},
     person_proof::{OrganizationFloor, PersonFloor, PersonRequestRefusal},
 };
@@ -133,24 +139,54 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             PersonFrame::ListWorkspaces {
                 correlation,
                 request,
-            } => {
-                let result = match self.read_person_workspace_page(request.body).await {
-                    Ok(page) => TypedCallResult::Answered {
-                        reply: ListOrganizationWorkspacesRpc::reply(fleet_rpc::Envelope {
-                            target: request.target,
-                            body: page,
-                        }),
-                    },
-                    Err(_) => TypedCallResult::Refused {
-                        reason: LinkCallRefusal::CentralFault,
-                    },
-                };
-                PersonLinkReply::Frames(vec![LinkFrame::Data(DataFrame::CentralCallReply {
-                    correlation_id: correlation,
-                    result: Box::new(result),
-                })])
-            }
+            } => person_call_reply::<ListOrganizationWorkspacesRpc>(
+                correlation,
+                request.target,
+                self.read_person_workspace_page(request.body).await,
+            ),
+            PersonFrame::LookupWorkspace {
+                correlation,
+                request,
+            } => person_call_reply::<LookupOrganizationWorkspaceRpc>(
+                correlation,
+                request.target,
+                self.lookup_workspace_on_person_link(connection, request.body)
+                    .await,
+            ),
+            PersonFrame::ReadChangeRecords {
+                correlation,
+                request,
+            } => person_call_reply::<ReadOrganizationChangeRecordsRpc>(
+                correlation,
+                request.target,
+                self.read_change_records_on_person_link(connection, request.body)
+                    .await,
+            ),
         })
+    }
+
+    async fn lookup_workspace_on_person_link(
+        &self,
+        connection: &PersonSocketAttachment,
+        request: LookupOrganizationWorkspace,
+    ) -> Result<LookupOrganizationWorkspaceResult, StoreFailure> {
+        use LookupOrganizationWorkspaceResult::{Absent, Found, Refused};
+        if !connection.permits(FleetPermission::ViewOrganization) {
+            return Ok(Refused {
+                reason: OrganizationReadRefusal::NotPermitted {},
+            });
+        }
+        Ok(
+            match self
+                .find_organization_workspace(&request.workspace_id)
+                .await?
+            {
+                Some(workspace) => Found {
+                    workspace: project_workspace(workspace)?,
+                },
+                None => Absent {},
+            },
+        )
     }
 
     async fn read_person_workspace_page(
@@ -165,38 +201,56 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         let page = self
             .list_organization_workspaces(after.as_ref(), request.limit.into())
             .await?;
-        let project_id = |id: message_board::WorkspaceId| {
-            workspace_ids::WorkspaceId::try_from(String::from(id))
-                .map_err(|_| corrupt("directory_workspaces.workspace_id"))
-        };
         Ok(OrganizationWorkspacePage {
-            next: page.next.map(project_id).transpose()?,
+            next: page.next.map(project_workspace_id).transpose()?,
             workspaces: page
                 .workspaces
                 .into_iter()
-                .map(|workspace| {
-                    Ok(OrganizationWorkspace {
-                        workspace_id: project_id(workspace.workspace_id)?,
-                        name: workspace_model::ResourceName::try_from(String::from(workspace.name))
-                            .map_err(|_| corrupt("directory_workspaces.name"))?,
-                        description: workspace_model::Description::try_from(String::from(
-                            workspace.description,
-                        ))
-                        .map_err(|_| corrupt("directory_workspaces.description"))?,
-                        state: match workspace.state {
-                            message_board::WorkspaceState::Active => {
-                                OrganizationWorkspaceState::Active
-                            }
-                            message_board::WorkspaceState::Archiving => {
-                                OrganizationWorkspaceState::Archiving
-                            }
-                            message_board::WorkspaceState::Archived => {
-                                OrganizationWorkspaceState::Archived
-                            }
-                        },
-                    })
-                })
+                .map(project_workspace)
                 .collect::<Result<_, StoreFailure>>()?,
         })
     }
+}
+
+fn person_call_reply<Rpc: CentralLinkRpc>(
+    correlation_id: CorrelationId,
+    target: Rpc::Target,
+    answer: Result<Rpc::Reply, StoreFailure>,
+) -> PersonLinkReply {
+    let result = match answer {
+        Ok(body) => TypedCallResult::Answered {
+            reply: Rpc::reply(Envelope { target, body }),
+        },
+        Err(_) => TypedCallResult::Refused {
+            reason: LinkCallRefusal::CentralFault,
+        },
+    };
+    PersonLinkReply::Frames(vec![LinkFrame::Data(DataFrame::CentralCallReply {
+        correlation_id,
+        result: Box::new(result),
+    })])
+}
+
+fn project_workspace_id(
+    id: message_board::WorkspaceId,
+) -> Result<workspace_ids::WorkspaceId, StoreFailure> {
+    workspace_ids::WorkspaceId::try_from(String::from(id))
+        .map_err(|_| corrupt("directory_workspaces.workspace_id"))
+}
+
+fn project_workspace(
+    workspace: fleet_contracts::WorkspaceView,
+) -> Result<OrganizationWorkspace, StoreFailure> {
+    Ok(OrganizationWorkspace {
+        workspace_id: project_workspace_id(workspace.workspace_id)?,
+        name: workspace_model::ResourceName::try_from(String::from(workspace.name))
+            .map_err(|_| corrupt("directory_workspaces.name"))?,
+        description: workspace_model::Description::try_from(String::from(workspace.description))
+            .map_err(|_| corrupt("directory_workspaces.description"))?,
+        state: match workspace.state {
+            message_board::WorkspaceState::Active => OrganizationWorkspaceState::Active,
+            message_board::WorkspaceState::Archiving => OrganizationWorkspaceState::Archiving,
+            message_board::WorkspaceState::Archived => OrganizationWorkspaceState::Archived,
+        },
+    })
 }

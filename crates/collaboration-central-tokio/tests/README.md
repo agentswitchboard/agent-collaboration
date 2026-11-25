@@ -166,7 +166,9 @@ The `workspace_link` integration module opens actual loopback WebSockets
 using the modern workspace host. It exercises signed admission, renewal,
 batch, immediate request and reply correlation, delivery replay, and private
 signed revocation of an idle link. The fixture owns the host, private Unix
-listener, public socket and signing keys for each case.
+listener, public socket and signing keys for each case. The person read cases
+compare workspace lookup and audit pages against signed HTTP and check the
+distinct permissions and the organization and machine boundaries.
 
 `codex-router central serve --config FILE` starts the same link and a private
 `signin.sock`. In the JSONC file, `listen` is the TCP address and port the

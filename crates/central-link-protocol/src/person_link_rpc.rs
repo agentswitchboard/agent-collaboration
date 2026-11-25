@@ -1,4 +1,11 @@
-//! Read the organization's workspace directory over an admitted person link.
+//! Read organization data over an admitted person link.
+
+mod change_records;
+pub use change_records::{
+    AuditChangeKind, AuditChangeOrigin, AuditRecord, ChangeRecordPageLimit, MachineAllowanceState,
+    ReadOrganizationChangeRecords, ReadOrganizationChangeRecordsResult,
+    ReadOrganizationChangeRecordsRpc, TargetedAuditRecord,
+};
 
 use fleet_identity_protocol::OrganizationId;
 use fleet_rpc::{IndependentReplyRpc, Rpc};
@@ -76,4 +83,34 @@ pub enum OrganizationWorkspaceState {
     Active,
     Archiving,
     Archived,
+}
+
+pub struct LookupOrganizationWorkspaceRpc;
+
+impl IndependentReplyRpc for LookupOrganizationWorkspaceRpc {}
+
+impl Rpc for LookupOrganizationWorkspaceRpc {
+    type Target = OrganizationId;
+    type Request = LookupOrganizationWorkspace;
+    type Reply = LookupOrganizationWorkspaceResult;
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LookupOrganizationWorkspace {
+    pub workspace_id: WorkspaceId,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "result", rename_all = "camelCase", deny_unknown_fields)]
+pub enum LookupOrganizationWorkspaceResult {
+    Found { workspace: OrganizationWorkspace },
+    Absent {},
+    Refused { reason: OrganizationReadRefusal },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum OrganizationReadRefusal {
+    NotPermitted {},
 }

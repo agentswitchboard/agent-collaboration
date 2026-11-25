@@ -1,4 +1,4 @@
-//! Registered RPC calls carried by an authenticated machine connection.
+//! Registered RPC calls carried by an authenticated Central link.
 use crate::{
     CorrelationId, FrameDirection, MachineLinkCloseCode,
     approval_rpc::{
@@ -6,7 +6,10 @@ use crate::{
         ListApprovalsForSessionRpc, PassOnApprovalForSessionRpc, RaiseApprovalRpc,
         ReadApprovalForSessionRpc, RegisterRunRpc, StopApprovalRpc,
     },
-    person_link_rpc::ListOrganizationWorkspacesRpc,
+    person_link_rpc::{
+        ListOrganizationWorkspacesRpc, LookupOrganizationWorkspaceRpc,
+        ReadOrganizationChangeRecordsRpc,
+    },
     session_lifecycle_rpc::{BindFleetSessionRpc, CreateFleetSessionRpc, EndFleetSessionRpc},
 };
 use fleet_rpc::{Envelope, Rpc};
@@ -101,7 +104,7 @@ mod registration {
     impl<Marker: Rpc> Mac for Marker where MacCall: Binding<Marker, ReplyFrame = MacCallReply> {}
 }
 
-/// A marker explicitly registered for calls from a Mac to Central.
+/// A marker explicitly registered for calls to Central.
 ///
 /// Implementing the generic RPC trait alone does not allow a link call.
 /// ```compile_fail,E0277
@@ -257,6 +260,8 @@ macro_rules! register_calls {
 register_calls! {
     CentralCall, "CentralCall", CentralCallReader, CentralCallReply, "CentralCallReply", CentralCallReplyReader, CentralLinkRpc;
     "listOrganizationWorkspaces" => ListOrganizationWorkspaces(ListOrganizationWorkspacesRpc),
+    "lookupOrganizationWorkspace" => LookupOrganizationWorkspace(LookupOrganizationWorkspaceRpc),
+    "readOrganizationChangeRecords" => ReadOrganizationChangeRecords(ReadOrganizationChangeRecordsRpc),
     "registerRun" => RegisterRun(RegisterRunRpc),
     "raise" => Raise(RaiseApprovalRpc),
     "stop" => Stop(StopApprovalRpc),

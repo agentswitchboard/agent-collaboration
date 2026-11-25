@@ -175,7 +175,10 @@ impl PersonRevision {
 use central_link_protocol::{
     CentralCall, CorrelationId, DataFrame, FrameDirection, LinkCallRefusal, LinkFrame,
     ProtocolError, ReplyPayload, RequestRefusal, RequestStatusAnswer, TokenRenewalRefusal,
-    TokenRenewalResult, TypedCallResult, decode_text, person_link_rpc::ListOrganizationWorkspaces,
+    TokenRenewalResult, TypedCallResult, decode_text,
+    person_link_rpc::{
+        ListOrganizationWorkspaces, LookupOrganizationWorkspace, ReadOrganizationChangeRecords,
+    },
 };
 use fleet_rpc::Envelope;
 
@@ -184,6 +187,14 @@ pub enum PersonFrame {
     ListWorkspaces {
         correlation: CorrelationId,
         request: Envelope<OrganizationId, ListOrganizationWorkspaces>,
+    },
+    LookupWorkspace {
+        correlation: CorrelationId,
+        request: Envelope<OrganizationId, LookupOrganizationWorkspace>,
+    },
+    ReadChangeRecords {
+        correlation: CorrelationId,
+        request: Envelope<OrganizationId, ReadOrganizationChangeRecords>,
     },
     ProtocolViolation,
 }
@@ -211,7 +222,25 @@ pub fn dispatch(connection: &PersonSocketAttachment, text: &str) -> PersonFrame 
                     request,
                 }
             }
+            CentralCall::LookupOrganizationWorkspace(request)
+                if &request.target == connection.organization() =>
+            {
+                PersonFrame::LookupWorkspace {
+                    correlation: correlation_id,
+                    request,
+                }
+            }
+            CentralCall::ReadOrganizationChangeRecords(request)
+                if &request.target == connection.organization() =>
+            {
+                PersonFrame::ReadChangeRecords {
+                    correlation: correlation_id,
+                    request,
+                }
+            }
             CentralCall::ListOrganizationWorkspaces(_)
+            | CentralCall::LookupOrganizationWorkspace(_)
+            | CentralCall::ReadOrganizationChangeRecords(_)
             | CentralCall::RegisterRun(_)
             | CentralCall::Raise(_)
             | CentralCall::Stop(_)
