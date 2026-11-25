@@ -10,7 +10,7 @@ use std::{
     num::NonZeroUsize,
     sync::Arc,
 };
-use switchboard_harness_contracts::{ReplyAdmission, ReservedReply, WorkReply, WriterState};
+use switchboard_harness_contracts::{ReplyAdmission, WorkReply, WriterState};
 use switchboard_harness_shared_mechanics::{
     CarrierReceiver, CarrierReply, CarrierSender, reply_carrier,
 };
@@ -132,12 +132,6 @@ impl OwnerCompletionPort {
 impl OwnerCompletion {
     pub fn send(self, event: OwnerEvent) {
         self.reply.send(event);
-    }
-}
-
-impl ReservedReply<WorkReply> for OwnerCompletion {
-    fn send(self: Box<Self>, reply: WorkReply) {
-        (*self).send(owner_event_for_work_reply(reply));
     }
 }
 

@@ -1,14 +1,10 @@
 //! Frame construction and offer recording for the ordered ACP work calls.
 
-use super::{
-    AcpFrame, Error, OwnerAcpWire, OwnerWireRefusal, ResponseKind, SettingCorrelation, TransportRun,
-};
+use super::{AcpFrame, Error, OwnerAcpWire, ResponseKind, SettingCorrelation, TransportRun};
 use crate::{
     PermissionModePlan, RequestedPermissionMode,
     acp_transport::{TransportOfferRefusal, TransportRefusal},
     owner_session_setting::{ModeConfirmation, OwnerSettingWirePlan},
-    provider_prompt_content::ProviderPromptContent,
-    session_owner_task::OwnerCompletion,
 };
 use agent_client_protocol::{
     JsonRpcMessage as _, UntypedMessage,
@@ -24,26 +20,6 @@ use switchboard_harness_contracts::{
 };
 
 impl OwnerAcpWire {
-    pub fn offer_prompt(
-        &self,
-        authorization: DispatchAuthorization,
-        turn: TurnId,
-        session: String,
-        content: ProviderPromptContent,
-        completion: OwnerCompletion,
-    ) -> Result<(), OwnerWireRefusal> {
-        let compact = content.is_compaction();
-        self.offer_work_prompt(
-            authorization,
-            turn,
-            session,
-            content.into_blocks(),
-            compact,
-            Box::new(completion),
-        )
-        .map_err(legacy_work_refusal)
-    }
-
     pub(crate) fn offer_work_prompt(
         &self,
         authorization: DispatchAuthorization,
@@ -76,41 +52,6 @@ impl OwnerAcpWire {
                 completion,
             },
         )
-    }
-
-    pub fn offer_steer(
-        &self,
-        authorization: DispatchAuthorization,
-        session: String,
-        content: ProviderPromptContent,
-        completion: OwnerCompletion,
-    ) -> Result<(), OwnerWireRefusal> {
-        self.offer_work_steer(
-            authorization,
-            session,
-            content.into_blocks(),
-            SteerIdlePolicy::AllowOwnerPrompt,
-            Box::new(completion),
-        )
-        .map_err(legacy_work_refusal)
-    }
-
-    /// Offers a steer which must leave the session untouched if its turn ended.
-    pub fn offer_exact_steer(
-        &self,
-        authorization: DispatchAuthorization,
-        session: String,
-        content: ProviderPromptContent,
-        completion: OwnerCompletion,
-    ) -> Result<(), OwnerWireRefusal> {
-        self.offer_work_steer(
-            authorization,
-            session,
-            content.into_blocks(),
-            SteerIdlePolicy::Refuse,
-            Box::new(completion),
-        )
-        .map_err(legacy_work_refusal)
     }
 
     pub(crate) fn offer_work_steer(
@@ -158,7 +99,7 @@ impl OwnerAcpWire {
         )?)
     }
 
-    pub fn offer_cancel(
+    pub(crate) fn offer_cancel(
         &self,
         authorization: DispatchAuthorization,
         session: String,
@@ -168,23 +109,6 @@ impl OwnerAcpWire {
             None,
             AcpFrame::Cancel(CancelNotification::new(session)),
         )
-    }
-
-    pub fn offer_explicit_setting(
-        &self,
-        authorization: DispatchAuthorization,
-        session: String,
-        kind: ProviderSettingKind,
-        wanted: String,
-        completion: OwnerCompletion,
-    ) -> Result<Option<DispatchResult>, OwnerWireRefusal> {
-        match self
-            .offer_work_setting(authorization, session, kind, wanted, Box::new(completion))
-            .map_err(legacy_work_refusal)?
-        {
-            SettingOffer::Offered => Ok(None),
-            SettingOffer::Settled(outcome) => Ok(Some(outcome)),
-        }
     }
 
     pub(crate) fn offer_work_setting(
@@ -255,22 +179,6 @@ impl From<TransportOfferRefusal> for WorkOfferRefusal {
             TransportOfferRefusal::AuthorizationSequenceOnRecord => {
                 Self::AuthorizationSequenceOnRecord
             }
-        }
-    }
-}
-
-fn legacy_work_refusal(refusal: WorkOfferRefusal) -> OwnerWireRefusal {
-    match refusal {
-        WorkOfferRefusal::PreparationFailed
-        | WorkOfferRefusal::SettingCatalogueUnavailable
-        | WorkOfferRefusal::SettingValueNotOffered
-        | WorkOfferRefusal::SettingSetterUnavailable => OwnerWireRefusal::Encoding,
-        WorkOfferRefusal::RouteUnavailable => TransportRefusal::RouteUnavailable.into(),
-        WorkOfferRefusal::RouteClosing => TransportRefusal::Closing.into(),
-        WorkOfferRefusal::WorkDoesNotFitAuthorization
-        | WorkOfferRefusal::OtherAuthorizationOffered
-        | WorkOfferRefusal::AuthorizationSequenceOnRecord => {
-            TransportRefusal::AuthorizationMismatch.into()
         }
     }
 }

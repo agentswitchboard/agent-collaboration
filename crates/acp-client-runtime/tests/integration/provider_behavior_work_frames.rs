@@ -1,3 +1,8 @@
+#![expect(
+    clippy::panic_in_result_fn,
+    reason = "Fixture I/O errors propagate while assertion failures retain the exact wire diff."
+)]
+
 use super::*;
 use serde_json::Value;
 

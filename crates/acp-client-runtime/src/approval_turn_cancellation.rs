@@ -3,14 +3,11 @@
 //! drain through. The client's cancel and the session actor both use it.
 
 use crate::{
-    ExternalProviderRuntimeError, InteractionPort,
-    acp_transport::TransportRun,
+    ExternalProviderRuntimeError, InteractionPort, acp_transport::TransportRun,
     owner_wire::OwnerAcpWire,
-    session_owner_task::{OwnerCompletionPort, OwnerTaskError},
 };
 use provider_session_machines::session_owner::{
-    CancelDrainReport, DispatchAuthorization, DispatchResult, OwnerAddress, OwnerEvent,
-    PendingTurnResponse,
+    CancelDrainReport, DispatchAuthorization, DispatchResult, PendingTurnResponse,
 };
 use std::{
     collections::{BTreeMap, HashMap},
@@ -275,7 +272,7 @@ impl<P: InteractionPort> OwnerApprovalDrain<P> {
 }
 
 /// Per-owner executor for the exact turn's outstanding ACP responses.
-pub struct OwnerCancelDrainExecutor<P: InteractionPort> {
+pub(crate) struct OwnerCancelDrainExecutor<P: InteractionPort> {
     approvals: OwnerApprovalBindings<P>,
     pending: BTreeMap<DispatchAuthorization, Arc<OwnerApprovalDrain<P>>>,
 }
@@ -285,35 +282,6 @@ impl<P: InteractionPort> OwnerCancelDrainExecutor<P> {
         Self {
             approvals,
             pending: BTreeMap::new(),
-        }
-    }
-
-    pub fn begin(
-        &mut self,
-        session: &str,
-        authorization: DispatchAuthorization,
-        owner: OwnerAddress,
-        completions: &OwnerCompletionPort,
-        tasks: &TaskTracker,
-        stop: CancellationToken,
-    ) -> Result<Option<OwnerEvent>, OwnerTaskError> {
-        match self.begin_work(
-            session,
-            authorization.clone(),
-            &mut || completions.reserve_work_reply(owner),
-            tasks,
-            Box::pin(stop.cancelled_owned()),
-        ) {
-            CancelDrainStart::AlreadyDrained => Ok(Some(OwnerEvent::Dispatch(
-                DispatchResult::CancelDrainFinished(authorization),
-            ))),
-            CancelDrainStart::Waiting => Ok(None),
-            CancelDrainStart::Refused(CancelReservationRefusal::Full) => {
-                Err(OwnerTaskError::CompletionCapacity)
-            }
-            CancelDrainStart::Refused(CancelReservationRefusal::Stopped) => {
-                Err(OwnerTaskError::ExecutorStopped)
-            }
         }
     }
 

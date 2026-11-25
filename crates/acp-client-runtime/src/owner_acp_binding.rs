@@ -1,8 +1,8 @@
 //! The ACP implementation of one session owner's harness work calls.
 
 use crate::{
-    InteractionPort, OwnerApprovalBindings, OwnerCancelDrainExecutor, owner_wire::OwnerAcpWire,
-    provider_prompt_content::acp_blocks_from_prompt_content,
+    InteractionPort, OwnerApprovalBindings, approval_turn_cancellation::OwnerCancelDrainExecutor,
+    owner_wire::OwnerAcpWire, provider_prompt_content::acp_blocks_from_prompt_content,
 };
 use std::sync::Arc;
 use switchboard_harness_contracts::{

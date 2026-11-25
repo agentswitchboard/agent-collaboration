@@ -87,7 +87,7 @@ pub use acp_protocol_version::AcpProtocolVersion;
 pub use agent_session_client::*;
 pub(crate) use approval_presentation::reviewed_approval_fields;
 pub use approval_turn_cancellation::{
-    OwnerApprovalBindings, OwnerApprovalDrain, OwnerApprovalLease, OwnerCancelDrainExecutor,
+    OwnerApprovalBindings, OwnerApprovalDrain, OwnerApprovalLease,
 };
 pub use external_permission_options::RefusedPermissionOption;
 pub(crate) use external_permission_options::map_permission_options;

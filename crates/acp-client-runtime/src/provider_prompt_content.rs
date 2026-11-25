@@ -112,10 +112,6 @@ impl ProviderPromptContent {
         })
     }
 
-    pub(crate) fn into_blocks(self) -> Vec<ContentBlock> {
-        acp_blocks_from_prompt_content(&self.contents)
-    }
-
     #[must_use]
     pub fn as_harness_content(&self) -> HarnessContent<'_> {
         if self.is_compaction() {
@@ -129,7 +125,7 @@ impl ProviderPromptContent {
         self.history_text.as_deref()
     }
 
-    pub(crate) fn is_compaction(&self) -> bool {
+    fn is_compaction(&self) -> bool {
         self.history_text.is_none()
     }
 

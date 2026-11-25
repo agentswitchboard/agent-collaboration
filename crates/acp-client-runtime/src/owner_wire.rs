@@ -460,19 +460,11 @@ impl OwnerAcpWire {
         )
     }
 
-    pub fn take(
+    pub(crate) fn take(
         &self,
         authorization: &DispatchAuthorization,
     ) -> Result<DispatchResult, TransportRefusal> {
-        self.take_when(authorization, || true)
-    }
-
-    pub fn take_when(
-        &self,
-        authorization: &DispatchAuthorization,
-        still_requested: impl FnOnce() -> bool,
-    ) -> Result<DispatchResult, TransportRefusal> {
-        self.hand_over_work(authorization, still_requested)
+        self.hand_over_work(authorization, || true)
             .map_err(TransportRefusal::from)
     }
 
@@ -493,7 +485,7 @@ impl OwnerAcpWire {
         Ok(result)
     }
 
-    pub fn revoke(
+    pub(crate) fn revoke(
         &self,
         authorization: &DispatchAuthorization,
     ) -> Result<DispatchResult, TransportRefusal> {
