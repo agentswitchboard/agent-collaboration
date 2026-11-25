@@ -1,5 +1,7 @@
 //! The production person upgrade and lifecycle on either Central host.
 
+pub mod organization_reads;
+
 use super::{
     ADMIN_AUDIENCE, ISSUER, LIST_WORKSPACES, NOW_SECONDS, OWNER, OWNER_SUBJECT, POLICY, Person,
     fresh_request_id, list_workspaces_body, list_workspaces_intent, sign,

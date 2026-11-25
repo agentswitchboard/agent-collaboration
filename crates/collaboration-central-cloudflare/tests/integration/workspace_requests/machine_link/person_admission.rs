@@ -5,6 +5,7 @@ use collaboration_central_conformance::{
         NOW_SECONDS, Person,
         person_link::{
             PersonLinkFixture, check_person_link_admission, check_workspace_list,
+            organization_reads::{OrganizationReadCase, check_organization_read},
             person_link_bearer,
         },
     },
@@ -77,6 +78,62 @@ async fn workerd_person_workspace_call_rejects_machine_only_carrier() -> Conform
     .await;
     fixture.close().await?;
     result
+}
+
+async fn check_read_case(case: OrganizationReadCase) -> ConformanceResult<()> {
+    let fixture = Fixture::with_production_dispatcher().await?;
+    let result = async {
+        let machine_url = fixture.link_url(ORGANIZATION);
+        let person_url = person_link_url(fixture.host.public_origin());
+        check_organization_read(
+            PersonLinkFixture {
+                client: &fixture.client,
+                person_url: &person_url,
+                machine_url: &machine_url,
+                organization: ORGANIZATION,
+                machine_token: &fixture.token,
+            },
+            async |path, body, headers| {
+                let mut request = fixture
+                    .client
+                    .post(format!("{}{path}", fixture.host.signin_origin()))
+                    .json(body);
+                for (name, value) in headers {
+                    request = request.header(name, value);
+                }
+                let response = request.send().await?;
+                Ok((response.status().as_u16(), response.bytes().await?.to_vec()))
+            },
+            case,
+        )
+        .await
+    }
+    .await;
+    fixture.close().await?;
+    result
+}
+
+#[tokio::test]
+async fn workerd_person_lookup_rejects_signed_post_only_or_missing_as_fault_build()
+-> ConformanceResult<()> {
+    check_read_case(OrganizationReadCase::Lookup).await
+}
+
+#[tokio::test]
+async fn workerd_person_audit_rejects_signed_post_only_or_inexact_cursor_build()
+-> ConformanceResult<()> {
+    check_read_case(OrganizationReadCase::AuditPages).await
+}
+
+#[tokio::test]
+async fn workerd_person_reads_reject_shared_view_permission_build() -> ConformanceResult<()> {
+    check_read_case(OrganizationReadCase::Permissions).await
+}
+
+#[tokio::test]
+async fn workerd_person_reads_reject_machine_or_cross_organization_dispatch_build()
+-> ConformanceResult<()> {
+    check_read_case(OrganizationReadCase::PrincipalBoundaries).await
 }
 
 #[tokio::test]
