@@ -1,5 +1,14 @@
 # Release Notes
 
+## 0.1.160
+
+- Two start-now-or-refuse prompts for one session can no longer both be admitted: the second is refused at once. Automatic sends, steers and queue requests are placed by the session's owner and are not refused this way.
+- A session no longer stays blocked after a store fault on one acknowledgement, and shutdown no longer spends its whole budget after a late write fails.
+- An automatic send queued while its session was reopening can again join the turn that starts next.
+- A request blocked by an earlier one still in flight is refused with "an earlier send is still in flight" and the operation to wait for.
+- A message notice for a running session is delivered into that turn even when another prompt is queued behind it. A notice that would start a turn holds no admission and yields to a request already being handed over; it is offered again at the next minute.
+- No stored data changes. Restart the Host after upgrading.
+
 ## 0.1.159
 
 - An enrolled Router registers its run with Central after each welcome. It reports connected only once Central has acknowledged that registration on the same connection and before its limit; until then the enrollment status reads registering.
