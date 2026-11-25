@@ -1,5 +1,7 @@
 //! Apply signed person-link authority to the owning organization's live floors.
 
+mod change_record_projection;
+
 use crate::{
     AdminRefusal, OrganizationAdminResult, PersonApprovalAnswer, WorkspaceRuntime,
     organization_authority_cache::StampStanding,
@@ -13,7 +15,9 @@ use central_link_protocol::{
         CreateOrganizationWorkspace, CreateOrganizationWorkspaceRefusal,
         CreateOrganizationWorkspaceResult, CreateOrganizationWorkspaceRpc, DecidePersonApprovalRpc,
         ListOrganizationWorkspaces, ListOrganizationWorkspacesRpc, ListPersonApprovalsRpc,
-        OrganizationWorkspace, OrganizationWorkspacePage, OrganizationWorkspaceState,
+        LookupOrganizationWorkspace, LookupOrganizationWorkspaceResult,
+        LookupOrganizationWorkspaceRpc, OrganizationReadRefusal, OrganizationWorkspace,
+        OrganizationWorkspacePage, OrganizationWorkspaceState, ReadOrganizationChangeRecordsRpc,
         ReadPersonApprovalRpc,
     },
 };
@@ -191,20 +195,29 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             PersonFrame::ListWorkspaces {
                 correlation,
                 request,
-            } => {
-                let result = match self.read_person_workspace_page(request.body).await {
-                    Ok(page) => TypedCallResult::Answered {
-                        reply: ListOrganizationWorkspacesRpc::reply(Envelope {
-                            target: request.target,
-                            body: page,
-                        }),
-                    },
-                    Err(_) => TypedCallResult::Refused {
-                        reason: LinkCallRefusal::CentralFault,
-                    },
-                };
-                person_call_reply(correlation, result)
-            }
+            } => organization_read_reply::<ListOrganizationWorkspacesRpc>(
+                correlation,
+                request.target,
+                self.read_person_workspace_page(request.body).await,
+            ),
+            PersonFrame::LookupWorkspace {
+                correlation,
+                request,
+            } => organization_read_reply::<LookupOrganizationWorkspaceRpc>(
+                correlation,
+                request.target,
+                self.lookup_workspace_on_person_link(connection, request.body)
+                    .await,
+            ),
+            PersonFrame::ReadChangeRecords {
+                correlation,
+                request,
+            } => organization_read_reply::<ReadOrganizationChangeRecordsRpc>(
+                correlation,
+                request.target,
+                self.read_change_records_on_person_link(connection, request.body)
+                    .await,
+            ),
             PersonFrame::Approval {
                 correlation,
                 operation,
@@ -298,6 +311,30 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         }
     }
 
+    async fn lookup_workspace_on_person_link(
+        &self,
+        connection: &PersonSocketAttachment,
+        request: LookupOrganizationWorkspace,
+    ) -> Result<LookupOrganizationWorkspaceResult, StoreFailure> {
+        use LookupOrganizationWorkspaceResult::{Absent, Found, Refused};
+        if !connection.permits(FleetPermission::ViewOrganization) {
+            return Ok(Refused {
+                reason: OrganizationReadRefusal::NotPermitted {},
+            });
+        }
+        Ok(
+            match self
+                .find_organization_workspace(&request.workspace_id)
+                .await?
+            {
+                Some(workspace) => Found {
+                    workspace: project_workspace(workspace)?,
+                },
+                None => Absent {},
+            },
+        )
+    }
+
     async fn read_person_workspace_page(
         &self,
         request: ListOrganizationWorkspaces,
@@ -316,9 +353,35 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
                 .workspaces
                 .into_iter()
                 .map(project_workspace)
-                .collect::<Result<_, _>>()?,
+                .collect::<Result<_, StoreFailure>>()?,
         })
     }
+}
+
+fn organization_read_reply<Rpc: CentralLinkRpc>(
+    correlation_id: CorrelationId,
+    target: Rpc::Target,
+    answer: Result<Rpc::Reply, StoreFailure>,
+) -> PersonLinkReply {
+    let result = match answer {
+        Ok(body) => TypedCallResult::Answered {
+            reply: Rpc::reply(Envelope { target, body }),
+        },
+        Err(_) => TypedCallResult::Refused {
+            reason: LinkCallRefusal::CentralFault,
+        },
+    };
+    person_call_reply(correlation_id, result)
+}
+
+fn person_call_reply(
+    correlation_id: CorrelationId,
+    result: TypedCallResult<CentralCallReply>,
+) -> PersonLinkReply {
+    PersonLinkReply::Frames(vec![LinkFrame::Data(DataFrame::CentralCallReply {
+        correlation_id,
+        result: Box::new(result),
+    })])
 }
 
 fn project_workspace_id(
@@ -343,16 +406,6 @@ fn project_workspace(
             message_board::WorkspaceState::Archived => OrganizationWorkspaceState::Archived,
         },
     })
-}
-
-fn person_call_reply(
-    correlation_id: CorrelationId,
-    result: TypedCallResult<CentralCallReply>,
-) -> PersonLinkReply {
-    PersonLinkReply::Frames(vec![LinkFrame::Data(DataFrame::CentralCallReply {
-        correlation_id,
-        result: Box::new(result),
-    })])
 }
 
 fn approval_reply(

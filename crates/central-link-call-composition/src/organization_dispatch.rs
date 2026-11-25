@@ -290,6 +290,8 @@ where
             match request {
                 CentralCall::ListOrganizationWorkspaces(_)
                 | CentralCall::CreateOrganizationWorkspace(_)
+                | CentralCall::LookupOrganizationWorkspace(_)
+                | CentralCall::ReadOrganizationChangeRecords(_)
                 | CentralCall::ListPersonApprovals(_)
                 | CentralCall::ReadPersonApproval(_)
                 | CentralCall::DecidePersonApproval(_) => Ok(TypedCallResult::Refused {

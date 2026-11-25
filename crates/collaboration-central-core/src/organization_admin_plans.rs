@@ -17,6 +17,18 @@ use fleet_contracts::{
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
 use fleet_workspace_directory::CentralWorkspaceDirectory;
 impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
+    pub(crate) async fn find_organization_workspace(
+        &self,
+        workspace: &workspace_ids::WorkspaceId,
+    ) -> Result<Option<fleet_contracts::WorkspaceView>, StoreFailure> {
+        let directory = CentralWorkspaceDirectory::new(self.execution.statement_host());
+        directory
+            .read_by_id(workspace)
+            .await?
+            .map(|row| directory.workspace_view(row))
+            .transpose()
+    }
+
     pub(crate) async fn list_organization_workspaces(
         &self,
         after: Option<&message_board::WorkspaceId>,
@@ -123,12 +135,7 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
                     .map_err(|_| {
                         fleet_runtime_ports::workspace_decode_error::corrupt("workspace_id")
                     })?;
-                let directory = CentralWorkspaceDirectory::new(self.execution.statement_host());
-                let found = directory
-                    .read_by_id(&workspace)
-                    .await?
-                    .map(|row| directory.workspace_view(row))
-                    .transpose()?;
+                let found = self.find_organization_workspace(&workspace).await?;
                 OrganizationAdminAnswer::Answered(OrganizationAdminResult::Found {
                     workspace: found,
                 })
