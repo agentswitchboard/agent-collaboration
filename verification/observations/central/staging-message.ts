@@ -81,7 +81,7 @@ function attachRecipient(plan: Plan): RecipientStream {
       "--service-directory",
       serviceDirectory(plan),
       "--timeout-seconds",
-      "420",
+      plan.senderHandoff === undefined ? "420" : "600",
     ],
     { stdio: ["ignore", "pipe", "ignore"] },
   );
@@ -236,7 +236,8 @@ async function sendMessage(
       receipt,
       intent: { requestId, to, body, runningTurn, source: plan.source, sendBefore },
     });
-    if (relayed.exit !== 0) throw new Error("remote sender reported a failed send; do not replay");
+    if (relayed.exit !== 0 && relayed.exit !== null)
+      throw new Error("remote sender reported a failed send; do not replay");
     if (Date.parse(relayed.observedAt) < armedAt || relayed.observedAt > sendBefore)
       throw new Error("remote send receipt is outside the armed window; do not replay");
     await receipt.record("remote-send-readback", {
@@ -359,12 +360,7 @@ async function checkDelivery(check: DeliveryCheck): Promise<void> {
         throw new Error("the held turn used a tool");
       if (delivery?.kind === "delivered" && delivery.arrivedAt !== undefined)
         arrivedAt ??= Date.parse(delivery.arrivedAt);
-      if (
-        view.starts.length !== startCount ||
-        (notice !== undefined && notice.turnId !== runningTurn)
-      )
-        throw new ObservationFailure("notice started or entered a different turn");
-      if (view.ends.includes(runningTurn) && notice === undefined) {
+      if (view.ends.includes(runningTurn) && notice?.turnId !== runningTurn) {
         const endObservedAt = view.endObservedAt.get(runningTurn);
         if (
           arrivedAt !== undefined &&
@@ -372,7 +368,13 @@ async function checkDelivery(check: DeliveryCheck): Promise<void> {
           endObservedAt - arrivedAt >= 65_000
         )
           throw new ObservationFailure("accepted message did not enter the already-running turn");
-        throw new Error("hold ended before a full notice window after recipient Mac custody");
+        if (arrivedAt !== undefined || seen !== undefined)
+          throw new Error("hold ended before a full notice window after recipient Mac custody");
+      } else if (
+        view.starts.length !== startCount ||
+        (notice !== undefined && notice.turnId !== runningTurn)
+      ) {
+        throw new ObservationFailure("notice was placed outside the active test turn");
       }
     } else if (
       view.starts.length > 1 ||

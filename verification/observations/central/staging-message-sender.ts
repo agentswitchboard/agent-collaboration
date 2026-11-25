@@ -26,7 +26,7 @@ const relaySchema = z.strictObject({
   machineId: z.uuid(),
   sender: sessionSchema,
   observedAt: z.iso.datetime(),
-  exit: z.number().int(),
+  exit: z.number().int().nullable(),
   output: z.unknown(),
 });
 
@@ -105,12 +105,13 @@ export async function awaitRemoteSend(input: {
   process.stdout.write(
     `Receiver armed. Give the declared sender operator the private intent at ${input.receipt.directory}/sender-intent.json\n`,
   );
-  for (let poll = 0; poll < 120; poll++) {
+  // The send deadline and receipt-transfer deadline are independent.
+  for (let poll = 0; poll < 480; poll++) {
     const result = await readRemoteReceipt({ ...input, operation: "send" });
     if (result !== undefined) return result;
     await setTimeout(500);
   }
   throw new Error(
-    "no exact remote send receipt arrived within 60 seconds; do not replay the request",
+    "no exact remote send receipt arrived within four minutes; do not replay the request",
   );
 }

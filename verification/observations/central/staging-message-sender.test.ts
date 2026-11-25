@@ -56,4 +56,19 @@ test("requires a distinct qualified Mac and rejects a receipt for another reques
     { mode: 0o600 },
   );
   await assert.rejects(readRemoteReceipt(read), /another request, machine, or session/u);
+  const sendOutput = { kind: "returned", value: { kind: "inOutbox", requestId } };
+  await writeFile(
+    join(directory, `${requestId}-send.json`),
+    JSON.stringify({
+      requestId,
+      machineId,
+      sender,
+      observedAt: "2026-11-25T12:00:00Z",
+      exit: null,
+      output: sendOutput,
+    }),
+  );
+  const sendReceipt = await readRemoteReceipt(read);
+  assert.equal(sendReceipt?.exit, null);
+  assert.deepEqual(sendReceipt?.output, sendOutput);
 });
