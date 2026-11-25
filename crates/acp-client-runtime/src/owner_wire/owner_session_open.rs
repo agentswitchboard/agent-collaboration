@@ -1,7 +1,8 @@
 //! Start SDK routing as an ordered connection effect.
 
 use crate::{
-    ExternalProviderRuntimeError, ProviderBehavior, ProviderCapabilityReport, SessionWorkRoots,
+    ExternalProviderRuntimeError, ManagedAcpToolSetup, ProviderBehavior, ProviderCapabilityReport,
+    SessionWorkRoots,
     owner_session_stream::{OwnerStreamTarget, ProjectionBuffer},
     provider_item_projection::ProviderItemProjection,
 };
@@ -15,6 +16,7 @@ use provider_session_machines::{ModelReasoningMetadata, ProviderSettingsCatalog}
 use std::{path::PathBuf, sync::Arc};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
+use tracing::instrument::WithSubscriber as _;
 
 #[derive(Clone, Debug)]
 pub struct OwnerSessionOpenSetup {
@@ -107,6 +109,7 @@ pub(crate) struct OwnerOpenConfiguration {
     pub(crate) behavior: Arc<dyn ProviderBehavior>,
     pub(crate) capabilities: ProviderCapabilityReport,
     pub(crate) mcp_servers: Vec<McpServer>,
+    pub(crate) supports_mcp_http: bool,
     pub(crate) reasoning: ModelReasoningMetadata,
     pub(crate) auth_status: Arc<tokio::sync::RwLock<session_event_model::ProviderAuthStatus>>,
     #[cfg(any(test, feature = "test-observation"))]
@@ -126,6 +129,7 @@ pub(crate) enum OpenRequest {
 
 pub(crate) struct OpenFrame {
     pub(crate) request: OpenRequest,
+    pub(crate) tools: Option<ManagedAcpToolSetup>,
     pub(crate) respond: oneshot::Sender<Result<OwnerOpenedSession, ExternalProviderRuntimeError>>,
 }
 
@@ -141,17 +145,34 @@ impl OpenFrame {
     ) {
         use crate::provider_acp_error_mapping::{acp_load_session_error, acp_operation_error};
 
+        let setup = match &self.request {
+            OpenRequest::New(setup) | OpenRequest::Restore { setup, .. } => setup,
+        };
+        let mut folders = crate::session_start_folders::session_start_folders(
+            &setup.cwd,
+            setup.scratch_folder.as_deref(),
+            &setup.work_roots,
+            config.behavior.as_ref(),
+            config.capabilities.supports_additional_directories,
+        );
+        let (servers, before_dispatch) = match &self.tools {
+            Some(tools) => match tools.request_setup(&mut folders.meta, config.supports_mcp_http) {
+                Ok((server, witness)) => (vec![server], witness),
+                Err(error) => {
+                    if matches!(self.request, OpenRequest::Restore { .. }) {
+                        restore_updates.reply_settled(run);
+                    }
+                    let _owner_retired = self.respond.send(Err(error));
+                    return;
+                }
+            },
+            None => (config.mcp_servers.clone(), None),
+        };
+        let tools = self.tools;
         match self.request {
             OpenRequest::New(setup) => {
-                let folders = crate::session_start_folders::session_start_folders(
-                    &setup.cwd,
-                    setup.scratch_folder.as_deref(),
-                    &setup.work_roots,
-                    config.behavior.as_ref(),
-                    config.capabilities.supports_additional_directories,
-                );
                 let mut request = NewSessionRequest::new(&setup.cwd)
-                    .mcp_servers(config.mcp_servers.clone())
+                    .mcp_servers(servers)
                     .additional_directories(folders.additional_directories);
                 request.meta = folders.meta;
                 let builder = connection.build_session_from(request).block_task();
@@ -162,6 +183,15 @@ impl OpenFrame {
                     // original handshake failure through the same receipt.
                     let result = builder
                         .run_until(async |mut sdk| {
+                            if let Some(tools) = tools
+                                && let Err(error) = tools
+                                    .require_setup_evidence(before_dispatch, &sdk.session_id().0)
+                            {
+                                if let Some(reply) = respond.take() {
+                                    let _owner_retired = reply.send(Err(error));
+                                }
+                                return Ok(());
+                            }
                             let (activate, activation) = oneshot::channel();
                             let auth_status = config.auth_status.read().await.clone();
                             let opened = OwnerOpenedSession::new(
@@ -193,12 +223,15 @@ impl OpenFrame {
                 let mut start = Box::pin(start);
                 // The first poll enqueues the handshake in writer order.
                 if start.as_mut().now_or_never().is_none() {
-                    tasks.spawn(async move {
-                        tokio::select! {
-                            () = start => {}
-                            () = shutdown.cancelled() => {}
+                    tasks.spawn(
+                        async move {
+                            tokio::select! {
+                                () = start => {}
+                                () = shutdown.cancelled() => {}
+                            }
                         }
-                    });
+                        .with_current_subscriber(),
+                    );
                 }
             }
             OpenRequest::Restore {
@@ -208,15 +241,7 @@ impl OpenFrame {
                 via,
                 setup,
             } => {
-                let folders = crate::session_start_folders::session_start_folders(
-                    &setup.cwd,
-                    setup.scratch_folder.as_deref(),
-                    &setup.work_roots,
-                    config.behavior.as_ref(),
-                    config.capabilities.supports_additional_directories,
-                );
                 let connection = connection.clone();
-                let servers = config.mcp_servers.clone();
                 let config = config.clone();
                 let start = async move {
                     let requested_session = SessionId::new(provider_id);
@@ -255,6 +280,9 @@ impl OpenFrame {
                             config.behavior.as_ref(),
                         )
                     })?;
+                    if let Some(tools) = tools {
+                        tools.require_setup_evidence(before_dispatch, &sdk.session_id().0)?;
+                    }
                     let auth_status = config.auth_status.read().await.clone();
                     let mut opened = OwnerOpenedSession::new(
                         &sdk,
@@ -287,7 +315,7 @@ impl OpenFrame {
                             tracing::debug!(?run, ?attempt, "settled retired ACP restore");
                         }
                         restore_updates.reply_settled(run);
-                    });
+                    }.with_current_subscriber());
                 }
             }
         }

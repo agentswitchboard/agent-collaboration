@@ -241,6 +241,11 @@ impl AdmittedLocalSession {
         Self(address)
     }
 
+    /// Used after the managed start owner confirms the exact live binding.
+    pub fn admitted_by_managed_start(address: SessionRef) -> Self {
+        Self(address)
+    }
+
     pub fn address(&self) -> &SessionRef {
         &self.0
     }

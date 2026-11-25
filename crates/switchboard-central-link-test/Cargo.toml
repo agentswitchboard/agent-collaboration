@@ -20,10 +20,14 @@ switchboard-message-custody.workspace = true
 switchboard-message-system = { workspace = true, features = ["test-support"] }
 collaboration-central-tokio = { workspace = true, features = ["test-support"] }
 collaboration-central-conformance = { workspace = true, features = ["signin-test-support"] }
+collaboration-mcp = { path = "../collaboration-mcp", version = "0.1.30" }
+collaboration-protocol = { path = "../collaboration-protocol", version = "0.1.30" }
+collaboration-service = { path = "../collaboration-service", version = "0.1.30", features = ["test-support"] }
 fleet-runtime = { workspace = true, features = ["test-support"] }
 router-clock = { workspace = true, features = ["test-support"] }
 runtime-primitives.workspace = true
 reqwest.workspace = true
+rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
 serde_json.workspace = true
 tempfile = "3.27.0"
 tokio.workspace = true

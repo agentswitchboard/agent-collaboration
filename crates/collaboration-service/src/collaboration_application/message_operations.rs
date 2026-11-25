@@ -1,6 +1,7 @@
 //! Local caller admission and direct-message operations.
 use std::{future::Future, pin::Pin, sync::Arc};
 
+use collaboration_protocol::ManagedToolAdmissionLease;
 use collaboration_protocol::message_tools::{
     AdmittedLocalSession, DirectMessageWrite, MachineId, MessageCallerRefusal,
     MessageOperationFuture, MessageSendOutcome, MessageToolRefusal, MessageUnitPort,
@@ -90,6 +91,18 @@ struct MessageServices {
 #[derive(Clone, Default)]
 pub struct MessageOperations(Option<Arc<MessageServices>>);
 
+/// The start owner keeps the binding live until the admitted operation settles locally.
+pub struct ManagedMessageCaller {
+    caller: AdmittedLocalSession,
+    _lease: Box<dyn ManagedToolAdmissionLease>,
+}
+
+impl ManagedMessageCaller {
+    pub fn caller(&self) -> &AdmittedLocalSession {
+        &self.caller
+    }
+}
+
 impl MessageOperations {
     pub fn new(
         admission: Arc<dyn MessageCallerAdmission>,
@@ -115,6 +128,18 @@ impl MessageOperations {
         let services = self.bindings()?;
         services.unit.check_available()?;
         services.admission.admit(reported).await
+    }
+
+    pub fn admit_managed_caller(
+        &self,
+        address: SessionRef,
+        lease: Box<dyn ManagedToolAdmissionLease>,
+    ) -> Result<ManagedMessageCaller, MessageToolRefusal> {
+        self.bindings()?.unit.check_available()?;
+        Ok(ManagedMessageCaller {
+            caller: AdmittedLocalSession::admitted_by_managed_start(address),
+            _lease: lease,
+        })
     }
 
     pub async fn send(

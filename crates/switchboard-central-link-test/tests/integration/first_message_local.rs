@@ -73,20 +73,24 @@ const CENTRAL_AWAITING_KEEP: &str =
 const DELIVERED_WORDS: &str = "Delivered to the recipient's Mac.";
 const SEEN_WORDS: &str = "Seen: the recipient session was told.";
 
-struct EnrolledFixtureMac {
-    root: PathBuf,
-    address: SessionRef,
+pub(super) struct EnrolledFixtureMac {
+    pub(super) root: PathBuf,
+    pub(super) address: SessionRef,
     refresh: FixtureRefresh,
 }
 
-struct RunningFixtureMac {
-    system: MessageSystem,
-    front: MessageFront,
+pub(super) struct RunningFixtureMac {
+    pub(super) system: MessageSystem,
+    pub(super) front: MessageFront,
     events: mpsc::UnboundedReceiver<CustodyTaskEvent>,
 }
 
 impl EnrolledFixtureMac {
-    async fn enroll(central: &MachineLinkFixture, name: &str, approval_request: RequestId) -> Self {
+    pub(super) async fn enroll(
+        central: &MachineLinkFixture,
+        name: &str,
+        approval_request: RequestId,
+    ) -> Self {
         let root = central.root_path().join(name);
         std::fs::DirBuilder::new()
             .mode(0o700)
@@ -122,7 +126,7 @@ impl EnrolledFixtureMac {
         }
     }
 
-    async fn start(
+    pub(super) async fn start(
         &self,
         central: &MachineLinkFixture,
         recipients: Arc<dyn RecipientSessionDirectory>,

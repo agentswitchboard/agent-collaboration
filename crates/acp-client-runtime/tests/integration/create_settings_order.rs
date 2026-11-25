@@ -51,7 +51,7 @@ const CLOSED_SETTINGS_SINK_FIXTURE: &str = concat!(
     "/../../verification/fixtures/provider-setting-response-agent.ts"
 );
 
-struct NoopInteractionPort;
+pub(super) struct NoopInteractionPort;
 impl InteractionPort for NoopInteractionPort {
     type Context = ();
     type OperationId = u64;
@@ -95,7 +95,7 @@ impl InteractionPort for NoopInteractionPort {
     }
 }
 
-struct NoopEventSink;
+pub(super) struct NoopEventSink;
 impl SessionEventSink for NoopEventSink {
     fn publish_skill_view(
         &self,

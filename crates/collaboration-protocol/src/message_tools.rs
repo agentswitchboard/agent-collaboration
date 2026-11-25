@@ -39,6 +39,22 @@ pub struct MessageStatusArguments {
     pub request_id: RequestId,
 }
 
+/// The private MCP address already supplies the sender.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManagedMessageSendArguments {
+    pub to: SessionRef,
+    pub body: PostText,
+    pub request_id: Option<RequestId>,
+}
+
+/// The private MCP address supplies the owner of the request ID.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManagedMessageStatusArguments {
+    pub request_id: RequestId,
+}
+
 /// The application returns one typed write outcome or one typed refusal to either transport.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[schemars(rename = "MessageToolResult_for_{Outcome}")]
@@ -251,6 +267,15 @@ const MAX_TOKEN_LENGTH: usize = ((MAX_INBOX_LIMIT as usize * 39 + 2) * 4).div_ce
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MessageInboxArguments {
     pub caller_session_id: Option<SessionId>,
+    #[schemars(range(min = 1, max = 100))]
+    pub limit: Option<u16>,
+    pub acknowledge: Option<String>,
+}
+
+/// The private MCP address supplies the recipient, including for acknowledgments.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManagedMessageInboxArguments {
     #[schemars(range(min = 1, max = 100))]
     pub limit: Option<u16>,
     pub acknowledge: Option<String>,

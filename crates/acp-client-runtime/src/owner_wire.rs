@@ -4,6 +4,7 @@ pub mod owner_session_open;
 pub mod owner_session_setting;
 pub mod owner_session_stream;
 
+use crate::ManagedAcpToolSetup;
 use crate::acp_transport::{
     AcpTransport, CallbackKind, CallbackResolution, OrderedOutput, SlotEvidence, TransportRefusal,
     TransportRun,
@@ -228,12 +229,32 @@ impl OwnerAcpWire {
         owner: OwnerIncarnation,
         setup: OwnerSessionOpenSetup,
     ) -> Result<OwnerSessionOpenReceipt, TransportRefusal> {
+        self.create_with_tools(owner, setup, None)
+    }
+
+    /// Opens the held session with its own Router tool server in `session/new`.
+    pub fn create_managed(
+        &self,
+        owner: OwnerIncarnation,
+        setup: OwnerSessionOpenSetup,
+        tools: ManagedAcpToolSetup,
+    ) -> Result<OwnerSessionOpenReceipt, TransportRefusal> {
+        self.create_with_tools(owner, setup, Some(tools))
+    }
+
+    fn create_with_tools(
+        &self,
+        owner: OwnerIncarnation,
+        setup: OwnerSessionOpenSetup,
+        tools: Option<ManagedAcpToolSetup>,
+    ) -> Result<OwnerSessionOpenReceipt, TransportRefusal> {
         self.enqueue_open(
             TransportRun {
                 incarnation: owner,
                 generation: SessionGeneration::UNTRACKED,
             },
             OpenRequest::New(setup),
+            tools,
         )
     }
 
@@ -245,6 +266,31 @@ impl OwnerAcpWire {
         via: RestoreVia,
         setup: OwnerSessionOpenSetup,
     ) -> Result<OwnerSessionOpenReceipt, TransportRefusal> {
+        self.restore_with_tools(run, attempt, session, via, setup, None)
+    }
+
+    /// Restores the exact held provider session with a freshly prepared descriptor.
+    pub fn restore_managed(
+        &self,
+        run: TransportRun,
+        attempt: LoadAttempt,
+        session: String,
+        via: RestoreVia,
+        setup: OwnerSessionOpenSetup,
+        tools: ManagedAcpToolSetup,
+    ) -> Result<OwnerSessionOpenReceipt, TransportRefusal> {
+        self.restore_with_tools(run, attempt, session, via, setup, Some(tools))
+    }
+
+    fn restore_with_tools(
+        &self,
+        run: TransportRun,
+        attempt: LoadAttempt,
+        session: String,
+        via: RestoreVia,
+        setup: OwnerSessionOpenSetup,
+        tools: Option<ManagedAcpToolSetup>,
+    ) -> Result<OwnerSessionOpenReceipt, TransportRefusal> {
         let updates = self.restore_updates.open(run, session.clone());
         let reply = self.enqueue_open(
             run,
@@ -255,6 +301,7 @@ impl OwnerAcpWire {
                 via,
                 setup,
             },
+            tools,
         );
         if reply.is_err() {
             self.restore_updates.retire(run);
@@ -267,10 +314,17 @@ impl OwnerAcpWire {
         &self,
         run: TransportRun,
         request: OpenRequest,
+        tools: Option<ManagedAcpToolSetup>,
     ) -> Result<OwnerSessionOpenReceipt, TransportRefusal> {
         let (respond, result) = oneshot::channel();
-        self.transport
-            .enqueue_control(run, AcpFrame::Open(OpenFrame { request, respond }))?;
+        self.transport.enqueue_control(
+            run,
+            AcpFrame::Open(OpenFrame {
+                request,
+                tools,
+                respond,
+            }),
+        )?;
         Ok(result)
     }
 

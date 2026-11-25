@@ -15,6 +15,7 @@ mod cursor_question_roundtrip;
 mod cursor_todo_events;
 mod history_replay_order;
 mod interaction_cancel_wire_order;
+mod managed_tool_setup;
 mod owner_permission_modes;
 mod provider_auth_status;
 mod provider_behavior_integration;

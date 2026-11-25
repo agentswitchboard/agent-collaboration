@@ -6,6 +6,8 @@ The custody journey joins the real admitted driver to in-process Tokio Central a
 
 The first-message journey uses two message systems, one native Tokio Central, and one manual clock. Each Mac's enrollment is written directly into its store with a fixture bearer. Tests enter at the real message-system port with fixture-admitted sessions, below the service and MCP/CLI. They check acceptance, keep, a scripted managed notice, Seen, and acknowledgement. The other cases check restart during a notice, reads after the delivery window, and acknowledgement before notice. The recipient directory and notice writer are fixtures. PR 411's Host fixtures and the owner's watched run cover the ACP Claude step separately.
 
+The managed MCP journey opens an enrolled Mac's real MessageFront and reaches it through an rmcp client, the loopback listener, and the collaboration application. It seeds the real SQLite inbox with distinct recipient messages. Its injected start resolver stands in for slice B and supplies Pending, Open and Retired verdicts. The tests exercise caller-free reads, send and status, crossed acknowledgement, descriptor and bearer refusal, and the shared door's reported-ID checks.
+
 The simulated link cases run the same Mac driver, custody and SQLite stores against
 Central's real Axum router over Turmoil TCP. They inspect the simulator's queued
 TCP segments to delay or drop a selected WebSocket frame and model connections

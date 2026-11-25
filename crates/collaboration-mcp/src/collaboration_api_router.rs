@@ -1,6 +1,8 @@
 //! The collaboration API: one stateless MCP server at `/mcp`, mounted on an axum router and
 //! served on whichever listener the Host hands it. Every call stands alone: there is no session
 //! manager and no connection state, and each listener sheds load past its own request limit.
+use crate::managed_tool_bindings::ManagedToolBindings;
+use crate::managed_tool_listener::managed_tool_routes;
 use crate::mcp_server::{CollaborationMcpServer, ToolSurface};
 use crate::native_schema_definitions::NativeSchemaDefinitions;
 use crate::tool_call_registry::ToolCallRegistry;
@@ -11,6 +13,7 @@ use axum::{
     middleware::{self, Next},
     response::{IntoResponse, Response},
 };
+use collaboration_protocol::{ManagedStartResolver, ManagedToolPreparationError};
 use collaboration_service::CollaborationApplication;
 use rmcp::{
     model::{
@@ -161,6 +164,48 @@ pub fn collaboration_api_router(
         tool_calls,
         call_grace: CALL_GRACE,
     }
+}
+
+/// Mounts managed tools alongside the shared route on the actual bound loopback socket.
+/// The private route has its own capacity and accepts only local HTTP authorities.
+pub fn managed_collaboration_api_router(
+    config: &CollaborationApiConfig,
+    address: SocketAddr,
+    proxy_authority: Option<crate::ProxyAuthority>,
+    resolver: Arc<dyn ManagedStartResolver>,
+) -> Result<(CollaborationApiRouter, Arc<ManagedToolBindings>), ManagedToolPreparationError> {
+    let bindings = Arc::new(ManagedToolBindings::new(address, resolver)?);
+    let mut api = collaboration_api_router(
+        config,
+        CollaborationApiListener::LoopbackTcp {
+            address,
+            proxy_authority,
+        },
+    );
+    let private_http = StreamableHttpServerConfig::default()
+        .with_legacy_session_mode(false)
+        .with_json_response(true)
+        .with_max_request_body_bytes(MAX_REQUEST_BODY_BYTES)
+        .with_cancellation_token(config.shutdown.child_token())
+        .with_allowed_hosts([address.ip().to_string(), "localhost".to_owned()])
+        .with_allowed_origins([
+            format!("http://{address}"),
+            format!("http://localhost:{}", address.port()),
+        ])
+        .enforce_origin_validation();
+    let private = managed_tool_routes(
+        Arc::clone(&bindings),
+        config.application.clone(),
+        api.tool_calls.clone(),
+        private_http,
+        MAX_REQUEST_BODY_BYTES,
+    )
+    .layer(middleware::from_fn_with_state(
+        Arc::new(Semaphore::new(config.concurrent_requests)),
+        shed_past_capacity,
+    ));
+    api.router = api.router.merge(private);
+    Ok((api, bindings))
 }
 
 /// Serves one listener's copy until `shutdown` is cancelled, then stops its calls: they see

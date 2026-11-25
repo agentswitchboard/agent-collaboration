@@ -19,6 +19,7 @@ test-support = []
 switchboard-harness-contracts.workspace = true
 switchboard-harness-shared-mechanics.workspace = true
 agent-client-protocol.workspace = true
+collaboration-protocol = { path = "../collaboration-protocol", version = "0.1.30" }
 provider-session-machines.workspace = true
 router-clock.workspace = true
 # The type of the child the ACP SDK spawns (provider_transport.rs).

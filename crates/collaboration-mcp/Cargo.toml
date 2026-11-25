@@ -29,6 +29,7 @@ collaboration-protocol = { path = "../collaboration-protocol", version = "0.1.30
 collaboration-service = { path = "../collaboration-service", version = "0.1.30" }
 codex-native-integration.workspace = true
 futures-util.workspace = true
+getrandom = "0.3.4"
 http.workspace = true
 message-board = { path = "../message-board", version = "0.1.20" }
 rmcp.workspace = true
@@ -37,6 +38,7 @@ session-event-model = { path = "../session-event-model", version = "0.1.39", opt
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+subtle = "2.6.1"
 tokio.workspace = true
 tokio-util.workspace = true
 thiserror.workspace = true

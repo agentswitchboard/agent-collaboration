@@ -13,6 +13,7 @@ use super::{
     initialize_provider_connection, provider_lifecycle_requests, record_permission_refusal,
     spawn_external_approval_dispatch,
 };
+use tracing::instrument::WithSubscriber as _;
 impl<P: InteractionPort> AgentSessionClient<P> {
     #[expect(
         clippy::too_many_arguments,
@@ -147,6 +148,7 @@ impl<P: InteractionPort> AgentSessionClient<P> {
         let provider_reaping_finished = CancellationToken::new();
         #[cfg(feature = "test-observation")]
         let mark_provider_reaping_finished = provider_reaping_finished.clone();
+        let dispatch = crate::provider_transport_diagnostics::provider_transport_dispatch();
         let task = tokio::spawn(async move {
             use futures_util::StreamExt as _;
             #[cfg(feature = "test-observation")]
@@ -154,7 +156,7 @@ impl<P: InteractionPort> AgentSessionClient<P> {
             use tokio_util::codec::{FramedRead, FramedWrite, LinesCodec};
 
             let stderr_task = stderr.map(|stderr| {
-                tokio::spawn(crate::provider_transport_diagnostics::drain_provider_stderr(stderr))
+                tokio::spawn(crate::provider_transport_diagnostics::drain_provider_stderr(stderr).with_current_subscriber())
             });
             let callback_claims =
                 Arc::new(crate::provider_callback_claims::ProviderCallbackClaims::default());
@@ -348,6 +350,7 @@ impl<P: InteractionPort> AgentSessionClient<P> {
                             let configuration = crate::owner_session_open::OwnerOpenConfiguration {
                                 behavior: connection_behavior,
                                 mcp_servers: if admission.supports_mcp_http { configured_mcp_servers } else { Vec::new() },
+                                supports_mcp_http: admission.supports_mcp_http,
                                 capabilities: capabilities.clone(), reasoning,
                                 auth_status: open_auth_status,
                                 #[cfg(any(test, feature = "test-observation"))]
@@ -361,7 +364,7 @@ impl<P: InteractionPort> AgentSessionClient<P> {
                     let _reader_gone = admission_settled_tx.send(());
                     if let Some(configuration) = opened {
                         let mut executors = tokio::task::JoinSet::new();
-                        executors.spawn(owner_output.run(connection.clone(), configuration, task_connection_retirement.clone(), input_ended));
+                        executors.spawn(owner_output.run(connection.clone(), configuration, task_connection_retirement.clone(), input_ended).with_current_subscriber());
                         loop {
                             tokio::select! {
                                 () = task_shutdown.cancelled() => break,
@@ -417,7 +420,7 @@ impl<P: InteractionPort> AgentSessionClient<P> {
             if let Some(stderr_task) = stderr_task {
                 let _result = stderr_task.await;
             }
-        });
+        }.with_subscriber(dispatch));
 
         let (admission, base_capabilities) =
             match router_clock::timeout_at(client_clock.as_ref(), initialize_deadline, ready_rx)

@@ -9,8 +9,69 @@ use std::{
     sync::Arc,
     task::{Context, Poll},
 };
+use tracing::{Dispatch, Event, Metadata, Subscriber, dispatcher, span, subscriber::Interest};
 
 const DIAGNOSTIC_TARGET: &str = "acp_client_runtime::provider_diagnostics";
+
+/// The SDK's JSON-RPC actors format raw requests and errors. Apply a task-local
+/// filter before those actors see the managed setup, even under a target-specific
+/// RUST_LOG override. Keep the Router's payload-free transport diagnostics.
+pub(crate) fn provider_transport_dispatch() -> Dispatch {
+    dispatcher::get_default(|dispatch| Dispatch::new(ProviderTransportSubscriber(dispatch.clone())))
+}
+
+struct ProviderTransportSubscriber(Dispatch);
+
+fn permits_provider_event(metadata: &Metadata<'_>) -> bool {
+    !metadata
+        .target()
+        .starts_with("agent_client_protocol::jsonrpc")
+}
+
+impl Subscriber for ProviderTransportSubscriber {
+    fn register_callsite(&self, metadata: &'static Metadata<'static>) -> Interest {
+        if permits_provider_event(metadata) {
+            self.0.register_callsite(metadata)
+        } else {
+            Interest::never()
+        }
+    }
+
+    fn enabled(&self, metadata: &Metadata<'_>) -> bool {
+        permits_provider_event(metadata) && self.0.enabled(metadata)
+    }
+
+    fn event(&self, event: &Event<'_>) {
+        if permits_provider_event(event.metadata()) {
+            self.0.event(event);
+        }
+    }
+
+    fn new_span(&self, attributes: &span::Attributes<'_>) -> span::Id {
+        self.0.new_span(attributes)
+    }
+
+    fn record(&self, id: &span::Id, values: &span::Record<'_>) {
+        self.0.record(id, values);
+    }
+
+    fn record_follows_from(&self, id: &span::Id, follows: &span::Id) {
+        self.0.record_follows_from(id, follows);
+    }
+
+    fn enter(&self, id: &span::Id) {
+        self.0.enter(id);
+    }
+    fn exit(&self, id: &span::Id) {
+        self.0.exit(id);
+    }
+    fn clone_span(&self, id: &span::Id) -> span::Id {
+        self.0.clone_span(id)
+    }
+    fn try_close(&self, id: span::Id) -> bool {
+        self.0.try_close(id)
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ProviderFrameKind {

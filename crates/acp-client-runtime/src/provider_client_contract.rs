@@ -220,6 +220,10 @@ pub enum ExternalProviderRuntimeError {
     UnsupportedSteering,
     #[error("provider does not advertise {capability}")]
     UnsupportedCapability { capability: &'static str },
+    #[error("the provider did not confirm the managed session's Router tools")]
+    ManagedToolSetupUnconfirmed,
+    #[error("the provider opened a session without confirming its Router tools")]
+    ManagedToolsNotConnected { provider_session_id: String },
     #[error("provider conversation operation is not active")]
     LocalNotFound,
     /// The Router released the session (closed it here for an agent with no

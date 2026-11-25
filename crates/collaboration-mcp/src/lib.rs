@@ -4,6 +4,9 @@
 mod collaboration_api_router;
 mod local_collaboration;
 mod loopback_bind_address;
+mod managed_message_tools;
+mod managed_tool_bindings;
+mod managed_tool_listener;
 mod mcp_server;
 mod native_schema_definitions;
 mod router_executable_check;
@@ -12,9 +15,10 @@ mod tool_call_registry;
 pub use collaboration_api_router::{
     COLLABORATION_API_PATH, CollaborationApiConfig, CollaborationApiListener,
     CollaborationApiRouter, DEFAULT_CONCURRENT_REQUESTS, collaboration_api_router,
-    serve_collaboration_api,
+    managed_collaboration_api_router, serve_collaboration_api,
 };
 pub use loopback_bind_address::{LoopbackBindAddress, LoopbackBindAddressError};
+pub use managed_tool_bindings::ManagedToolBindings;
 pub use native_schema_definitions::NativeSchemaDefinitions;
 pub use router_executable_check::{FixedRouterExecutableRelation, RouterExecutableCheck};
 /// One request slot held until a test releases it; for admission tests here and in other crates.
