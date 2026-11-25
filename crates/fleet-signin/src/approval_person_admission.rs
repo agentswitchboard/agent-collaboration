@@ -181,71 +181,66 @@ impl VerifiedApprovalPersonRequest {
     }
 }
 
-impl PersonSocketAttachment {
-    /// Recheck the socket's applying authority inside the transaction. The authenticated
-    /// connection owns the person and target, and carries no per-operation proof to reserve.
-    pub async fn admit_approval<'loan, Transaction: ApprovalPersonTransaction>(
-        &self,
-        operation: ApprovalPersonOperation,
-        transaction: &'loan mut Transaction,
-    ) -> Result<
-        Result<AdmittedApprovalPersonOperation<'loan, Transaction>, AdmissionRefusal>,
-        StoreFailure,
-    > {
-        let organization = self.organization();
-        let person = self.person();
-        if transaction.organization_id() != organization || operation.organization() != organization
-        {
-            return Ok(Err(AdmissionRefusal::NotPermitted));
-        }
-        let sampled = transaction.sample_person_authorization_time()?;
-        if !self.is_current(sampled.unix_millis()) {
-            return Ok(Err(AdmissionRefusal::Expired));
-        }
-        let organization_rows = transaction
-            .read_person_authorization(organization_floor_statement(organization.as_str()))
-            .await?;
-        let organization_floor =
-            decode_organization_floor(&organization_rows, organization.as_str())?;
-        let person_rows = transaction
-            .read_person_authorization(person_floor_statement(
-                organization.as_str(),
-                person.as_str(),
-            ))
-            .await?;
-        let person_floor =
-            decode_person_floor(&person_rows, organization.as_str(), person.as_str())?;
-        if !organization_floor
-            .zip(person_floor)
-            .is_some_and(|(organization, person)| self.still_matches(&organization, &person))
-        {
-            return Ok(Err(AdmissionRefusal::RefreshRequired));
-        }
-
-        let access = if self.permits(FleetPermission::DecideApproval) {
-            ApprovalPersonAccess::Granted
-        } else if matches!(&operation, ApprovalPersonOperation::Decide(_)) {
-            let intent_digest = operation
-                .intent()
-                .digest()
-                .map_err(|_| StoreFailure::Unavailable)?;
-            ApprovalPersonAccess::RetainedOnly { intent_digest }
-        } else {
-            return Ok(Err(AdmissionRefusal::NotPermitted));
-        };
-        let identity = ApprovalPersonAdmission {
-            person: person.clone(),
-            organization: organization.clone(),
-        };
-        Ok(bind_approval_command(
-            transaction,
-            identity,
-            operation,
-            access,
-            None,
-            sampled,
-        ))
+/// Recheck the socket's applying authority inside the transaction. The authenticated
+/// connection owns the person and target, and carries no per-operation proof to reserve.
+pub async fn admit_person_link_approval<'loan, Transaction: ApprovalPersonTransaction>(
+    attachment: &PersonSocketAttachment,
+    operation: ApprovalPersonOperation,
+    transaction: &'loan mut Transaction,
+) -> Result<
+    Result<AdmittedApprovalPersonOperation<'loan, Transaction>, AdmissionRefusal>,
+    StoreFailure,
+> {
+    let organization = attachment.organization();
+    let person = attachment.person();
+    if transaction.organization_id() != organization || operation.organization() != organization {
+        return Ok(Err(AdmissionRefusal::NotPermitted));
     }
+    let sampled = transaction.sample_person_authorization_time()?;
+    if !attachment.is_current(sampled.unix_millis()) {
+        return Ok(Err(AdmissionRefusal::Expired));
+    }
+    let organization_rows = transaction
+        .read_person_authorization(organization_floor_statement(organization.as_str()))
+        .await?;
+    let organization_floor = decode_organization_floor(&organization_rows, organization.as_str())?;
+    let person_rows = transaction
+        .read_person_authorization(person_floor_statement(
+            organization.as_str(),
+            person.as_str(),
+        ))
+        .await?;
+    let person_floor = decode_person_floor(&person_rows, organization.as_str(), person.as_str())?;
+    if !organization_floor
+        .zip(person_floor)
+        .is_some_and(|(organization, person)| attachment.still_matches(&organization, &person))
+    {
+        return Ok(Err(AdmissionRefusal::RefreshRequired));
+    }
+
+    let access = if attachment.permits(FleetPermission::DecideApproval) {
+        ApprovalPersonAccess::Granted
+    } else if matches!(&operation, ApprovalPersonOperation::Decide(_)) {
+        let intent_digest = operation
+            .intent()
+            .digest()
+            .map_err(|_| StoreFailure::Unavailable)?;
+        ApprovalPersonAccess::RetainedOnly { intent_digest }
+    } else {
+        return Ok(Err(AdmissionRefusal::NotPermitted));
+    };
+    let identity = ApprovalPersonAdmission {
+        person: person.clone(),
+        organization: organization.clone(),
+    };
+    Ok(bind_approval_command(
+        transaction,
+        identity,
+        operation,
+        access,
+        None,
+        sampled,
+    ))
 }
 
 enum ApprovalPersonAccess {
