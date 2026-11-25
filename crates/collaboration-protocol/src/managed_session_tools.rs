@@ -5,7 +5,7 @@ use std::{future::Future, pin::Pin};
 use fleet_identity_protocol::SessionSecret;
 use workspace_ids::{ManagedToolBindingId, RouterRunId, SessionOperationId, SessionRef};
 
-/// The identity of one proposed or live tool binding, even before Claude returns its ID.
+/// The identity of one proposed or live tool binding, even before the harness returns its ID.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ManagedSessionToolBinding {
     pub start: SessionOperationId,
@@ -17,7 +17,7 @@ pub struct ManagedSessionToolBinding {
 /// Its underlying value zeroizes and redacts debug output.
 pub struct ManagedToolBearer(pub SessionSecret);
 
-/// A prepared loopback URL and its separate bearer header for ACP session setup.
+/// A prepared loopback URL and its separate bearer header for harness session setup.
 /// The descriptor and bearer live in memory for this binding only.
 pub struct ManagedToolDescriptor {
     pub url: String,
@@ -38,6 +38,9 @@ pub enum ManagedToolPreparationError {
 /// Prepares a descriptor before a provider ID exists. Repeating the same binding
 /// returns its same descriptor. A new owner must use a new binding identity.
 /// Preparation permits protocol discovery and grants no session tool effects.
+/// The harness adapter must enforce exclusive routing for the Router's tools.
+/// Cursor's ACP client accepts the HTTP descriptor and headers, but can retain
+/// a same-name configured server when its per-session client fails to load.
 pub trait PrepareManagedToolDescriptor: Send + Sync {
     fn prepare_managed_descriptor(
         &self,
