@@ -15,7 +15,6 @@ use acp_client_runtime::{
     AgentSessionClient, ExternalProviderRuntimeError, ManagedAcpToolSetup, SessionWorkRoots,
     acp_transport::TransportRun, owner_session_open::OwnerSessionOpenSetup,
 };
-use collaboration_protocol::{ManagedToolBearer, ManagedToolDescriptor};
 use provider_session_machines::{
     SessionGeneration,
     session_lifecycle_machine::{LoadAttempt, RestoreVia},
@@ -98,11 +97,12 @@ fn session_setup() -> OwnerSessionOpenSetup {
     }
 }
 
-fn descriptor(canary: u8) -> ManagedToolDescriptor {
-    ManagedToolDescriptor {
-        url: TEST_URL.to_owned(),
-        bearer: ManagedToolBearer::from_random_bytes(&[canary; 32]),
-    }
+fn fixture_bearer(canary: u8) -> String {
+    format!("test-only-managed-credential-{canary}")
+}
+
+fn claude_tools(canary: u8) -> ManagedAcpToolSetup {
+    ManagedAcpToolSetup::claude(TEST_URL.to_owned(), &fixture_bearer(canary))
 }
 
 fn assert_managed_server(frame: &Value, method: &str, canary: u8) {
@@ -119,7 +119,7 @@ fn assert_managed_server(frame: &Value, method: &str, canary: u8) {
     );
     assert_eq!(server.get("type").and_then(Value::as_str), Some("http"));
     assert_eq!(server.get("url").and_then(Value::as_str), Some(TEST_URL));
-    let expected = format!("Bearer {}", descriptor(canary).bearer.expose_header_value());
+    let expected = format!("Bearer {}", fixture_bearer(canary));
     assert_eq!(
         server.pointer("/headers/0/name").and_then(Value::as_str),
         Some("Authorization")
@@ -136,11 +136,7 @@ async fn claude_new_load_and_resume_forward_strict_setup_fails_on_connection_wid
     let wire = provider.client.owner_wire();
     let incarnation = OWNER;
     let opened = wire
-        .create_managed(
-            incarnation,
-            session_setup(),
-            ManagedAcpToolSetup::claude(descriptor(1)),
-        )
+        .create_managed(incarnation, session_setup(), claude_tools(1))
         .unwrap()
         .await
         .unwrap()
@@ -174,7 +170,7 @@ async fn claude_new_load_and_resume_forward_strict_setup_fails_on_connection_wid
                 PROVIDER_SESSION.to_owned(),
                 via,
                 session_setup(),
-                ManagedAcpToolSetup::claude(descriptor(canary)),
+                claude_tools(canary),
             )
             .unwrap()
             .await
@@ -203,14 +199,18 @@ async fn cursor_requires_fresh_setup_fails_on_fallback_or_cached_evidence() {
             }
         })
         .await;
-        let observe = move |_: &ManagedToolDescriptor| handshakes.load(Ordering::Acquire);
+        let observe = move || handshakes.load(Ordering::Acquire);
         let wire = provider.client.owner_wire();
         let incarnation = OWNER;
         let result = wire
             .create_managed(
                 incarnation,
                 session_setup(),
-                ManagedAcpToolSetup::cursor(descriptor(4), observe.clone()),
+                ManagedAcpToolSetup::cursor(
+                    TEST_URL.to_owned(),
+                    &fixture_bearer(4),
+                    observe.clone(),
+                ),
             )
             .unwrap()
             .await
@@ -233,7 +233,7 @@ async fn cursor_requires_fresh_setup_fails_on_fallback_or_cached_evidence() {
                 PROVIDER_SESSION.to_owned(),
                 RestoreVia::Load,
                 session_setup(),
-                ManagedAcpToolSetup::cursor(descriptor(5), observe),
+                ManagedAcpToolSetup::cursor(TEST_URL.to_owned(), &fixture_bearer(5), observe),
             )
             .unwrap()
             .await
@@ -275,11 +275,7 @@ async fn managed_open_requires_advertised_http_mcp_before_dispatch() {
     let result = provider
         .client
         .owner_wire()
-        .create_managed(
-            OWNER,
-            session_setup(),
-            ManagedAcpToolSetup::claude(descriptor(6)),
-        )
+        .create_managed(OWNER, session_setup(), claude_tools(6))
         .unwrap()
         .await
         .unwrap();
@@ -326,11 +322,7 @@ async fn acp_bearer_never_reaches_target_specific_trace_fails_without_connection
     let wire = provider.client.owner_wire();
     let incarnation = OWNER;
     let opened = wire
-        .create_managed(
-            incarnation,
-            session_setup(),
-            ManagedAcpToolSetup::claude(descriptor(7)),
-        )
+        .create_managed(incarnation, session_setup(), claude_tools(7))
         .unwrap()
         .await
         .unwrap()
@@ -348,7 +340,7 @@ async fn acp_bearer_never_reaches_target_specific_trace_fails_without_connection
         "Router transport diagnostics were disabled"
     );
     assert!(
-        !output.contains(descriptor(7).bearer.expose_header_value()),
+        !output.contains(&fixture_bearer(7)),
         "ACP SDK leaked the managed bearer"
     );
     assert!(!output.contains(TEST_URL), "ACP SDK leaked the managed URL");

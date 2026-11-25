@@ -17,7 +17,6 @@ dependencies = [
  "async-process",
  "chrono",
  "codex-router-test-support",
- "collaboration-protocol",
  "futures-util",
  "hegeltest",
  "provider-session-machines",
