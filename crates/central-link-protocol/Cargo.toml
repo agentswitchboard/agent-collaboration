@@ -20,7 +20,7 @@ workspace-ids.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-uuid.workspace = true
+uuid = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
 jsonschema.workspace = true

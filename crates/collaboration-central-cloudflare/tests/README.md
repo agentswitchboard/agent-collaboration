@@ -27,7 +27,10 @@ serves the private sign-in routes.
 The `machine_link` integration module opens real workerd sockets with signed
 machine tokens. It exercises admission, batch replies, renewal, alarm rearm,
 delivery and acknowledgement replay, and private signed revocation of an idle
-link. The witness cases distinguish object eviction and restored attachments
+link. The person read cases use the public person carrier and compare workspace
+lookup and audit pages against signed private HTTP. They check the distinct
+permissions and the organization and machine boundaries. The witness cases
+distinguish object eviction and restored attachments
 from warm-socket behavior. The production bundle guard excludes the witness
 controls.
 
