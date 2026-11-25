@@ -88,3 +88,41 @@ fn direct_when_idle_rejects_loading_and_uses_the_prompt_take_of_an_exact_idle_ru
     );
     assert!(taken.contains(&OwnerEffect::PromptTaken(notice)));
 }
+
+#[test]
+fn pr329_limit_a_notice_offered_but_not_taken_refuses_direct_until_settling_changes_it() {
+    let mut state = fresh();
+    let run = restore_live(&mut state, 1);
+    let notice = input(run.generation, 2);
+    command(
+        &mut state,
+        SessionOwnerCommand::Prompt {
+            input: notice.clone(),
+            admission: PromptAdmission::DirectWhenIdle,
+        },
+    );
+    let offered = apply(&mut state, mark_prompt(&notice));
+    let _offered = authorization(&offered);
+    assert!(
+        !offered
+            .iter()
+            .any(|effect| matches!(effect, OwnerEffect::PromptTaken(_)))
+    );
+    assert_eq!(state.snapshot().turn, SessionTurn::Idle);
+
+    // PR 329 only fixes admission priority. Settling removes the refusal at
+    // this exact mark/offer boundary when the human wins before provider take.
+    let human = input(run.generation, 3);
+    assert!(matches!(
+        decide(
+            &state,
+            OwnerEvent::Command(SessionOwnerCommand::Prompt {
+                input: human,
+                admission: PromptAdmission::Direct,
+            })
+        ),
+        Err(SessionOwnerRejection::Refused(
+            SessionOwnerRefusal::EffectInProgress(_)
+        ))
+    ));
+}

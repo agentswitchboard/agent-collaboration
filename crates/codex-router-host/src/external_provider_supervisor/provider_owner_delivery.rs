@@ -4,7 +4,7 @@ use super::{
     ConversationOperationFailureKind, ConversationOperationFailureStage,
     ExternalProviderSupervisor, PreparedOperation, ProviderOperationCompletion,
     ProviderOperationEffect, ProviderOperationKind, failure,
-    provider_admission_policy::{AdmissionClass, AdmissionMode},
+    provider_admission_policy::{AdmissionClass, AdmissionMode, NoticeAdmissionPlacement},
     provider_owner_operations::owner_failure,
     provider_owner_prompt::{SessionQueuePlan, WarmRun, explicit_steer_refusal, retained_prompt},
     provider_prompt_contents::ProviderPromptContentsRequest,
@@ -272,22 +272,18 @@ impl ExternalProviderSupervisor {
                 | DeliveryAdmission::QueueOnRun(_)
         );
         let class = match admission {
-            DeliveryAdmission::Requested(MessageDelivery::Queue)
+            DeliveryAdmission::Requested(_)
             | DeliveryAdmission::QueueOnRun(_)
-            | DeliveryAdmission::SteerExisting(_)
-            | DeliveryAdmission::Notice(NoticeRun {
-                placement: NoticePlacement::Steer(_),
-                ..
-            }) => AdmissionClass::LinePlacement,
-            DeliveryAdmission::Requested(MessageDelivery::Auto | MessageDelivery::Steer)
-                if matches!(snapshot.turn, SessionTurn::Running { .. }) =>
-            {
-                AdmissionClass::LinePlacement
-            }
-            DeliveryAdmission::Requested(MessageDelivery::Auto) if !snapshot.queue.is_empty() => {
-                AdmissionClass::LinePlacement
-            }
-            _ => AdmissionClass::Independent,
+            | DeliveryAdmission::SteerExisting(_) => AdmissionClass::OwnerPlaced,
+            DeliveryAdmission::Warm(_) => AdmissionClass::Independent,
+            DeliveryAdmission::Notice(run) => AdmissionClass::Notice {
+                placement: match run.placement {
+                    NoticePlacement::Direct => NoticeAdmissionPlacement::StartTurn,
+                    NoticePlacement::Steer(_) => NoticeAdmissionPlacement::SteerExactTurn,
+                },
+            },
+            #[cfg(test)]
+            DeliveryAdmission::Direct => AdmissionClass::Independent,
         };
         let mode = AdmissionMode::deferred(class);
         let live = if can_queue {
@@ -393,6 +389,8 @@ impl ExternalProviderSupervisor {
         // The Host owns settlement before the caller can suspend on placement.
         // Only the borrowed evidence reply stays with the caller.
         let acceptance = self.retain_operation(operation.clone(), Some(target.clone()), async move {
+            #[cfg(test)]
+            backend.pause_before_owner_prompt_for_test(&operation).await;
             let receipt = if can_queue
                 && owner
                     .defer_queued_admission(switchboard_session_store::ProviderOperationAdmission {
