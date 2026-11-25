@@ -122,6 +122,39 @@ fn call_wrappers_require_tags_and_envelope_fields_by_name() {
 }
 
 #[test]
+fn workspace_list_codec_rejects_a_complete_positional_body() {
+    let operation_id = "019f0000-0000-7000-8000-000000000003";
+    let named = json!({
+        "kind": "callCentral",
+        "correlationId": CORRELATION,
+        "request": {
+            "call": "listOrganizationWorkspaces",
+            "envelope": {
+                "target": CORRELATION,
+                "body": {"operationId": operation_id, "after": null, "limit": 7}
+            }
+        }
+    });
+    let direction = FrameDirection::ToCentral;
+    let decoded = decode_text(&named.to_string(), direction).expect("named workspace list request");
+    assert!(matches!(
+        &decoded,
+        LinkFrame::Data(DataFrame::CallCentral { request, .. })
+            if matches!(request.as_ref(), CentralCall::ListOrganizationWorkspaces(_))
+    ));
+    let encoded = encode_text(&decoded, direction).expect("encode named workspace list request");
+    assert_eq!(serde_json::from_str::<Value>(&encoded).unwrap(), named);
+
+    let mut positional = named;
+    positional["request"]["envelope"]["body"] = json!([operation_id, null, 7]);
+    let result = decode_text(&positional.to_string(), direction);
+    assert!(
+        matches!(result, Err(ProtocolError::Json(_))),
+        "workspace list body must be a named object, got {result:?}"
+    );
+}
+
+#[test]
 fn create_workspace_codec_rejects_a_complete_positional_body() {
     let named = json!({
         "kind": "callCentral",

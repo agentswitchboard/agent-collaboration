@@ -20,12 +20,34 @@ impl Rpc for ListOrganizationWorkspacesRpc {
     type Reply = OrganizationWorkspacePage;
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ListOrganizationWorkspaces {
     pub operation_id: RequestId,
     pub after: Option<WorkspaceId>,
     pub limit: PersonWorkspacePageLimit,
+}
+
+impl<'de> Deserialize<'de> for ListOrganizationWorkspaces {
+    fn deserialize<D: serde::Deserializer<'de>>(input: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Fields {
+            operation_id: RequestId,
+            after: Option<WorkspaceId>,
+            limit: PersonWorkspacePageLimit,
+        }
+        let Fields {
+            operation_id,
+            after,
+            limit,
+        } = approval_request_protocol::decode_named_map(input)?;
+        Ok(Self {
+            operation_id,
+            after,
+            limit,
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
