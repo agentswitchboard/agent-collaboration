@@ -38,6 +38,7 @@ use self::{
 mod custody_cases;
 mod mac_capabilities;
 mod packet_flight;
+mod registration_cases;
 mod simulation_clock;
 mod write_readiness;
 
@@ -86,8 +87,11 @@ async fn serve_central(
 
 #[test]
 fn real_central_welcomes_the_mac_over_simulated_tcp() {
-    run_link_case(|link| async move {
-        assert!(matches!(*link.status.borrow(), LinkStatus::Welcomed { .. }));
+    run_link_case(|mut link| async move {
+        link.status
+            .wait_for(|status| matches!(status, LinkStatus::Connected { .. }))
+            .await
+            .unwrap();
         link.close().await;
     });
 }
@@ -313,6 +317,14 @@ struct SimulatedLeases {
 }
 
 impl LeaseSource<u8> for SimulatedLeases {
+    fn registration_target(
+        &self,
+        _binding: &u8,
+    ) -> Result<switchboard_central_link::lease_source::ApprovalServiceTarget, LeaseFailure> {
+        let organization_id = self.central.organization_id.clone();
+        Ok(switchboard_central_link::lease_source::ApprovalServiceTarget { organization_id })
+    }
+
     fn acquire<'lease>(
         &'lease self,
         binding: &'lease u8,
@@ -345,12 +357,21 @@ type ReadBytesSender = oneshot::Sender<Vec<u8>>;
 type DriverReadReport = (ReadBytesSender, Vec<u8>);
 
 #[derive(Clone, Default)]
-struct ReadProbe(Arc<Mutex<Option<ReadBytesSender>>>);
+struct ReadProbe {
+    report: Arc<Mutex<Option<ReadBytesSender>>>,
+    discard: Arc<Mutex<Option<ReadBytesSender>>>,
+}
 
 impl ReadProbe {
     fn observe_next_read_turn(&self) -> oneshot::Receiver<Vec<u8>> {
         let (report, observed) = oneshot::channel();
-        assert!(self.0.lock().unwrap().replace(report).is_none());
+        assert!(self.report.lock().unwrap().replace(report).is_none());
+        observed
+    }
+
+    fn discard_next_read(&self) -> oneshot::Receiver<Vec<u8>> {
+        let (report, observed) = oneshot::channel();
+        assert!(self.discard.lock().unwrap().replace(report).is_none());
         observed
     }
 }
@@ -376,6 +397,19 @@ impl<Reader: AsyncRead + Unpin> AsyncRead for ResettableRead<Reader> {
         if let Some((report, bytes)) = self.read_to_report.take() {
             let _ = report.send(bytes);
         }
+        let discard_armed = self.read_probe.discard.lock().unwrap().is_some();
+        if discard_armed {
+            let mut bytes = [0; 4096];
+            let mut held = ReadBuf::new(&mut bytes);
+            let read = Pin::new(&mut self.reader).poll_read(context, &mut held);
+            if matches!(read, Poll::Ready(Ok(()))) && !held.filled().is_empty() {
+                let report = self.read_probe.discard.lock().unwrap().take().unwrap();
+                report.send(held.filled().to_vec()).unwrap();
+                context.waker().wake_by_ref();
+                return Poll::Pending;
+            }
+            return read;
+        }
         let before = buffer.filled().len();
         let read = Pin::new(&mut self.reader).poll_read(context, buffer);
         if let Poll::Ready(Ok(())) = read
@@ -384,7 +418,7 @@ impl<Reader: AsyncRead + Unpin> AsyncRead for ResettableRead<Reader> {
                 .get(before..)
                 .filter(|bytes| !bytes.is_empty())
         {
-            let report = self.read_probe.0.lock().unwrap().take();
+            let report = self.read_probe.report.lock().unwrap().take();
             if let Some(report) = report {
                 self.read_to_report = Some((report, bytes.to_vec()));
             }
@@ -398,8 +432,15 @@ where
     Case: FnOnce(SimulatedLink) -> Running + 'static,
     Running: Future<Output = ()> + 'static,
 {
+    run_link_case_with_network(PacketFlight::new(), case);
+}
+
+fn run_link_case_with_network<Case, Running>(network: PacketFlight, case: Case)
+where
+    Case: FnOnce(SimulatedLink) -> Running + 'static,
+    Running: Future<Output = ()> + 'static,
+{
     let clock = Arc::new(ManualClock::new("2030-03-17T17:46:40Z".parse().unwrap()));
-    let network = PacketFlight::new();
     let mut simulation = turmoil::Builder::new()
         .enable_tokio_io()
         .rng_seed(42)

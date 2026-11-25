@@ -21,7 +21,7 @@ use switchboard_message_custody::{
 };
 use switchboard_message_system::{
     CloseReport, FrontRefusal, MessageRoots, MessageSystem, MessageSystemEvents,
-    MessageSystemStatus as Status,
+    MessageSystemObservation, MessageSystemReason, MessageSystemStatus as Status,
     test_support::{
         AdmittedLocalSession, DirectMessageWrite, LinkFixture, MessageDeliveryObservation,
         MessageSendOutcome, MessageStatus, MessageUnitPort, MessageWriteStatus,
@@ -208,6 +208,10 @@ async fn live_enrollment_sends_through_central_restarts_and_drains_in_order() {
     );
     clock.advance(poll).unwrap();
     observe_status(&mut status, Status::Stopping).await;
+    assert_eq!(
+        status.borrow().reason,
+        MessageSystemReason::EnrollmentRevoked
+    );
     second_driver.finished.await.unwrap();
     assert!(matches!(
         front.custody(),
@@ -219,13 +223,17 @@ async fn live_enrollment_sends_through_central_restarts_and_drains_in_order() {
     );
     second_driver.release.send(()).unwrap();
     observe_status(&mut status, Status::EnrollmentEnded).await;
+    assert_eq!(
+        status.borrow().reason,
+        MessageSystemReason::EnrollmentRevoked
+    );
     assert!(handle.reserve().await.is_err());
     assert!(matches!(
         front.custody(),
         Err(FrontRefusal::EnrollmentEnded)
     ));
     assert_eq!(system.close().await, CloseReport::Closed);
-    assert_eq!(*status.borrow(), Status::Stopped);
+    assert_eq!(status.borrow().status, Status::Stopped);
     assert!(matches!(front.custody(), Err(FrontRefusal::ShuttingDown)));
     assert!(store.read_metadata().await.is_err());
     writer.close().await.unwrap();
@@ -280,8 +288,11 @@ async fn run_driver(
     released.await.unwrap();
 }
 
-async fn observe_status(status: &mut watch::Receiver<Status>, expected: Status) {
-    status.wait_for(|found| *found == expected).await.unwrap();
+async fn observe_status(status: &mut watch::Receiver<MessageSystemObservation>, expected: Status) {
+    status
+        .wait_for(|found| found.status == expected)
+        .await
+        .unwrap();
 }
 
 fn start_at(root: &Path, clock: Arc<ManualClock>) -> MessageSystem {
@@ -305,11 +316,11 @@ async fn close_before_first_read_does_not_open_the_store() {
     let clock = Arc::new(ManualClock::new(EPOCH.parse().unwrap()));
     let system = start_at(&root, clock);
     let status = system.status();
-    assert_eq!(*status.borrow(), Status::Starting);
+    assert_eq!(status.borrow().status, Status::Starting);
 
     assert_eq!(system.close().await, CloseReport::Closed);
 
-    assert_eq!(*status.borrow(), Status::Stopped);
+    assert_eq!(status.borrow().status, Status::Stopped);
     assert!(!root.join(MACHINE_LOCAL_DATABASE).try_exists().unwrap());
 }
 
@@ -341,6 +352,6 @@ async fn close_with_retry_due_after_open_failure_does_not_open_the_store() {
     clock.advance(retry).unwrap();
     assert_eq!(close.await, CloseReport::Closed);
 
-    assert_eq!(*status.borrow(), Status::Stopped);
+    assert_eq!(status.borrow().status, Status::Stopped);
     assert!(!root.join(MACHINE_LOCAL_DATABASE).try_exists().unwrap());
 }

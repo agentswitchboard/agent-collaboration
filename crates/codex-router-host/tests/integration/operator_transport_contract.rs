@@ -16,6 +16,8 @@ use codex_router_host::HostSnapshot;
 use codex_router_host::HostSnapshotDimensions;
 use codex_router_host::HostTerminalResponse;
 use codex_router_host::HostedReadiness;
+use codex_router_host::MessageSystemObservation;
+use codex_router_host::MessageSystemReason;
 use codex_router_host::MessageSystemStatus;
 use codex_router_host::OperatorFrame;
 use codex_router_host::OperatorProtocolError;
@@ -188,7 +190,50 @@ fn status_reply_round_trips_the_optional_message_system_value()
             status,
             "status must survive the existing codec",
         )?;
+        check_equal(
+            decoded.snapshot().message_system_reason(),
+            None,
+            "the baseline Host snapshot omits the reason field",
+        )?;
     }
+    Ok(())
+}
+
+#[test]
+fn status_reply_preserves_the_status_string_and_reports_reason_separately()
+-> Result<(), Box<dyn std::error::Error>> {
+    let observation = MessageSystemObservation {
+        status: MessageSystemStatus::RegistrationFailed,
+        reason: MessageSystemReason::RegistrationTimedOut,
+    };
+    let reply = OperatorFrame::terminal(HostTerminalResponse::new(
+        OperatorRequest::Status,
+        TerminalClassification::Ready,
+        ready_snapshot().with_message_system_observation(Some(observation)),
+        "shared Codex host status".to_owned(),
+    ));
+    let encoded = encode_operator_frame(&reply)?;
+    let json: serde_json::Value = serde_json::from_slice(&encoded)?;
+    check_equal(
+        json.pointer("/frame/payload/snapshot/message_system_status")
+            .cloned(),
+        Some(serde_json::json!("registration_failed")),
+        "registration status is a snake_case string",
+    )?;
+    check_equal(
+        json.pointer("/frame/payload/snapshot/message_system_reason")
+            .cloned(),
+        Some(serde_json::json!("registration_timed_out")),
+        "registration reason has its own wire field",
+    )?;
+    let OperatorFrame::Terminal(decoded) = decode_operator_frame(&encoded)? else {
+        return Err("status reply must be terminal".into());
+    };
+    check_equal(
+        decoded.snapshot().message_system_reason(),
+        Some(observation.reason),
+        "reason must survive the existing codec",
+    )?;
     Ok(())
 }
 

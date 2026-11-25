@@ -1371,7 +1371,11 @@ dependencies = [
  "sha2 0.10.9",
  "sqlx",
  "state-machine-core",
+ "switchboard-central-link",
+ "switchboard-link-lease",
  "switchboard-machine-core-store",
+ "switchboard-machine-enrollment",
+ "switchboard-machine-enrollment-store",
  "switchboard-message-custody",
  "switchboard-message-system",
  "switchboard-session-events",
@@ -6028,6 +6032,7 @@ dependencies = [
  "hegeltest",
  "serde_json",
  "state-machine-core",
+ "switchboard-run-gate",
  "tokio",
  "turmoil",
  "workspace-ids",
@@ -6058,6 +6063,7 @@ dependencies = [
  "router-clock",
  "serde_json",
  "state-machine-core",
+ "switchboard-run-gate",
  "tokio",
  "tokio-tungstenite",
  "tower-service",
@@ -6235,6 +6241,16 @@ dependencies = [
  "url",
  "uuid",
  "workspace-model",
+]
+
+[[package]]
+name = "switchboard-run-gate"
+version = "0.1.158"
+dependencies = [
+ "approval-request-protocol",
+ "hegeltest",
+ "state-machine-core",
+ "workspace-ids",
 ]
 
 [[package]]
@@ -7481,6 +7497,7 @@ dependencies = [
  "state-machine-core",
  "switchboard-approval-holder",
  "switchboard-approval-ports",
+ "switchboard-run-gate",
  "tempfile",
  "thiserror 2.0.18",
  "uuid",

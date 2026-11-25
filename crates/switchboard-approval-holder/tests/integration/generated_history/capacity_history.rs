@@ -1,10 +1,10 @@
 use approval_request_protocol::{
     CancelReason, HolderStopCause, RaiseReply, RegisterRunReply, StopReceiptEnding, StopReply,
 };
-use switchboard_approval_holder::{
-    run_gate::CallAttempt,
-    waiting_request::{LocalNegative, ProviderReply, RaiseRefusal, WriterOutcome},
+use switchboard_approval_holder::waiting_request::{
+    LocalNegative, ProviderReply, RaiseRefusal, WriterOutcome,
 };
+use switchboard_run_gate::CallAttempt;
 
 use super::super::fixtures::{GateEvent, RESPONDER, RequestEffect, authority, call, link};
 use super::{

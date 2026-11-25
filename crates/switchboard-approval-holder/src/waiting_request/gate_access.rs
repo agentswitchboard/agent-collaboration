@@ -2,7 +2,7 @@ use approval_request_protocol::{DeliverEndingReply, DeliverEndingRequest};
 use state_machine_core::{EventTag, StateMachineResult, Transition, TransitionError};
 
 use super::{Authority, WaitEffect, WaitState, WaitingRequest, step};
-use crate::run_gate::{CallKey, LinkAdmission, LinkAttempt, RunAuthority, RunGateState};
+use switchboard_run_gate::{CallKey, LinkAdmission, LinkAttempt, RunAuthority, RunGateState};
 
 /// Inputs whose effects and custody decisions depend on the current run gate.
 #[derive(Clone, Debug, Eq, PartialEq)]

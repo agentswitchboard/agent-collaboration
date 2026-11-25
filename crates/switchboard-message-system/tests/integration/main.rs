@@ -56,6 +56,19 @@ fn active(organization: u8, deployment: u8, id: u8) -> Metadata {
     })
 }
 
+fn ended_metadata() -> Metadata {
+    use switchboard_machine_enrollment::{EnrollmentEnd, EnrollmentKey};
+
+    Metadata::Ended {
+        key: EnrollmentKey {
+            organization_id: pair(1, 1).organization().to_string().parse().unwrap(),
+            machine_id: "00000000-0000-7000-8000-000000000001".parse().unwrap(),
+            enrollment_id: enrollment(1).to_string().parse().unwrap(),
+        },
+        why: EnrollmentEnd::Revoked,
+    }
+}
+
 fn target(generation: Generation, piece: UnitPiece) -> StopTarget {
     StopTarget::Unit { generation, piece }
 }

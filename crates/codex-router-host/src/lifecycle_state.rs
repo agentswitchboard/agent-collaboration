@@ -2,7 +2,9 @@
 
 use serde::Deserialize;
 use serde::Serialize;
-use switchboard_message_system::MessageSystemStatus;
+use switchboard_message_system::{
+    MessageSystemObservation, MessageSystemReason, MessageSystemStatus,
+};
 
 /// Lifecycle operation visible in status and terminal results.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -212,6 +214,8 @@ pub struct HostSnapshot {
     last_login_reload: Option<crate::login_reload_outcome::LoginReloadOutcome>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     message_system_status: Option<MessageSystemStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    message_system_reason: Option<MessageSystemReason>,
 }
 
 /// Independently owned dimensions captured in one host snapshot.
@@ -253,6 +257,7 @@ impl HostSnapshot {
             last_lifecycle_outcome: dimensions.last_lifecycle_outcome,
             last_login_reload: None,
             message_system_status: None,
+            message_system_reason: None,
         }
     }
 
@@ -282,6 +287,31 @@ impl HostSnapshot {
     #[must_use]
     pub const fn message_system_status(&self) -> Option<MessageSystemStatus> {
         self.message_system_status
+    }
+
+    /// Attaches one observed pair so status and reason describe the same reading.
+    #[must_use]
+    pub const fn with_message_system_observation(
+        mut self,
+        observation: Option<MessageSystemObservation>,
+    ) -> Self {
+        match observation {
+            Some(observation) => {
+                self.message_system_status = Some(observation.status);
+                self.message_system_reason = Some(observation.reason);
+            }
+            None => {
+                self.message_system_status = None;
+                self.message_system_reason = None;
+            }
+        }
+        self
+    }
+
+    /// Absent when an older Host supplied status without a reason.
+    #[must_use]
+    pub const fn message_system_reason(&self) -> Option<MessageSystemReason> {
+        self.message_system_reason
     }
 
     /// Derives overall usability without mutating any component dimension.

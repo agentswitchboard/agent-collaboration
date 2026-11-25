@@ -19,6 +19,7 @@ members = [
     "crates/state-machine-core",
     "crates/provider-session-machines",
     "crates/switchboard-approval-holder",
+    "crates/switchboard-run-gate",
     "crates/switchboard-message-system",
     "crates/switchboard-harness-contracts",
     "crates/switchboard-harness-shared-mechanics",
@@ -113,6 +114,7 @@ publish = false
 [workspace.dependencies]
 approval-request-protocol = { path = "crates/approval-request-protocol", version = "0.1.158" }
 switchboard-approval-holder = { path = "crates/switchboard-approval-holder", version = "0.1.158" }
+switchboard-run-gate = { path = "crates/switchboard-run-gate", version = "0.1.158" }
 switchboard-approval-ports = { path = "crates/switchboard-approval-ports", version = "0.1.158" }
 switchboard-message-system = { path = "crates/switchboard-message-system", version = "0.1.158" }
 switchboard-harness-shared-mechanics = { path = "crates/switchboard-harness-shared-mechanics", version = "0.1.158" }

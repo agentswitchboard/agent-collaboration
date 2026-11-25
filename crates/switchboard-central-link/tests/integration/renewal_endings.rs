@@ -43,7 +43,7 @@ async fn refuse_renewal_with_reason(
     welcome(&mut socket).await;
     fixture
         .status
-        .wait_for(|state| matches!(state, LinkStatus::Welcomed { .. }))
+        .wait_for(|state| matches!(state, LinkStatus::Connected { .. }))
         .await
         .unwrap();
     fixture.clock.not_due_check_now(tick(20)).await;
@@ -120,7 +120,7 @@ async fn receive_after_refusal(
     let _ = socket.send(Message::Text(DELIVER_FRAME.into())).await;
     tokio::select! {
         event = fixture.inbox_events.recv() => matches!(event, Some(LinkLaneEvent::Deliver { .. })),
-        _ = fixture.status.wait_for(|status| !matches!(status, LinkStatus::Welcomed { .. })) => false,
+        _ = fixture.status.wait_for(|status| !matches!(status, LinkStatus::Connected { .. })) => false,
     }
 }
 
@@ -151,7 +151,7 @@ async fn renewal_refusal_alone_preserves_enrollment_until_the_confirmed_deadline
     );
     assert!(matches!(
         *fixture.status.borrow(),
-        LinkStatus::Welcomed { .. }
+        LinkStatus::Connected { .. }
     ));
     fixture.clock.advance(Duration::from_secs(1)).unwrap();
     fixture

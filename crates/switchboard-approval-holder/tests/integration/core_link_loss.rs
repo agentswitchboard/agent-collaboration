@@ -13,10 +13,8 @@ use approval_request_protocol::{
     RegisterRunReply, RegisterRunRequest, RunRefusal, StopReceiptEnding, StopReply, StopRequest,
 };
 use state_machine_core::{StateMachine, TransitionError};
-use switchboard_approval_holder::{
-    run_gate::RunGate,
-    waiting_request::{LocalNegative, ProviderReply, WriterOutcome},
-};
+use switchboard_approval_holder::waiting_request::{LocalNegative, ProviderReply, WriterOutcome};
+use switchboard_run_gate::RunGate;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use turmoil::net::{TcpListener, TcpStream};
 

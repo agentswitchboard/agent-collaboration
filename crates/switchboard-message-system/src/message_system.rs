@@ -10,7 +10,7 @@ use tokio::{
 
 use crate::{
     CloseReport, Event, Front, FrontRefusal, MessageFront, MessageRoots, MessageSystemEvents,
-    MessageSystemStatus, message_system_status,
+    MessageSystemObservation,
 };
 use crate::{
     interpreter::{Interpreter, MessageInputs, OpenedEnrollment, start_supervisor},
@@ -23,7 +23,7 @@ pub struct MessageSystem {
     close: CloseRequest,
     interpreter: JoinHandle<CloseReport>,
     front: MessageFront,
-    status: watch::Receiver<MessageSystemStatus>,
+    status: watch::Receiver<MessageSystemObservation>,
 }
 
 struct CloseRequest(mpsc::UnboundedSender<Event>);
@@ -68,9 +68,10 @@ impl MessageSystem {
             Front::Forwarding(_) => FrontRefusal::CouldNotStart,
         };
         let (front_out, front) = MessageFront::refusing(initial);
-        let (status_out, status) = watch::channel(message_system_status(
+        let (status_out, status) = watch::channel(MessageSystemObservation::project(
             supervisor.state(),
             &LinkStatus::NotEnrolled,
+            None,
         ));
         let (events, queue) = mpsc::unbounded_channel();
         let close = CloseRequest(events.clone());
@@ -91,7 +92,7 @@ impl MessageSystem {
     }
 
     #[must_use]
-    pub fn status(&self) -> watch::Receiver<MessageSystemStatus> {
+    pub fn status(&self) -> watch::Receiver<MessageSystemObservation> {
         self.status.clone()
     }
 

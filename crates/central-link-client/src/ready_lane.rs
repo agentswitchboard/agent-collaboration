@@ -3,9 +3,9 @@
 use std::{future::Future, io, pin::Pin, time::Duration};
 
 use central_link_protocol::{
-    CentralCall, CentralCallReply, CorrelationId, DataFrame, DeliveryMessage, LinkFrame,
-    LinkRequest, LinkRequestBatch, ReceiptBatch, ReceiptResult, ReplyPayload, RequestStatusAnswer,
-    RequestStatusQuery, TimeLeft, TypedCallResult,
+    CentralCall, CentralCallReply, CorrelationId, DataFrame, DeliveryMessage, LinkCallRefusal,
+    LinkFrame, LinkRequest, LinkRequestBatch, ReceiptBatch, ReceiptResult, ReplyPayload,
+    RequestStatusAnswer, RequestStatusQuery, TimeLeft, TypedCallResult,
     approval_rpc::{ApprovalServiceTarget, RegisterRunReply},
 };
 use router_clock::ClockInstant;
@@ -115,6 +115,7 @@ impl RegisteredConnection {
 /// The registration owner records the exact RegisterRun frame written on one admitted connection.
 pub struct PendingRunRegistration {
     request: Option<SentRegistration>,
+    answer_before: ClockInstant,
 }
 
 struct SentRegistration {
@@ -130,8 +131,21 @@ pub struct RunRegistrationEvidence {
     router_run: RouterRunId,
 }
 
+pub enum RunRegistrationDecision {
+    NotPending,
+    Mismatched,
+    TimedOut,
+    Registered(RunRegistrationEvidence),
+    Answered(RegisterRunReply),
+    Refused(LinkCallRefusal),
+}
+
 impl PendingRunRegistration {
-    pub fn from_sent_frame(admitted: AdmittedConnection, frame: &LinkFrame) -> Option<Self> {
+    pub fn from_sent_frame(
+        admitted: AdmittedConnection,
+        frame: &LinkFrame,
+        answer_before: ClockInstant,
+    ) -> Option<Self> {
         let LinkFrame::Data(DataFrame::CallCentral {
             correlation_id,
             request,
@@ -149,40 +163,51 @@ impl PendingRunRegistration {
                 target: registration.target.clone(),
                 router_run: registration.body.router_run.clone(),
             }),
+            answer_before,
         })
+    }
+
+    pub const fn answer_deadline(&self) -> ClockInstant {
+        self.answer_before
     }
 
     /// Settle a reply observed by the current socket owner. Foreign observations leave it pending.
     pub fn observe_reply(
         &mut self,
         attempt: &ConnectionAttempt,
-        frame: &LinkFrame,
-    ) -> Option<RunRegistrationEvidence> {
-        let pending = self.request.as_ref()?;
-        let LinkFrame::Data(DataFrame::CentralCallReply {
-            correlation_id,
-            result,
-        }) = frame
-        else {
-            return None;
+        correlation_id: &CorrelationId,
+        result: &TypedCallResult<CentralCallReply>,
+        observed_at: ClockInstant,
+    ) -> RunRegistrationDecision {
+        use RunRegistrationDecision as Decision;
+        let Some(pending) = self.request.as_ref() else {
+            return Decision::NotPending;
         };
-        if &pending.admitted.connection != attempt || &pending.correlation_id != correlation_id {
-            return None;
+        if &pending.admitted.connection != attempt {
+            return Decision::Mismatched;
         }
-        let registered = match result.as_ref() {
+        if observed_at >= self.answer_before {
+            self.request = None;
+            return Decision::TimedOut;
+        }
+        if &pending.correlation_id != correlation_id {
+            return Decision::Mismatched;
+        }
+        let decision = match result {
             TypedCallResult::Answered {
                 reply: CentralCallReply::RegisterRun(reply),
-            } if reply.target == pending.target => {
-                matches!(reply.body, RegisterRunReply::Registered {})
-            }
-            TypedCallResult::Refused { .. } => false,
-            TypedCallResult::Answered { .. } => return None,
+            } if reply.target == pending.target => match reply.body {
+                RegisterRunReply::Registered {} => Decision::Registered(RunRegistrationEvidence {
+                    admitted: pending.admitted.clone(),
+                    router_run: pending.router_run.clone(),
+                }),
+                ref reply => Decision::Answered(reply.clone()),
+            },
+            TypedCallResult::Refused { reason } => Decision::Refused(*reason),
+            TypedCallResult::Answered { .. } => return Decision::Mismatched,
         };
-        let settled = self.request.take()?;
-        registered.then_some(RunRegistrationEvidence {
-            admitted: settled.admitted,
-            router_run: settled.router_run,
-        })
+        self.request = None;
+        decision
     }
 }
 

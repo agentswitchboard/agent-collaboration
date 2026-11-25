@@ -2,7 +2,7 @@
 
 use std::io::{self, Write};
 
-use codex_router_host::MessageSystemStatus;
+use codex_router_host::{MessageSystemReason, MessageSystemStatus};
 use switchboard_machine_enrollment::{EnrollmentEnd, EnrollmentMetadata, InvalidReason};
 use switchboard_machine_enrollment_store::MachineEnrollmentStatus;
 
@@ -10,24 +10,107 @@ pub(crate) const ENROLLED_TEXT: &str = "This Mac is enrolled.";
 
 pub(crate) fn write_router_link_status(
     output: &mut impl Write,
-    status: Option<MessageSystemStatus>,
+    status: Option<(MessageSystemStatus, Option<MessageSystemReason>)>,
 ) -> io::Result<()> {
     use MessageSystemStatus as Status;
 
-    let line = match status {
-        None => "Router has no message link",
-        Some(Status::Starting) => "starting",
-        Some(Status::NotEnrolled) => "not enrolled",
-        Some(Status::EnrollmentEnded) => "enrollment ended",
-        Some(Status::EnrollmentUnreadable) => "could not read enrollment",
-        Some(Status::Connecting) => "enrolled, connecting",
-        Some(Status::Connected) => "enrolled, connected",
-        Some(Status::Stopping) => "stopping",
-        Some(Status::Restarting) => "enrolled, restarting",
-        Some(Status::EnrollmentMismatch) => "enrollment does not match this Router",
-        Some(Status::Stopped) => "link stopped",
+    let Some((status, reason)) = status else {
+        return writeln!(output, "Router has no message link");
     };
-    writeln!(output, "{line}")
+    let line = match status {
+        Status::Starting => "starting",
+        Status::NotEnrolled => "not enrolled",
+        Status::EnrollmentEnded => "enrollment ended",
+        Status::EnrollmentUnreadable => "could not read enrollment",
+        Status::Connecting => "enrolled, connecting",
+        Status::Registering => "welcomed, registering",
+        Status::RegistrationFailed => match reason {
+            Some(MessageSystemReason::RegistrationTimedOut) => "registration timed out",
+            Some(
+                MessageSystemReason::CentralReportedEnrollmentEnded
+                | MessageSystemReason::AuthorityRevoked
+                | MessageSystemReason::AuthorityExpired
+                | MessageSystemReason::AuthorityInactive,
+            ) => "registration refused",
+            _ => "registration failed",
+        },
+        Status::RunRetired => "run retired",
+        Status::Connected => "enrolled, connected",
+        Status::Fault => "link fault",
+        Status::Stopping => "stopping",
+        Status::Restarting => "enrolled, restarting",
+        Status::EnrollmentMismatch => "enrollment does not match this Router",
+        Status::Stopped => "link stopped",
+    };
+    match reason {
+        None => writeln!(output, "{line} (reason not reported)"),
+        Some(MessageSystemReason::NoReason) => writeln!(output, "{line}"),
+        Some(reason) => writeln!(output, "{line}: {}", link_status_reason(reason)),
+    }
+}
+
+fn link_status_reason(reason: MessageSystemReason) -> &'static str {
+    use MessageSystemReason as Reason;
+    match reason {
+        Reason::NoReason => "",
+        Reason::RegistrationTimedOut => "no fitting acknowledgement arrived in time",
+        Reason::RegistrationWriterUnavailable => {
+            "the writer was unavailable before the frame was sent"
+        }
+        Reason::RegistrationWriterBusy => "the writer was busy before the frame was sent",
+        Reason::RegistrationSendWindowElapsed => {
+            "the write deadline elapsed before the frame was sent"
+        }
+        Reason::RegistrationFrameTooLarge => "the frame exceeded the link's size limit",
+        Reason::RegistrationFrameInvalid => "the frame could not be encoded",
+        Reason::RegistrationSinkRejected => "the socket rejected the frame",
+        Reason::CentralReportedEnrollmentEnded => "central reports the enrollment ended",
+        Reason::CentralFault => "central could not serve registration",
+        Reason::CentralDoesNotKnowCall => "central does not recognize the registration call",
+        Reason::CentralRejectedTarget => "central rejected the registration target",
+        Reason::CentralDidNotPermitCall => "central did not permit registration",
+        Reason::CentralRejectedSessionProof => "central did not accept the session proof",
+        Reason::AuthorityRevoked => "central reports the link authority was revoked",
+        Reason::AuthorityExpired => "central reports the link authority expired",
+        Reason::AuthorityInactive => "central reports the link authority became inactive",
+        Reason::AnotherRunTookOver => "another run of this Router took over",
+        Reason::MalformedAddress => "the central address is invalid",
+        Reason::FreshCredentialRefused => "central refused the refreshed credential",
+        Reason::LeaseSourceFault => "the enrollment lease could not be obtained",
+        Reason::EnrollmentEndingPending => "waiting for the stored ending",
+        Reason::EnrollmentDenied => ending_reason(EnrollmentEnd::Denied),
+        Reason::DeviceCodeExpired => ending_reason(EnrollmentEnd::Expired),
+        Reason::DeviceCodeRefused => {
+            ending_reason(EnrollmentEnd::Invalid(InvalidReason::GrantRefused))
+        }
+        Reason::InvalidClient => {
+            ending_reason(EnrollmentEnd::Invalid(InvalidReason::InvalidClient))
+        }
+        Reason::InvalidRequest => {
+            ending_reason(EnrollmentEnd::Invalid(InvalidReason::InvalidRequest))
+        }
+        Reason::UnknownSignInError => {
+            ending_reason(EnrollmentEnd::Invalid(InvalidReason::UnknownError))
+        }
+        Reason::MalformedSignInAnswer => {
+            ending_reason(EnrollmentEnd::Invalid(InvalidReason::MalformedAnswer))
+        }
+        Reason::UnexpectedSignInStatus => {
+            ending_reason(EnrollmentEnd::Invalid(InvalidReason::UnexpectedStatus))
+        }
+        Reason::WrongEnrollment => {
+            ending_reason(EnrollmentEnd::Invalid(InvalidReason::WrongEnrollment))
+        }
+        Reason::OversizedSignInAnswer => {
+            ending_reason(EnrollmentEnd::Invalid(InvalidReason::OversizedAnswer))
+        }
+        Reason::RefreshRefused => ending_reason(EnrollmentEnd::RefreshRefused),
+        Reason::RefreshClientDisabled => ending_reason(EnrollmentEnd::RefreshClientDisabled),
+        Reason::EnrollmentEndedByCentral => ending_reason(EnrollmentEnd::EndedByCentral),
+        Reason::LocalCredentialLost => ending_reason(EnrollmentEnd::LocalCredentialLost),
+        Reason::EnrollmentRevoked => ending_reason(EnrollmentEnd::Revoked),
+        Reason::EnrollmentInactive => ending_reason(EnrollmentEnd::Inactive),
+    }
 }
 
 pub(crate) fn write_enrollment_status(

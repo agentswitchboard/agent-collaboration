@@ -8,7 +8,7 @@ use std::{
 
 use serde::Deserialize;
 
-use super::{CLIENT, DRIVER, REAL_TEST};
+use super::{CLIENT, DRIVER, ENROLLMENT_STORE, HOST, MESSAGE_SYSTEM, REAL_TEST};
 
 const LOOPBACK: &str = "test-support";
 
@@ -122,7 +122,9 @@ fn check_declared_activation(metadata: &FeatureMetadata) -> Result<(), FeaturePo
             .iter()
             .filter(|dependency| dependency.name == DRIVER)
         {
-            if owner.name == REAL_TEST && dependency.kind == Some(super::DependencyKind::Dev) {
+            if matches!(owner.name.as_str(), REAL_TEST | HOST)
+                && dependency.kind == Some(super::DependencyKind::Dev)
+            {
                 continue;
             }
             let alias = dependency.rename.as_deref().unwrap_or(DRIVER);
@@ -166,9 +168,13 @@ fn check_fixture_activation(
 }
 
 fn check_no_loopback(graph: &ActiveFeatures, root: &'static str) -> Result<(), FeaturePolicyError> {
-    if graph
-        .get(DRIVER)
-        .is_some_and(|features| features.contains(LOOPBACK))
+    if [DRIVER, ENROLLMENT_STORE, MESSAGE_SYSTEM]
+        .into_iter()
+        .any(|package| {
+            graph
+                .get(package)
+                .is_some_and(|features| features.contains(LOOPBACK))
+        })
     {
         return Err(FeaturePolicyError::ShippedLoopback(root));
     }

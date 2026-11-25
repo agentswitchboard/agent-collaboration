@@ -52,6 +52,14 @@ struct RealLeases {
 }
 
 impl LeaseSource<u8> for RealLeases {
+    fn registration_target(
+        &self,
+        _binding: &u8,
+    ) -> Result<switchboard_central_link::lease_source::ApprovalServiceTarget, LeaseFailure> {
+        let organization_id = self.central.organization_id.clone();
+        Ok(switchboard_central_link::lease_source::ApprovalServiceTarget { organization_id })
+    }
+
     fn acquire<'a>(
         &'a self,
         binding: &'a u8,
@@ -143,7 +151,7 @@ impl Journey {
             .wait_for(|status| {
                 matches!(
                     status,
-                    LinkStatus::Welcomed { .. }
+                    LinkStatus::Connected { .. }
                         | LinkStatus::Fault { .. }
                         | LinkStatus::EnrollmentEnded { .. }
                 )
@@ -153,7 +161,7 @@ impl Journey {
             .clone();
         assert_eq!(
             actual,
-            LinkStatus::Welcomed {
+            LinkStatus::Connected {
                 machine_id: MACHINE_LINK_FIXTURE_MACHINE.parse().unwrap()
             }
         );
@@ -188,7 +196,7 @@ impl Journey {
 }
 
 #[tokio::test]
-async fn real_machine_admission_allows_immediate_request_and_status_without_registration() {
+async fn real_machine_admission_allows_immediate_request_and_status_on_the_registered_socket() {
     let journey = Journey::start().await;
     let admitted_watch = journey.lane.watch_admitted();
     let admitted = admitted_watch.borrow().clone();
@@ -197,7 +205,16 @@ async fn real_machine_admission_allows_immediate_request_and_status_without_regi
         "Central's checked Welcome must enable the message lane"
     );
     let admitted = admitted.unwrap();
-    assert!(journey.lane.watch_registered().borrow().is_none());
+    assert_eq!(
+        journey
+            .lane
+            .watch_registered()
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .admitted(),
+        &admitted
+    );
     let wire = format!(
         r#"{{"kind":"request","request":{{"correlationId":"01890f2e-7b4c-7cc0-98c4-000000000031","caller":{{"kind":"session","value":{{"machineId":"{MACHINE_LINK_FIXTURE_MACHINE}","sessionId":"fixture-lane"}}}},"payload":{{"kind":"mail","request":{{"requestId":"01890f2e-7b4c-7cc0-98c4-000000000032","operation":{{"kind":"setNoticeCadence","cadence":"m25"}}}}}}}}}}"#
     );
@@ -284,7 +301,7 @@ async fn real_central_renews_the_welcomed_socket_across_its_original_deadline() 
     journey.mac_clock.advance(Duration::from_secs(50)).unwrap();
     tokio::select! {
         () = journey.mac_clock.not_due_check_now(ClockInstant::ZERO.after(Duration::from_secs(610))) => {}
-        status = journey.status.wait_for(|status| !matches!(status, LinkStatus::Welcomed { .. })) => {
+        status = journey.status.wait_for(|status| !matches!(status, LinkStatus::Connected { .. })) => {
             assert!(status.is_err(), "Central renewal must keep the original socket welcomed");
         }
     }
@@ -295,7 +312,7 @@ async fn real_central_renews_the_welcomed_socket_across_its_original_deadline() 
         .await;
     assert!(matches!(
         &*journey.status.borrow(),
-        LinkStatus::Welcomed { .. }
+        LinkStatus::Connected { .. }
     ));
     assert!(journey.acquisitions.try_recv().is_err());
     journey.close().await;

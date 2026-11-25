@@ -87,10 +87,10 @@ fn status_projects_supervisor_state_and_current_link() {
             Status::Connecting,
         ),
         (
-            "running after welcome",
+            "running after welcome, before registration",
             running,
             &welcomed,
-            Status::Connected,
+            Status::Registering,
         ),
         (
             "draining ended enrollment",

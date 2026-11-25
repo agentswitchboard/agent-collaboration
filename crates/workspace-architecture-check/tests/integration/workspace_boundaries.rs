@@ -185,6 +185,7 @@ const APPROVAL_HOLDER: (&str, &[&str]) = (
     &[
         "approval-request-protocol",
         "state-machine-core",
+        "switchboard-run-gate",
         "workspace-ids",
     ],
 );

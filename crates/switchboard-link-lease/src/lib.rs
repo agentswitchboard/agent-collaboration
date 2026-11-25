@@ -8,7 +8,7 @@ use std::{
 use central_link_client::EnrollmentEnd;
 use router_clock::{ClockInstant, RuntimeClock};
 use switchboard_central_link::{
-    lease_source::{LeaseFailure, LeaseFuture, LeaseSource},
+    lease_source::{ApprovalServiceTarget, LeaseFailure, LeaseFuture, LeaseSource},
     link_policy::LeaseVersion,
 };
 use switchboard_machine_enrollment::{
@@ -270,6 +270,18 @@ impl EnrollmentLeaseSource {
 }
 
 impl LeaseSource<EnrollmentKey> for EnrollmentLeaseSource {
+    fn registration_target(
+        &self,
+        key: &EnrollmentKey,
+    ) -> Result<ApprovalServiceTarget, LeaseFailure> {
+        let organization_id = key
+            .organization_id
+            .to_string()
+            .try_into()
+            .map_err(|_| LeaseFailure::Fault)?;
+        Ok(ApprovalServiceTarget { organization_id })
+    }
+
     fn acquire<'source>(
         &'source self,
         key: &'source EnrollmentKey,

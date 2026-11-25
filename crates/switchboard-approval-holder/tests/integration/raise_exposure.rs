@@ -3,10 +3,8 @@ use approval_request_protocol::{
     RegisterRunReply, RunRefusal, StopReceiptEnding, StopReply, StopRequest,
 };
 use state_machine_core::{StateMachine, TransitionError};
-use switchboard_approval_holder::{
-    run_gate::{CallAttempt, CallKey},
-    waiting_request::{LinkAttemptDisposition, LinkCallAnswer},
-};
+use switchboard_approval_holder::waiting_request::{LinkAttemptDisposition, LinkCallAnswer};
+use switchboard_run_gate::{CallAttempt, CallKey};
 
 use super::fixtures::{
     Mac, RESPONDER, RequestEffect, RequestEvent, RequestMachine, authority, call, call_raise,

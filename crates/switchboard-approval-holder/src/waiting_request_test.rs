@@ -13,12 +13,12 @@ use super::{
     WriterOutcome,
     gate_access::{GateWaitEvent, step_under_gate},
 };
-use crate::run_gate::{
+use approval_request_protocol::RegisterRunReply;
+use std::sync::OnceLock;
+use switchboard_run_gate::{
     CallAttempt, CallKey, DialAttempt, LinkAttempt, RunAuthority, RunGate, RunGateEvent,
     RunGateState,
 };
-use approval_request_protocol::RegisterRunReply;
-use std::sync::OnceLock;
 
 type Wait = WaitingRequest<u8, u8, u8>;
 type State = WaitState<u8, u8>;

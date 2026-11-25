@@ -1,5 +1,5 @@
 //! Bind listeners, prepare service owners and start the Host runtime.
-use super::message_startup::HostCustodyEvents;
+use super::message_startup::{HostCustodyEvents, HostMessageStartup};
 use super::{
     BackendPublication, BoundCollaborationApi, CancellationToken, CollaborationRuntime,
     CollaborationRuntimeInputs, EndpointId, EndpointRef, HostCollaborationInputs, JoinSet,
@@ -12,7 +12,7 @@ use std::sync::Arc;
 use switchboard_message_custody::recipient_sessions::{
     CombinedRecipientSessionDirectory, RecipientSessionSources,
 };
-use switchboard_message_system::{MessageRoots, MessageSystem, MessageSystemEvents};
+use switchboard_message_system::MessageSystemEvents;
 
 #[cfg(test)]
 pub(crate) type BeforeProviderRetention = Box<dyn FnOnce(&CollaborationRuntime) + Send>;
@@ -131,7 +131,7 @@ impl CollaborationRuntime {
         router_proxy_endpoint: Option<SocketAddr>,
         prepared_exposure: Option<crate::tailscale_exposure::PreparedTailscaleExposure>,
         worker_clock: std::sync::Arc<dyn router_clock::RuntimeClock>,
-        message_roots: Option<MessageRoots>,
+        message_roots: Option<HostMessageStartup>,
     ) -> io::Result<Self> {
         let mut owner_human_id = inputs.owner_human_id.clone();
         let service_id = load_service_identity(&inputs.directory)?;
@@ -462,7 +462,7 @@ impl CollaborationRuntime {
             },
         )?;
         let (message_system, message_tools) = match message_roots {
-            Some(roots) => {
+            Some(startup) => {
                 let custody_events = Arc::new(HostCustodyEvents);
                 let recipient_directory = Arc::new(CombinedRecipientSessionDirectory::new(
                     RecipientSessionSources {
@@ -500,12 +500,9 @@ impl CollaborationRuntime {
                     }),
                     None => events,
                 };
-                let system = MessageSystem::start(
-                    roots,
-                    worker_clock.clone(),
-                    recipient_directory.clone(),
-                    events,
-                );
+                let system = startup
+                    .start(worker_clock.clone(), recipient_directory.clone(), events)
+                    .await;
                 let front = system.front();
                 let admission = super::message_startup::v0_message_admission(
                     front.clone(),

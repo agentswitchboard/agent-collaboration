@@ -4,6 +4,7 @@ use std::{future::Future, pin::Pin, time::Duration};
 
 use central_link_client::EnrollmentEnd;
 use central_link_protocol::MachineTokenText;
+pub use central_link_protocol::approval_rpc::ApprovalServiceTarget;
 
 use crate::link_policy::{LeaseVersion, LeaseWindow};
 
@@ -30,6 +31,10 @@ pub type LeaseFuture<'source, Binding> =
 /// binding (organization, machine and enrollment). That owner completes any
 /// already-started sign-in rotation even if a socket drops its waiting future.
 pub trait LeaseSource<Binding>: Send + Sync {
+    /// Project the organization from the same binding used to acquire the lease.
+    fn registration_target(&self, binding: &Binding)
+    -> Result<ApprovalServiceTarget, LeaseFailure>;
+
     fn acquire<'source>(
         &'source self,
         binding: &'source Binding,

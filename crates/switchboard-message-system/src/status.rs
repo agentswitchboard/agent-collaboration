@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
 use switchboard_central_link::link_policy::LinkStatus;
 
-use crate::{FrontRefusal, ObservationPhase, State};
+use switchboard_central_link::link_policy::RegistrationFailure;
+use switchboard_machine_enrollment::EnrollmentEnd;
+
+use crate::{FrontRefusal, MessageSystemReason, ObservationPhase, State};
 
 /// Live message-system status returned through the Host's operator interface.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -12,7 +15,11 @@ pub enum MessageSystemStatus {
     EnrollmentEnded,
     EnrollmentUnreadable,
     Connecting,
+    Registering,
+    RegistrationFailed,
+    RunRetired,
     Connected,
+    Fault,
     Stopping,
     Restarting,
     EnrollmentMismatch,
@@ -42,15 +49,57 @@ pub fn message_system_status(state: &State, link: &LinkStatus) -> MessageSystemS
         },
         State::Opening { .. } => Status::Connecting,
         State::Running { .. } => match link {
-            LinkStatus::Welcomed { .. } | LinkStatus::Connected { .. } => Status::Connected,
-            LinkStatus::NotEnrolled
-            | LinkStatus::Connecting
-            | LinkStatus::Fault { .. }
-            | LinkStatus::EnrollmentEnded { .. } => Status::Connecting,
+            LinkStatus::Connected { .. } => Status::Connected,
+            LinkStatus::Welcomed { .. } | LinkStatus::Registering => Status::Registering,
+            LinkStatus::RegistrationFault { .. } => Status::Fault,
+            LinkStatus::RegistrationFailed { .. } => Status::RegistrationFailed,
+            LinkStatus::RunRetired => Status::RunRetired,
+            LinkStatus::Fault { .. } => Status::Fault,
+            LinkStatus::EnrollmentEnded { .. } => Status::EnrollmentEnded,
+            LinkStatus::NotEnrolled | LinkStatus::Connecting => Status::Connecting,
         },
         State::Quiescing(_) => Status::Stopping,
         State::Faulted { .. } => Status::EnrollmentMismatch,
         State::ClosedWithOutstanding { .. } | State::Closed => Status::Stopped,
+    }
+}
+
+/// One atomic status publication and the reason reported by this generation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MessageSystemObservation {
+    pub status: MessageSystemStatus,
+    pub reason: MessageSystemReason,
+}
+
+impl MessageSystemObservation {
+    pub(crate) fn project(state: &State, link: &LinkStatus, ending: Option<EnrollmentEnd>) -> Self {
+        use MessageSystemReason as Reason;
+        use MessageSystemStatus as Status;
+
+        let status = message_system_status(state, link);
+        let reason = match (status, link) {
+            (Status::EnrollmentEnded, _) => {
+                ending.map_or(Reason::EnrollmentEndingPending, Reason::stored_ending)
+            }
+            (Status::Stopping, _)
+                if matches!(
+                    state.front(),
+                    crate::Front::Refusing(FrontRefusal::EnrollmentEnded)
+                ) =>
+            {
+                ending.map_or(Reason::EnrollmentEndingPending, Reason::stored_ending)
+            }
+            (Status::RunRetired, _) => Reason::AnotherRunTookOver,
+            (Status::RegistrationFailed, LinkStatus::RegistrationFailed { reason }) => {
+                Reason::registration(*reason)
+            }
+            (Status::Fault, LinkStatus::RegistrationFault { reason }) => {
+                Reason::registration(RegistrationFailure::Refused(*reason))
+            }
+            (Status::Fault, LinkStatus::Fault { kind }) => Reason::link_fault(*kind),
+            _ => Reason::NoReason,
+        };
+        Self { status, reason }
     }
 }
 

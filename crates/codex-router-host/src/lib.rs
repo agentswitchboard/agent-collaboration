@@ -198,11 +198,15 @@ pub use router_compatibility::probe_router;
 pub use router_executable_observation::{
     RouterExecutableObserver, RouterExecutableRelation, SharedRouterExecutableCheck,
 };
-pub use switchboard_message_system::MessageSystemStatus;
+pub use switchboard_message_system::{
+    MessageSystemObservation, MessageSystemReason, MessageSystemStatus,
+};
 mod backend_publication;
 pub use backend_publication::BackendPublication;
 mod collaboration_runtime;
 pub(crate) use collaboration_runtime::HostCollaborationInputs;
+#[cfg(all(debug_assertions, feature = "runtime-test-support"))]
+pub use collaboration_runtime::HostMessageSystemFixture;
 pub use collaboration_runtime::scratch_sweep::{
     LoggedScratchSweepEvents, SCRATCH_RETRY_DELAY, SCRATCH_UNUSED_RETENTION, ScratchSweepClock,
     ScratchSweepEvents, ScratchSweepFailure, ScratchSweepReport, SystemScratchSweepClock,

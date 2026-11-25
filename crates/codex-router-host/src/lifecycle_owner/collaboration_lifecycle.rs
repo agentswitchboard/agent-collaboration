@@ -9,7 +9,7 @@ use std::{io, path::PathBuf, sync::Arc};
 pub(super) struct CollaborationLifecycle {
     owner_human_id: Option<message_board::HumanId>,
     directory: PathBuf,
-    message_roots: Option<switchboard_message_system::MessageRoots>,
+    message_roots: Option<crate::collaboration_runtime::HostMessageStartup>,
     codex_home: PathBuf,
     peer_registry_directory: Option<PathBuf>,
     backend_socket: PathBuf,
@@ -59,7 +59,12 @@ impl CollaborationLifecycle {
                 .router_root()
                 .zip(router_secret_root)
                 .map(|(root, secrets)| {
-                    switchboard_message_system::MessageRoots::new(root.to_owned(), secrets)
+                    let startup = crate::collaboration_runtime::HostMessageStartup::from(
+                        switchboard_message_system::MessageRoots::new(root.to_owned(), secrets),
+                    );
+                    #[cfg(all(debug_assertions, feature = "runtime-test-support"))]
+                    let startup = startup.with_fixture(config.message_system_fixture());
+                    startup
                 }),
             codex_home: config
                 .collaboration_codex_home()
@@ -206,7 +211,7 @@ impl CollaborationLifecycle {
             .map(CollaborationRuntime::mcp_listen_address)
     }
 
-    pub(super) fn message_system_status(&self) -> Option<crate::MessageSystemStatus> {
+    pub(super) fn message_system_status(&self) -> Option<crate::MessageSystemObservation> {
         self.runtime
             .as_ref()
             .and_then(CollaborationRuntime::message_status)

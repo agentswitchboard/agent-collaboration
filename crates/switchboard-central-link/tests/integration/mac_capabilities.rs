@@ -20,7 +20,7 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
 
 use super::{
-    Fixture,
+    Fixture, acknowledge_registration,
     admitted_commands::{mail_write, send_answer},
     machine, send_welcome, text, tick, welcome,
 };
@@ -89,6 +89,7 @@ async fn ordinary_exchange(
             })),
             "the first outbound data frame after Welcome must advertise an empty call set"
         );
+        acknowledge_registration(socket).await;
     }
     let next = tokio::select! {
         frame = text(socket) => frame,
@@ -155,6 +156,7 @@ async fn expect_refusal(
             if matches!(decode_text(text, FrameDirection::ToCentral),
                 Ok(LinkFrame::Data(DataFrame::MacCapabilities(_)))))
     {
+        acknowledge_registration(socket).await;
         frame = socket.next().await;
     }
     let Some(Ok(Message::Text(frame))) = frame else {

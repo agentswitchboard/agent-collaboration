@@ -12,6 +12,13 @@ use fleet_rpc::{IndependentReplyRpc, Rpc};
 use serde::{Deserialize, Serialize};
 use workspace_ids::{CentralSessionId, MachineId};
 
+impl crate::CentralCall {
+    /// Wrap the run gate's request for the exact organization on this link.
+    pub fn register_run(target: ApprovalServiceTarget, body: RegisterRunRequest) -> Self {
+        Self::RegisterRun(fleet_rpc::Envelope { target, body })
+    }
+}
+
 /// Central's approvals service for one organization.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

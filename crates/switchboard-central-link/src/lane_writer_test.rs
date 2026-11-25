@@ -238,7 +238,7 @@ pub(crate) struct BufferedFixture {
     pub(crate) remaining: Arc<AtomicUsize>,
     pub(crate) crossed: Arc<AtomicUsize>,
     pub(crate) write_polls: Arc<AtomicUsize>,
-    fail: Arc<AtomicBool>,
+    pub(crate) fail: Arc<AtomicBool>,
 }
 
 impl BufferedFixture {

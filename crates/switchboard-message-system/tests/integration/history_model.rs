@@ -179,7 +179,7 @@ impl Model {
                 return;
             }
             Metadata::Empty => Some(FrontRefusal::NotEnrolled),
-            Metadata::Ended => Some(FrontRefusal::EnrollmentEnded),
+            Metadata::Ended { .. } => Some(FrontRefusal::EnrollmentEnded),
             Metadata::Active(active) => {
                 if let Some(pinned) = &self.pinned
                     && *pinned != active.pair

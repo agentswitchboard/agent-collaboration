@@ -15,8 +15,8 @@ use thiserror::Error;
 
 use crate::CliContext;
 use codex_router_host::{
-    HostPortOverrides, MessageSystemStatus, OperatorFrame, parse_loopback_mcp_bind,
-    resolve_host_ports,
+    HostPortOverrides, MessageSystemReason, MessageSystemStatus, OperatorFrame,
+    parse_loopback_mcp_bind, resolve_host_ports,
 };
 use operator_client::OperatorClientError;
 
@@ -40,7 +40,7 @@ const UPDATE_REQUEST_DEADLINE: Duration = Duration::from_secs(17 * 60);
 
 pub(crate) async fn read_message_system_status(
     router_root: &Path,
-) -> Result<Option<MessageSystemStatus>, OperatorClientError> {
+) -> Result<Option<(MessageSystemStatus, Option<MessageSystemReason>)>, OperatorClientError> {
     let paths = HostCoordinationPaths::for_router_root(router_root);
     let frames = operator_client::send_operator_request_streaming(
         paths.operator_socket(),
@@ -52,7 +52,10 @@ pub(crate) async fn read_message_system_status(
     let Some(OperatorFrame::Terminal(reply)) = frames.last() else {
         return Err(OperatorClientError::MissingTerminal);
     };
-    Ok(reply.snapshot().message_system_status())
+    let snapshot = reply.snapshot();
+    Ok(snapshot
+        .message_system_status()
+        .map(|status| (status, snapshot.message_system_reason())))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Subcommand)]

@@ -4,9 +4,9 @@ use std::{
 
 use codex_router_host::{
     AppServerCondition, ExecutableRelation, HostCoordinationPaths, HostPhase, HostSnapshot,
-    HostSnapshotDimensions, HostTerminalResponse, MessageSystemStatus, OperatorFrame,
-    OperatorRequest, RecoveryBudget, RemoteControlCondition, RouterCondition,
-    RouterExecutableRelation, TerminalClassification, decode_operator_request,
+    HostSnapshotDimensions, HostTerminalResponse, MessageSystemObservation, MessageSystemReason,
+    MessageSystemStatus, OperatorFrame, OperatorRequest, RecoveryBudget, RemoteControlCondition,
+    RouterCondition, RouterExecutableRelation, TerminalClassification, decode_operator_request,
     encode_operator_frame,
 };
 use sqlx::{
@@ -283,18 +283,31 @@ async fn compiled_enrollment_status_reads_the_host_reply_and_keeps_stored_facts(
         ),
         (Status::Stopped, "link stopped"),
     ] {
-        let output = compiled_status_with_host_reply(home.path(), &host, Some(status))
+        let output = compiled_status_with_host_reply(home.path(), &host, Some(status), None)
             .await
             .expect("read live status on the Host socket");
         assert_eq!(
             stdout(&output),
             format!(
-                "{line}\nThis Mac is enrolled.\nMachine: {machine_id}\nOrganization: {ORGANIZATION}\nSign-in: {SIGN_IN}\n"
+                "{line} (reason not reported)\nThis Mac is enrolled.\nMachine: {machine_id}\nOrganization: {ORGANIZATION}\nSign-in: {SIGN_IN}\n"
             )
         );
     }
 
-    let output = compiled_status_with_host_reply(home.path(), &host, None)
+    let output = compiled_status_with_host_reply(
+        home.path(),
+        &host,
+        Some(Status::RegistrationFailed),
+        Some(MessageSystemReason::AuthorityRevoked),
+    )
+    .await
+    .expect("read a typed registration reason");
+    assert!(
+        stdout(&output)
+            .starts_with("registration refused: central reports the link authority was revoked\n")
+    );
+
+    let output = compiled_status_with_host_reply(home.path(), &host, None, None)
         .await
         .expect("read a Host reply without message status");
     assert_eq!(
@@ -310,6 +323,7 @@ async fn compiled_status_with_host_reply(
     home: &Path,
     host: &UnixListener,
     status: Option<MessageSystemStatus>,
+    reason: Option<MessageSystemReason>,
 ) -> Result<Output, Box<dyn std::error::Error>> {
     let snapshot = HostSnapshot::new(HostSnapshotDimensions {
         phase: HostPhase::Steady,
@@ -323,6 +337,11 @@ async fn compiled_status_with_host_reply(
         last_lifecycle_outcome: None,
     })
     .with_message_system_status(status);
+    let snapshot = if let Some((status, reason)) = status.zip(reason) {
+        snapshot.with_message_system_observation(Some(MessageSystemObservation { status, reason }))
+    } else {
+        snapshot
+    };
     let reply = OperatorFrame::terminal(HostTerminalResponse::new(
         OperatorRequest::Status,
         TerminalClassification::Unavailable,

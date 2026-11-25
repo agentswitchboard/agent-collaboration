@@ -74,7 +74,7 @@ async fn replayed_bad_address_stays_parked_until_the_address_changes() {
     welcome(&mut socket).await;
     fixture
         .status
-        .wait_for(|status| matches!(status, LinkStatus::Welcomed { .. }))
+        .wait_for(|status| matches!(status, LinkStatus::Connected { .. }))
         .await
         .unwrap();
     fixture.stop().await;
