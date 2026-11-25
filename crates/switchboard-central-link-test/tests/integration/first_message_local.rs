@@ -240,12 +240,18 @@ async fn first_message_local_two_macs_acknowledging_while_waiting_records_seen_w
     first_message_local(FirstMessageCase::ReadBeforeNotice).await;
 }
 
+#[tokio::test]
+async fn first_message_local_two_macs_prompt_required_retries_at_the_next_notice_mark() {
+    first_message_local(FirstMessageCase::PromptRequiredThenWrite).await;
+}
+
 #[derive(Clone, Copy)]
 enum FirstMessageCase {
     NoticeThenRead,
     RestartDuringNotice,
     ReadAfterDeliveryWindow,
     ReadBeforeNotice,
+    PromptRequiredThenWrite,
 }
 
 async fn first_message_local(journey: FirstMessageCase) {
@@ -281,6 +287,7 @@ async fn first_message_local(journey: FirstMessageCase) {
     let takes = Arc::new(AtomicUsize::new(0));
     let notice_result = match journey {
         FirstMessageCase::RestartDuringNotice => NoticeResultScript::HoldAfterWriterTake,
+        FirstMessageCase::PromptRequiredThenWrite => NoticeResultScript::PromptRequiredThenWrite,
         _ => NoticeResultScript::ReturnWriterTake,
     };
     let port = Arc::new(ManagedPromptPort {
@@ -426,20 +433,44 @@ async fn first_message_local(journey: FirstMessageCase) {
     assert_eq!(notice.count(), 1);
     assert_eq!(notice.text(), NOTICE_TEXT);
 
+    let (seen_mark, expected_takes) =
+        if matches!(notice_result, NoticeResultScript::PromptRequiredThenWrite) {
+            observe_handoff(&mut inbox, message_id, |state| {
+                !matches!(state, DirectHandoff::Writing { .. })
+            })
+            .await;
+            assert_eq!(
+                handoff_row(&mut inbox, message_id).await.unwrap().handoff,
+                DirectHandoff::Waiting
+            );
+            assert_sender_words(
+                &mac_a.front,
+                &sender,
+                &request_id,
+                message_id,
+                DELIVERED_WORDS,
+            )
+            .await;
+            let next_mark = next_mark_after(clock.now());
+            let next_wake = clock.wall_deadline(next_mark);
+            clock.not_due_check_now(next_wake).await;
+            assert!(written.try_recv().is_err());
+            move_clock(&clock, next_wake);
+            let retry = written.recv().await.unwrap();
+            assert_eq!(retry.target(), notice.target());
+            assert_eq!(retry.text(), notice.text());
+            assert_ne!(retry.attempt(), notice.attempt());
+            (next_mark, 2)
+        } else {
+            (notice_mark, 1)
+        };
     let expected_acknowledgment = match notice_result {
-        NoticeResultScript::ReturnWriterTake => {
+        NoticeResultScript::ReturnWriterTake | NoticeResultScript::PromptRequiredThenWrite => {
             observe_handoff(&mut inbox, message_id, |state| {
                 matches!(state, DirectHandoff::Seen { .. })
             })
             .await;
-            run_receipt_turn(
-                &clock,
-                anchor,
-                &recipient_mac,
-                notice_mark,
-                &mut mac_b.events,
-            )
-            .await;
+            run_receipt_turn(&clock, anchor, &recipient_mac, seen_mark, &mut mac_b.events).await;
             assert_sender_words(&mac_a.front, &sender, &request_id, message_id, SEEN_WORDS).await;
             MessageInboxAcknowledgment {
                 changed: 0,
@@ -533,7 +564,7 @@ async fn first_message_local(journey: FirstMessageCase) {
         .await;
         assert_sender_words(&mac_a.front, &sender, &request_id, message_id, SEEN_WORDS).await;
     }
-    assert_eq!(takes.load(Ordering::SeqCst), 1);
+    assert_eq!(takes.load(Ordering::SeqCst), expected_takes);
     assert!(written.try_recv().is_err());
 
     assert_eq!(mac_a.system.close().await, CloseReport::Closed);

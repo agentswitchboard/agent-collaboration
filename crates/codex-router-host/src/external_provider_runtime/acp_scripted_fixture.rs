@@ -154,6 +154,31 @@ impl AcpFixtureScript {
         self
     }
 
+    #[cfg(test)]
+    pub(crate) fn wait_for_socket_signal(mut self, path: &std::path::Path) -> Self {
+        self.steps
+            .push(json!({"action": "wait_for_socket_signal", "socketPath": path}));
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn expect_recorded_request(
+        mut self,
+        request_name: &str,
+        method: &str,
+        params: Value,
+        path: &std::path::Path,
+    ) -> Self {
+        self.steps.push(json!({
+            "action": "expect_request",
+            "requestName": request_name,
+            "method": method,
+            "params": params,
+            "recordPath": path,
+        }));
+        self
+    }
+
     pub fn launch(self) -> ExternalProviderLaunch {
         let script = Value::Array(self.steps).to_string();
         ExternalProviderLaunch {

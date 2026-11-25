@@ -1,4 +1,7 @@
 use super::*;
+
+#[path = "notice_started_turn_test.rs"]
+mod started_turn;
 use crate::ManagedAcpNoticeAdapter;
 use router_clock::{ManualClock, RuntimeClock};
 use switchboard_message_custody::{
@@ -16,6 +19,7 @@ enum NoticeScript {
     DirectWithLoggedOutReport,
     DirectThenSteer,
     DirectThenProviderDeclinesSteer,
+    DirectThenProviderStartsTurn,
     DirectWithSteeringAvailable,
 }
 
@@ -92,7 +96,7 @@ async fn managed_notice_fixture(
                 "protocolVersion": 1,
                 "agentCapabilities": {"loadSession": true, "mcpCapabilities": {"http": true}},
                 "agentInfo": {"name": "managed-notice-fixture", "version": "1"},
-                "_meta": {"steering": {"supported": matches!(notices, NoticeScript::DirectThenSteer | NoticeScript::DirectThenProviderDeclinesSteer | NoticeScript::DirectWithSteeringAvailable)}}
+                "_meta": {"steering": {"supported": matches!(notices, NoticeScript::DirectThenSteer | NoticeScript::DirectThenProviderDeclinesSteer | NoticeScript::DirectThenProviderStartsTurn | NoticeScript::DirectWithSteeringAvailable)}}
             }),
         )
         .expect_request(
@@ -103,10 +107,21 @@ async fn managed_notice_fixture(
         .respond("load", json!({}))
         .record_diagnostics(receipt.clone());
     let script = if !matches!(notices, NoticeScript::NoWrite) {
-        let script = script.expect_request("notice", "session/prompt", json!({
-            "sessionId": "saved-notice-session",
-            "prompt": [{"type": "text", "text": "You have 1 new message. Read them with message_inbox."}]
-        })).write_marker(&receipt.with_extension("prompt"));
+        let foreground = if matches!(notices, NoticeScript::DirectThenProviderStartsTurn) {
+            "Hold the foreground turn"
+        } else {
+            "You have 1 new message. Read them with message_inbox."
+        };
+        let script = script
+            .expect_request(
+                "notice",
+                "session/prompt",
+                json!({
+                    "sessionId": "saved-notice-session",
+                    "prompt": [{"type": "text", "text": foreground}]
+                }),
+            )
+            .write_marker(&receipt.with_extension("prompt"));
         if matches!(notices, NoticeScript::DirectThenProviderDeclinesSteer) {
             script
                 .expect_request(
@@ -117,15 +132,32 @@ async fn managed_notice_fixture(
                 .write_marker(&receipt.with_extension("steer"))
                 .respond("steer", json!({"outcome":"promptRequired"}))
                 .respond("notice", json!({"stopReason": "end_turn"}))
-                // A fallback build completes this request, leaving explicit evidence
-                // of the prohibited second prompt instead of hanging on it.
+                // A fallback build also completes this request. The test checks
+                // its marker before advancing the clock and offering the retry.
                 .expect_request(
-                    "fallback",
+                    "retry",
                     "session/prompt",
-                    json!({"sessionId": "saved-notice-session"}),
+                    json!({
+                        "sessionId": "saved-notice-session",
+                        "prompt": [{"type": "text", "text": "You have 1 new message. Read them with message_inbox."}]
+                    }),
                 )
-                .write_marker(&receipt.with_extension("fallback"))
-                .respond("fallback", json!({"stopReason": "end_turn"}))
+                .write_marker(&receipt.with_extension("retry"))
+                .respond("retry", json!({"stopReason": "end_turn"}))
+        } else if matches!(notices, NoticeScript::DirectThenProviderStartsTurn) {
+            script
+                .expect_recorded_request(
+                    "steer",
+                    "_session/steering",
+                    json!({
+                        "sessionId": "saved-notice-session",
+                        "prompt": [{"type": "text", "text": "You have 1 new message. Read them with message_inbox."}]
+                    }),
+                    &receipt.with_extension("traffic"),
+                )
+                .respond("notice", json!({"stopReason": "end_turn"}))
+                .wait_for_socket_signal(&receipt.with_extension("sock"))
+                .respond("steer", json!({"outcome": "startedNewTurn"}))
         } else {
             let script = if matches!(notices, NoticeScript::DirectThenSteer) {
                 script.expect_request("steer", "_session/steering", json!({
@@ -183,7 +215,7 @@ async fn managed_notice_fixture(
 }
 
 #[tokio::test]
-async fn managed_notice_provider_prompt_required_cannot_start_a_replacement_turn_or_report_seen() {
+async fn managed_notice_provider_prompt_required_leaves_direct_delivery_for_the_next_offer() {
     use provider_session_machines::session_turn_machine::SessionTurn;
 
     let clock = Arc::new(ManualClock::new(chrono::DateTime::UNIX_EPOCH));
@@ -207,19 +239,52 @@ async fn managed_notice_provider_prompt_required_cannot_start_a_replacement_turn
     let exact = adapter.ready(&recipient).await.unwrap();
     assert_eq!(
         exact
-            .offer(second_notice(&recipient, &clock, authority))
+            .offer(second_notice(&recipient, &clock, authority.clone()))
             .await,
         NoticeWriteOutcome::SteerNotInjected
     );
     let owner = rig.supervisor.session_owner_for(&rig.target).unwrap();
-    owner
-        .snapshots()
+    let mut snapshots = owner.snapshots();
+    snapshots
         .wait_for(|snapshot| snapshot.turn == SessionTurn::Idle)
         .await
         .unwrap();
     assert!(rig.receipt.with_extension("steer").is_file());
-    assert!(!rig.receipt.with_extension("fallback").exists());
+    assert!(!rig.receipt.with_extension("retry").exists());
+
+    clock.advance(std::time::Duration::from_secs(60)).unwrap();
+    let retry_attempt = NoticeAttemptId::mint(clock.utc_now());
+    let retry = ClaimedNotice::new(
+        recipient.clone(),
+        retry_attempt,
+        vec!["019f0000-0000-7000-8000-000000000018".parse().unwrap()],
+        clock
+            .monotonic_now()
+            .after(std::time::Duration::from_secs(1)),
+        clock.utc_now() + chrono::TimeDelta::seconds(1),
+        authority,
+    )
+    .unwrap();
+    let writer = adapter.ready(&recipient).await.unwrap();
+    assert_eq!(
+        writer.offer(retry).await,
+        NoticeWriteOutcome::Written {
+            taken_at: clock.utc_now()
+        }
+    );
+    let retry_input = session_event_model::InputId::new(String::from(retry_attempt)).unwrap();
+    snapshots
+        .wait_for(|snapshot| {
+            snapshot
+                .last_live_turn
+                .as_ref()
+                .is_some_and(|turn| turn.input == retry_input)
+        })
+        .await
+        .unwrap();
+    assert!(rig.receipt.with_extension("retry").is_file());
     rig.supervisor.shutdown().await.unwrap();
+    assert_wire_script_completed(&rig, true);
 }
 
 fn prepare_notice(

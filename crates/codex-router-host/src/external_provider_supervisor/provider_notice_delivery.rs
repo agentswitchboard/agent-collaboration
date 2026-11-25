@@ -12,7 +12,8 @@ use crate::{
 };
 use collaboration_protocol::{OperationId, SessionRef};
 use provider_session_machines::{
-    session_lifecycle_machine::SessionLifecycle, session_owner::SessionSnapshot,
+    session_lifecycle_machine::SessionLifecycle,
+    session_owner::{RevokeReason, SessionSnapshot},
     session_turn_machine::SessionTurn,
 };
 use std::sync::Arc;
@@ -157,11 +158,20 @@ impl ManagedNoticeRun for OwnedManagedNotice {
                 .submit_owned_notice(request, self.run, take.clone())
                 .await;
             if let Some(taken_at) = take.taken_at() {
-                return match (self.run.placement, &accepted) {
-                    (NoticePlacement::Direct, _) | (NoticePlacement::Steer(_), Ok(InputAcceptance::Steered { .. })) => NoticeWriteOutcome::Written { taken_at },
-                    (NoticePlacement::Steer(_), Ok(InputAcceptance::Unsent { reason: Some(provider_session_machines::session_owner::RevokeReason::ProviderSteerRefused) })) => NoticeWriteOutcome::SteerNotInjected,
-                    (NoticePlacement::Steer(_), Ok(InputAcceptance::ProviderStarted)) => NoticeWriteOutcome::NotKnown(NoticeUncertainty::UnexpectedSteerOutcome),
-                    (NoticePlacement::Steer(_), _) => NoticeWriteOutcome::NotKnown(NoticeUncertainty::WriterOutcomeLost),
+                if matches!(self.run.placement, NoticePlacement::Direct) {
+                    return NoticeWriteOutcome::Written { taken_at };
+                }
+                return match accepted {
+                    Ok(InputAcceptance::Steered { .. } | InputAcceptance::ProviderStarted) => {
+                        NoticeWriteOutcome::Written { taken_at }
+                    }
+                    Ok(InputAcceptance::Unsent {
+                        reason: Some(RevokeReason::ProviderSteerNeedsPrompt),
+                    }) => NoticeWriteOutcome::SteerNotInjected,
+                    Ok(InputAcceptance::Unsent {
+                        reason: Some(RevokeReason::ProviderSteerRefused),
+                    }) => NoticeWriteOutcome::SteerRefused,
+                    _ => NoticeWriteOutcome::NotKnown(NoticeUncertainty::WriterOutcomeLost),
                 };
             }
             match accepted {

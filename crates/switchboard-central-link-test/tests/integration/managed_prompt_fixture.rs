@@ -18,6 +18,8 @@ pub(super) enum NoticeResultScript {
     ReturnWriterTake,
     #[cfg(debug_assertions)]
     HoldAfterWriterTake,
+    #[cfg(debug_assertions)]
+    PromptRequiredThenWrite,
 }
 
 #[derive(Clone)]
@@ -48,6 +50,9 @@ impl ManagedNoticePort for ManagedPromptPort {
 impl ManagedNoticeRun for ManagedPromptPort {
     fn offer(self: Box<Self>, claimed: ClaimedNotice) -> NoticeFuture<'static, NoticeWriteOutcome> {
         Box::pin(async move {
+            #[cfg(debug_assertions)]
+            let offer_index = self.calls.fetch_add(1, Ordering::SeqCst);
+            #[cfg(not(debug_assertions))]
             self.calls.fetch_add(1, Ordering::SeqCst);
             let taken_at = self.clock.utc_now();
             assert!(self.offers.send(claimed).is_ok());
@@ -55,6 +60,14 @@ impl ManagedNoticeRun for ManagedPromptPort {
                 NoticeResultScript::ReturnWriterTake => NoticeWriteOutcome::Written { taken_at },
                 #[cfg(debug_assertions)]
                 NoticeResultScript::HoldAfterWriterTake => std::future::pending().await,
+                #[cfg(debug_assertions)]
+                NoticeResultScript::PromptRequiredThenWrite if offer_index == 0 => {
+                    NoticeWriteOutcome::SteerNotInjected
+                }
+                #[cfg(debug_assertions)]
+                NoticeResultScript::PromptRequiredThenWrite => {
+                    NoticeWriteOutcome::Written { taken_at }
+                }
             }
         })
     }

@@ -879,10 +879,7 @@ impl ResponseKind {
                             authorization,
                             replacement_turn: TurnId(Uuid::now_v7()),
                         },
-                        SteerIdlePolicy::Refuse => DispatchResult::SteerFinished {
-                            authorization,
-                            outcome: WireOutcome::Refused,
-                        },
+                        SteerIdlePolicy::Refuse => DispatchResult::SteerNeedsPrompt(authorization),
                     },
                     Some("injected") => DispatchResult::SteerFinished {
                         authorization,

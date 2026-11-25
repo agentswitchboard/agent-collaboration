@@ -53,8 +53,10 @@ pub enum NoticeWriteOutcome {
     Written {
         taken_at: Timestamp,
     },
-    /// The provider replied that the selected turn did not take the steer.
+    /// The provider requires a new prompt and did not accept the steer.
     SteerNotInjected,
+    /// The provider explicitly refused the steer.
+    SteerRefused,
     DefinitelyNotWritten(NoticePreTakeRefusal),
     NotKnown(NoticeUncertainty),
 }
@@ -71,7 +73,6 @@ pub enum NoticePreTakeRefusal {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NoticeUncertainty {
     WriterOutcomeLost,
-    UnexpectedSteerOutcome,
     UnitRetiredBeforeOutcome,
 }
 
@@ -198,11 +199,15 @@ impl StateMachine for DirectHandoffMachine {
                             vec![],
                         )
                     }
-                    NoticeWriteOutcome::DefinitelyNotWritten(_) if now < state.expires_at => {
+                    NoticeWriteOutcome::DefinitelyNotWritten(_)
+                    | NoticeWriteOutcome::SteerNotInjected
+                        if now < state.expires_at =>
+                    {
                         (Waiting, vec![])
                     }
-                    NoticeWriteOutcome::DefinitelyNotWritten(_) => (NotSeen, vec![]),
-                    NoticeWriteOutcome::SteerNotInjected => (NotSeen, vec![]),
+                    NoticeWriteOutcome::DefinitelyNotWritten(_)
+                    | NoticeWriteOutcome::SteerNotInjected
+                    | NoticeWriteOutcome::SteerRefused => (NotSeen, vec![]),
                     NoticeWriteOutcome::NotKnown(_) => (NotKnown, vec![]),
                 }
             }

@@ -58,7 +58,7 @@ fn seen(completed_at: Timestamp) -> DirectHandoff {
     }
 }
 
-fn events(active: NoticeAttemptId, stale: NoticeAttemptId) -> [HandoffEvent; 14] {
+fn events(active: NoticeAttemptId, stale: NoticeAttemptId) -> [HandoffEvent; 17] {
     let before = at(CUTOFF - 1);
     let cutoff = at(CUTOFF);
     let after = at(CUTOFF + 1);
@@ -103,6 +103,21 @@ fn events(active: NoticeAttemptId, stale: NoticeAttemptId) -> [HandoffEvent; 14]
             attempt: active,
             outcome: missed,
             now: cutoff,
+        },
+        HandoffEvent::WriteFinished {
+            attempt: active,
+            outcome: NoticeWriteOutcome::SteerNotInjected,
+            now: before,
+        },
+        HandoffEvent::WriteFinished {
+            attempt: active,
+            outcome: NoticeWriteOutcome::SteerNotInjected,
+            now: cutoff,
+        },
+        HandoffEvent::WriteFinished {
+            attempt: active,
+            outcome: NoticeWriteOutcome::SteerRefused,
+            now: before,
         },
         HandoffEvent::WriteFinished {
             attempt: active,
@@ -260,10 +275,11 @@ impl NoticeHistory {
                     NoticeWriteOutcome::DefinitelyNotWritten(NoticePreTakeRefusal::CannotSteer) => {
                         self.refused = true;
                     }
-                    NoticeWriteOutcome::DefinitelyNotWritten(_) => {
+                    NoticeWriteOutcome::DefinitelyNotWritten(_)
+                    | NoticeWriteOutcome::SteerNotInjected => {
                         self.expired_waiting = now.timestamp_millis() >= CUTOFF;
                     }
-                    NoticeWriteOutcome::SteerNotInjected => {
+                    NoticeWriteOutcome::SteerRefused => {
                         self.expired_waiting = true;
                     }
                     NoticeWriteOutcome::NotKnown(_) => {
