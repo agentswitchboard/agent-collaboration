@@ -13,6 +13,7 @@ use switchboard_message_custody::{
 enum NoticeScript {
     NoWrite,
     Direct,
+    DirectWithLoggedOutReport,
     DirectThenSteer,
     DirectThenProviderDeclinesSteer,
     DirectWithSteeringAvailable,
@@ -73,8 +74,18 @@ async fn managed_notice_fixture(
         .unwrap();
     store.record_target(&operation, &target, 0).await.unwrap();
     store.mark_may_have_dispatched(&operation, 0).await.unwrap();
-    let script = AcpFixtureScript::new()
-        .expect_request("init", "initialize", json!({"protocolVersion": 1}))
+    let script =
+        AcpFixtureScript::new().expect_request("init", "initialize", json!({"protocolVersion": 1}));
+    let script = if matches!(notices, NoticeScript::DirectWithLoggedOutReport) {
+        script.send(json!({
+            "jsonrpc": "2.0",
+            "method": "_auth/status_update",
+            "params": {"authStatus": {"kind": "none", "label": "Signed out"}}
+        }))
+    } else {
+        script
+    };
+    let script = script
         .respond(
             "init",
             json!({
@@ -282,6 +293,41 @@ async fn managed_claude_notice_is_written_on_take_before_the_provider_turn_ends(
     assert_eq!(
         rig.supervisor.owner_session_activity(&rig.target),
         crate::ProviderSessionActivity::Running
+    );
+    finish_notice_turn(&rig).await;
+    rig.supervisor.shutdown().await.unwrap();
+    assert_wire_script_completed(&rig, false);
+}
+
+#[tokio::test]
+async fn idle_managed_claude_gets_notice_with_logged_out_connection_report() {
+    use session_event_model::{ProviderAuthStatus, SessionState};
+
+    let clock = Arc::new(ManualClock::new(chrono::DateTime::UNIX_EPOCH));
+    let rig = managed_notice_fixture(
+        clock.clone(),
+        NoticeScript::DirectWithLoggedOutReport,
+        collaboration_protocol::ProviderKind::ClaudeCode,
+    )
+    .await;
+    let snapshot = rig.supervisor.owner_session_snapshot(&rig.target).unwrap();
+    assert_eq!(snapshot.projection.state, SessionState::Idle);
+    assert_eq!(
+        snapshot.projection.capabilities.unwrap().auth_status,
+        ProviderAuthStatus::LoggedOut
+    );
+    let (adapter, recipient, notice) =
+        prepare_notice(&rig, &clock, Arc::new(NoticeAuthority::new()));
+
+    let writer = adapter
+        .ready(&recipient)
+        .await
+        .expect("an idle session is ready even when its connection reports LoggedOut");
+    assert_eq!(
+        writer.offer(notice).await,
+        NoticeWriteOutcome::Written {
+            taken_at: clock.utc_now()
+        }
     );
     finish_notice_turn(&rig).await;
     rig.supervisor.shutdown().await.unwrap();

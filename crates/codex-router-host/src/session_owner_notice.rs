@@ -23,15 +23,11 @@ pub(crate) enum NoticePlacement {
 }
 
 pub(crate) fn notice_waits_for_session(snapshot: &SessionSnapshot) -> bool {
-    use session_event_model::{ProviderAuthStatus, SessionState};
+    use session_event_model::SessionState;
     matches!(
         snapshot.projection.state,
         SessionState::RequiresAction { .. } | SessionState::AuthenticationRequired
-    ) || snapshot
-        .projection
-        .capabilities
-        .as_ref()
-        .is_some_and(|report| report.auth_status == ProviderAuthStatus::LoggedOut)
+    )
 }
 
 #[derive(Clone)]
