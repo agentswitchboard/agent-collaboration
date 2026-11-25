@@ -70,7 +70,7 @@ use collaboration_central_conformance::{
         ApprovalLinkFixture, DeadlineDelivery, ROUTER_RUN, approval_deadline_delivery,
         receive_frame, registered_stop_and_replay,
     },
-    signin_fixtures::{self as signed, approval_routes::check_signed_holder_delivery},
+    signin_fixtures::{self as signed, approval_routes::check_socket_holder_delivery},
 };
 use fleet_contracts::MachineTokenDecision;
 use reqwest_websocket::{RequestBuilderExt, WebSocket};
@@ -351,9 +351,15 @@ use collaboration_central_conformance::approval_link_scenarios::{
 };
 
 #[tokio::test]
-async fn workerd_signed_person_decision_delivers_ending_to_holder() -> Result<()> {
+async fn workerd_socket_person_decision_delivers_one_ending_to_the_registered_holder() -> Result<()>
+{
     let fixture = Fixture::with_production_dispatcher().await?;
-    let observed = check_signed_holder_delivery(&fixture, async |path, body, headers| {
+    let endpoint = signed::approval_socket::PersonApprovalEndpoint {
+        client: &fixture.client,
+        origin: fixture.host.public_origin(),
+        now_seconds: fixture.now_seconds(),
+    };
+    let observed = check_socket_holder_delivery(&fixture, endpoint, async |path, body, headers| {
         let mut request = fixture
             .client
             .post(format!("{}{path}", fixture.host.signin_origin()))
