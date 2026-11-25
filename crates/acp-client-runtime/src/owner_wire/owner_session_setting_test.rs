@@ -21,7 +21,7 @@ impl ReservedReply<WorkReply> for CapturedWorkReply {
     }
 }
 
-struct ConnectionCatalogueBehavior;
+pub(crate) struct ConnectionCatalogueBehavior;
 
 impl crate::ProviderBehavior for ConnectionCatalogueBehavior {
     fn initialization_authentication(&self) -> ProviderInitializationAuthentication {

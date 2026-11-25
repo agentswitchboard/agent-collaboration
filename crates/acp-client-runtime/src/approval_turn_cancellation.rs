@@ -19,6 +19,10 @@ use switchboard_harness_contracts::{
 };
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
+#[cfg(test)]
+#[path = "approval_turn_cancellation_test.rs"]
+mod tests;
+
 #[derive(Default)]
 pub(crate) struct PermissionResponseBarrier {
     pending: Mutex<BTreeMap<PendingTurnResponse, usize>>,
@@ -155,6 +159,14 @@ pub struct OwnerApprovalLease<P: InteractionPort> {
 }
 
 impl<P: InteractionPort> OwnerApprovalBindings<P> {
+    #[cfg(all(debug_assertions, feature = "test-observation"))]
+    pub fn held_turn_for_test(
+        &self,
+        provider_session_id: &str,
+    ) -> Option<provider_session_machines::session_turn_machine::TurnId> {
+        self.active.lock().ok()?.get(provider_session_id)?.turn
+    }
+
     pub(crate) fn new(
         active: Arc<Mutex<HashMap<String, ActiveApprovalContext<P>>>>,
         interaction_port: Arc<P>,

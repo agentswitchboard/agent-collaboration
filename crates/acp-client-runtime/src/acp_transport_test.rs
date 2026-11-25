@@ -144,6 +144,31 @@ fn offer_record_distinguishes_scope_conflict_and_existing_sequence() {
 }
 
 #[test]
+fn a_stopped_writer_leaves_the_offer_until_it_is_taken_back() {
+    let (transport, writer) = new_transport(1);
+    let run = route(1);
+    transport.open_route(run, "session".into());
+    transport.activate_route(run);
+    let key = authorization(run, AuthorizationTarget::Session);
+    drop(writer);
+    transport
+        .offer_work(key.clone(), None, "never written")
+        .expect("offer was recorded");
+
+    let outcome = transport.hand_over_work(&key, || panic!("no writer permit for the question"));
+
+    assert_eq!(outcome, Err(HandOverRefusal::WriterStopped));
+    assert_eq!(
+        transport.revoke(&key),
+        Ok(DispatchResult::Revoked(key.clone()))
+    );
+    assert_eq!(
+        transport.hand_over_work(&key, || panic!("taken-back work has no question")),
+        Ok(DispatchResult::DefinitelyUnsent(key)),
+    );
+}
+
+#[test]
 fn held_steer_cannot_enqueue_on_a_successor_turn_on_the_same_run() {
     let (transport, mut writer) = new_transport(1);
     let run = route(1);

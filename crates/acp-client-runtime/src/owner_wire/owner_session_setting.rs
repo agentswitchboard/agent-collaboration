@@ -30,7 +30,7 @@ use uuid::Uuid;
 
 #[cfg(test)]
 #[path = "owner_session_setting_test.rs"]
-mod tests;
+pub(crate) mod tests;
 
 pub struct RestoreSettingPlan {
     pub mode: RestoredMode,

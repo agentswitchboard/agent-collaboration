@@ -2,8 +2,20 @@ use super::*;
 
 #[path = "notice_admission_test.rs"]
 mod admission;
+#[cfg(debug_assertions)]
+#[path = "notice_handover_fence_test.rs"]
+mod handover_fence;
+#[cfg(debug_assertions)]
+#[path = "setting_work_interest_test.rs"]
+mod setting_work_interest;
 #[path = "notice_started_turn_test.rs"]
 mod started_turn;
+#[cfg(debug_assertions)]
+#[path = "steer_work_receipt_test.rs"]
+mod steer_work_receipt;
+#[cfg(debug_assertions)]
+#[path = "work_offer_admission_test.rs"]
+mod work_offer_admission;
 use crate::ManagedAcpNoticeAdapter;
 use router_clock::{ManualClock, RuntimeClock};
 use switchboard_message_custody::{
@@ -20,6 +32,10 @@ const HUMAN_TEXT: &str = "human prompt";
 #[derive(Clone, Copy)]
 enum NoticeScript {
     NoWrite,
+    SettingWork,
+    HoldCancelTerminal,
+    #[cfg(debug_assertions)]
+    OrdinarySteer(steer_work_receipt::SteerPeerAction),
     Direct,
     DirectWithLoggedOutReport,
     DirectThenSteer,
@@ -96,6 +112,29 @@ async fn managed_notice_fixture(
     } else {
         script
     };
+    let setting_catalogue = |value: &str| {
+        json!({"configOptions": [{
+            "id": "model", "name": "Model", "category": "model", "type": "select",
+            "currentValue": value,
+            "options": [{"value":"old","name":"Old"},{"value":"new","name":"New"}]
+        }]})
+    };
+    let loaded = if matches!(notices, NoticeScript::SettingWork) {
+        setting_catalogue("old")
+    } else {
+        json!({})
+    };
+    let steering = matches!(
+        notices,
+        NoticeScript::DirectThenSteer
+            | NoticeScript::HumanThenNoticeSteer
+            | NoticeScript::HumanWithQueuedPrompt
+            | NoticeScript::DirectThenProviderDeclinesSteer
+            | NoticeScript::DirectThenProviderStartsTurn
+            | NoticeScript::DirectWithSteeringAvailable
+    );
+    #[cfg(debug_assertions)]
+    let steering = steering || matches!(notices, NoticeScript::OrdinarySteer(_));
     let script = script
         .respond(
             "init",
@@ -103,7 +142,7 @@ async fn managed_notice_fixture(
                 "protocolVersion": 1,
                 "agentCapabilities": {"loadSession": true, "mcpCapabilities": {"http": true}},
                 "agentInfo": {"name": "managed-notice-fixture", "version": "1"},
-                "_meta": {"steering": {"supported": matches!(notices, NoticeScript::DirectThenSteer | NoticeScript::HumanThenNoticeSteer | NoticeScript::HumanWithQueuedPrompt | NoticeScript::DirectThenProviderDeclinesSteer | NoticeScript::DirectThenProviderStartsTurn | NoticeScript::DirectWithSteeringAvailable)}}
+                "_meta": {"steering": {"supported": steering}}
             }),
         )
         .expect_request(
@@ -111,9 +150,26 @@ async fn managed_notice_fixture(
             "session/load",
             json!({"sessionId": "saved-notice-session"}),
         )
-        .respond("load", json!({}))
+        .respond("load", loaded)
         .record_diagnostics(receipt.clone());
-    let script = if !matches!(notices, NoticeScript::NoWrite) {
+    #[cfg(debug_assertions)]
+    let (script, notices) = match notices {
+        NoticeScript::OrdinarySteer(action) => (
+            steer_work_receipt::steer_script(script, &receipt, action),
+            NoticeScript::NoWrite,
+        ),
+        _ => (script, notices),
+    };
+    let script = if matches!(notices, NoticeScript::SettingWork) {
+        script
+            .expect_request(
+                "setter",
+                "session/set_config_option",
+                json!({"sessionId": "saved-notice-session", "configId":"model", "value":"new"}),
+            )
+            .write_marker(&receipt.with_extension("setting"))
+            .respond("setter", setting_catalogue("new"))
+    } else if !matches!(notices, NoticeScript::NoWrite) {
         let foreground = match notices {
             NoticeScript::DirectThenProviderStartsTurn => "Hold the foreground turn",
             NoticeScript::HumanThenNoticeSteer | NoticeScript::HumanWithQueuedPrompt => HUMAN_TEXT,
@@ -186,12 +242,16 @@ async fn managed_notice_fixture(
             } else {
                 script
             };
-            let script = script
-                .expect_message(json!({
-                    "jsonrpc": "2.0", "method": "session/cancel",
-                    "params": {"sessionId": "saved-notice-session"}
-                }))
-                .respond("notice", json!({"stopReason": "cancelled"}));
+            let script = script.expect_message(json!({
+                "jsonrpc": "2.0", "method": "session/cancel",
+                "params": {"sessionId": "saved-notice-session"}
+            }));
+            let script = if matches!(notices, NoticeScript::HoldCancelTerminal) {
+                script.wait_for_socket_signal(&receipt.with_extension("cancel.sock"))
+            } else {
+                script
+            };
+            let script = script.respond("notice", json!({"stopReason": "cancelled"}));
             if matches!(notices, NoticeScript::HumanWithQueuedPrompt) {
                 admission::expect_queued_prompt(script, &receipt)
             } else {
@@ -536,6 +596,74 @@ async fn finish_notice_turn(rig: &SteeringSession) {
         .wait_for(|state| state.turn == SessionTurn::Idle)
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn peer_cancel_does_not_end_the_turn_until_its_separate_terminal_fact() {
+    use provider_session_machines::{
+        session_lifecycle_machine::SessionLifecycle, session_owner::CancelDrainReport,
+        session_turn_machine::SessionTurn,
+    };
+    use session_event_model::{StopReason, TurnOutcome};
+
+    let clock = Arc::new(ManualClock::new(chrono::DateTime::UNIX_EPOCH));
+    let rig = managed_notice_fixture(
+        Arc::clone(&clock),
+        NoticeScript::HoldCancelTerminal,
+        collaboration_protocol::ProviderKind::ClaudeCode,
+    )
+    .await;
+    let terminal = tokio::net::UnixListener::bind(rig.receipt.with_extension("cancel.sock"))
+        .expect("peer terminal release socket");
+    let (adapter, recipient, notice) =
+        prepare_notice(&rig, &clock, Arc::new(NoticeAuthority::new()));
+    assert!(matches!(
+        adapter
+            .ready(&recipient)
+            .await
+            .expect("ready")
+            .offer(notice)
+            .await,
+        NoticeWriteOutcome::Written { .. }
+    ));
+    let owner = rig
+        .supervisor
+        .session_owner_for(&rig.target)
+        .expect("active owner");
+    let mut snapshots = owner.snapshots();
+    let running = snapshots.borrow().clone();
+    let (SessionLifecycle::Live { generation }, SessionTurn::Running { turn }) =
+        (running.lifecycle, running.turn)
+    else {
+        panic!("foreground was not running");
+    };
+
+    assert_eq!(
+        owner
+            .cancel_turn(generation, turn)
+            .await
+            .expect("cancel dispatched")
+            .expect("cancel receipt"),
+        CancelDrainReport::Drained
+    );
+    let (peer, _) = terminal.accept().await.expect("peer saw session/cancel");
+    assert_eq!(snapshots.borrow().turn, SessionTurn::Cancelling { turn });
+    assert!(snapshots.borrow().last_live_turn.is_none());
+    drop(peer);
+
+    let ended = snapshots
+        .wait_for(|snapshot| snapshot.turn == SessionTurn::Idle)
+        .await
+        .expect("peer terminal fact reduced");
+    assert!(matches!(
+        ended.last_live_turn.as_ref(),
+        Some(observed)
+            if observed.turn == turn
+                && matches!(observed.outcome, TurnOutcome::Ended { stop_reason: StopReason::Cancelled, .. })
+    ));
+    drop(ended);
+    rig.supervisor.shutdown().await.expect("fixture shutdown");
+    assert_wire_script_completed(&rig, false);
 }
 
 fn assert_wire_script_completed(rig: &SteeringSession, expects_steer: bool) {

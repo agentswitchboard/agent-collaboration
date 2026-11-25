@@ -135,6 +135,8 @@ impl<Frame> TransportState<Frame> {
 pub struct AcpTransport<Frame> {
     state: Mutex<TransportState<Frame>>,
     ordered: mpsc::Sender<OrderedOutput<Frame>>,
+    #[cfg(all(debug_assertions, feature = "test-observation"))]
+    pub(crate) handover_test: crate::handover_test_control::HandoverTestControl,
 }
 
 impl<Frame> AcpTransport<Frame> {
@@ -145,7 +147,15 @@ impl<Frame> AcpTransport<Frame> {
             slot: BTreeMap::new(),
             callbacks: CallbackRouter::default(),
         });
-        (Self { state, ordered }, output)
+        (
+            Self {
+                state,
+                ordered,
+                #[cfg(all(debug_assertions, feature = "test-observation"))]
+                handover_test: Default::default(),
+            },
+            output,
+        )
     }
 
     #[cfg(feature = "test-observation")]
@@ -375,6 +385,11 @@ impl<Frame> AcpTransport<Frame> {
         new_turn: Option<TurnId>,
         frame: Frame,
     ) -> Result<(), TransportOfferRefusal> {
+        #[cfg(all(debug_assertions, feature = "test-observation"))]
+        self.handover_test.reach(
+            crate::handover_test_control::HandoverPausePoint::BeforeOffer,
+            &authorization,
+        );
         let mut state = self.state();
         let run = authorization_run(&authorization);
         let route = state
@@ -463,10 +478,20 @@ impl<Frame> AcpTransport<Frame> {
             mpsc::error::TrySendError::Full(_) => HandOverRefusal::WriterFull,
             mpsc::error::TrySendError::Closed(_) => HandOverRefusal::WriterStopped,
         })?;
+        #[cfg(all(debug_assertions, feature = "test-observation"))]
+        self.handover_test.reach(
+            crate::handover_test_control::HandoverPausePoint::BeforeQuestion,
+            authorization,
+        );
         if !still_requested() {
             state.revoke_slot(authorization);
             return Ok(DispatchResult::DefinitelyUnsent(authorization.clone()));
         }
+        #[cfg(all(debug_assertions, feature = "test-observation"))]
+        self.handover_test.reach(
+            crate::handover_test_control::HandoverPausePoint::BeforePublication,
+            authorization,
+        );
         let Some(AuthorizationSlot::Offered { frame, .. }) = state
             .slot
             .insert(authorization.clone(), AuthorizationSlot::Taken)

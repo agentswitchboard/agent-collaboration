@@ -42,6 +42,8 @@ mod approval_presentation;
 mod approval_turn_cancellation;
 mod callback_router;
 mod external_permission_options;
+#[cfg(all(debug_assertions, feature = "test-observation"))]
+pub mod handover_test_control;
 mod in_folder_allowance;
 mod interaction_port;
 pub mod owner_acp_binding;
@@ -50,6 +52,8 @@ mod owner_restore_updates;
 pub mod owner_session_creation;
 mod owner_session_replay;
 pub mod owner_wire;
+#[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
+pub mod work_call_observation;
 pub use owner_wire::{owner_session_open, owner_session_setting, owner_session_stream};
 mod permission_mode_plan;
 mod provider_acp_error_mapping;

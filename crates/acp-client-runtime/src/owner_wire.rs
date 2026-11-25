@@ -166,6 +166,15 @@ pub(crate) struct OwnerAcpOutput {
 }
 
 impl OwnerAcpWire {
+    #[cfg(all(debug_assertions, feature = "test-observation"))]
+    pub fn pause_work_handover_for_test(
+        &self,
+        point: crate::handover_test_control::HandoverPausePoint,
+        input: session_event_model::InputId,
+    ) -> crate::handover_test_control::HandoverPause {
+        self.transport.handover_test.arm(point, input)
+    }
+
     pub(crate) fn new(
         capacity: NonZeroUsize,
         behavior: Arc<dyn crate::ProviderBehavior>,
@@ -589,7 +598,24 @@ impl OwnerAcpOutput {
                     correlation,
                 } => {
                     let behavior = configuration.behavior.clone();
-                    let request = connection.send_request(message).block_task();
+                    #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
+                    let witness = match &correlation {
+                        ResponseKind::Prompt { authorization, .. }
+                        | ResponseKind::Steer { authorization, .. } => {
+                            Some((authorization, message.method.clone()))
+                        }
+                        ResponseKind::Close { .. } | ResponseKind::Setting(_) => None,
+                    };
+                    let request = connection.send_request(message);
+                    #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
+                    if let Some((authorization, method)) = witness {
+                        crate::work_call_observation::record_frame_id(
+                            authorization,
+                            &method,
+                            request.id(),
+                        );
+                    }
+                    let request = request.block_task();
                     let shutdown = shutdown.clone();
                     let input_ended = input_ended.clone();
                     let connection = connection.clone();

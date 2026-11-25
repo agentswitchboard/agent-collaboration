@@ -17,6 +17,8 @@ pub(crate) enum BindingFixtureWait {
 pub(crate) struct BindingStoreFixture {
     terminal_write: WritePause<OperationId>,
     #[cfg(test)]
+    undo_receipt: WritePause<OperationId>,
+    #[cfg(test)]
     residue_read: WritePause<OperationId>,
     mode_write: WritePause<(SessionRef, String)>,
     waits: Mutex<BTreeMap<(SessionRef, BindingFixtureWait), oneshot::Sender<()>>>,
@@ -62,6 +64,19 @@ impl<Key> WritePause<Key> {
 }
 
 impl BindingStoreFixture {
+    #[cfg(test)]
+    pub(crate) fn pause_undo_receipt(
+        &self,
+        operation: OperationId,
+    ) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+        self.undo_receipt.arm(operation)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn hold_undo_receipt(&self, operation: &OperationId) {
+        self.undo_receipt.hold(|waiting| waiting == operation).await;
+    }
+
     #[cfg(test)]
     pub(crate) fn pause_residue_read(
         &self,

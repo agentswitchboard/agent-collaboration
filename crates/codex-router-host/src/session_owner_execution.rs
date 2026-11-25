@@ -5,6 +5,10 @@ use crate::{
     session_owner_publication::SessionOwnerPublisher,
     session_owner_storage::SessionOwnerStorage,
 };
+#[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
+use acp_client_runtime::work_call_observation::{
+    WorkWitnessEvent, WorkWitnessKind, record_host_work,
+};
 use acp_client_runtime::{
     ExternalProviderRuntimeError,
     acp_transport::TransportRun,
@@ -38,6 +42,10 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
+
+#[cfg(test)]
+#[path = "session_owner_work_refusal_test.rs"]
+mod work_refusal_tests;
 
 pub struct SessionOwnerExecution {
     target: SessionRef,
@@ -345,6 +353,14 @@ impl SessionOwnerExecution {
             }
             AuthorizedWork::Cancel(_) | AuthorizedWork::Setting { .. } => None,
         };
+        #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
+        let witness_kind = if notice.is_some() {
+            Some(WorkWitnessKind::ManagedNotice)
+        } else if matches!(&work, AuthorizedWork::Prompt(_)) {
+            Some(WorkWitnessKind::Prompt)
+        } else {
+            None
+        };
         let setting_operation = match &work {
             AuthorizedWork::Setting { setting, .. } => Some(setting.change.attempt.0),
             _ => None,
@@ -416,23 +432,32 @@ impl SessionOwnerExecution {
         };
         if let Err(refusal) = offered {
             return Ok(Some(settle_refused_offer(
-                self.work_binding.as_mut(),
                 authorization,
                 refusal,
+                |authorization| self.work_binding.take_back(authorization),
             )));
         }
-        if let Some(notice) = notice {
-            return Ok(notice
-                .take(&authorization, self.work_binding.as_ref())
-                .map(OwnerEvent::Dispatch));
+        #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
+        if let Some(work_kind) = witness_kind {
+            record_host_work(&authorization, WorkWitnessEvent::Offered { work_kind });
         }
-        Ok(self
-            .work_binding
-            .hand_over(&authorization, &mut || {
-                setting_operation.is_none_or(|operation| self.calls.settlement_requested(operation))
-            })
-            .ok()
-            .map(OwnerEvent::Dispatch))
+        let handed_over = if let Some(notice) = notice {
+            notice.take(&authorization, self.work_binding.as_ref())
+        } else {
+            self.work_binding
+                .hand_over(&authorization, &mut || {
+                    setting_operation
+                        .is_none_or(|operation| self.calls.settlement_requested(operation))
+                })
+                .ok()
+        };
+        #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
+        if let Some(work_kind) = witness_kind
+            && matches!(&handed_over, Some(DispatchResult::Taken(_)))
+        {
+            record_host_work(&authorization, WorkWitnessEvent::NewlyTaken { work_kind });
+        }
+        Ok(handed_over.map(OwnerEvent::Dispatch))
     }
 
     fn activate_reader(
@@ -679,7 +704,9 @@ impl SessionOwnerPorts for SessionOwnerExecution {
                 Ok(Some(OwnerEvent::Dispatch(result)))
             }
             OwnerEffect::Revoke { authorization, .. } => Ok(Some(OwnerEvent::Dispatch(
-                take_back_work(self.work_binding.as_mut(), authorization),
+                take_back_work(authorization, |authorization| {
+                    self.work_binding.take_back(authorization)
+                }),
             ))),
             OwnerEffect::CallbackMembership(change) => {
                 self.wire.apply_membership(owner.incarnation, change);
@@ -891,22 +918,30 @@ fn definitely_unsent(authorization: DispatchAuthorization) -> OwnerEvent {
 }
 
 fn settle_refused_offer(
-    binding: &mut dyn HarnessBinding,
     authorization: DispatchAuthorization,
     refusal: WorkOfferRefusal,
+    take_back: impl FnOnce(
+        &DispatchAuthorization,
+    ) -> Result<
+        DispatchResult,
+        provider_session_machines::session_owner::TakeBackRefusal,
+    >,
 ) -> OwnerEvent {
     if refusal.valid_moves().contains(&RefusedWorkMove::TakeBack) {
-        OwnerEvent::Dispatch(take_back_work(binding, authorization))
+        OwnerEvent::Dispatch(take_back_work(authorization, take_back))
     } else {
         definitely_unsent(authorization)
     }
 }
 
 fn take_back_work(
-    binding: &mut dyn HarnessBinding,
     authorization: DispatchAuthorization,
+    take_back: impl FnOnce(
+        &DispatchAuthorization,
+    ) -> Result<
+        DispatchResult,
+        provider_session_machines::session_owner::TakeBackRefusal,
+    >,
 ) -> DispatchResult {
-    binding
-        .take_back(&authorization)
-        .unwrap_or(DispatchResult::Revoked(authorization))
+    take_back(&authorization).unwrap_or(DispatchResult::Revoked(authorization))
 }

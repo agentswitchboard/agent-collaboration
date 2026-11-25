@@ -115,6 +115,39 @@ impl std::fmt::Debug for ExternalProviderRuntime {
 }
 
 impl ExternalProviderRuntime {
+    #[cfg(all(debug_assertions, test))]
+    pub(crate) fn pause_work_handover_for_test(
+        &self,
+        point: acp_client_runtime::handover_test_control::HandoverPausePoint,
+        input: session_event_model::InputId,
+    ) -> acp_client_runtime::handover_test_control::HandoverPause {
+        self.client
+            .owner_wire()
+            .pause_work_handover_for_test(point, input)
+    }
+
+    #[cfg(all(debug_assertions, test))]
+    pub(crate) fn held_work_approval_for_test(
+        &self,
+        provider_id: &str,
+    ) -> Option<provider_session_machines::session_turn_machine::TurnId> {
+        self.client
+            .owner_approval_bindings()
+            .held_turn_for_test(provider_id)
+    }
+
+    #[cfg(all(debug_assertions, test))]
+    pub(crate) fn retire_work_route_for_test(
+        &self,
+        authorization: &provider_session_machines::session_owner::DispatchAuthorization,
+    ) {
+        use provider_session_machines::session_owner::TurnMembership;
+        self.client.owner_wire().apply_membership(
+            authorization.incarnation,
+            TurnMembership::Retire(authorization.run),
+        );
+    }
+
     pub(crate) fn owner_clock(&self) -> Arc<dyn router_clock::RuntimeClock> {
         self.client.runtime_clock()
     }

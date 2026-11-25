@@ -3,6 +3,8 @@
 pub use crate::handover::EmptyNoticeClaim;
 use crate::handover::NoticeWriteOutcome;
 use router_clock::{ClockInstant, RuntimeClock};
+#[cfg(debug_assertions)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{future::Future, pin::Pin, sync::Arc};
 pub use switchboard_machine_core_store::NoticeAttemptId;
 use tokio::sync::watch;
@@ -32,16 +34,48 @@ pub trait ManagedNoticePort: Send + Sync {
 
 /// The custody unit holds the close side. A writer holds a read guard through
 /// the synchronous take, so retirement and writer take have one order.
-pub struct NoticeAuthority(watch::Sender<bool>);
+pub struct NoticeAuthority(watch::Sender<bool>, #[cfg(debug_assertions)] AtomicUsize);
 
 impl NoticeAuthority {
     pub fn new() -> Self {
-        Self(watch::Sender::new(true))
+        Self(
+            watch::Sender::new(true),
+            #[cfg(debug_assertions)]
+            AtomicUsize::new(0),
+        )
     }
 
     pub fn close(&self) {
         self.0
             .send_if_modified(|live| std::mem::replace(live, false));
+    }
+
+    #[cfg(debug_assertions)]
+    #[must_use]
+    pub fn read_guard_held_for_test(&self) -> bool {
+        self.1.load(Ordering::Acquire) != 0
+    }
+}
+
+/// Borrows the actual watch guard, so this witness cannot outlive the lock.
+#[cfg(debug_assertions)]
+struct HeldNoticeRead<'guard, 'watch> {
+    _held: &'guard watch::Ref<'watch, bool>,
+    count: &'guard AtomicUsize,
+}
+
+#[cfg(debug_assertions)]
+impl<'guard, 'watch> HeldNoticeRead<'guard, 'watch> {
+    fn new(held: &'guard watch::Ref<'watch, bool>, count: &'guard AtomicUsize) -> Self {
+        count.fetch_add(1, Ordering::AcqRel);
+        Self { _held: held, count }
+    }
+}
+
+#[cfg(debug_assertions)]
+impl Drop for HeldNoticeRead<'_, '_> {
+    fn drop(&mut self) {
+        self.count.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -117,6 +151,8 @@ impl ClaimedNotice {
     /// retains authority. The closure must not perform async work.
     pub fn while_live<T>(&self, take: impl FnOnce() -> T) -> Option<T> {
         let live = self.authority.0.borrow();
+        #[cfg(debug_assertions)]
+        let _guard_witness = HeldNoticeRead::new(&live, &self.authority.1);
         if !*live {
             return None;
         }
