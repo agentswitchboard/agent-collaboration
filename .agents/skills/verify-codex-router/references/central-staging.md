@@ -4,7 +4,24 @@ For central-storage-reset D1, use [D1 central mail](d1-central-mail.md). O5 rese
 
 ## Current entry
 
-The two-Mac cross-machine/staging harness is unavailable until deliverable C. Ordinary `node verification/run.ts` invocation refuses with exit 2 before reading a declaration or launching setup. C will connect the retained non-import behavior cases to the new path. Independent D1 routes keep their declared scope. Staging attachment grants no deployment, login or enrollment authority.
+The staging notice journey uses the existing CLI and session event stream on a declared, already-running signed debug Host. It covers two same-Mac cases through staging Central. The two-Mac run, the legacy staging cases and independent D1 routes retain their own qualification and scope. The legacy entry still refuses with exit 2. No staging access, enrollment, sign-in or deployment authority follows from this recipe.
+
+```sh
+node verification/run.ts --staging-message /absolute/private/staging-message.json
+```
+
+Create the declaration outside the checkout, mode `0600`, with a fresh `evidence` directory under an existing owner-private directory. Supply:
+
+- `journey` as `idle` or `running`, and the 40-character `source` pin. For `running`, optional `answerLines` chooses the bounded no-tools answer length from 4,000 to 12,000. The default is 8,000.
+- `router` and `collaboration`, each with canonical absolute `path`, `sha256`, signing `identifier` and `team`. Use the signed debug artifacts. Pin the approved `root`, loopback `port`, enrolled `machineId` and `hostPid` of that Host.
+- `claudeAdapter` with absolute `path` and `sha256`, and its actual `claudeAdapterPid` under that Host. The driver compares only the actual process's expected local Anthropic route and keeps no process arguments or environment in evidence. Use the normal Host launch path with its already authenticated debug-only account. Stop on a login or permission request.
+- `sender` and `recipient`, distinct exact SessionRef objects of the form `{endpoint: {serviceId, endpointId}, sessionId}`. Use the real current sender session's identity and an isolated idle managed Claude recipient created under this Host with model `haiku` (Haiku 5.5). Use the existing session create and inspect commands, and a fresh test recipient for each run. A failed or uncertain send is not replayed.
+
+The driver checks the debug process, staging enrollment, debug-account health, the sender and recipient identities, and effective Haiku before input. It attaches before the send and requires continuous coverage of the recipient stream. In the idle case the one notice must appear in one new turn. In the running case a real Claude session streams a bounded numbered answer without tools. The driver sends once the product shows the exact turn producing output and still running. The notice must appear within that exact turn. The sender must read `Seen` for the same request. That status records the notice write.
+
+Use a no-tools hold. The public prompt CLI refuses permission requests ([conversation command](../../../../crates/agent-collaboration/src/conversation_commands.rs#L50)), so a permissioned sleep can cancel the fixture before any message is sent. If the no-tools answer finishes before a complete notice window, retain that run as blocked. A fresh fixture can use a larger bounded answer on the same Haiku model.
+
+The adopted expectations come from the messages design's recipient-state table and the notice slice's scope ruling. The idle-only baseline should reach recipient Mac custody and complete the held turn without the notice in it. An unavailable hold, lost stream or wrong target is a setup failure and does not establish the baseline red. Run `running` on the declared old build and on the candidate, and `idle` on the candidate. Retain the private receipts for each. An interrupted test cleans up its own captured hold turn and observer, leaving the Host and fixture sessions to their allocator. The two-Mac positive remains open until an authorized second debug Host and sender are assigned and the journey supports that route.
 
 ## Retained obligations and historical evidence
 
