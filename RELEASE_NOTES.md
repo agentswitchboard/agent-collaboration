@@ -1,5 +1,12 @@
 # Release Notes
 
+## 0.1.159
+
+- An enrolled Router registers its run with Central after each welcome. It reports connected only once Central has acknowledged that registration on the same connection and before its limit; until then the enrollment status reads registering.
+- The Host's enrollment status adds a reason beside its status: registration pending, timed out, refused, the run retired, discovery pending or unavailable, an invalid address, and others. `codex-router` shows it. Against a Host older than 0.1.159 the reason reads "reason not reported".
+- A run keeps its id across reconnects and address changes of one enrollment; a replaced enrollment starts a new run. A reply from an earlier attempt or connection never marks a run registered.
+- Version skew: restart the Host after upgrading to see reasons. No stored data changes.
+
 ## 0.1.158
 
 - Provider `events_observe` calls emit one `snapshotEnd` record when they finish sending kept history. Live events follow it. Existing clients may ignore this unnumbered record or use its cursor to detect the cut and resume. Strict record decoders must accept the new kind.
