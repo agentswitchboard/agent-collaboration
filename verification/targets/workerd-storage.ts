@@ -1,6 +1,6 @@
 // Runs a worker-build bundle under the pinned Miniflare and workerd, with real
 // SQLite-backed Durable Objects persisted in a private temporary directory.
-// Loopback only; outbound fetch is refused unless an exact JWKS fixture is declared.
+// Loopback only. Sign-in keys have a named service entry and a separate outbound trap.
 // Rebuilt minimally from the loader
 // deliverable A removed (ec7ba9dbf^:verification/targets/workerd-central.ts).
 import { existsSync } from "node:fs";
@@ -38,19 +38,11 @@ export interface WorkerdBundle {
 }
 
 const jwksMappingSchema = z
-  .object({ sourceUrl: z.url(), fixtureUrl: z.url() })
+  .object({ fixtureUrl: z.url().optional(), publicTrapJwks: z.json().optional() })
   .strict()
   .superRefine((mapping, context) => {
-    const source = new URL(mapping.sourceUrl);
+    if (mapping.fixtureUrl === undefined) return;
     const fixture = new URL(mapping.fixtureUrl);
-    if (
-      source.protocol !== "https:" ||
-      source.username !== "" ||
-      source.password !== "" ||
-      source.hash !== "" ||
-      source.href !== mapping.sourceUrl
-    )
-      context.addIssue({ code: "custom", message: "JWKS source must be one canonical HTTPS URL" });
     if (
       fixture.protocol !== "http:" ||
       fixture.hostname !== "127.0.0.1" ||
@@ -72,6 +64,41 @@ export interface WorkerdSignInOptions {
   readonly jwks: z.infer<typeof jwksMappingSchema>;
 }
 
+interface JwksRequests {
+  privateGets: number;
+  unexpectedPrivate: number;
+  publicRequests: number;
+}
+
+const signInKeysSource = `
+import { WorkerEntrypoint } from "cloudflare:workers";
+export class SignInJwks extends WorkerEntrypoint {
+  fetch(request) {
+    return this.env.KEY_FIXTURE.fetch(new Request(request, { redirect: "manual" }));
+  }
+}
+export default { fetch() { return new Response(null, { status: 404 }); } };
+`;
+
+function privateKeysFixture(fixtureUrl: string, requests: JwksRequests): V4FetchHandler {
+  return async (request): Promise<Response> => {
+    if (new URL(request.url).pathname !== "/api/auth/jwks") {
+      requests.unexpectedPrivate++;
+      return new Response(null, { status: 404 });
+    }
+    if (request.method !== "GET") {
+      requests.unexpectedPrivate++;
+      return new Response(null, { status: 405, headers: { allow: "GET" } });
+    }
+    requests.privateGets++;
+    const response = await fetch(fixtureUrl, { method: "GET", redirect: "manual" });
+    return new Response(response.body === null ? null : await response.arrayBuffer(), {
+      status: response.status,
+      headers: [...response.headers],
+    });
+  };
+}
+
 function signInClockService(readClock: (organization: string) => number): V4FetchHandler {
   return async (request: Parameters<V4FetchHandler>[0]): Promise<Response> => {
     const prefix = "https://signin-clock.test/clock/";
@@ -88,7 +115,8 @@ function signInClockService(readClock: (organization: string) => number): V4Fetc
 export const workerdSignInPlanSchema = z
   .object({
     textBindings: z.record(z.string(), z.string()),
-    jwksFixtureUrl: z.string(),
+    jwksFixtureUrl: z.string().optional(),
+    publicTrapJwks: z.json().optional(),
   })
   .strict();
 
@@ -96,6 +124,7 @@ export const workerdSignInPlanSchema = z
 export const workerdLauncherTimeSchema = z.number().int().safe().min(0).max(9_223_372_036_854);
 
 export const workerdBridgeCommandSchema = z.union([
+  z.object({ jwksRequests: z.literal(true) }).strict(),
   z.object({ setTimeMs: workerdLauncherTimeSchema }).strict(),
   z.object({ observe: z.uuidv7() }).strict(),
   z.object({ c2Evict: z.uuidv7() }).strict(),
@@ -137,10 +166,23 @@ export const workerdClockAcknowledgementSchema = z.literal(true);
 
 const gatewaySource = `export default { async fetch(request, env) {
   const url = new URL(request.url);
-  const binding = url.pathname.startsWith("/public/") ? env.PUBLIC_CENTRAL
+  const binding = url.pathname.startsWith("/public/") ? env.CENTRAL_LINK
     : url.pathname.startsWith("/private/") ? env.PRIVATE_LINK : undefined;
   if (binding === undefined) return new Response("unknown verification transport", {status: 404});
   url.pathname = url.pathname.slice(url.pathname.indexOf("/", 1));
+  if (request.method === "GET" && request.headers.get("upgrade")?.toLowerCase() === "websocket"
+    && url.pathname.endsWith("/person-link")) {
+    // Replay the request Sign-in builds at CENTRAL_LINK, without transport or client headers.
+    const headers = new Headers({ connection: "Upgrade", upgrade: "websocket" });
+    for (const name of ["authorization", "sec-websocket-key", "sec-websocket-version",
+      "sec-websocket-protocol", "sec-websocket-extensions"]) {
+      const value = request.headers.get(name);
+      if (value !== null) headers.set(name, value);
+    }
+    return binding.fetch(new Request(new URL(url.pathname, "http://central.invalid"), {
+      headers, redirect: "manual",
+    }));
+  }
   return binding.fetch(new Request(url, request));
 } };`;
 
@@ -256,21 +298,92 @@ export class C2EvictionError extends Error {
   }
 }
 
+function signInWorkers(
+  bundle: WorkerdBundle,
+  central: V4WorkerOptions,
+  signIn: WorkerdSignInOptions,
+  jwksRequests: JwksRequests,
+): V4WorkerOptions[] {
+  const mapping = jwksMappingSchema.parse(signIn.jwks);
+  const className = bundle.durableObjects.CENTRAL;
+  if (className === undefined)
+    throw new Error("sign-in topology requires the public CENTRAL namespace");
+  if (Object.keys(signIn.linkBundle.durableObjects).length !== 0)
+    throw new Error("private link must not own a separate Durable Object namespace");
+  const outboundService = (): Response => {
+    jwksRequests.publicRequests++;
+    return Response.json(mapping.publicTrapJwks ?? { keys: [] });
+  };
+  const workers: V4WorkerOptions[] = [
+    {
+      name: "verification-gateway",
+      compatibilityDate: bundle.compatibilityDate,
+      modules: true,
+      script: gatewaySource,
+      serviceBindings: {
+        CENTRAL_LINK: "verification-central",
+        PRIVATE_LINK: "verification-private-link",
+      },
+      outboundService: (): never => {
+        throw new Error("unexpected gateway outbound fetch");
+      },
+    },
+    {
+      ...central,
+      outboundService,
+      ...(mapping.fixtureUrl === undefined
+        ? {}
+        : {
+            serviceBindings: {
+              ...central.serviceBindings,
+              SIGN_IN_KEYS: { name: "verification-sign-in-keys", entrypoint: "SignInJwks" },
+            },
+          }),
+    },
+    {
+      ...workerOptions(signIn.linkBundle),
+      name: "verification-private-link",
+      durableObjects: {
+        CENTRAL: { className, scriptName: "verification-central", useSQLite: true },
+      },
+    },
+  ];
+  if (mapping.fixtureUrl !== undefined)
+    workers.push({
+      name: "verification-sign-in-keys",
+      compatibilityDate: bundle.compatibilityDate,
+      modules: true,
+      script: signInKeysSource,
+      serviceBindings: { KEY_FIXTURE: privateKeysFixture(mapping.fixtureUrl, jwksRequests) },
+      outboundService: (): never => {
+        throw new Error("unexpected keys fixture outbound fetch");
+      },
+    });
+  return workers;
+}
+
 export class WorkerdStorage {
   readonly origin: string;
   private readonly runtime: Miniflare;
   private readonly temporaryRoot: string | undefined;
   private readonly c2Witness: C2WitnessRecorder | undefined;
+  private readonly jwksRequests: JwksRequests;
   private constructor(
     origin: string,
     runtime: Miniflare,
     temporaryRoot: string | undefined,
     c2Witness: C2WitnessRecorder | undefined,
+    jwksRequests: JwksRequests,
   ) {
     this.origin = origin;
     this.runtime = runtime;
     this.temporaryRoot = temporaryRoot;
     this.c2Witness = c2Witness;
+    this.jwksRequests = jwksRequests;
+  }
+
+  observeJwksRequests(): Readonly<JwksRequests> {
+    return { ...this.jwksRequests };
   }
 
   static async start(
@@ -287,50 +400,9 @@ export class WorkerdStorage {
     z.object({ version: z.literal("5.20261012.0-beta") }).parse(require("miniflare/package.json"));
     z.object({ version: z.literal("1.20261012.1") }).parse(require("workerd"));
     const central = clockedWorkerOptions(bundle, clock);
-    let workers: V4WorkerOptions[] = [central];
-    if (signIn !== undefined) {
-      const mapping = jwksMappingSchema.parse(signIn.jwks);
-      const className = bundle.durableObjects.CENTRAL;
-      if (className === undefined)
-        throw new Error("sign-in topology requires the public CENTRAL namespace");
-      if (Object.keys(signIn.linkBundle.durableObjects).length !== 0)
-        throw new Error("private link must not own a separate Durable Object namespace");
-      const outboundService = async (request: Request): Promise<Response> => {
-        if (request.url !== mapping.sourceUrl || request.method !== "GET")
-          throw new Error("unexpected external workerd fetch");
-        // Fetch afresh, so the Rust fixture controls rotation and the Worker's cache.
-        // Forward no caller credentials or proof headers, and never follow redirects.
-        const response = await fetch(mapping.fixtureUrl, { method: "GET", redirect: "manual" });
-        return new Response(response.body === null ? null : await response.arrayBuffer(), {
-          status: response.status,
-          headers: [...response.headers],
-        });
-      };
-      workers = [
-        {
-          name: "verification-gateway",
-          compatibilityDate: bundle.compatibilityDate,
-          modules: true,
-          script: gatewaySource,
-          serviceBindings: {
-            PUBLIC_CENTRAL: "verification-central",
-            PRIVATE_LINK: "verification-private-link",
-          },
-          outboundService: (): never => {
-            throw new Error("unexpected gateway outbound fetch");
-          },
-        },
-        { ...central, outboundService },
-        {
-          ...workerOptions(signIn.linkBundle),
-          name: "verification-private-link",
-          outboundService,
-          durableObjects: {
-            CENTRAL: { className, scriptName: "verification-central", useSQLite: true },
-          },
-        },
-      ];
-    }
+    const jwksRequests = { privateGets: 0, unexpectedPrivate: 0, publicRequests: 0 };
+    const workers =
+      signIn === undefined ? [central] : signInWorkers(bundle, central, signIn, jwksRequests);
     const { persistenceDirectory } = options;
     const root = await resolvePersistenceRoot(persistenceDirectory);
     const temporaryRoot = persistenceDirectory === undefined ? root : undefined;
@@ -356,7 +428,13 @@ export class WorkerdStorage {
         [8787, 8788, 19741, 19742, 19743].includes(Number(ready.port))
       )
         throw new Error("workerd did not bind a permitted loopback port");
-      return new WorkerdStorage(ready.origin, runtime, temporaryRoot, bundle.c2Witness);
+      return new WorkerdStorage(
+        ready.origin,
+        runtime,
+        temporaryRoot,
+        bundle.c2Witness,
+        jwksRequests,
+      );
     } catch (error: unknown) {
       const failures: unknown[] = [error];
       try {

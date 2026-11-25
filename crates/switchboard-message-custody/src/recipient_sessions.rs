@@ -76,9 +76,18 @@ const UNAVAILABLE_INVENTORY: SessionInventoryAnswer = SessionInventoryAnswer::At
 pub type InventoryRead<'lookup> =
     Pin<Box<dyn Future<Output = SessionInventoryAnswer> + Send + 'lookup>>;
 
+/// Which role this lookup plays in resolving the addressed session.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SessionInventorySource {
+    Independent,
+    ManagedClaude,
+    ClaudeTerminal,
+}
+
 /// A disjoint part of an authority. Its completed answer replaces any evidence
 /// the authority could already prove before starting the read.
 pub struct SessionInventoryPart<'lookup> {
+    pub source: SessionInventorySource,
     pub observed: SessionInventoryAnswer,
     pub read: InventoryRead<'lookup>,
 }
@@ -97,6 +106,7 @@ pub trait SessionInventory: Send + Sync {
         _deadline: Option<ClockInstant>,
     ) -> Vec<SessionInventoryPart<'lookup>> {
         vec![SessionInventoryPart {
+            source: SessionInventorySource::Independent,
             observed: UNAVAILABLE_INVENTORY,
             read: self.lookup_session(session_id),
         }]
@@ -133,6 +143,49 @@ pub fn combine_inventory_answers(
     }
 }
 
+fn resolve_recipient_parts(
+    parts: impl IntoIterator<Item = (SessionInventorySource, SessionInventoryAnswer)>,
+) -> RecipientSessionAnswer {
+    let mut independent = EMPTY_INVENTORY;
+    let mut managed_claude = EMPTY_INVENTORY;
+    let mut claude_terminal = EMPTY_INVENTORY;
+    for (source, answer) in parts {
+        let slot = match source {
+            SessionInventorySource::Independent => &mut independent,
+            SessionInventorySource::ManagedClaude => &mut managed_claude,
+            SessionInventorySource::ClaudeTerminal => &mut claude_terminal,
+        };
+        *slot = slot.merge(answer);
+    }
+    combine_inventory_answers([
+        independent,
+        prefer_managed_claude(managed_claude, claude_terminal),
+    ])
+}
+
+/// A managed Claude claim owns this Mac's address. A terminal sighting of the
+/// same ID has no separate address, even when someone explicitly reuses the ID
+/// in another project (Claude Code 2.1.331), or opens the pre-clear conversation
+/// after a context reset kept the ACP ID but minted a new native ID
+/// (claude-agent-acp 0.81.0). The Lead accepted both cases.
+fn prefer_managed_claude(
+    managed: SessionInventoryAnswer,
+    terminal: SessionInventoryAnswer,
+) -> SessionInventoryAnswer {
+    let terminal_count = match managed {
+        SessionInventoryAnswer::Complete(0) => return terminal,
+        // Until the managed lookup can prove absence, multiple terminal sightings
+        // establish only one guaranteed Claude claim.
+        SessionInventoryAnswer::AtLeast(0) => terminal.proved().min(1),
+        SessionInventoryAnswer::Complete(_) | SessionInventoryAnswer::AtLeast(_) => 0,
+    };
+    let terminal = match terminal {
+        SessionInventoryAnswer::Complete(_) => SessionInventoryAnswer::Complete(terminal_count),
+        SessionInventoryAnswer::AtLeast(_) => SessionInventoryAnswer::AtLeast(terminal_count),
+    };
+    managed.merge(terminal)
+}
+
 /// Resolves endpoint-free addresses against the Mac's session sources.
 pub struct CombinedRecipientSessionDirectory {
     sources: RecipientSessionSources,
@@ -164,11 +217,12 @@ impl CombinedRecipientSessionDirectory {
         ]
         .into_iter()
         .flat_map(|source| source.lookup_parts(session_id, cutoff))
-        .map(|part| (part.observed, Some(part.read)))
+        .map(|part| (part.source, part.observed, Some(part.read)))
         .collect();
-        let mut summary = combine_inventory_answers(parts.iter().map(|(answer, _)| *answer));
+        let mut summary =
+            resolve_recipient_parts(parts.iter().map(|(source, answer, _)| (*source, *answer)));
         let lookups = poll_fn(|context| {
-            for (answer, pending) in &mut parts {
+            for (_, answer, pending) in &mut parts {
                 if let Some(read) = pending
                     && let Poll::Ready(completed) = read.as_mut().poll(context)
                 {
@@ -176,9 +230,10 @@ impl CombinedRecipientSessionDirectory {
                     *pending = None;
                 }
             }
-            summary = combine_inventory_answers(parts.iter().map(|(answer, _)| *answer));
+            summary =
+                resolve_recipient_parts(parts.iter().map(|(source, answer, _)| (*source, *answer)));
             if summary == RecipientSessionAnswer::AmbiguousSession
-                || parts.iter().all(|(_, pending)| pending.is_none())
+                || parts.iter().all(|(_, _, pending)| pending.is_none())
             {
                 Poll::Ready(summary)
             } else {

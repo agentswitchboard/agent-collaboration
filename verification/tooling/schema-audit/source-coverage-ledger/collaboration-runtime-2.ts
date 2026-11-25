@@ -159,11 +159,6 @@ export const section: LedgerSection = {
       note: "reads stored native receipt JSON (:5); storage format",
     },
     {
-      file: `${R}stored_inventory_observation.rs`,
-      disposition: { kind: "converts", owners: ["router-vocabulary"] },
-      note: "catalog discovery record: session target.session_id copied into ThreadAddress.native_thread_id (:25-30). Reads chrono::Utc::now (:33)",
-    },
-    {
       file: `${R}stored_run_receipt.rs`,
       disposition: { kind: "defines", owners: ["router-vocabulary"] },
       note: "stored Run acceptance JSON serde (:5); storage format",

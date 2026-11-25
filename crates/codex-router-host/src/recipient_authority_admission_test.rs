@@ -424,3 +424,72 @@ async fn reused_terminal_pid_cannot_create_a_permanent_custody_refusal() {
         .run(host.inbox.expect_accepted(&target), loaded(&[]))
         .await;
 }
+
+#[tokio::test]
+async fn managed_claude_stays_one_recipient_when_its_worker_is_registered() {
+    let root = tempfile::tempdir().unwrap();
+    let root = root.path();
+    let native = NativeListFixture::bind(root);
+    let mut host = HostAdmission::with_gate(root, CodexCatalogue::Empty, native.gate.clone()).await;
+    let target = session_id(SAVED);
+    host.save_managed(0, root, &target).await;
+
+    let registry = root.join("registry");
+    std::fs::create_dir(&registry).unwrap();
+    let worker = LivePeer::new();
+    seed_peer(&registry, worker.0.id(), SAVED, false);
+    assert_eq!(host.managed.lookup_session(&target).await, complete(1));
+    assert_eq!(host.terminal.lookup_session(&target).await, complete(1));
+
+    // The wrong build can refuse as soon as both Claude reads complete.
+    // Hold the managed row read until the native list reply is on the wire.
+    let provider_store = host.provider_store.clone();
+    let store_guard = provider_store.lock().await;
+    let release_managed_lookup = async {
+        let (mut wire, request) = native.request().await;
+        native_reply(&mut wire, &request, loaded(&[])).await;
+        drop(store_guard);
+    };
+    tokio::join!(host.inbox.expect_accepted(&target), release_managed_lookup);
+}
+
+#[tokio::test]
+async fn managed_claude_can_read_its_inbox_until_an_independent_caller_claim() {
+    use collaboration_protocol::message_tools::{MessageCallerRefusal, MessageToolRefusal};
+
+    let root = tempfile::tempdir().unwrap();
+    let root = root.path();
+    let target = session_id("managed-claude-inbox-caller");
+    let mut host = HostAdmission::new(root, CodexCatalogue::Empty).await;
+    host.save_managed(0, root, &target).await;
+    host.inbox.expect_accepted(&target).await;
+    let registry = root.join("registry");
+    std::fs::create_dir(&registry).unwrap();
+    seed_peer(&registry, std::process::id(), target.as_str(), false);
+
+    let messages = host.inbox.read_as_reported_caller(&target).await.unwrap();
+    assert_eq!(messages.len(), 1);
+    assert!(matches!(messages.as_slice(), [kept] if kept.target.session_id == target));
+
+    host.save_managed(1, root, &target).await;
+    assert!(matches!(
+        host.inbox.read_as_reported_caller(&target).await,
+        Err(MessageToolRefusal::Caller(
+            MessageCallerRefusal::AmbiguousSession
+        ))
+    ));
+}
+
+#[tokio::test]
+async fn cursor_and_terminal_claude_without_managed_claude_refuse_custody() {
+    let root = tempfile::tempdir().unwrap();
+    let root = root.path();
+    let target = session_id("cursor-and-terminal-claude");
+    let mut host = HostAdmission::new(root, CodexCatalogue::Empty).await;
+    host.save_managed(1, root, &target).await;
+    let registry = root.join("registry");
+    std::fs::create_dir(&registry).unwrap();
+    seed_peer(&registry, std::process::id(), target.as_str(), false);
+
+    host.inbox.expect_ambiguous(&target).await;
+}

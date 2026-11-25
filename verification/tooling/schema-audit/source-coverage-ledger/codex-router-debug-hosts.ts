@@ -137,7 +137,7 @@ export const section: LedgerSection = {
     {
       file: `${R}debug_host_acceptance/lifecycle_reader_proof.rs`,
       disposition: { kind: "sends", owners: ["mcp"] },
-      note: "CollaborationClient tool calls journal_status (21), sessions_list (48), addresses_list (75), journal_read (111,120), decoded into the typed collaboration_protocol shapes; serde_json::to_value of watermark and coverage (79-80) only to compare pages, not a conversion between types",
+      note: "Uses public endpoints_list, sessions_list and session_inspect after the owned native prompt.",
     },
     {
       file: `${R}debug_host_acceptance/native_fork_proof.rs`,
@@ -208,11 +208,10 @@ export const section: LedgerSection = {
     ...connectSends("debug_host_acceptance/acp_replacement_proof.rs", 120),
     inspectSend("debug_host_acceptance/acp_replacement_proof.rs", 121),
     mcpCall("debug_host_acceptance/acp_replacement_proof.rs", 163, "endpoints_list"),
-    mcpCall("debug_host_acceptance/lifecycle_reader_proof.rs", 21, "journal_status"),
-    mcpCall("debug_host_acceptance/lifecycle_reader_proof.rs", 48, "sessions_list"),
-    mcpCall("debug_host_acceptance/lifecycle_reader_proof.rs", 75, "addresses_list"),
-    mcpCall("debug_host_acceptance/lifecycle_reader_proof.rs", 111, "journal_read"),
-    mcpCall("debug_host_acceptance/lifecycle_reader_proof.rs", 120, "journal_read"),
+    mcpCall("debug_host_acceptance/lifecycle_reader_proof.rs", 36, "sessions_list"),
+    mcpCall("debug_host_acceptance/lifecycle_reader_proof.rs", 54, "endpoints_list"),
+    mcpCall("debug_host_acceptance/lifecycle_reader_proof.rs", 74, "sessions_list"),
+    mcpCall("debug_host_acceptance/lifecycle_reader_proof.rs", 92, "session_inspect"),
     codexSend(
       "debug_host_acceptance/native_fork_proof.rs",
       25,

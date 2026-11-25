@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use serde_json::json;
-use workspace_model::central_mail::CentralMailRefusal;
+use workspace_model::central_mail::{CentralMailRefusal, MessageRefusal};
 
 use super::*;
 
@@ -130,4 +130,32 @@ fn accepted_write_words_report_what_central_has_confirmed() {
             format!("Accepted by central. Message id {message_id}.\n{words}")
         );
     }
+}
+
+#[test]
+fn status_text_names_the_unknown_session_refusal() {
+    assert_delivery_refusal_text(
+        MessageRefusal::UnknownSession,
+        "Refused by the recipient's Mac: unknown session.",
+    );
+}
+
+#[test]
+fn status_text_names_the_ambiguous_session_refusal() {
+    assert_delivery_refusal_text(
+        MessageRefusal::AmbiguousSession,
+        "Refused by the recipient's Mac: two sessions match.",
+    );
+}
+
+fn assert_delivery_refusal_text(reason: MessageRefusal, words: &str) {
+    let message_id: MessageId = "019a0000-0000-7000-8000-000000000003".parse().unwrap();
+    let result = MessageToolResult::Returned(MessageWriteStatus::Answered {
+        message_id: message_id.clone(),
+        delivery: MessageDeliveryObservation::Checked(MessageStatus::Refused { reason }),
+    });
+    assert_eq!(
+        message_status_text(&result),
+        format!("Accepted by central. Message id {message_id}.\n{words}")
+    );
 }

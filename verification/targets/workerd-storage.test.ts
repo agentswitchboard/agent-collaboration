@@ -55,7 +55,7 @@ test("bridge names every absent public or private artifact before readiness", as
     await writeFile(
       plan,
       JSON.stringify({
-        textBindings: { CENTRAL_SIGN_IN_JWKS_URL: sourceUrl },
+        textBindings: {},
         jwksFixtureUrl: "http://127.0.0.1:12345/jwks",
       }),
     );
@@ -135,6 +135,11 @@ export default { async fetch(request, env) {
   }
   if (["/counter", "/clock", "/clock-presence"].includes(url.pathname))
     return env.CENTRAL.get(env.CENTRAL.idFromName("same-central")).fetch(request);
+  if (url.pathname === "/keys") {
+    const keyUrl = new URL("https://sign-in-keys.invalid/");
+    keyUrl.pathname = url.searchParams.get("path") ?? "/api/auth/jwks";
+    return env.SIGN_IN_KEYS.fetch(new Request(keyUrl, { method: request.method, redirect: "manual" }));
+  }
   if (url.pathname === "/outbound") {
     try { return await fetch(url.searchParams.get("url"), { method: request.method, redirect: "manual",
       headers: { authorization: "fixture-only", cookie: "fixture-only", "x-proof": "fixture-only" } }); }
@@ -205,7 +210,7 @@ before(async () => {
   if (address === null || typeof address === "string")
     throw new Error("fixture has no TCP address");
   fixtureUrl = `http://127.0.0.1:${address.port}/jwks`;
-  host = await WorkerdStorage.start(publicBundle, { linkBundle, jwks: { sourceUrl, fixtureUrl } });
+  host = await WorkerdStorage.start(publicBundle, { linkBundle, jwks: { fixtureUrl } });
 });
 
 const bridgeRelativePath =
@@ -375,7 +380,7 @@ async function createBridgeControlFixture(): Promise<string> {
   await writeFile(
     join(fixture, "plan.json"),
     JSON.stringify({
-      textBindings: { CENTRAL_SIGN_IN_JWKS_URL: sourceUrl },
+      textBindings: {},
       jwksFixtureUrl: fixtureUrl,
     }),
   );
@@ -526,9 +531,8 @@ test("private service binding and public worker share the same durable namespace
   assert.equal((await fetch(`${host.origin}/other/counter`)).status, 404);
 });
 
-test("JWKS transport forwards each exact GET without credentials and preserves rotation and status", async (): Promise<void> => {
-  const invoke = (): Promise<Response> =>
-    fetch(`${host.origin}/public/outbound?url=${encodeURIComponent(sourceUrl)}`);
+test("named JWKS service forwards each GET and preserves rotation and status", async (): Promise<void> => {
+  const invoke = (): Promise<Response> => fetch(`${host.origin}/public/keys`);
   const first = await invoke();
   assert.equal(first.status, 203);
   assert.equal(first.headers.get("x-fixture"), "preserved");
@@ -543,16 +547,25 @@ test("JWKS transport forwards each exact GET without credentials and preserves r
   ]);
 });
 
-test("wrong JWKS URL and method never reach the fixture", async (): Promise<void> => {
+test("wrong private JWKS paths and methods never reach the publisher", async (): Promise<void> => {
   const before = arrivals.length;
-  for (const url of [sourceUrl + "?unexpected=1", "https://other.test/jwks"]) {
-    const response = await fetch(`${host.origin}/public/outbound?url=${encodeURIComponent(url)}`);
-    assert.equal(response.status, 500);
-  }
-  const post = await fetch(`${host.origin}/public/outbound?url=${encodeURIComponent(sourceUrl)}`, {
-    method: "POST",
-  });
-  assert.equal(post.status, 500);
+  assert.equal((await fetch(`${host.origin}/public/keys?path=/other`)).status, 404);
+  const post = await fetch(`${host.origin}/public/keys`, { method: "POST" });
+  assert.equal(post.status, 405);
+  assert.equal(post.headers.get("allow"), "GET");
+  assert.equal(arrivals.length, before);
+  assert.equal(host.observeJwksRequests().unexpectedPrivate, 2);
+});
+
+test("global outbound reaches only the counting trap", async (): Promise<void> => {
+  const before = arrivals.length;
+  const previous = host.observeJwksRequests().publicRequests;
+  const response = await fetch(
+    `${host.origin}/public/outbound?url=${encodeURIComponent(sourceUrl)}`,
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { keys: [] });
+  assert.equal(host.observeJwksRequests().publicRequests, previous + 1);
   assert.equal(arrivals.length, before);
 });
 
@@ -560,10 +573,7 @@ test("JWKS fixture redirects are returned without following another fixture path
   const before = arrivals.length;
   redirect = true;
   try {
-    const response = await fetch(
-      `${host.origin}/public/outbound?url=${encodeURIComponent(sourceUrl)}`,
-      { redirect: "manual" },
-    );
+    const response = await fetch(`${host.origin}/public/keys`, { redirect: "manual" });
     assert.equal(response.status, 302);
     assert.equal(response.headers.get("location"), "/not-a-jwks-fixture");
     assert.equal(arrivals.length, before + 1);
@@ -584,22 +594,23 @@ test("default loader still refuses every outbound fetch", async (): Promise<void
   }
 });
 
-test("invalid outbound configuration refuses before starting workers", async (): Promise<void> => {
+test("non-loopback or non-allocated JWKS publisher is refused before starting workers", async (): Promise<void> => {
   for (const invalid of [
-    { sourceUrl: "http://signin.test/jwks", fixtureUrl },
-    { sourceUrl, fixtureUrl: "http://localhost:12345/jwks" },
-    { sourceUrl, fixtureUrl: "http://127.0.0.1:0/jwks" },
-    { sourceUrl, fixtureUrl: "http://user:password@127.0.0.1:12345/jwks" },
-    { sourceUrl: sourceUrl + "#fragment", fixtureUrl },
+    "http://localhost:9000/jwks",
+    "http://127.0.0.1/jwks",
+    "http://127.0.0.1:0/jwks",
+    fixtureUrl + "#fragment",
   ])
-    await assert.rejects(WorkerdStorage.start(publicBundle, { linkBundle, jwks: invalid }));
+    await assert.rejects(
+      WorkerdStorage.start(publicBundle, { linkBundle, jwks: { fixtureUrl: invalid } }),
+    );
 });
 
 test("private link cannot silently create its own central namespace", async (): Promise<void> => {
   await assert.rejects(
     WorkerdStorage.start(publicBundle, {
       linkBundle: { ...linkBundle, durableObjects: { CENTRAL: "CentralObject" } },
-      jwks: { sourceUrl, fixtureUrl },
+      jwks: { fixtureUrl },
     }),
     /must not own a separate/,
   );
@@ -608,7 +619,7 @@ test("private link cannot silently create its own central namespace", async (): 
       { ...publicBundle, durableObjects: {} },
       {
         linkBundle,
-        jwks: { sourceUrl, fixtureUrl },
+        jwks: { fixtureUrl },
       },
     ),
     /requires the public CENTRAL/,
@@ -624,7 +635,7 @@ test("optional clock binding reads one live cell without restarting durable stat
     const second = "019f0000-0000-7000-8000-00000000d202";
     const controlled = await WorkerdStorage.start(
       publicBundle,
-      privateTopology ? { linkBundle, jwks: { sourceUrl, fixtureUrl } } : undefined,
+      privateTopology ? { linkBundle, jwks: { fixtureUrl } } : undefined,
       (organization: string): number => {
         organizations.push(organization);
         return milliseconds;
@@ -748,7 +759,7 @@ test("private provision checks the CENTRAL binding before decoding the full body
       ...publicWorker,
       durableObjects: { ...publicWorker.durableObjects, CENTRAL: "CentralObject" },
     },
-    { linkBundle: link, jwks: { sourceUrl, fixtureUrl } },
+    { linkBundle: link, jwks: { fixtureUrl } },
     clock,
   );
   try {

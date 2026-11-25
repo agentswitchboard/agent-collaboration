@@ -60,7 +60,6 @@ members = [
     "crates/ui-preference-store",
     "crates/sqlite-storage-maintenance",
     "crates/codex-acp-adapter",
-    "crates/lifecycle-observation",
     "crates/collaboration-client",
     "crates/collaboration-mcp",
     "crates/collaboration-service",

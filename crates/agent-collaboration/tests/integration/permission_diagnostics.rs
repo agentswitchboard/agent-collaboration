@@ -267,22 +267,6 @@ fn api_command_families_share_permission_diagnostic() {
     let directory = fixture.root.to_string_lossy().into_owned();
     let commands: Vec<Vec<&str>> = vec![
         vec![
-            "addresses",
-            "list",
-            "--endpoint",
-            "codex-local",
-            "--json",
-            "--service-directory",
-            &directory,
-        ],
-        vec![
-            "journal",
-            "status",
-            "--json",
-            "--service-directory",
-            &directory,
-        ],
-        vec![
             "sessions",
             "list",
             "--endpoint",

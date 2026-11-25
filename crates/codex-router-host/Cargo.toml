@@ -49,7 +49,6 @@ agent-automation = { path = "../agent-automation", version = "0.1.16" }
 futures-util.workspace = true
 message-board = { path = "../message-board", version = "0.1.20" }
 chrono.workspace = true
-lifecycle-observation = { path = "../lifecycle-observation", version = "0.1.14" }
 collaboration-protocol = { path = "../collaboration-protocol", version = "0.1.14" }
 claude-code-peer-messaging = { path = "../claude-code-peer-messaging", version = "0.1.37" }
 collaboration-service = { path = "../collaboration-service", version = "0.1.14" }

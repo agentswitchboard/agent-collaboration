@@ -1,13 +1,12 @@
-//! Endpoint, session, lifecycle-journal and address-book tools.
+//! Endpoint and session tools.
 use super::{
-    API_RESULT_BUDGET, AddressListParams, AddressPage, CallToolResult, ClientError,
-    CollaborationMcpServer, EmptyToolInput, EndpointInventory, InstallationIdentity, JournalPage,
-    JournalReadParams, JournalStatus, McpToolOutput, NativeInspectParams, NativeInspectResult,
-    NativeInterruptParams, NativeInterruptResult, NativeRenameParams, NativeRenameResult,
-    NativeSessionListParams, NativeSessionListResult, OperationEffect, Parameters,
-    ProviderInspectFailure, ProviderSessionInspectRequest, ProviderSessionInspectResult,
-    ProviderSessionListParams, ProviderSessionListResult, application_result, caller_cancelled,
-    failure, success_result, tool, tool_router, typed_failure_result,
+    API_RESULT_BUDGET, CallToolResult, ClientError, CollaborationMcpServer, EmptyToolInput,
+    EndpointInventory, InstallationIdentity, McpToolOutput, NativeInspectParams,
+    NativeInspectResult, NativeInterruptParams, NativeInterruptResult, NativeRenameParams,
+    NativeRenameResult, NativeSessionListParams, NativeSessionListResult, OperationEffect,
+    Parameters, ProviderInspectFailure, ProviderSessionInspectRequest,
+    ProviderSessionInspectResult, ProviderSessionListParams, ProviderSessionListResult,
+    application_result, failure, tool, tool_router, typed_failure_result,
 };
 
 #[tool_router(router = session_tool_router, vis = "pub(super)")]
@@ -128,40 +127,6 @@ impl CollaborationMcpServer {
                 .codex_turn_interrupt(request, API_RESULT_BUDGET)
                 .await,
             OperationEffect::Unknown,
-        )
-    }
-
-    #[tool(name = "journal_status", description = "Reads lifecycle-journal availability and bounds without mutating state.", output_schema = rmcp::handler::server::tool::schema_for_type::<McpToolOutput<JournalStatus>>())]
-    pub(super) async fn journal_status(
-        &self,
-        Parameters(EmptyToolInput {}): Parameters<EmptyToolInput>,
-    ) -> CallToolResult {
-        success_result(&self.application.sessions().journal_status().await)
-    }
-
-    #[tool(name = "journal_read", description = "Reads a bounded lifecycle-journal page. Read-only and not a durable conversation transcript.", output_schema = rmcp::handler::server::tool::schema_for_type::<McpToolOutput<JournalPage>>())]
-    pub(super) async fn journal_read(
-        &self,
-        Parameters(request): Parameters<JournalReadParams>,
-        context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
-    ) -> CallToolResult {
-        let sessions = self.application.sessions();
-        tokio::select! {
-            () = context.ct.cancelled() => caller_cancelled(OperationEffect::None),
-            result = sessions.journal_read(request) => {
-                application_result(result, OperationEffect::None)
-            }
-        }
-    }
-
-    #[tool(name = "addresses_list", description = "Lists known conversation addresses and their observed lifecycle coverage. Read-only.", output_schema = rmcp::handler::server::tool::schema_for_type::<McpToolOutput<AddressPage>>())]
-    pub(super) async fn addresses_list(
-        &self,
-        Parameters(request): Parameters<AddressListParams>,
-    ) -> CallToolResult {
-        application_result(
-            self.application.sessions().address_list(request).await,
-            OperationEffect::None,
         )
     }
 }

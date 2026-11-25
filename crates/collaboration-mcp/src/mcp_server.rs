@@ -12,9 +12,8 @@ use collaboration_client::{
     ConversationOperationResult, OperationEffect, operation_failure_from_client_error,
 };
 use collaboration_protocol::{
-    AddressListParams, AddressPage, ConversationCloseRequest, ConversationCreateOutcome,
-    ConversationOperationSubmission, ConversationResumeRequest, EndpointInventory,
-    InstallationIdentity, JournalPage, JournalReadParams, JournalStatus, NativeInspectParams,
+    ConversationCloseRequest, ConversationCreateOutcome, ConversationOperationSubmission,
+    ConversationResumeRequest, EndpointInventory, InstallationIdentity, NativeInspectParams,
     NativeInspectResult, NativeInterruptParams, NativeInterruptResult, NativeRenameParams,
     NativeRenameResult, NativeSessionListParams, NativeSessionListResult, OperationId,
     ProviderInspectFailure, ProviderSessionInspectRequest, ProviderSessionInspectResult,

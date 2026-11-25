@@ -18,11 +18,6 @@ export const section: LedgerSection = {
       note: "Vendored ACP JSON Schema: ACP_SCHEMA_BYTES L6 (include_bytes), ACP_SCHEMA_DIGEST L8, AcpSchemaCatalog::load L26 hex-encodes the sha256 by hand (L27-L30), verifies the digest and requires exactly 42 x-method entries (L49); validate L64 compiles one $defs entry with jsonschema.",
     },
     {
-      file: "crates/collaboration-protocol/src/address_book_contract.rs",
-      disposition: { kind: "defines", owners: ["router-vocabulary", "mcp"] },
-      note: "types Existence L9, ArchiveState L16, StatusOrdering L23, LifecycleDisposition L30, AddressEntry L38 (lastStatus is the NativeThreadStatus projection), CoverageState L50, CoverageView L58, AddressPage L67",
-    },
-    {
       file: "crates/collaboration-protocol/src/attempt_history_contract.rs",
       disposition: { kind: "defines", owners: ["router-vocabulary", "mcp"] },
       note: "types AttemptInspection L11, SummaryInspectionState L22, SummaryInspection L33, EarlierAttempts L55, AttemptHistoryCoverage L60, AttemptHistoryPage L68, DeliveryAttemptsRequest L76, RunSummariesRequest L84",
@@ -113,19 +108,9 @@ export const section: LedgerSection = {
       note: "types InstructionCreateParams L8, InstructionUpdateParams L14, InstructionShowParams L22, InstructionSnapshot L27, InstructionFailureKind L37, InstructionStage L48, InstructionNextAction L56, LocalMutationState L64, LocalMutationEvidence L71, InstructionFailure L76",
     },
     {
-      file: "crates/collaboration-protocol/src/journal_contract.rs",
-      disposition: { kind: "defines", owners: ["router-vocabulary", "mcp"] },
-      note: "types JournalPosition L6, JournalBounds L13, LifecycleRecord L22, JournalPage L33, JournalStatus L43, JournalReadParams L49, AddressListParams L59",
-    },
-    {
       file: "crates/collaboration-protocol/src/lib.rs",
       disposition: { kind: "none" },
       note: "Module list and re-exports; it also re-exports the central board_sync_protocol::{FleetLinkRecord, FleetLinkState} (L20) and collaboration_mail_protocol::{MailDigest, MailItemId} (L339) through this facade.",
-    },
-    {
-      file: "crates/collaboration-protocol/src/lifecycle_observation.rs",
-      disposition: { kind: "defines", owners: ["router-vocabulary", "codex", "mcp"] },
-      note: "ThreadAddress L6, ObservationScope L12, ObservationSource L19, LifecycleSubject L27, BackendStatus L33, TerminalStatus L47 (the terminal Codex turn statuses), NativeActiveFlag L54 and NativeThreadStatus L61 (a pinned projection of Codex ThreadStatus, tag type), LifecycleChange L72, LifecycleObservation L95 with validate L103.",
     },
     {
       file: "crates/collaboration-protocol/src/message_content.rs",

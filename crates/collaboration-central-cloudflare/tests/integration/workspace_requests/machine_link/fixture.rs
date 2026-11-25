@@ -50,47 +50,38 @@ pub(super) struct Fixture {
 
 impl Fixture {
     pub async fn new() -> Result<Self> {
-        Self::open(true).await
+        Self::open(true, false).await
     }
 
     pub async fn with_production_dispatcher() -> Result<Self> {
-        Self::open(false).await
+        Self::open(false, false).await
     }
 
-    async fn open(fixture_link_calls: bool) -> Result<Self> {
+    pub(super) async fn with_private_keys_probe() -> Result<Self> {
+        Self::open(false, true).await
+    }
+
+    async fn open(fixture_link_calls: bool, private_keys_probe: bool) -> Result<Self> {
         let keys = signed::SignInKeys::start().await?;
-        let root = tempfile::Builder::new()
-            .prefix("c2-machine-link-")
-            .tempdir()?;
-        let plan = root.path().join("sign-in-plan.json");
-        std::fs::write(
-            &plan,
-            serde_json::to_vec(&json!({"textBindings":{
-            "CENTRAL_SIGN_IN_ISSUER":signed::ISSUER,"CENTRAL_SIGN_IN_AUDIENCE":signed::AUDIENCE,
-            "CENTRAL_MACHINE_AUDIENCE":signed::MACHINE_AUDIENCE,
-            "CENTRAL_SIGN_IN_JWKS_URL":"https://signin.test/.well-known/jwks.json",
-            "CENTRAL_ADMIN_AUDIENCE":signed::ADMIN_AUDIENCE,"CENTRAL_PERSON_LINK_AUDIENCE":format!("{}/audiences/central-person-link", signed::ISSUER),"CENTRAL_PUBLIC_ORIGIN":signed::PUBLIC_ORIGIN,
-            "CENTRAL_SIGN_IN_SERVICE_ID":"019f0000-0000-7000-8000-00000000cf04",
-            "TEST_SUPPORT_LINK_CALLS":if fixture_link_calls { "legacy" } else { "production" }
-        },"jwksFixtureUrl":keys.url}))?,
-        )?;
-        let clock = Arc::new(ManualClock::starting_at(SyncTime::from_unix_millis(
-            signed::NOW_SECONDS * 1000,
-        ))?);
-        let host = WorkerdHost::open_c2(clock.clone(), &plan).await?;
+        let (host, clock, root) =
+            open_sign_in(Some(&keys.url), fixture_link_calls, private_keys_probe).await?;
         let client = reqwest::Client::builder().no_proxy().build()?;
         let organization = ORGANIZATION.to_owned().try_into()?;
         let provision = ProvisionOrganization {
             organization_id: organization,
             organization_statement: signed::stamp(ORGANIZATION, signed::NOW_SECONDS)?.try_into()?,
         };
-        let _: ProvisionOrganizationResult = post(
+        let provision_result: Result<ProvisionOrganizationResult> = post(
             &host,
             &client,
             "/internal/organization-provisioning",
             &provision,
         )
-        .await?;
+        .await;
+        if private_keys_probe {
+            host.assert_jwks_requests(1).await?;
+        }
+        provision_result?;
         let enrollment = approve(
             &host,
             &client,
@@ -181,7 +172,43 @@ impl Fixture {
     }
 }
 
-async fn post<Answer: DeserializeOwned>(
+pub(super) async fn open_sign_in(
+    fixture_url: Option<&str>,
+    fixture_link_calls: bool,
+    private_keys_probe: bool,
+) -> Result<(WorkerdHost, Arc<ManualClock>, tempfile::TempDir)> {
+    let root = tempfile::Builder::new()
+        .prefix("c2-machine-link-")
+        .tempdir()?;
+    let plan = root.path().join("sign-in-plan.json");
+    let mut settings = json!({"textBindings":{
+        "CENTRAL_SIGN_IN_ISSUER":signed::ISSUER,"CENTRAL_SIGN_IN_AUDIENCE":signed::AUDIENCE,
+        "CENTRAL_MACHINE_AUDIENCE":signed::MACHINE_AUDIENCE,
+        "CENTRAL_ADMIN_AUDIENCE":signed::ADMIN_AUDIENCE,"CENTRAL_PERSON_LINK_AUDIENCE":format!("{}/audiences/central-person-link", signed::ISSUER),"CENTRAL_PUBLIC_ORIGIN":signed::PUBLIC_ORIGIN,
+        "CENTRAL_SIGN_IN_SERVICE_ID":"019f0000-0000-7000-8000-00000000cf04",
+        "TEST_SUPPORT_LINK_CALLS":if fixture_link_calls { "legacy" } else { "production" }
+    }});
+    if let Some(fixture_url) = fixture_url {
+        settings["jwksFixtureUrl"] = json!(fixture_url);
+    }
+    if private_keys_probe {
+        // The trap can validate stamp-b. The distinct stamp-a key is private only.
+        settings["publicTrapJwks"] = signed::published_keys_except(&["stamp-a".to_owned()])?;
+        if std::env::var_os("CODEX_ROUTER_TEST_LEGACY_JWKS_URL").is_some() {
+            // Supply the old setting solely when running the explicit wrong-build check.
+            settings["textBindings"]["CENTRAL_SIGN_IN_JWKS_URL"] =
+                json!("https://public-keys.invalid/api/auth/jwks");
+        }
+    }
+    std::fs::write(&plan, serde_json::to_vec(&settings)?)?;
+    let clock = Arc::new(ManualClock::starting_at(SyncTime::from_unix_millis(
+        signed::NOW_SECONDS * 1000,
+    ))?);
+    let host = WorkerdHost::open_c2(clock.clone(), &plan).await?;
+    Ok((host, clock, root))
+}
+
+pub(super) async fn post<Answer: DeserializeOwned>(
     host: &WorkerdHost,
     client: &reqwest::Client,
     path: &str,

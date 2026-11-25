@@ -191,7 +191,6 @@ dependencies = [
  "iocraft",
  "jsonc-parser",
  "jsonschema",
- "lifecycle-observation",
  "message-board",
  "node-test-fixture",
  "owned-process-test-support",
@@ -1356,7 +1355,6 @@ dependencies = [
  "hegeltest",
  "httparse",
  "jsonc-parser",
- "lifecycle-observation",
  "message-board",
  "nix",
  "node-test-fixture",
@@ -1911,7 +1909,6 @@ dependencies = [
  "collaboration-mail-protocol",
  "collaboration-protocol",
  "futures-util",
- "lifecycle-observation",
  "message-board",
  "nix",
  "router-clock",
@@ -1950,7 +1947,6 @@ dependencies = [
  "collaboration-runtime",
  "futures-util",
  "getrandom 0.3.4",
- "lifecycle-observation",
  "message-board",
  "nix",
  "node-test-fixture",
@@ -4031,30 +4027,6 @@ dependencies = [
  "cc",
  "pkg-config",
  "vcpkg",
-]
-
-[[package]]
-name = "lifecycle-observation"
-version = "0.1.158"
-dependencies = [
- "base64 0.22.1",
- "chrono",
- "codex-native-integration",
- "collaboration-protocol",
- "futures-util",
- "router-clock",
- "runtime-primitives",
- "serde",
- "serde_json",
- "sqlite-storage-maintenance",
- "sqlx",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-tungstenite",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
