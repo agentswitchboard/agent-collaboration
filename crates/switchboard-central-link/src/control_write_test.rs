@@ -11,8 +11,8 @@ use central_link_client::{
     RequestStatusCommand, link_frame_answer_deadline, link_frame_write_deadline,
 };
 use central_link_protocol::{
-    DataFrame, FrameDirection, HandledMacCalls, LinkFrame, MacCapabilities, RequestScope,
-    RequestStatusQuery, decode_text, encode_text,
+    CentralCall, DataFrame, FrameDirection, HandledMacCalls, LinkFrame, MacCapabilities,
+    RequestScope, RequestStatusQuery, decode_text, encode_text,
 };
 use futures_util::{FutureExt, Sink, SinkExt, Stream, StreamExt};
 use router_clock::{ClockInstant, ManualClock, RuntimeClock};
@@ -118,6 +118,10 @@ pub(super) fn fresh_driver(
 ) -> WelcomedDriver<'_, NoLeaseSource> {
     let (mut driver, _) = fixture.welcomed_driver(&NoLeaseSource);
     driver.client = LinkClient::new(fixture.machine.clone(), fixture.clock.clone());
+    driver.registration = crate::run_registration::RunRegistration::new(
+        binding,
+        driver.client.mint_router_run().unwrap(),
+    );
     driver.apply(LinkInput::BindingAvailable(binding)).unwrap();
     driver
 }
@@ -130,6 +134,7 @@ pub(super) fn start_attempt(
         panic!("the new attempt must be ready to dial");
     };
     driver.client.dial_started(&attempt).unwrap();
+    assert!(driver.registration.dial_started(attempt.clone()));
     let now = driver.clock.monotonic_now();
     driver
         .apply(LinkInput::DialStarted {
@@ -177,6 +182,34 @@ pub(super) async fn expect_advertisement(peer: &mut Peer) {
             handled_calls: HandledMacCalls::default()
         }))
     );
+    complete_registration(peer).await;
+}
+
+pub(super) async fn complete_registration(peer: &mut Peer) {
+    let LinkFrame::Data(DataFrame::CallCentral {
+        correlation_id,
+        request,
+    }) = read_frame(peer).await
+    else {
+        panic!("the capabilities must be followed by registration");
+    };
+    let CentralCall::RegisterRun(request) = *request else {
+        panic!("a registration must be sent by the driver");
+    };
+    let response = serde_json::json!({
+        "kind": "centralCallReply",
+        "correlationId": correlation_id,
+        "result": {
+            "kind": "answered",
+            "reply": {
+                "call": "registerRun",
+                "envelope": { "target": request.target, "body": { "kind": "registered" } }
+            }
+        }
+    });
+    peer.send(Message::Text(response.to_string().into()))
+        .await
+        .unwrap();
 }
 
 async fn expect_discarded_tail(peer: Peer, probe: &SocketProbe) {

@@ -1,6 +1,7 @@
 use std::{collections::BTreeSet, num::NonZeroU64, time::Duration};
 
 use state_machine_core::EventTag;
+use switchboard_machine_enrollment::{EnrollmentEnd, EnrollmentKey};
 use url::Url;
 use uuid::{Uuid, Variant};
 
@@ -107,7 +108,10 @@ pub struct ActiveEnrollment {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Metadata {
     Empty,
-    Ended,
+    Ended {
+        key: EnrollmentKey,
+        why: EnrollmentEnd,
+    },
     Active(ActiveEnrollment),
     ReadFailed,
 }

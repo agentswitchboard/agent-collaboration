@@ -9,11 +9,14 @@ use super::{
 
 const CLIENT: &str = "central-link-client";
 const DRIVER: &str = "switchboard-central-link";
+const RUN_GATE: &str = "switchboard-run-gate";
 const MAC_STORE: &str = "switchboard-machine-core-store";
 const LEASE: &str = "switchboard-link-lease";
 const ENROLLMENT: &str = "switchboard-machine-enrollment";
 const ENROLLMENT_STORE: &str = "switchboard-machine-enrollment-store";
 const REAL_TEST: &str = "switchboard-central-link-test";
+const HOST: &str = "codex-router-host";
+const MESSAGE_SYSTEM: &str = "switchboard-message-system";
 const TOKIO_CENTRAL: &str = "collaboration-central-tokio";
 const CLOCK_SOURCE: &str = "git+https://github.com/agent-collaboration/agent-fleet-sync.git?rev=b75d072c116afa46cfa82facd34db6317f380687";
 
@@ -67,6 +70,7 @@ const DRIVER_NORMAL: &[Edge] = &[
     workspace("central-link-protocol", &[]),
     workspace("router-clock", &[]),
     workspace("state-machine-core", &[]),
+    workspace(RUN_GATE, &[]),
     workspace("workspace-ids", &[]),
     workspace("workspace-model", &[]),
     registry("serde_json", true, &[]),
@@ -142,6 +146,13 @@ const LEASE_DEV: &[Edge] = &[
     workspace("router-clock", &["test-support"]),
     registry("hegeltest", true, &["static-engine"]),
 ];
+const HOST_FIXTURE_DEV: &[Edge] = &[
+    workspace(DRIVER, &["test-support"]),
+    workspace(LEASE, &[]),
+    workspace(ENROLLMENT, &[]),
+    workspace(ENROLLMENT_STORE, &["test-support"]),
+    workspace(MESSAGE_SYSTEM, &["test-support"]),
+];
 const REAL_TEST_DEV: &[Edge] = &[
     registry("axum", false, &["http1", "tokio"]),
     registry("tungstenite", false, &[]),
@@ -199,6 +210,7 @@ fn edges(owner: &str, kind: DependencyKind) -> &[Edge] {
         (LEASE, DependencyKind::Normal) => LEASE_NORMAL,
         (LEASE, DependencyKind::Dev) => LEASE_DEV,
         (REAL_TEST, DependencyKind::Dev) => REAL_TEST_DEV,
+        (HOST, DependencyKind::Dev) => HOST_FIXTURE_DEV,
         _ => &[],
     }
 }
@@ -260,18 +272,34 @@ fn check_declaration(
     Ok(())
 }
 
-fn test_constructor_scope(package: &CargoPackage) -> Result<(), PolicyError> {
+fn test_constructor_scope(
+    metadata: &CargoMetadata,
+    package: &CargoPackage,
+) -> Result<(), PolicyError> {
     for dependency in &package.dependencies {
+        let feature_enabled = dependency
+            .features
+            .iter()
+            .any(|feature| feature == "test-support");
+        if package.name == HOST
+            && HOST_FIXTURE_DEV
+                .iter()
+                .any(|edge| edge.name == dependency.name)
+            && !(dependency.name == MESSAGE_SYSTEM
+                && dependency.kind.unwrap_or(DependencyKind::Normal) == DependencyKind::Normal
+                && !feature_enabled)
+        {
+            check_declaration(metadata, package, dependency)?;
+            continue;
+        }
         let test_api = match dependency.name.as_str() {
             DRIVER => "the link's loopback test constructor",
             MAC_STORE => "the inbox commit pause",
             ENROLLMENT_STORE => "the enrollment store test Keychain",
+            MESSAGE_SYSTEM => "the enrolled message system fixture",
             _ => continue,
         };
-        if dependency
-            .features
-            .iter()
-            .any(|feature| feature == "test-support")
+        if feature_enabled
             && (package.name != REAL_TEST || dependency.kind != Some(DependencyKind::Dev))
         {
             return Err(format!("BD1: {} enables {test_api}", package.name,).into());
@@ -388,7 +416,25 @@ pub(super) fn check(metadata: &CargoMetadata) -> Result<(), PolicyError> {
         .iter()
         .filter(|package| workspace_package(metadata, package))
     {
-        test_constructor_scope(package)?;
+        for dependency in &package.dependencies {
+            if dependency.name == RUN_GATE {
+                let kind = dependency.kind.unwrap_or(DependencyKind::Normal);
+                if !matches!(
+                    (package.name.as_str(), kind),
+                    (
+                        DRIVER | "switchboard-approval-holder",
+                        DependencyKind::Normal
+                    ) | ("workspace-architecture-check", DependencyKind::Dev)
+                ) {
+                    return Err(format!(
+                        "BD1: forbidden {kind:?} dependency {} -> {RUN_GATE}",
+                        package.name
+                    )
+                    .into());
+                }
+            }
+        }
+        test_constructor_scope(metadata, package)?;
         if matches!(package.name.as_str(), CLIENT | DRIVER | LEASE | REAL_TEST) {
             for dependency in &package.dependencies {
                 check_declaration(metadata, package, dependency)?;

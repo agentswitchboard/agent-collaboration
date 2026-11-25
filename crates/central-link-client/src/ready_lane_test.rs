@@ -187,41 +187,90 @@ fn registration_evidence_requires_the_pending_attempt_correlation_target_and_run
     }).to_string(), FrameDirection::ToRouter).unwrap()
     };
 
-    let mut pending = PendingRunRegistration::from_sent_frame(admitted.clone(), &request).unwrap();
-    let matching_reply = reply(correlation, organization);
-    assert!(
-        pending
-            .observe_reply(&foreign_attempt, &matching_reply)
-            .is_none()
-    );
-    assert!(
-        pending
-            .observe_reply(
-                &admitted.connection,
-                &reply(foreign_correlation, organization)
-            )
-            .is_none()
-    );
-    assert!(
-        pending
-            .observe_reply(
-                &admitted.connection,
-                &reply(correlation, foreign_organization)
-            )
-            .is_none()
-    );
-    let evidence = pending
-        .observe_reply(&admitted.connection, &matching_reply)
-        .unwrap();
+    use RunRegistrationDecision as Decision;
+    let deadline = ClockInstant::ZERO.after(Duration::from_secs(30));
+    let make_pending =
+        || PendingRunRegistration::from_sent_frame(admitted.clone(), &request, deadline).unwrap();
+    let observe =
+        |pending: &mut PendingRunRegistration, attempt: &ConnectionAttempt, frame, now| {
+            let LinkFrame::Data(DataFrame::CentralCallReply {
+                correlation_id,
+                result,
+            }) = frame
+            else {
+                panic!("expected a Central reply");
+            };
+            pending.observe_reply(attempt, &correlation_id, &result, now)
+        };
+    let mut pending = make_pending();
+    assert!(matches!(
+        observe(
+            &mut pending,
+            &foreign_attempt,
+            reply(correlation, organization),
+            ClockInstant::ZERO
+        ),
+        Decision::Mismatched
+    ));
+    assert!(matches!(
+        observe(
+            &mut pending,
+            &admitted.connection,
+            reply(foreign_correlation, organization),
+            ClockInstant::ZERO
+        ),
+        Decision::Mismatched
+    ));
+    assert!(matches!(
+        observe(
+            &mut pending,
+            &admitted.connection,
+            reply(correlation, foreign_organization),
+            ClockInstant::ZERO
+        ),
+        Decision::Mismatched
+    ));
+    let Decision::Registered(evidence) = observe(
+        &mut pending,
+        &admitted.connection,
+        reply(correlation, organization),
+        ClockInstant::ZERO,
+    ) else {
+        panic!("the matching in-window reply must register");
+    };
     let registered = RegisteredConnection::from_registration(evidence);
     assert_eq!(registered.admitted(), &admitted);
     assert_eq!(
         registered.router_run(),
         &run.parse::<RouterRunId>().unwrap()
     );
-    assert!(
-        pending
-            .observe_reply(&admitted.connection, &matching_reply)
-            .is_none()
-    );
+    assert!(matches!(
+        observe(
+            &mut pending,
+            &admitted.connection,
+            reply(correlation, organization),
+            ClockInstant::ZERO
+        ),
+        Decision::NotPending
+    ));
+
+    let mut elapsed = make_pending();
+    assert!(matches!(
+        observe(
+            &mut elapsed,
+            &admitted.connection,
+            reply(correlation, organization),
+            deadline
+        ),
+        Decision::TimedOut
+    ));
+    assert!(matches!(
+        observe(
+            &mut elapsed,
+            &admitted.connection,
+            reply(correlation, organization),
+            deadline
+        ),
+        Decision::NotPending
+    ));
 }

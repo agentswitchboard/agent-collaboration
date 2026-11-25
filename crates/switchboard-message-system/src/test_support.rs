@@ -23,6 +23,11 @@ use crate::{
 
 type FixtureDriver = LinkDriver<EnrollmentKey, EnrollmentLeaseSource>;
 
+/// Request the live supervisor's normal metadata reread after a fixture changes its read boundary.
+pub fn metadata_reread(system: &MessageSystem) -> impl Fn() -> bool + Send + use<> {
+    system.metadata_reread()
+}
+
 pub struct LinkFixture<Discovery, Refresh, RunDriver> {
     pub discovery: Discovery,
     pub refresh: Refresh,

@@ -16,13 +16,24 @@ use tokio_tungstenite::tungstenite::{Error, Message, protocol::CloseFrame};
 
 use super::{Control, HeartbeatFixture, elapsed_tick, test_settings};
 use crate::{
-    lease_source::{LeaseFuture, LeaseSource, LinkLease},
+    lease_source::{LeaseFailure, LeaseFuture, LeaseSource, LinkLease},
     link_policy::{LeaseVersion, LeaseWindow, LinkInput},
 };
 
 struct PolledLeaseSource;
 
 impl LeaseSource<u8> for PolledLeaseSource {
+    fn registration_target(
+        &self,
+        _binding: &u8,
+    ) -> Result<crate::lease_source::ApprovalServiceTarget, LeaseFailure> {
+        let organization_id = "01890f2e-7b4c-7cc0-98c4-000000000010"
+            .to_owned()
+            .try_into()
+            .map_err(|_| LeaseFailure::Fault)?;
+        Ok(crate::lease_source::ApprovalServiceTarget { organization_id })
+    }
+
     fn acquire<'source>(
         &'source self,
         binding: &'source u8,

@@ -4,10 +4,10 @@ use approval_request_protocol::{
     RegisterRunRequest, RunRefusal, StopReceiptEnding, StopReply, StopRequest,
 };
 use hegel::generators as gs;
-use switchboard_approval_holder::{
-    run_gate::{AuthorityEnd, CallAttempt, CallKey, DialAttempt, LinkAttempt},
-    waiting_request::{LocalNegative, ProviderReply, RaiseRefusal, WriterOutcome},
+use switchboard_approval_holder::waiting_request::{
+    LocalNegative, ProviderReply, RaiseRefusal, WriterOutcome,
 };
+use switchboard_run_gate::{AuthorityEnd, CallAttempt, CallKey, DialAttempt, LinkAttempt};
 
 use super::fixtures::{
     GateEffect, GateEvent, RESPONDER, RequestEffect, authority, call_raise, raise,

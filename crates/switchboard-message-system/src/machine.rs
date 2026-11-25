@@ -328,7 +328,7 @@ impl Supervisor {
                 return self.schedule(RETRY, effects).map(|_| ());
             }
             Metadata::Empty => self.enrollment_lost(EnrollmentDuringDrain::Empty, effects),
-            Metadata::Ended => self.enrollment_lost(EnrollmentDuringDrain::Ended, effects),
+            Metadata::Ended { .. } => self.enrollment_lost(EnrollmentDuringDrain::Ended, effects),
             Metadata::Active(ActiveEnrollment { pair, enrollment }) => {
                 if let Some(pinned) = self.pinned.as_ref()
                     && *pinned != pair

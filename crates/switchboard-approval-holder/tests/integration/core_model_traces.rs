@@ -2,9 +2,9 @@ use approval_request_protocol::{
     DeliverEndingReply, DeliverEndingRequest, Ending, RaiseReply, RegisterRunReply, RunRefusal,
 };
 use state_machine_core::{StateMachine, TransitionError};
-use switchboard_approval_holder::run_gate::CallAttempt;
 use switchboard_approval_holder::waiting_request::{LinkAttemptDisposition, LinkCallAnswer};
 use switchboard_approval_holder::waiting_request::{ProviderReply, WriterOutcome};
+use switchboard_run_gate::CallAttempt;
 
 use super::fixtures::{
     GateEvent, Mac, RESPONDER, RequestEffect, RequestEvent, RequestMachine, authority, call,
@@ -130,7 +130,7 @@ fn run_not_registered_holds_the_same_wait_until_registration_recovers() {
     let request = DeliverEndingRequest::from_raise(&raise(), Ending::TimedOut {}).unwrap();
     assert!(offer(&mut mac, 1, request).is_empty());
     assert_eq!(
-        switchboard_approval_holder::run_gate::RunGate::transition(
+        switchboard_run_gate::RunGate::transition(
             &mac.gate,
             GateEvent::PublishRegistration { call: call(1, 2) }
         ),

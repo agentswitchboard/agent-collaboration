@@ -8,6 +8,7 @@ const HOLDER: &str = "switchboard-approval-holder";
 const NORMAL: &[&str] = &[
     "approval-request-protocol",
     "state-machine-core",
+    "switchboard-run-gate",
     "workspace-ids",
 ];
 const DEV: &[&str] = &["hegeltest", "serde_json", "tokio", "turmoil"];

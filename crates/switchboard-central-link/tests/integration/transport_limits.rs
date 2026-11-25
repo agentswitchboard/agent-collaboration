@@ -54,7 +54,7 @@ async fn assert_message_limit(fragmented: bool) {
     welcome(&mut socket).await;
     fixture
         .status
-        .wait_for(|status| matches!(status, LinkStatus::Welcomed { .. }))
+        .wait_for(|status| matches!(status, LinkStatus::Connected { .. }))
         .await
         .unwrap();
     send_padded_delivery(&mut socket, EXPECTED_MESSAGE_LIMIT, fragmented).await;

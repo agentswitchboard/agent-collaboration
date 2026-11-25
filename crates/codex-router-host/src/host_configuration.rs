@@ -81,6 +81,8 @@ pub struct HostConfig {
     external_provider_startups: Vec<crate::ExternalProviderStartup>,
     provider_operation_retention_days: Option<NonZeroU32>,
     deadlines: HostDeadlines,
+    #[cfg(all(debug_assertions, feature = "runtime-test-support"))]
+    message_system_fixture: Option<crate::HostMessageSystemFixture>,
 }
 
 /// Already-resolved inputs for one host runtime.
@@ -118,7 +120,20 @@ impl HostConfig {
             external_provider_startups: Vec::new(),
             provider_operation_retention_days: None,
             deadlines: inputs.deadlines,
+            #[cfg(all(debug_assertions, feature = "runtime-test-support"))]
+            message_system_fixture: None,
         }
+    }
+    #[cfg(all(debug_assertions, feature = "runtime-test-support"))]
+    #[must_use]
+    pub fn with_message_system_fixture(mut self, fixture: crate::HostMessageSystemFixture) -> Self {
+        self.message_system_fixture = Some(fixture);
+        self
+    }
+
+    #[cfg(all(debug_assertions, feature = "runtime-test-support"))]
+    pub(crate) fn message_system_fixture(&self) -> Option<crate::HostMessageSystemFixture> {
+        self.message_system_fixture.clone()
     }
     #[must_use]
     pub fn with_owner_human_id(mut self, owner_human_id: message_board::HumanId) -> Self {

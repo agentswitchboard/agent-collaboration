@@ -21,6 +21,7 @@ fleet-approvals.workspace = true
 state-machine-core.workspace = true
 switchboard-approval-holder.workspace = true
 switchboard-approval-ports.workspace = true
+switchboard-run-gate.workspace = true
 tempfile = "3.27.0"
 uuid.workspace = true
 

@@ -4,5 +4,4 @@
 //! The checks refuse stale inputs and candidates under the current gate,
 //! relying on the executor to serialize access.
 
-pub mod run_gate;
 pub mod waiting_request;

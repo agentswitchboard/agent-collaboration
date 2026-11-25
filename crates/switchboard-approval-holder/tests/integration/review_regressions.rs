@@ -6,10 +6,10 @@ use state_machine_core::{StateMachine, TransitionError};
 use switchboard_approval_holder::waiting_request::{
     LinkAttemptDisposition, LinkCallAnswer, RequestFamily,
 };
-use switchboard_approval_holder::{
-    run_gate::{AuthorityEnd, CallAttempt, DialAttempt, RunGate},
-    waiting_request::{LocalNegative, ProviderReply, WaitState, WriterOutcome},
+use switchboard_approval_holder::waiting_request::{
+    LocalNegative, ProviderReply, WaitState, WriterOutcome,
 };
+use switchboard_run_gate::{AuthorityEnd, CallAttempt, DialAttempt, RunGate};
 
 use super::fixtures::{
     GateEffect, GateEvent, Mac, RESPONDER, RequestEffect, RequestEvent, RequestMachine, authority,
@@ -50,7 +50,7 @@ fn stale_dial_and_registration_attempts_cannot_change_a_new_attempt() {
     let old = link(1);
     mac.gate_event(GateEvent::DialStarted { link: old.clone() });
     mac.lose_connection(1);
-    let fresh = switchboard_approval_holder::run_gate::LinkAttempt {
+    let fresh = switchboard_run_gate::LinkAttempt {
         connection: 1,
         dial: DialAttempt::new(2),
     };
@@ -73,11 +73,11 @@ fn stale_dial_and_registration_attempts_cannot_change_a_new_attempt() {
         link: fresh.clone(),
     });
 
-    let first = switchboard_approval_holder::run_gate::CallKey {
+    let first = switchboard_run_gate::CallKey {
         link: fresh.clone(),
         attempt: CallAttempt::new(10),
     };
-    let retry = switchboard_approval_holder::run_gate::CallKey {
+    let retry = switchboard_run_gate::CallKey {
         link: fresh,
         attempt: CallAttempt::new(11),
     };

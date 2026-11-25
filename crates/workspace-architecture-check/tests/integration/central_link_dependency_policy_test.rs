@@ -43,6 +43,21 @@ fn declared(name: &str, kind: Option<&str>, features: &[&str]) -> Value {
 }
 
 #[test]
+fn only_the_driver_and_holder_can_take_a_production_run_gate_edge() {
+    let metadata = fixture(
+        "switchboard-message-system",
+        declared("switchboard-run-gate", None, &[]),
+        "switchboard-run-gate",
+        Some(DependencyKind::Normal),
+    );
+    let error = check(&metadata).unwrap_err().to_string();
+    assert_eq!(
+        error,
+        "BD1: forbidden Normal dependency switchboard-message-system -> switchboard-run-gate"
+    );
+}
+
+#[test]
 fn link_declared_features_do_not_enable_the_protocol_test_vocabulary() {
     let metadata = fixture(
         "switchboard-central-link",
@@ -93,8 +108,30 @@ fn host_cannot_enable_the_loopback_test_constructor() {
     );
     let error = check(&metadata).unwrap_err().to_string();
     assert!(
-        error.contains("codex-router-host enables the link's loopback test constructor"),
+        error.contains("forbidden link declared Normal dependency codex-router-host -> switchboard-central-link"),
         "{error}"
+    );
+}
+
+#[test]
+fn host_registration_fixture_store_is_a_dev_only_edge() {
+    let store = "switchboard-machine-enrollment-store";
+    let fixture_metadata = fixture(
+        "codex-router-host",
+        declared(store, Some("dev"), &["test-support"]),
+        store,
+        Some(DependencyKind::Dev),
+    );
+    assert!(check(&fixture_metadata).is_ok());
+    let shipping_metadata = fixture(
+        "codex-router-host",
+        declared(store, None, &["test-support"]),
+        store,
+        Some(DependencyKind::Normal),
+    );
+    assert_eq!(
+        check(&shipping_metadata).unwrap_err().to_string(),
+        "BD1: forbidden link declared Normal dependency codex-router-host -> switchboard-machine-enrollment-store"
     );
 }
 

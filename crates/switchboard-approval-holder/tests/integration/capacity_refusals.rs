@@ -1,9 +1,9 @@
 use approval_request_protocol::{HolderStopCause, RegisterRunReply};
 use state_machine_core::{StateMachine, TransitionError};
-use switchboard_approval_holder::{
-    run_gate::CallAttempt,
-    waiting_request::{LocalNegative, ProviderReply, RequestFamily, WaitRefusal, WaitState},
+use switchboard_approval_holder::waiting_request::{
+    LocalNegative, ProviderReply, RequestFamily, WaitRefusal, WaitState,
 };
+use switchboard_run_gate::CallAttempt;
 
 use super::fixtures::{Mac, RESPONDER, RequestEffect, RequestEvent, RequestMachine, try_publish};
 

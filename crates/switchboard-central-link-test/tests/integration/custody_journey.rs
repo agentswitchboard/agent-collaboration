@@ -97,7 +97,7 @@ impl CustodyJourney {
             .wait_for(|status| {
                 matches!(
                     status,
-                    LinkStatus::Welcomed { .. }
+                    LinkStatus::Connected { .. }
                         | LinkStatus::Fault { .. }
                         | LinkStatus::EnrollmentEnded { .. }
                 )
@@ -107,7 +107,7 @@ impl CustodyJourney {
             .clone();
         assert_eq!(
             actual,
-            LinkStatus::Welcomed {
+            LinkStatus::Connected {
                 machine_id: MACHINE_LINK_FIXTURE_MACHINE.parse().unwrap()
             }
         );
