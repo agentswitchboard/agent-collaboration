@@ -10,14 +10,17 @@ pub(super) enum DispatchMark {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum NoticeAdmissionPlacement {
+    StartTurn,
+    SteerExactTurn,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum AdmissionClass {
     Independent,
     OwnerPlaced,
-    /// A notice starting a turn yields to hand-off custody without holding admission.
-    Notice,
-    RefuseWhileRunning {
-        foreground: uuid::Uuid,
-    },
+    Notice { placement: NoticeAdmissionPlacement },
+    RefuseWhileRunning { foreground: uuid::Uuid },
 }
 
 impl AdmissionClass {
@@ -26,7 +29,7 @@ impl AdmissionClass {
     }
 
     pub(super) const fn is_notice(self) -> bool {
-        matches!(self, Self::Notice)
+        matches!(self, Self::Notice { .. })
     }
 }
 
@@ -108,7 +111,13 @@ impl AdmissionRequest<'_> {
             // to the owner, and same-ID reuse consults the existing operation.
             EarlierOperation::InFlight { .. }
                 if self.kind == ConversationClose
-                    || self.mode.class == AdmissionClass::OwnerPlaced
+                    || matches!(
+                        self.mode.class,
+                        AdmissionClass::OwnerPlaced
+                            | AdmissionClass::Notice {
+                                placement: NoticeAdmissionPlacement::SteerExactTurn
+                            }
+                    )
                     || self.operation == earlier =>
             {
                 false

@@ -4,7 +4,7 @@ use super::{
     ConversationOperationFailureKind, ConversationOperationFailureStage,
     ExternalProviderSupervisor, PreparedOperation, ProviderOperationCompletion,
     ProviderOperationEffect, ProviderOperationKind, failure,
-    provider_admission_policy::{AdmissionClass, AdmissionMode},
+    provider_admission_policy::{AdmissionClass, AdmissionMode, NoticeAdmissionPlacement},
     provider_owner_operations::owner_failure,
     provider_owner_prompt::{SessionQueuePlan, WarmRun, explicit_steer_refusal, retained_prompt},
     provider_prompt_contents::ProviderPromptContentsRequest,
@@ -274,16 +274,14 @@ impl ExternalProviderSupervisor {
         let class = match admission {
             DeliveryAdmission::Requested(_)
             | DeliveryAdmission::QueueOnRun(_)
-            | DeliveryAdmission::Notice(NoticeRun {
-                placement: NoticePlacement::Steer(_),
-                ..
-            })
             | DeliveryAdmission::SteerExisting(_) => AdmissionClass::OwnerPlaced,
             DeliveryAdmission::Warm(_) => AdmissionClass::Independent,
-            DeliveryAdmission::Notice(NoticeRun {
-                placement: NoticePlacement::Direct,
-                ..
-            }) => AdmissionClass::Notice,
+            DeliveryAdmission::Notice(run) => AdmissionClass::Notice {
+                placement: match run.placement {
+                    NoticePlacement::Direct => NoticeAdmissionPlacement::StartTurn,
+                    NoticePlacement::Steer(_) => NoticeAdmissionPlacement::SteerExactTurn,
+                },
+            },
             #[cfg(test)]
             DeliveryAdmission::Direct => AdmissionClass::Independent,
         };

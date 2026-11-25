@@ -6,7 +6,9 @@ mod write_custody;
 use super::{
     LiveOperation, LiveOperations, OperationId, ProviderBindingIdentity, ProviderOperationKind,
     SessionRef,
-    provider_admission_policy::{AdmissionClass, AdmissionMode, AdmissionRequest},
+    provider_admission_policy::{
+        AdmissionClass, AdmissionMode, AdmissionRequest, EarlierOperation, NoticeAdmissionPlacement,
+    },
     provider_operation_index::Reservation,
     tests::binding,
 };
@@ -192,13 +194,28 @@ struct ReservationEntry {
 
 fn prompt_entries(foreground: uuid::Uuid) -> [ReservationEntry; 19] {
     use AdmissionClass::{Independent, Notice, OwnerPlaced, RefuseWhileRunning};
+    use NoticeAdmissionPlacement::{StartTurn, SteerExactTurn};
     [
         ("direct prompt", Independent, false, true),
         ("Compact", Independent, false, true),
         ("Warm", Independent, false, true),
         ("direct delivery", Independent, false, true),
-        ("direct notice", Notice, false, false),
-        ("exact-steer notice", OwnerPlaced, false, false),
+        (
+            "direct notice",
+            Notice {
+                placement: StartTurn,
+            },
+            false,
+            false,
+        ),
+        (
+            "exact-steer notice",
+            Notice {
+                placement: SteerExactTurn,
+            },
+            false,
+            false,
+        ),
         ("idle API Auto", OwnerPlaced, false, false),
         ("idle Steer fallback", OwnerPlaced, false, false),
         ("rowless idle Auto", OwnerPlaced, true, false),
@@ -272,22 +289,42 @@ fn the_reservation_class_table_keeps_admission_and_dispatch_holds_distinct() {
     let exact_steer_notice = prompt_request(
         &second,
         &session,
-        AdmissionMode::deferred(AdmissionClass::OwnerPlaced),
+        AdmissionMode::deferred(AdmissionClass::Notice {
+            placement: NoticeAdmissionPlacement::SteerExactTurn,
+        }),
     );
-    let notice = prompt_request(
+    let direct_notice = prompt_request(
         &second,
         &session,
-        AdmissionMode::deferred(AdmissionClass::Notice),
+        AdmissionMode::deferred(AdmissionClass::Notice {
+            placement: NoticeAdmissionPlacement::StartTurn,
+        }),
     );
+    for request in [direct_notice, exact_steer_notice] {
+        assert!(request.blocked_by(&first, EarlierOperation::Unknown, None));
+    }
     for entry in prompt_entries(uuid::Uuid::now_v7()) {
         let mut index = LiveOperations::default();
         let holder = place_prompt(&mut index, &binding, &session, &first, &entry);
+        let notice_holder = matches!(entry.mode.class, AdmissionClass::Notice { .. });
+        assert_eq!(
+            entry.mode.class.is_notice(),
+            notice_holder,
+            "{}",
+            entry.name
+        );
+        assert_eq!(
+            entry.mode.class.holds_admission(),
+            entry.admission_holder,
+            "{}",
+            entry.name
+        );
         let assert_hold_readers = |dispatch_hold: bool| {
-            // A direct notice yields to reservations and dispatch holders.
-            // The lane still sees its dispatch mark.
+            // Both notice placements leave independent admission alone.
+            // The store lane still sees either placement's dispatch mark.
             assert_eq!(
                 index.admission_blockers(&binding, asks).contains(&first),
-                !entry.mode.class.is_notice() && (entry.admission_holder || dispatch_hold),
+                !notice_holder && (entry.admission_holder || dispatch_hold),
                 "{}",
                 entry.name
             );
@@ -305,7 +342,7 @@ fn the_reservation_class_table_keeps_admission_and_dispatch_holds_distinct() {
                 entry.name
             );
             assert_eq!(
-                index.admission_blockers(&binding, notice),
+                index.admission_blockers(&binding, direct_notice),
                 vec![first.clone()],
                 "{}",
                 entry.name
@@ -322,7 +359,7 @@ fn the_reservation_class_table_keeps_admission_and_dispatch_holds_distinct() {
         assert_hold_readers(false);
         holder.finish_write(CustodyEnd::NoWrite);
         assert!(index.admission_blockers(&binding, asks).is_empty());
-        assert!(index.admission_blockers(&binding, notice).is_empty());
+        assert!(index.admission_blockers(&binding, direct_notice).is_empty());
         assert_eq!(index.lane_mark_blocker(&binding, asks), None);
     }
     for (kind, target, mode) in [
@@ -375,6 +412,11 @@ fn the_reservation_class_table_keeps_admission_and_dispatch_holds_distinct() {
             index
                 .admission_blockers(&binding, exact_steer_notice)
                 .is_empty(),
+            "{kind:?}"
+        );
+        assert_eq!(
+            index.admission_blockers(&binding, direct_notice),
+            vec![first.clone()],
             "{kind:?}"
         );
         assert_eq!(
@@ -451,7 +493,8 @@ fn generated_same_target_reservations_obey_first_independent_hold(case: hegel::T
     if stage == 3 {
         holder.finish_write(CustodyEnd::Written);
     }
-    let blocked = stage == 2 || (stage < 2 && entry.admission_holder);
+    let notice_holder = matches!(entry.mode.class, AdmissionClass::Notice { .. });
+    let blocked = (stage == 2 && !notice_holder) || (stage < 2 && entry.admission_holder);
     match reserve(&mut index, &binding, asks) {
         Err(blockers) => {
             assert!(blocked, "{} {stage}", entry.name);
