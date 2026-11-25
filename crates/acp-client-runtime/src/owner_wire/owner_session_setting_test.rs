@@ -11,6 +11,15 @@ use provider_session_machines::{
 };
 use serde_json::{Value, json};
 use session_event_model::{InputId, PromptContent, ProviderSubmission};
+use switchboard_harness_contracts::ReservedReply;
+
+struct CapturedWorkReply(std::sync::mpsc::Sender<WorkReply>);
+
+impl ReservedReply<WorkReply> for CapturedWorkReply {
+    fn send(self: Box<Self>, reply: WorkReply) {
+        self.0.send(reply).expect("test owns reply receiver");
+    }
+}
 
 struct ConnectionCatalogueBehavior;
 
@@ -90,6 +99,7 @@ fn settle_catalogue_reply(
         authorization_seq: 1,
         target: AuthorizationTarget::Session,
     };
+    let (send_reply, receive_reply) = std::sync::mpsc::channel();
     let offered = CorrelatedSetting {
         shape: SettingResponseShape {
             catalog: catalogue,
@@ -100,18 +110,21 @@ fn settle_catalogue_reply(
             accepted_fallback: None,
             mode_confirmation: None,
         },
-        correlation: SettingCorrelation::Explicit(authorization.clone()),
+        correlation: SettingCorrelation::Explicit {
+            authorization: authorization.clone(),
+            completion: Box::new(CapturedWorkReply(send_reply)),
+        },
     };
 
-    let event = offered.settle(
+    offered.settle(
         Some(Ok(json!({"configOptions": options}))),
         &ConnectionCatalogueBehavior,
     );
 
-    let OwnerEvent::Dispatch(DispatchResult::SettingFinished {
+    let WorkReply::Dispatch(DispatchResult::SettingFinished {
         authorization: observed_authorization,
         observation,
-    }) = event
+    }) = receive_reply.try_recv().expect("work reply")
     else {
         panic!("explicit setting must yield a correlated dispatch result");
     };

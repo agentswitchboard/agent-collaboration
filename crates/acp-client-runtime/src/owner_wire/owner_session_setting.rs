@@ -1,6 +1,7 @@
 //! Translate owner-authorized settings to exact ACP values and readback.
 
 use crate::owner_wire::OwnerWireRefusal;
+use crate::session_owner_task::OwnerCompletion;
 use crate::{
     PermissionModePlan, RequestedPermissionMode, owner_session_open::OwnerOpenedSession,
     plan_permission_mode,
@@ -24,6 +25,7 @@ use provider_session_machines::{
     session_setting_machine::{SettingApplication, SettingValueId},
 };
 use std::sync::Arc;
+use switchboard_harness_contracts::{ReservedWorkReply, WorkOfferRefusal, WorkReply};
 use uuid::Uuid;
 
 #[cfg(test)]
@@ -108,14 +110,19 @@ pub(crate) struct ModeConfirmation {
 }
 
 pub(crate) enum SettingCorrelation {
-    Explicit(DispatchAuthorization),
+    Explicit {
+        authorization: DispatchAuthorization,
+        completion: ReservedWorkReply,
+    },
     RestoreMode {
         run: RunAttempt<LoadAttempt>,
         setting: OwnerSetting,
+        completion: OwnerCompletion,
     },
     RestoreFastOff {
         run: RunAttempt<LoadAttempt>,
         setting: OwnerSetting,
+        completion: OwnerCompletion,
     },
 }
 
@@ -132,8 +139,19 @@ impl OwnerSettingWirePlan {
         wanted: String,
         accepted_fallback: Option<String>,
     ) -> Result<Self, OwnerWireRefusal> {
+        Self::from_work_catalog(session, catalog, kind, wanted, accepted_fallback)
+            .map_err(|_| OwnerWireRefusal::Encoding)
+    }
+
+    pub(super) fn from_work_catalog(
+        session: String,
+        catalog: &ProviderSettingsCatalog,
+        kind: ProviderSettingKind,
+        wanted: String,
+        accepted_fallback: Option<String>,
+    ) -> Result<Self, WorkOfferRefusal> {
         if catalog.unavailable_selection(kind, &wanted).is_some() {
-            return Err(OwnerWireRefusal::Encoding);
+            return Err(WorkOfferRefusal::SettingValueNotOffered);
         }
         let reads_value = catalog.config_option(kind).is_some();
         let message = if let Some(option) = catalog.config_option(kind) {
@@ -150,22 +168,24 @@ impl OwnerSettingWirePlan {
                                 &choice.value,
                             )
                         })
-                        .ok_or(OwnerWireRefusal::Encoding)?;
+                        .ok_or(WorkOfferRefusal::SettingValueNotOffered)?;
                     SessionConfigOptionValue::value_id(off.value.clone())
                 }
                 ProviderConfigValue::Select(_) => {
                     SessionConfigOptionValue::value_id(wanted.clone())
                 }
-                ProviderConfigValue::Boolean(_) => return Err(OwnerWireRefusal::Encoding),
+                ProviderConfigValue::Boolean(_) => {
+                    return Err(WorkOfferRefusal::SettingSetterUnavailable);
+                }
             };
             SetSessionConfigOptionRequest::new(session, option.id.clone(), value)
                 .to_untyped_message()
         } else if kind == ProviderSettingKind::Mode && !catalog.modes.is_empty() {
             SetSessionModeRequest::new(session, wanted.clone()).to_untyped_message()
         } else {
-            return Err(OwnerWireRefusal::Encoding);
+            return Err(WorkOfferRefusal::SettingSetterUnavailable);
         }
-        .map_err(|_| OwnerWireRefusal::Encoding)?;
+        .map_err(|_| WorkOfferRefusal::PreparationFailed)?;
         Ok(Self {
             message,
             response: SettingResponseShape {
@@ -204,7 +224,7 @@ impl CorrelatedSetting {
         self,
         reply: Option<Result<serde_json::Value, Error>>,
         behavior: &dyn crate::ProviderBehavior,
-    ) -> OwnerEvent {
+    ) {
         let Self {
             mut shape,
             correlation,
@@ -251,7 +271,10 @@ impl CorrelatedSetting {
             })
         };
         match correlation {
-            SettingCorrelation::Explicit(authorization) => {
+            SettingCorrelation::Explicit {
+                authorization,
+                completion,
+            } => {
                 let fast_refusal = shape.kind == ProviderSettingKind::Fast
                     && catalogue_reported
                     && shape.catalog.fast_observed() != FastObserved::Off;
@@ -290,12 +313,16 @@ impl CorrelatedSetting {
                 } else {
                     SettingObservation::Unknown
                 };
-                OwnerEvent::Dispatch(DispatchResult::SettingFinished {
+                completion.send(WorkReply::Dispatch(DispatchResult::SettingFinished {
                     authorization,
                     observation,
-                })
+                }));
             }
-            SettingCorrelation::RestoreMode { run, setting } => {
+            SettingCorrelation::RestoreMode {
+                run,
+                setting,
+                completion,
+            } => {
                 let outcome = match observed {
                     Some(value) if value.0 == shape.sent => RestoreModeOutcome::Confirmed(value),
                     Some(value) if shape.accepted_fallback.as_deref() == Some(value.0.as_str()) => {
@@ -307,15 +334,19 @@ impl CorrelatedSetting {
                     },
                     None => RestoreModeOutcome::Unconfirmed,
                 };
-                OwnerEvent::Wire(SessionWireResult::RestoreMode {
+                completion.send(OwnerEvent::Wire(SessionWireResult::RestoreMode {
                     run,
                     setting,
                     outcome,
                     catalogue: (catalogue_reported || confirmed_legacy_mode)
                         .then(|| Arc::new(shape.catalog)),
-                })
+                }));
             }
-            SettingCorrelation::RestoreFastOff { run, setting } => {
+            SettingCorrelation::RestoreFastOff {
+                run,
+                setting,
+                completion,
+            } => {
                 let cause = match &observed {
                     Some(value)
                         if !provider_session_machines::provider_settings_catalog::is_fast_off_select_value(
@@ -328,7 +359,7 @@ impl CorrelatedSetting {
                     None if refused => Some(ObservationCause::Refused),
                     None => Some(ObservationCause::Unconfirmed),
                 };
-                OwnerEvent::Prepare(RestorePreparation::FastOff {
+                completion.send(OwnerEvent::Prepare(RestorePreparation::FastOff {
                     run,
                     setting,
                     catalogue: catalogue_reported.then(|| Arc::new(shape.catalog)),
@@ -337,7 +368,7 @@ impl CorrelatedSetting {
                             .map_or(ObservedSetting::Unknown, ObservedSetting::Confirmed),
                         cause,
                     },
-                })
+                }));
             }
         }
     }

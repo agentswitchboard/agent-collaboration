@@ -16,6 +16,10 @@ use std::{
     collections::{BTreeMap, HashMap},
     sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
+use switchboard_harness_contracts::{
+    CancelDrainStart, CancelReservationRefusal, ReplyAdmission, RunRetirement, WorkReply,
+    WriterState,
+};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 #[derive(Default)]
@@ -293,23 +297,57 @@ impl<P: InteractionPort> OwnerCancelDrainExecutor<P> {
         tasks: &TaskTracker,
         stop: CancellationToken,
     ) -> Result<Option<OwnerEvent>, OwnerTaskError> {
-        let Some(drain) = self.approvals.begin_cancel(session, &authorization) else {
-            return Ok(Some(OwnerEvent::Dispatch(
+        match self.begin_work(
+            session,
+            authorization.clone(),
+            &mut || completions.reserve_work_reply(owner),
+            tasks,
+            Box::pin(stop.cancelled_owned()),
+        ) {
+            CancelDrainStart::AlreadyDrained => Ok(Some(OwnerEvent::Dispatch(
                 DispatchResult::CancelDrainFinished(authorization),
-            )));
+            ))),
+            CancelDrainStart::Waiting => Ok(None),
+            CancelDrainStart::Refused(CancelReservationRefusal::Full) => {
+                Err(OwnerTaskError::CompletionCapacity)
+            }
+            CancelDrainStart::Refused(CancelReservationRefusal::Stopped) => {
+                Err(OwnerTaskError::ExecutorStopped)
+            }
+        }
+    }
+
+    pub(crate) fn begin_work(
+        &mut self,
+        session: &str,
+        authorization: DispatchAuthorization,
+        reserve_reply: &mut dyn FnMut() -> ReplyAdmission<WorkReply>,
+        tasks: &TaskTracker,
+        retired: RunRetirement,
+    ) -> CancelDrainStart {
+        let Some(drain) = self.approvals.begin_cancel(session, &authorization) else {
+            return CancelDrainStart::AlreadyDrained;
         };
-        let completion = completions.reserve(owner)?;
+        let completion = match reserve_reply() {
+            ReplyAdmission::Reserved(completion) => completion,
+            ReplyAdmission::Refused(WriterState::Full) => {
+                return CancelDrainStart::Refused(CancelReservationRefusal::Full);
+            }
+            ReplyAdmission::Refused(WriterState::Stopped) => {
+                return CancelDrainStart::Refused(CancelReservationRefusal::Stopped);
+            }
+        };
         let drain = Arc::new(drain);
         self.pending.insert(authorization.clone(), drain.clone());
         tasks.spawn(async move {
             tokio::select! {
-                () = stop.cancelled() => {}
+                () = retired => {}
                 () = drain.settle_pending_approvals() => completion.send(
-                    OwnerEvent::Dispatch(DispatchResult::CancelDrainFinished(authorization))
+                    WorkReply::Dispatch(DispatchResult::CancelDrainFinished(authorization))
                 ),
             }
         });
-        Ok(None)
+        CancelDrainStart::Waiting
     }
 
     pub fn take(

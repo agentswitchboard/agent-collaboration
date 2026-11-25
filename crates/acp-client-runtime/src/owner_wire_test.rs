@@ -130,29 +130,35 @@ async fn settle_prompt_error(provider_shutdown: CancellationToken) -> SessionSna
         turn,
         compact: false,
         reader: None,
+        completion: Box::new(
+            handle
+                .completion_port()
+                .reserve(address)
+                .expect("reserve prompt completion"),
+        ),
     };
     // Both waits are ready in the shutdown case. The reply wins the worker's
     // select and enters the owner before any independent retirement event.
-    let (reply, connection_lost) = correlation
-        .read_reply(
-            std::future::ready(Err(Error::internal_error())),
-            &provider_shutdown,
-            |_| false,
-        )
-        .await;
+    let (reply, connection_lost) = ResponseKind::read_reply(
+        matches!(&correlation, ResponseKind::Prompt { .. }),
+        std::future::ready(Err(Error::internal_error())),
+        &provider_shutdown,
+        |_| false,
+    )
+    .await;
     assert!(
         matches!(reply, Some(Err(_))),
         "consume the ready reply first"
     );
+    let ResponseKind::Prompt { completion, .. } = correlation else {
+        panic!("prompt reply correlation");
+    };
     PromptTerminal {
         authorization,
         turn,
         compact: false,
         reply,
-        completion: handle
-            .completion_port()
-            .reserve(address)
-            .expect("reserve prompt completion"),
+        completion,
     }
     .route(None, connection_lost);
 

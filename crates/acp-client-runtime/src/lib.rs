@@ -44,6 +44,7 @@ mod callback_router;
 mod external_permission_options;
 mod in_folder_allowance;
 mod interaction_port;
+pub mod owner_acp_binding;
 mod owner_callback_routing;
 mod owner_restore_updates;
 pub mod owner_session_creation;

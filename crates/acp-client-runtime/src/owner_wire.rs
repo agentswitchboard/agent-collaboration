@@ -3,6 +3,7 @@
 pub mod owner_session_open;
 pub mod owner_session_setting;
 pub mod owner_session_stream;
+mod owner_work_offers;
 
 use crate::acp_transport::{
     AcpTransport, CallbackKind, CallbackResolution, OrderedOutput, SlotEvidence, TransportRefusal,
@@ -11,15 +12,10 @@ use crate::acp_transport::{
 use crate::owner_session_open::{
     OpenFrame, OpenRequest, OwnerOpenConfiguration, OwnerSessionOpenReceipt, OwnerSessionOpenSetup,
 };
-use crate::owner_session_setting::{
-    CorrelatedSetting, ModeConfirmation, OwnerSettingWirePlan, SettingCorrelation,
-};
-use crate::provider_prompt_content::ProviderPromptContent;
+use crate::owner_session_setting::{CorrelatedSetting, OwnerSettingWirePlan, SettingCorrelation};
 use crate::provider_prompt_result_codec::decode_prompt_result;
 use crate::session_owner_task::OwnerCompletion;
-use agent_client_protocol::schema::v1::{
-    CancelNotification, CloseSessionRequest, ErrorCode, PromptRequest,
-};
+use agent_client_protocol::schema::v1::{CancelNotification, CloseSessionRequest, ErrorCode};
 use agent_client_protocol::{Agent, ConnectionTo, Error, JsonRpcMessage as _, UntypedMessage};
 use provider_session_machines::SessionGeneration;
 use provider_session_machines::session_lifecycle_machine::{CloseAttempt, LoadAttempt, RestoreVia};
@@ -34,6 +30,9 @@ use std::{
     num::NonZeroUsize,
     sync::{Arc, Mutex},
 };
+use switchboard_harness_contracts::{
+    HandOverRefusal, ReservedWorkReply, SteerIdlePolicy, WorkReply,
+};
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
@@ -42,7 +41,6 @@ use uuid::Uuid;
 enum AcpFrame {
     Request {
         message: UntypedMessage,
-        completion: OwnerCompletion,
         correlation: ResponseKind,
     },
     Cancel(CancelNotification),
@@ -68,19 +66,18 @@ enum ResponseKind {
         turn: TurnId,
         compact: bool,
         reader: Option<mpsc::Sender<PromptTerminal>>,
+        completion: ReservedWorkReply,
     },
     Steer {
         authorization: DispatchAuthorization,
         idle: SteerIdlePolicy,
+        completion: ReservedWorkReply,
     },
-    Close(RunAttempt<CloseAttempt>),
+    Close {
+        run: RunAttempt<CloseAttempt>,
+        completion: OwnerCompletion,
+    },
     Setting(Box<CorrelatedSetting>),
-}
-
-#[derive(Clone, Copy)]
-enum SteerIdlePolicy {
-    AllowOwnerPrompt,
-    Refuse,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -106,13 +103,13 @@ pub(crate) struct PromptTerminal {
     pub(crate) compact: bool,
     authorization: DispatchAuthorization,
     reply: Option<Result<serde_json::Value, Error>>,
-    completion: OwnerCompletion,
+    completion: ReservedWorkReply,
 }
 
 impl PromptTerminal {
     fn route(self, reader: Option<mpsc::Sender<Self>>, connection_lost: bool) {
         if connection_lost {
-            self.completion.send(OwnerEvent::ConnectionLost);
+            self.completion.send(WorkReply::ConnectionLost);
         } else if let Some(reader) = reader {
             if let Err(undelivered) = reader.try_send(self) {
                 undelivered.into_inner().finish(String::new(), None);
@@ -137,7 +134,7 @@ impl PromptTerminal {
                     .coded_wire_failure()
         {
             self.completion
-                .send(OwnerEvent::Dispatch(DispatchResult::PromptFailed {
+                .send(WorkReply::Dispatch(DispatchResult::PromptFailed {
                     authorization: self.authorization,
                     failure,
                 }));
@@ -156,7 +153,7 @@ impl PromptTerminal {
             _ => WireOutcome::Unknown,
         };
         self.completion
-            .send(OwnerEvent::Dispatch(DispatchResult::PromptFinished {
+            .send(WorkReply::Dispatch(DispatchResult::PromptFinished {
                 authorization: self.authorization,
                 outcome,
             }));
@@ -428,200 +425,6 @@ impl OwnerAcpWire {
         self.transport.allows_explicit_tool_request(session, tool)
     }
 
-    pub fn offer_prompt(
-        &self,
-        authorization: DispatchAuthorization,
-        turn: TurnId,
-        session: String,
-        content: ProviderPromptContent,
-        completion: OwnerCompletion,
-    ) -> Result<(), OwnerWireRefusal> {
-        let compact = content.is_compaction();
-        let request = PromptRequest::new(session, content.into_blocks());
-        let route = TransportRun {
-            incarnation: authorization.incarnation,
-            generation: authorization.run,
-        };
-        let reader = self
-            .readers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&route)
-            .cloned();
-        self.offer_request(
-            authorization.clone(),
-            Some(turn),
-            request.to_untyped_message(),
-            completion,
-            ResponseKind::Prompt {
-                authorization,
-                turn,
-                compact,
-                reader,
-            },
-        )
-    }
-
-    pub fn offer_steer(
-        &self,
-        authorization: DispatchAuthorization,
-        session: String,
-        content: ProviderPromptContent,
-        completion: OwnerCompletion,
-    ) -> Result<(), OwnerWireRefusal> {
-        self.offer_steer_with_idle_policy(
-            authorization,
-            session,
-            content,
-            completion,
-            SteerIdlePolicy::AllowOwnerPrompt,
-        )
-    }
-
-    /// Offers a steer which must leave the session untouched if its turn ended.
-    pub fn offer_exact_steer(
-        &self,
-        authorization: DispatchAuthorization,
-        session: String,
-        content: ProviderPromptContent,
-        completion: OwnerCompletion,
-    ) -> Result<(), OwnerWireRefusal> {
-        self.offer_steer_with_idle_policy(
-            authorization,
-            session,
-            content,
-            completion,
-            SteerIdlePolicy::Refuse,
-        )
-    }
-
-    fn offer_steer_with_idle_policy(
-        &self,
-        authorization: DispatchAuthorization,
-        session: String,
-        content: ProviderPromptContent,
-        completion: OwnerCompletion,
-        idle: SteerIdlePolicy,
-    ) -> Result<(), OwnerWireRefusal> {
-        let request = UntypedMessage::new(
-            "_session/steering",
-            serde_json::json!({
-                "sessionId": session,
-                "prompt": content.into_blocks(),
-                "_meta": { "steering": { "idleBehavior": "promptRequired" } },
-            }),
-        );
-        self.offer_request(
-            authorization.clone(),
-            None,
-            request,
-            completion,
-            ResponseKind::Steer {
-                authorization,
-                idle,
-            },
-        )
-    }
-
-    fn offer_request(
-        &self,
-        authorization: DispatchAuthorization,
-        new_turn: Option<TurnId>,
-        message: Result<UntypedMessage, Error>,
-        completion: OwnerCompletion,
-        correlation: ResponseKind,
-    ) -> Result<(), OwnerWireRefusal> {
-        Ok(self.transport.offer(
-            authorization,
-            new_turn,
-            AcpFrame::Request {
-                message: message.map_err(|_| OwnerWireRefusal::Encoding)?,
-                completion,
-                correlation,
-            },
-        )?)
-    }
-
-    pub fn offer_cancel(
-        &self,
-        authorization: DispatchAuthorization,
-        session: String,
-    ) -> Result<(), TransportRefusal> {
-        self.transport.offer(
-            authorization,
-            None,
-            AcpFrame::Cancel(CancelNotification::new(session)),
-        )
-    }
-
-    pub fn offer_explicit_setting(
-        &self,
-        authorization: DispatchAuthorization,
-        session: String,
-        kind: provider_session_machines::ProviderSettingKind,
-        wanted: String,
-        completion: OwnerCompletion,
-    ) -> Result<Option<DispatchResult>, OwnerWireRefusal> {
-        use crate::{PermissionModePlan, RequestedPermissionMode};
-        use provider_session_machines::ProviderSettingKind;
-
-        let run = TransportRun {
-            incarnation: authorization.incarnation,
-            generation: authorization.run,
-        };
-        let catalog = self
-            .session_catalog(run)
-            .ok_or(OwnerWireRefusal::Encoding)?;
-        let (wire_value, fallback, mode_confirmation) = if kind == ProviderSettingKind::Mode {
-            let plan = crate::plan_permission_mode(
-                RequestedPermissionMode::from_request(Some(&wanted)),
-                &catalog.advertised_values(kind),
-                self.behavior.auto_permission_mode(),
-            )
-            .map_err(|_| OwnerWireRefusal::Encoding)?;
-            match plan {
-                PermissionModePlan::Keep { reason, .. } => {
-                    return Ok(Some(DispatchResult::SettingKept {
-                        authorization,
-                        reason,
-                    }));
-                }
-                PermissionModePlan::Set {
-                    mode,
-                    accepted_fallback,
-                    reason,
-                    ..
-                } => (mode, accepted_fallback, Some(ModeConfirmation { reason })),
-            }
-        } else {
-            (wanted, None, None)
-        };
-        let plan =
-            OwnerSettingWirePlan::from_catalog(session, &catalog, kind, wire_value, fallback)?
-                .with_mode_confirmation(mode_confirmation);
-        self.offer_setting(authorization, plan, completion)?;
-        Ok(None)
-    }
-
-    fn offer_setting(
-        &self,
-        authorization: DispatchAuthorization,
-        plan: OwnerSettingWirePlan,
-        completion: OwnerCompletion,
-    ) -> Result<(), TransportRefusal> {
-        let (message, setting) =
-            plan.correlate(SettingCorrelation::Explicit(authorization.clone()));
-        self.transport.offer(
-            authorization,
-            None,
-            AcpFrame::Request {
-                message,
-                completion,
-                correlation: ResponseKind::Setting(Box::new(setting)),
-            },
-        )
-    }
-
     pub fn reapply_setting(
         &self,
         owner: OwnerIncarnation,
@@ -632,9 +435,17 @@ impl OwnerAcpWire {
     ) -> Result<(), TransportRefusal> {
         let correlation = match setting.kind {
             provider_session_machines::ProviderSettingKind::Fast => {
-                SettingCorrelation::RestoreFastOff { run, setting }
+                SettingCorrelation::RestoreFastOff {
+                    run,
+                    setting,
+                    completion,
+                }
             }
-            _ => SettingCorrelation::RestoreMode { run, setting },
+            _ => SettingCorrelation::RestoreMode {
+                run,
+                setting,
+                completion,
+            },
         };
         let (message, setting) = plan.correlate(correlation);
         self.transport.enqueue_request(
@@ -644,7 +455,6 @@ impl OwnerAcpWire {
             },
             AcpFrame::Request {
                 message,
-                completion,
                 correlation: ResponseKind::Setting(Box::new(setting)),
             },
         )
@@ -662,7 +472,18 @@ impl OwnerAcpWire {
         authorization: &DispatchAuthorization,
         still_requested: impl FnOnce() -> bool,
     ) -> Result<DispatchResult, TransportRefusal> {
-        let result = self.transport.take_when(authorization, still_requested)?;
+        self.hand_over_work(authorization, still_requested)
+            .map_err(TransportRefusal::from)
+    }
+
+    pub(crate) fn hand_over_work(
+        &self,
+        authorization: &DispatchAuthorization,
+        still_requested: impl FnOnce() -> bool,
+    ) -> Result<DispatchResult, HandOverRefusal> {
+        let result = self
+            .transport
+            .hand_over_work(authorization, still_requested)?;
         if matches!(result, DispatchResult::Taken(_))
             && authorization.target
                 == provider_session_machines::session_owner::AuthorizationTarget::NewTurn
@@ -712,8 +533,7 @@ impl OwnerAcpWire {
             message: CloseSessionRequest::new(session)
                 .to_untyped_message()
                 .map_err(|_| OwnerWireRefusal::Encoding)?,
-            completion,
-            correlation: ResponseKind::Close(run),
+            correlation: ResponseKind::Close { run, completion },
         };
         Ok(self.transport.enqueue_close(
             TransportRun {
@@ -774,7 +594,6 @@ impl OwnerAcpOutput {
                 }
                 AcpFrame::Request {
                     message,
-                    completion,
                     correlation,
                 } => {
                     let behavior = configuration.behavior.clone();
@@ -783,19 +602,18 @@ impl OwnerAcpOutput {
                     let input_ended = input_ended.clone();
                     let connection = connection.clone();
                     replies.spawn(async move {
-                        let (response, connection_lost) = correlation
-                            .read_reply(request, &shutdown, |error| {
+                        let (response, connection_lost) = ResponseKind::read_reply(
+                            matches!(&correlation, ResponseKind::Prompt { .. }),
+                            request,
+                            &shutdown,
+                            |error| {
                                 connection.is_incoming_closed()
                                     || input_ended.is_cancelled()
                                     || agent_client_protocol::is_incoming_transport_closed(error)
-                            })
-                            .await;
-                        correlation.complete(
-                            response,
-                            completion,
-                            connection_lost,
-                            behavior.as_ref(),
-                        );
+                            },
+                        )
+                        .await;
+                        correlation.complete(response, connection_lost, behavior.as_ref());
                     });
                 }
             }
@@ -808,7 +626,7 @@ impl OwnerAcpOutput {
 
 impl ResponseKind {
     async fn read_reply(
-        &self,
+        prompt_pending: bool,
         request: impl std::future::Future<Output = Result<serde_json::Value, Error>>,
         shutdown: &CancellationToken,
         incoming_lost: impl FnOnce(&Error) -> bool,
@@ -822,8 +640,7 @@ impl ResponseKind {
             reply.as_ref().is_err_and(|error| {
                 // The SDK can wake a prompt with an unmarked internal error
                 // after the process exits, before incoming EOF is observed.
-                (matches!(self, Self::Prompt { .. }) && shutdown.is_cancelled())
-                    || incoming_lost(error)
+                (prompt_pending && shutdown.is_cancelled()) || incoming_lost(error)
             })
         });
         (response, connection_lost)
@@ -832,7 +649,6 @@ impl ResponseKind {
     fn complete(
         self,
         reply: Option<Result<serde_json::Value, Error>>,
-        completion: OwnerCompletion,
         connection_lost: bool,
         behavior: &dyn crate::ProviderBehavior,
     ) {
@@ -842,6 +658,7 @@ impl ResponseKind {
                 turn,
                 compact,
                 reader,
+                completion,
             } => PromptTerminal {
                 turn,
                 compact,
@@ -851,64 +668,67 @@ impl ResponseKind {
             }
             .route(reader, connection_lost),
             Self::Setting(setting) => {
-                completion
-                    .send(setting.settle(if connection_lost { None } else { reply }, behavior));
+                setting.settle(if connection_lost { None } else { reply }, behavior);
             }
-            other => {
-                if let Some(event) = other.settle(reply) {
-                    completion.send(event);
-                }
-            }
-        }
-    }
-
-    fn settle(self, reply: Option<Result<serde_json::Value, Error>>) -> Option<OwnerEvent> {
-        Some(match self {
-            Self::Prompt { .. } | Self::Setting(_) => return None,
             Self::Steer {
                 authorization,
                 idle,
-            } => OwnerEvent::Dispatch(match reply {
-                Some(Ok(reply)) => match reply.get("outcome").and_then(serde_json::Value::as_str) {
-                    Some("startedNewTurn") => DispatchResult::SteerStartedNewTurn {
-                        authorization,
-                        turn: TurnId(Uuid::now_v7()),
-                    },
-                    Some("promptRequired") => match idle {
-                        SteerIdlePolicy::AllowOwnerPrompt => DispatchResult::PromptRequired {
-                            authorization,
-                            replacement_turn: TurnId(Uuid::now_v7()),
-                        },
-                        SteerIdlePolicy::Refuse => DispatchResult::SteerNeedsPrompt(authorization),
-                    },
-                    Some("injected") => DispatchResult::SteerFinished {
-                        authorization,
-                        outcome: WireOutcome::Confirmed(()),
-                    },
-                    Some("failed") => DispatchResult::SteerFinished {
-                        authorization,
-                        outcome: WireOutcome::Refused,
-                    },
-                    _ => DispatchResult::SteerInvalidReply(authorization),
-                },
-                Some(Err(error)) if definite_refusal(&error) => DispatchResult::SteerFinished {
+                completion,
+            } => {
+                completion.send(WorkReply::Dispatch(settle_steer_reply(
                     authorization,
-                    outcome: WireOutcome::Refused,
-                },
-                _ => DispatchResult::SteerFinished {
-                    authorization,
-                    outcome: WireOutcome::Unknown,
-                },
-            }),
-            Self::Close(run) => {
+                    idle,
+                    reply,
+                )));
+            }
+            Self::Close { run, completion } => {
                 let outcome = match reply {
                     Some(Ok(_)) => WireOutcome::Confirmed(()),
                     Some(Err(error)) if definite_refusal(&error) => WireOutcome::Refused,
                     _ => WireOutcome::Unknown,
                 };
-                OwnerEvent::Wire(SessionWireResult::Close { run, outcome })
+                completion.send(OwnerEvent::Wire(SessionWireResult::Close { run, outcome }));
             }
-        })
+        }
+    }
+}
+
+fn settle_steer_reply(
+    authorization: DispatchAuthorization,
+    idle: SteerIdlePolicy,
+    reply: Option<Result<serde_json::Value, Error>>,
+) -> DispatchResult {
+    match reply {
+        Some(Ok(reply)) => match reply.get("outcome").and_then(serde_json::Value::as_str) {
+            Some("startedNewTurn") => DispatchResult::SteerStartedNewTurn {
+                authorization,
+                turn: TurnId(Uuid::now_v7()),
+            },
+            Some("promptRequired") => match idle {
+                SteerIdlePolicy::AllowOwnerPrompt => DispatchResult::PromptRequired {
+                    authorization,
+                    replacement_turn: TurnId(Uuid::now_v7()),
+                },
+                SteerIdlePolicy::Refuse => DispatchResult::SteerNeedsPrompt(authorization),
+            },
+            Some("injected") => DispatchResult::SteerFinished {
+                authorization,
+                outcome: WireOutcome::Confirmed(()),
+            },
+            Some("failed") => DispatchResult::SteerFinished {
+                authorization,
+                outcome: WireOutcome::Refused,
+            },
+            _ => DispatchResult::SteerInvalidReply(authorization),
+        },
+        Some(Err(error)) if definite_refusal(&error) => DispatchResult::SteerFinished {
+            authorization,
+            outcome: WireOutcome::Refused,
+        },
+        _ => DispatchResult::SteerFinished {
+            authorization,
+            outcome: WireOutcome::Unknown,
+        },
     }
 }
 
