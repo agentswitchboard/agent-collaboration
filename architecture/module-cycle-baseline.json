@@ -91,7 +91,6 @@
   "switchboard-session-calls": [],
   "switchboard-session-events": [],
   "switchboard-session-payloads": [],
-  "switchboard-session-start": [],
   "switchboard-session-store": [{"modules":["switchboard_session_store::provider_operation_store","switchboard_session_store::provider_session_record"],"edges":[{"from":"switchboard_session_store::provider_operation_store","to":"switchboard_session_store::provider_session_record"},{"from":"switchboard_session_store::provider_session_record","to":"switchboard_session_store::provider_operation_store"}]}],
   "ui-preference-store": [],
   "vendor-protocol": [],
