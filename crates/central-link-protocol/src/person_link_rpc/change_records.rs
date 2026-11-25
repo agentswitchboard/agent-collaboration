@@ -20,12 +20,25 @@ impl Rpc for ReadOrganizationChangeRecordsRpc {
     type Reply = ReadOrganizationChangeRecordsResult;
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReadOrganizationChangeRecords {
     #[schemars(with = "Option<String>", extend("format" = "uuid"))]
     pub after: Option<Uuid>,
     pub limit: ChangeRecordPageLimit,
+}
+
+impl<'de> Deserialize<'de> for ReadOrganizationChangeRecords {
+    fn deserialize<D: serde::Deserializer<'de>>(input: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Fields {
+            after: Option<Uuid>,
+            limit: ChangeRecordPageLimit,
+        }
+        let Fields { after, limit } = approval_request_protocol::decode_named_map(input)?;
+        Ok(Self { after, limit })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]

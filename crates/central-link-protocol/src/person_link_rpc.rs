@@ -1,6 +1,9 @@
 //! Read organization data over an admitted person link.
 
 mod change_records;
+#[cfg(test)]
+#[path = "person_link_rpc_test.rs"]
+mod tests;
 pub use change_records::{
     AuditChangeKind, AuditChangeOrigin, AuditRecord, ChangeRecordPageLimit, MachineAllowanceState,
     ReadOrganizationChangeRecords, ReadOrganizationChangeRecordsResult,
@@ -96,10 +99,22 @@ impl Rpc for LookupOrganizationWorkspaceRpc {
     type Reply = LookupOrganizationWorkspaceResult;
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LookupOrganizationWorkspace {
     pub workspace_id: WorkspaceId,
+}
+
+impl<'de> Deserialize<'de> for LookupOrganizationWorkspace {
+    fn deserialize<D: serde::Deserializer<'de>>(input: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Fields {
+            workspace_id: WorkspaceId,
+        }
+        let Fields { workspace_id } = approval_request_protocol::decode_named_map(input)?;
+        Ok(Self { workspace_id })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
