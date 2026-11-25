@@ -577,3 +577,47 @@ fn deadline_wins_over_a_matching_renewal_at_equality() {
         [Effect::BackOff { attempt: ended }, Effect::NeedLease { .. }] if ended == &attempt)
     );
 }
+
+#[test]
+fn transport_status_alone_never_reports_connected() {
+    use super::{DialLease, LinkPhase, Renewal};
+
+    let (attempt, _) = attempt_pair();
+    let phases = [
+        LinkPhase::NotEnrolled,
+        LinkPhase::Waiting {
+            binding: 1,
+            lease: DialLease::Current,
+        },
+        LinkPhase::Dialing {
+            attempt: attempt.clone(),
+            lease: lease(1),
+            refresh: DialLease::Current,
+        },
+        LinkPhase::Welcomed {
+            attempt,
+            lease: lease(1),
+            deadline: at(120),
+            renewal: Renewal::Scheduled(at(60)),
+        },
+        LinkPhase::Fault {
+            binding: 1,
+            kind: LinkFault::LeaseSource,
+            retry_at: None,
+        },
+        LinkPhase::EnrollmentEnded {
+            binding: 1,
+            cause: EnrollmentEnd::Revoked,
+        },
+    ];
+    for phase in phases {
+        let state = LinkState {
+            machine_id: machine(),
+            phase,
+        };
+        assert!(
+            !matches!(state.status(), LinkStatus::Connected { .. }),
+            "{state:?}"
+        );
+    }
+}

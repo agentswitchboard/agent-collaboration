@@ -35,7 +35,7 @@ async fn held_initial_lease_does_not_spend_the_welcome_budget() {
     welcome(&mut socket).await;
     fixture
         .status
-        .wait_for(|status| matches!(status, LinkStatus::Welcomed { .. }))
+        .wait_for(|status| matches!(status, LinkStatus::Connected { .. }))
         .await
         .unwrap();
     fixture.stop().await;
@@ -77,7 +77,7 @@ async fn wall_clock_changes_in_both_directions_leave_elapsed_lease_timers_unchan
     welcome(&mut socket).await;
     fixture
         .status
-        .wait_for(|status| matches!(status, LinkStatus::Welcomed { .. }))
+        .wait_for(|status| matches!(status, LinkStatus::Connected { .. }))
         .await
         .unwrap();
     fixture.clock.not_due_check_now(tick(20)).await;
@@ -90,7 +90,7 @@ async fn wall_clock_changes_in_both_directions_leave_elapsed_lease_timers_unchan
             .unwrap();
         let still_welcomed = tokio::select! {
             event = fixture.inbox_events.recv() => event.is_some(),
-            _ = fixture.status.wait_for(|status| !matches!(status, LinkStatus::Welcomed { .. })) => false,
+            _ = fixture.status.wait_for(|status| !matches!(status, LinkStatus::Connected { .. })) => false,
         };
         assert!(
             still_welcomed,

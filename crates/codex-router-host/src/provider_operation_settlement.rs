@@ -7,9 +7,10 @@ use collaboration_protocol::{
     ProviderRequestedPolicy, ProviderSettingName, ProviderSettingsMappingStatus,
     ProviderWorkingDirectory, SessionRef,
 };
-use switchboard_session_store::ProviderOperationStore;
-use switchboard_session_store::ProviderOperationStoreError;
-use switchboard_session_store::{ProviderSessionRecord, ProviderSessionResumeInputs};
+use switchboard_session_store::{
+    ProviderOperationRecord, ProviderOperationStore, ProviderOperationStoreError,
+    ProviderSessionRecord, ProviderSessionResumeInputs,
+};
 
 pub(crate) enum ProviderOperationCompletion {
     Success {
@@ -42,14 +43,13 @@ pub(crate) async fn persist_provider_success(
     session_record: Option<&ProviderSessionRecord>,
     terminal_stop_reason: Option<ProviderPromptStopReason>,
     clock: &dyn router_clock::RuntimeClock,
-    #[cfg(test)] observe_target: Option<
-        &(dyn Fn(&switchboard_session_store::ProviderOperationRecord) + Sync),
-    >,
-) -> Result<(), ProviderOperationStoreError> {
+    #[cfg(test)] observe_target: Option<&(dyn Fn(&ProviderOperationRecord) + Sync)>,
+) -> Result<Option<ProviderOperationRecord>, ProviderOperationStoreError> {
     if let Some(session_record) = session_record {
         return store
             .settle_session_operation(operation_id, session_record)
-            .await;
+            .await
+            .map(|()| None);
     }
     if let Some(target) = target {
         let _target_record = store
@@ -68,8 +68,8 @@ pub(crate) async fn persist_provider_success(
             terminal_stop_reason,
             clock.utc_now().timestamp_millis(),
         )
-        .await?;
-    Ok(())
+        .await
+        .map(Some)
 }
 
 pub(crate) fn effective_settings(

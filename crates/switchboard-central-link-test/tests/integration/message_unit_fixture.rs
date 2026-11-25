@@ -57,6 +57,16 @@ pub(super) async fn grant_at_central(
     machine_id: &MachineId,
     approval_request: RequestId,
 ) -> (EnrollmentId, SecretValue) {
+    let enrollment = approve_at_central(central, machine_id, approval_request).await;
+    let token = grant_for_enrollment(central, machine_id, enrollment).await;
+    (enrollment, token)
+}
+
+pub(super) async fn approve_at_central(
+    central: &MachineLinkFixture,
+    machine_id: &MachineId,
+    approval_request: RequestId,
+) -> EnrollmentId {
     let organization = central.organization_id.as_str();
     let now = central.clock.utc_now().timestamp();
     let runtime = central
@@ -71,9 +81,26 @@ pub(super) async fn grant_at_central(
         "approverSecondFactorAt": now - 60, "codeExpiresAt": now + 600,
     })).unwrap()).await.unwrap();
     let approved = serde_json::to_value(approved).unwrap();
-    let enrollment = approved
+    approved
         .get("enrollmentId")
         .and_then(serde_json::Value::as_str)
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
+pub(super) async fn grant_for_enrollment(
+    central: &MachineLinkFixture,
+    machine_id: &MachineId,
+    enrollment: EnrollmentId,
+) -> SecretValue {
+    let organization = central.organization_id.as_str();
+    let now = central.clock.utc_now().timestamp();
+    let enrollment = enrollment.to_string();
+    let runtime = central
+        .host
+        .central(&central.organization_id)
+        .await
         .unwrap();
     let grant = runtime
         .decide_machine_token(
@@ -88,7 +115,7 @@ pub(super) async fn grant_at_central(
     let token = signed::machine_token(
         organization,
         machine_id.as_str(),
-        enrollment,
+        &enrollment,
         now,
         grant
             .get("grantExpiresAt")
@@ -96,10 +123,7 @@ pub(super) async fn grant_at_central(
             .unwrap(),
     )
     .unwrap();
-    (
-        enrollment.parse().unwrap(),
-        SecretValue::new(token).unwrap(),
-    )
+    SecretValue::new(token).unwrap()
 }
 
 pub(super) async fn enroll(

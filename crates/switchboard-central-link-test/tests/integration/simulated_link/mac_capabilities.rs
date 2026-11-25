@@ -13,6 +13,13 @@ use serde_json::json;
 use super::{MACHINE_LINK_FIXTURE_MACHINE, SimulatedLink, run_link_case};
 
 async fn check_advertisement_and_status(link: &SimulatedLink, previous: Option<u16>) -> u16 {
+    drop(
+        link.lane
+            .watch_registered()
+            .wait_for(Option::is_some)
+            .await
+            .unwrap(),
+    );
     let correlation_id: CorrelationId = "01890f2e-7b4c-7cc0-98c4-0000000000a1".parse().unwrap();
     let outcome = link
         .lane
@@ -61,11 +68,13 @@ async fn check_advertisement_and_status(link: &SimulatedLink, previous: Option<u
             ordinary.as_slice(),
             [LinkFrame::Data(DataFrame::Welcome { .. }),
              LinkFrame::Data(DataFrame::MacCapabilities(MacCapabilities { handled_calls })),
+             LinkFrame::Data(DataFrame::CallCentral { .. }),
+             LinkFrame::Data(DataFrame::CentralCallReply { .. }),
              LinkFrame::Data(DataFrame::RequestStatus { .. }),
              LinkFrame::Data(DataFrame::RequestStatusReply { .. })]
                 if handled_calls == &HandledMacCalls::default()
         ),
-        "expected Welcome, one empty advertisement, and an ordinary request/reply on the same socket: {ordinary:?}"
+        "expected Welcome, one empty advertisement, registration and an ordinary request/reply on the same socket: {ordinary:?}"
     );
     request.connection_port
 }

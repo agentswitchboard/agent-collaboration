@@ -10,7 +10,9 @@ use super::{
     ProviderBindingIdentity, ProviderOperationAdmission, ProviderOperationAdmissionResult,
     ProviderOperationEffect, ProviderOperationKind, ProviderOperationRecord,
     ProviderReconciliationState, SessionRef, admission_failure, failure,
-    provider_admission_policy::{AdmissionMode, AdmissionRequest, EarlierOperation},
+    provider_admission_policy::{
+        AdmissionBlockers, AdmissionMode, AdmissionRequest, EarlierOperation,
+    },
     provider_operation_index::Reservation,
     snapshot_failure, snapshot_from_record, unavailable_failure,
 };
@@ -195,17 +197,22 @@ impl ExternalProviderSupervisor {
                 if self.inner.clock.monotonic_now() >= deadline {
                     return Err(admission_expired(request.operation, request.target));
                 }
-                let pending = outcomes.as_ref().is_some_and(|outcomes| {
-                    request.target.is_some_and(|target| {
-                        outcomes.pending_dispatches_for(target).any(|operation| {
-                            request.blocked_by(
+                let notice = request.mode.class.is_notice();
+                let pending = outcomes.as_ref().and_then(|outcomes| {
+                    let target = request.target?;
+                    outcomes.pending_dispatches_for(target).find(|operation| {
+                        (notice
+                            || !operations
+                                .operations
+                                .get(*operation)
+                                .is_some_and(|live| live.is_notice()))
+                            && request.blocked_by(
                                 operation,
                                 EarlierOperation::InFlight {
                                     target: Some(target),
                                 },
                                 None,
                             )
-                        })
                     })
                 });
                 let unknown = outcomes.as_ref().map_or_else(Vec::new, |outcomes| {
@@ -218,11 +225,18 @@ impl ExternalProviderSupervisor {
                         context.unconfirmed_cancel.as_deref(),
                     )
                 });
-                if pending
+                if let Some(pending) = pending
                     && !blocked_by_unknown
                     && !operations.operations.contains_key(request.operation)
                 {
-                    None
+                    if notice {
+                        Some(Err(AdmissionBlockers {
+                            unknown: Vec::new(),
+                            in_flight: vec![pending.clone()],
+                        }))
+                    } else {
+                        None
+                    }
                 } else {
                     Some(operations.reserve(
                         binding,
@@ -305,7 +319,7 @@ impl ExternalProviderSupervisor {
             )
             .await?
             .map_err(|()| unavailable_failure(operation_id.clone(), Some(target.clone())))?;
-        let live = Arc::new(LiveOperation::queued_prompt(binding, target.clone()));
+        let live = Arc::new(LiveOperation::queued_prompt(binding, target.clone(), mode));
         match self
             .reserve_operation(deadline, binding, request, &context, &live)
             .await?
@@ -364,10 +378,12 @@ impl ExternalProviderSupervisor {
 
         #[cfg(test)]
         self.pause_before_admission_reservation_for_test().await;
-        let live = Arc::new(
-            LiveOperation::reserving(&binding, known_target.cloned(), operation_kind, mode.mark)
-                .with_cancel_target(mode.cancel_target),
-        );
+        let live = Arc::new(LiveOperation::reserving(
+            &binding,
+            known_target.cloned(),
+            operation_kind,
+            mode,
+        ));
         if matches!(
             self.reserve_operation(deadline, &binding, request, &context, &live)
                 .await?,
@@ -481,7 +497,7 @@ impl ExternalProviderSupervisor {
                         let _result = reply.send(result);
                     }
                 }
-                let end = if let Err(error) = store
+                let end = match store
                     .record_terminal(
                         &operation_id,
                         ProviderOperationEffect::None,
@@ -491,10 +507,14 @@ impl ExternalProviderSupervisor {
                     )
                     .await
                 {
-                    tracing::error!(operation = operation_id.as_str(), %error, "could not settle unsent provider admission");
-                    CustodyEnd::Failed
-                } else {
-                    CustodyEnd::Written
+                    Ok(row) => {
+                        self.inner.refresh_durable_operation(&row);
+                        CustodyEnd::Written
+                    }
+                    Err(error) => {
+                        tracing::error!(operation = operation_id.as_str(), %error, "could not settle unsent provider admission");
+                        CustodyEnd::Failed
+                    }
                 };
                 self.drop_reservation_after(&operation_id, &live, false, end);
             }
@@ -610,22 +630,11 @@ impl ExternalProviderSupervisor {
 mod tests;
 
 impl super::SupervisorInner {
-    pub(super) async fn release_reconciled_prompt(&self, row: &ProviderOperationRecord) {
-        if row.operation_kind != ProviderOperationKind::ConversationPrompt
-            || row.stage != collaboration_protocol::ProviderOperationStage::Terminal
-            || row.effect != ProviderOperationEffect::Unknown
-            || row.reconciliation_state
-                != collaboration_protocol::ProviderReconciliationState::NotReconcilable
-        {
-            return;
-        }
-        if let ConversationBindingIdentity::ExternalProvider { binding } = &row.binding
-            && let Ok(cell) = self.binding_uncertainty(binding).await
-            && let Some(outcomes) = cell.outcomes.get()
-        {
-            crate::binding_dispatch_permit::lock(outcomes)
-                .record_reconciled(row.operation_id.clone());
-            cell.eligibility_changed();
+    pub(super) fn refresh_durable_operation(&self, row: &ProviderOperationRecord) {
+        if let ConversationBindingIdentity::ExternalProvider { binding } = &row.binding {
+            self.uncertainty
+                .slot(&binding.endpoint)
+                .refresh_durable_row(row, None);
         }
     }
 
@@ -636,12 +645,11 @@ impl super::SupervisorInner {
         binding: &ProviderBindingIdentity,
     ) -> Result<Arc<crate::binding_dispatch_permit::BindingUncertainty>, ()> {
         use crate::binding_dispatch_permit::{BindingOutcomes, UnknownRecovery};
-        let store = &self.store;
-        self.uncertainty
-            .cell(&binding.endpoint, || async {
+        let cell = self.uncertainty.slot(&binding.endpoint);
+        if cell.outcomes.get().is_none() {
+            let mut store = self.store.lock().await;
+            if cell.outcomes.get().is_none() {
                 let rows = store
-                    .lock()
-                    .await
                     .stored_uncertain_operations(binding)
                     .await
                     .map_err(|_| ())?;
@@ -662,9 +670,10 @@ impl super::SupervisorInner {
                     };
                     unknown.record_unknown(row.operation, row.target, recovery);
                 }
-                Ok(unknown)
-            })
-            .await
+                let _ = cell.outcomes.set(std::sync::Mutex::new(unknown));
+            }
+        }
+        Ok(cell)
     }
 
     /// The binding's identity, for its uncertainty cell's seed.

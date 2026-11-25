@@ -11,8 +11,10 @@ use std::{
 
 use central_link_client::{EnrollmentEnd, LinkLaneEvent, ReadyLinkLane};
 use central_link_protocol::{
-    DataFrame, FrameDirection, HandledMacCalls, LinkFrame, MacCapabilities, MachineLinkCloseCode,
-    TokenRenewalResult, decode_text,
+    CentralCall, CentralCallReply, CorrelationId, DataFrame, FrameDirection, HandledMacCalls,
+    LinkFrame, MacCapabilities, MachineLinkCloseCode, TokenRenewalResult, TypedCallResult,
+    approval_rpc::{ApprovalServiceTarget, RegisterRunReply},
+    decode_text, encode_text,
 };
 use futures_util::{FutureExt, SinkExt, StreamExt};
 use router_clock::{ClockInstant, ManualClock};
@@ -43,6 +45,7 @@ mod credential_diagnostics;
 mod lease_boundaries;
 mod mac_capabilities;
 mod renewal_endings;
+mod run_registration;
 mod settings_replay;
 mod transport_limits;
 
@@ -68,6 +71,17 @@ struct FakeSource {
 type InitialLeaseGate = oneshot::Receiver<Result<(), LeaseFailure>>;
 
 impl LeaseSource<u8> for FakeSource {
+    fn registration_target(
+        &self,
+        _binding: &u8,
+    ) -> Result<switchboard_central_link::lease_source::ApprovalServiceTarget, LeaseFailure> {
+        let organization_id = "01890f2e-7b4c-7cc0-98c4-000000000010"
+            .to_owned()
+            .try_into()
+            .map_err(|_| LeaseFailure::Fault)?;
+        Ok(switchboard_central_link::lease_source::ApprovalServiceTarget { organization_id })
+    }
+
     fn acquire<'a>(
         &'a self,
         binding: &'a u8,
@@ -203,6 +217,11 @@ async fn send_welcome(socket: &mut WebSocketStream<TcpStream>) {
 }
 
 async fn welcome(socket: &mut WebSocketStream<TcpStream>) {
+    welcome_before_registration(socket).await;
+    acknowledge_registration(socket).await;
+}
+
+async fn welcome_before_registration(socket: &mut WebSocketStream<TcpStream>) {
     send_welcome(socket).await;
     assert_eq!(
         decode_text(&text(socket).await, FrameDirection::ToCentral).unwrap(),
@@ -210,6 +229,63 @@ async fn welcome(socket: &mut WebSocketStream<TcpStream>) {
             handled_calls: HandledMacCalls::default(),
         }))
     );
+}
+
+#[expect(
+    clippy::panic,
+    reason = "A fixture must fail when the driver emits a different control frame."
+)]
+async fn registration_request(
+    socket: &mut WebSocketStream<TcpStream>,
+) -> (
+    CorrelationId,
+    ApprovalServiceTarget,
+    workspace_ids::RouterRunId,
+) {
+    let LinkFrame::Data(DataFrame::CallCentral {
+        correlation_id,
+        request,
+    }) = decode_text(&text(socket).await, FrameDirection::ToCentral).unwrap()
+    else {
+        panic!("the registration frame must follow the capability frame");
+    };
+    let CentralCall::RegisterRun(request) = *request else {
+        panic!("the driver's registration exchange must request RegisterRun");
+    };
+    (correlation_id, request.target, request.body.router_run)
+}
+
+async fn acknowledge_registration(socket: &mut WebSocketStream<TcpStream>) {
+    let (correlation_id, target, _) = registration_request(socket).await;
+    reply_registration(
+        socket,
+        correlation_id,
+        target,
+        RegisterRunReply::Registered {},
+    )
+    .await;
+}
+
+async fn reply_registration(
+    socket: &mut WebSocketStream<TcpStream>,
+    correlation_id: CorrelationId,
+    target: ApprovalServiceTarget,
+    body: RegisterRunReply,
+) {
+    let result = serde_json::json!({
+        "kind": "answered",
+        "reply": { "call": "registerRun", "envelope": { "target": target, "body": body } },
+    });
+    let result: TypedCallResult<CentralCallReply> = serde_json::from_value(result).unwrap();
+    let wire = encode_text(
+        &LinkFrame::Data(DataFrame::CentralCallReply {
+            correlation_id,
+            result: Box::new(result),
+        }),
+        FrameDirection::ToRouter,
+    )
+    .unwrap();
+    socket.send(Message::Text(wire.into())).await.unwrap();
 }
 
 #[expect(
@@ -253,7 +329,7 @@ async fn renewal_extends_the_same_socket_without_disclosing_credentials() {
     welcome(&mut socket).await;
     fixture
         .status
-        .wait_for(|state| matches!(state, LinkStatus::Welcomed { .. }))
+        .wait_for(|state| matches!(state, LinkStatus::Connected { .. }))
         .await
         .unwrap();
     fixture
@@ -292,7 +368,7 @@ async fn renewal_extends_the_same_socket_without_disclosing_credentials() {
         .unwrap();
     tokio::select! {
         event = fixture.inbox_events.recv() => assert!(matches!(event, Some(LinkLaneEvent::Deliver { .. }))),
-        status = fixture.status.wait_for(|status| !matches!(status, LinkStatus::Welcomed { .. })) =>
+        status = fixture.status.wait_for(|status| !matches!(status, LinkStatus::Connected { .. })) =>
             assert!(status.is_err(), "renewal must keep the original socket open for Deliver"),
     }
     // TCP ordering puts the renewal response before any later inbound text.
@@ -305,7 +381,7 @@ async fn renewal_extends_the_same_socket_without_disclosing_credentials() {
     );
     assert!(matches!(
         &*fixture.status.borrow(),
-        LinkStatus::Welcomed { .. }
+        LinkStatus::Connected { .. }
     ));
     assert!(fixture.acquired.try_recv().is_err());
     socket
@@ -448,7 +524,7 @@ async fn withheld_welcome_uses_one_elapsed_window_then_redials() {
     welcome(&mut next).await;
     fixture
         .status
-        .wait_for(|state| matches!(state, LinkStatus::Welcomed { .. }))
+        .wait_for(|state| matches!(state, LinkStatus::Connected { .. }))
         .await
         .unwrap();
     fixture.stop().await;
@@ -461,7 +537,7 @@ async fn reconnect_requires_two_transmitted_unanswered_heartbeats() {
     welcome(&mut socket).await;
     fixture
         .status
-        .wait_for(|state| matches!(state, LinkStatus::Welcomed { .. }))
+        .wait_for(|state| matches!(state, LinkStatus::Connected { .. }))
         .await
         .unwrap();
     fixture.clock.advance(Duration::from_secs(20)).unwrap();
@@ -479,7 +555,7 @@ async fn reconnect_requires_two_transmitted_unanswered_heartbeats() {
     welcome(&mut next).await;
     fixture
         .status
-        .wait_for(|state| matches!(state, LinkStatus::Welcomed { .. }))
+        .wait_for(|state| matches!(state, LinkStatus::Connected { .. }))
         .await
         .unwrap();
     fixture.stop().await;
@@ -533,7 +609,7 @@ async fn shutdown_joins_after_sending_the_idle_sockets_close() {
     welcome(&mut socket).await;
     fixture
         .status
-        .wait_for(|state| matches!(state, LinkStatus::Welcomed { .. }))
+        .wait_for(|state| matches!(state, LinkStatus::Connected { .. }))
         .await
         .unwrap();
     fixture.clock.not_due_check_now(tick(20)).await;

@@ -280,14 +280,14 @@ fn target_for(
 fn no_settings() -> DriverSettings<EnrollmentKey> {
     DriverSettings {
         binding: None,
-        address: Err(AddressError::InvalidLocation),
+        address: Err(AddressError::DiscoveryPending),
     }
 }
 
 fn unresolved(key: EnrollmentKey) -> DriverSettings<EnrollmentKey> {
     DriverSettings {
         binding: Some(key),
-        address: Err(AddressError::InvalidLocation),
+        address: Err(AddressError::DiscoveryPending),
     }
 }
 
@@ -304,7 +304,7 @@ fn project_discovery(
                 .unwrap_or(DISCOVERY_RETRY)
                 .max(Duration::from_secs(1));
             return (
-                last_good.clone().ok_or(AddressError::InvalidLocation),
+                last_good.clone().ok_or(AddressError::DiscoveryUnavailable),
                 Some(delay),
             );
         }

@@ -10,7 +10,7 @@ use tokio::{
 
 use crate::{
     CloseReport, Event, Front, FrontRefusal, MessageFront, MessageRoots, MessageSystemEvents,
-    MessageSystemStatus, message_system_status,
+    MessageSystemObservation,
 };
 use crate::{
     interpreter::{Interpreter, MessageInputs, OpenedEnrollment, start_supervisor},
@@ -23,7 +23,7 @@ pub struct MessageSystem {
     close: CloseRequest,
     interpreter: JoinHandle<CloseReport>,
     front: MessageFront,
-    status: watch::Receiver<MessageSystemStatus>,
+    status: watch::Receiver<MessageSystemObservation>,
 }
 
 struct CloseRequest(mpsc::UnboundedSender<Event>);
@@ -35,6 +35,12 @@ impl Drop for CloseRequest {
 }
 
 impl MessageSystem {
+    #[cfg(all(feature = "test-support", debug_assertions))]
+    pub(crate) fn metadata_reread(&self) -> impl Fn() -> bool + Send + use<> {
+        let events = self.close.0.clone();
+        move || events.send(Event::EnrollmentMayHaveChanged).is_ok()
+    }
+
     /// Starts observation on the caller's Tokio runtime. Enrollment is observed
     /// asynchronously and can change while the Router is running.
     pub fn start(
@@ -68,9 +74,10 @@ impl MessageSystem {
             Front::Forwarding(_) => FrontRefusal::CouldNotStart,
         };
         let (front_out, front) = MessageFront::refusing(initial);
-        let (status_out, status) = watch::channel(message_system_status(
+        let (status_out, status) = watch::channel(MessageSystemObservation::project(
             supervisor.state(),
             &LinkStatus::NotEnrolled,
+            None,
         ));
         let (events, queue) = mpsc::unbounded_channel();
         let close = CloseRequest(events.clone());
@@ -91,7 +98,7 @@ impl MessageSystem {
     }
 
     #[must_use]
-    pub fn status(&self) -> watch::Receiver<MessageSystemStatus> {
+    pub fn status(&self) -> watch::Receiver<MessageSystemObservation> {
         self.status.clone()
     }
 

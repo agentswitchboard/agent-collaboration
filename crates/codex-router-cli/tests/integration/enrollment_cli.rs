@@ -4,9 +4,9 @@ use std::{
 
 use codex_router_host::{
     AppServerCondition, ExecutableRelation, HostCoordinationPaths, HostPhase, HostSnapshot,
-    HostSnapshotDimensions, HostTerminalResponse, MessageSystemStatus, OperatorFrame,
-    OperatorRequest, RecoveryBudget, RemoteControlCondition, RouterCondition,
-    RouterExecutableRelation, TerminalClassification, decode_operator_request,
+    HostSnapshotDimensions, HostTerminalResponse, MessageSystemObservation, MessageSystemReason,
+    MessageSystemStatus, OperatorFrame, OperatorRequest, RecoveryBudget, RemoteControlCondition,
+    RouterCondition, RouterExecutableRelation, TerminalClassification, decode_operator_request,
     encode_operator_frame,
 };
 use sqlx::{
@@ -239,6 +239,12 @@ async fn compiled_status_reports_active_and_ended_rows_without_writing() {
     assert_eq!(fs::read(&database).expect("machine database"), before);
 }
 
+// Literal v1 responses pinned to the Host encoder at 97b37e636.
+const BASELINE_STATUS_REPLIES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../verification/fixtures/host-operator-status-97b37e636.ndjson"
+));
+
 #[tokio::test]
 async fn compiled_enrollment_status_reads_the_host_reply_and_keeps_stored_facts() {
     use MessageSystemStatus as Status;
@@ -268,35 +274,69 @@ async fn compiled_enrollment_status_reads_the_host_reply_and_keeps_stored_facts(
     let paths = HostCoordinationPaths::for_router_root(&root);
     let host = UnixListener::bind(paths.operator_socket()).expect("bind fixture Host socket");
 
-    for (status, line) in [
-        (Status::Starting, "starting"),
-        (Status::NotEnrolled, "not enrolled"),
-        (Status::EnrollmentEnded, "enrollment ended"),
-        (Status::EnrollmentUnreadable, "could not read enrollment"),
-        (Status::Connecting, "enrolled, connecting"),
-        (Status::Connected, "enrolled, connected"),
-        (Status::Stopping, "stopping"),
-        (Status::Restarting, "enrolled, restarting"),
-        (
-            Status::EnrollmentMismatch,
-            "enrollment does not match this Router",
-        ),
-        (Status::Stopped, "link stopped"),
+    let mut baseline = BASELINE_STATUS_REPLIES.split_inclusive(|byte| *byte == b'\n');
+    assert_eq!(baseline.clone().count(), 11);
+    for line in [
+        "starting",
+        "not enrolled",
+        "enrollment ended",
+        "could not read enrollment",
+        "enrolled, connecting",
+        "enrolled, connected",
+        "stopping",
+        "enrolled, restarting",
+        "enrollment does not match this Router",
+        "link stopped",
     ] {
-        let output = compiled_status_with_host_reply(home.path(), &host, Some(status))
+        let received = baseline
+            .next()
+            .expect("one frozen Host response per status");
+        let output = compiled_status_with_host_bytes(home.path(), &host, received)
             .await
-            .expect("read live status on the Host socket");
+            .expect("read a frozen v1 Host response on the operator socket");
         assert_eq!(
             stdout(&output),
             format!(
-                "{line}\nThis Mac is enrolled.\nMachine: {machine_id}\nOrganization: {ORGANIZATION}\nSign-in: {SIGN_IN}\n"
+                "{line} (reason not reported)\nThis Mac is enrolled.\nMachine: {machine_id}\nOrganization: {ORGANIZATION}\nSign-in: {SIGN_IN}\n"
             )
         );
     }
 
-    let output = compiled_status_with_host_reply(home.path(), &host, None)
-        .await
-        .expect("read a Host reply without message status");
+    for (status, reason, line) in [
+        (
+            Status::RegistrationFailed,
+            MessageSystemReason::AuthorityRevoked,
+            "registration refused: central reports the link authority was revoked",
+        ),
+        (
+            Status::Connecting,
+            MessageSystemReason::DiscoveryPending,
+            "enrolled, connecting: waiting to discover the central address",
+        ),
+        (
+            Status::Connecting,
+            MessageSystemReason::DiscoveryUnavailable,
+            "enrolled, connecting: central address discovery is temporarily unavailable",
+        ),
+        (
+            Status::Fault,
+            MessageSystemReason::MalformedAddress,
+            "link fault: the central address is invalid",
+        ),
+    ] {
+        let output = compiled_status_with_host_reply(home.path(), &host, status, reason)
+            .await
+            .expect("read a typed reason");
+        assert!(stdout(&output).starts_with(&format!("{line}\n")));
+    }
+
+    let output = compiled_status_with_host_bytes(
+        home.path(),
+        &host,
+        baseline.next().expect("frozen absent status"),
+    )
+    .await
+    .expect("read a Host reply without message status");
     assert_eq!(
         stdout(&output),
         format!(
@@ -309,7 +349,8 @@ async fn compiled_enrollment_status_reads_the_host_reply_and_keeps_stored_facts(
 async fn compiled_status_with_host_reply(
     home: &Path,
     host: &UnixListener,
-    status: Option<MessageSystemStatus>,
+    status: MessageSystemStatus,
+    reason: MessageSystemReason,
 ) -> Result<Output, Box<dyn std::error::Error>> {
     let snapshot = HostSnapshot::new(HostSnapshotDimensions {
         phase: HostPhase::Steady,
@@ -322,19 +363,27 @@ async fn compiled_status_with_host_reply(
         recovery_budget: RecoveryBudget::Available,
         last_lifecycle_outcome: None,
     })
-    .with_message_system_status(status);
+    .with_message_system_observation(Some(MessageSystemObservation { status, reason }));
     let reply = OperatorFrame::terminal(HostTerminalResponse::new(
         OperatorRequest::Status,
         TerminalClassification::Unavailable,
         snapshot,
         "fixture Host status".to_owned(),
     ));
+    compiled_status_with_host_bytes(home, host, &encode_operator_frame(&reply)?).await
+}
+
+async fn compiled_status_with_host_bytes(
+    home: &Path,
+    host: &UnixListener,
+    response: &[u8],
+) -> Result<Output, Box<dyn std::error::Error>> {
     let host_exchange = async {
         let (mut stream, _) = host.accept().await?;
         let mut request = Vec::new();
         stream.read_to_end(&mut request).await?;
         assert_eq!(decode_operator_request(&request)?, OperatorRequest::Status);
-        stream.write_all(&encode_operator_frame(&reply)?).await?;
+        stream.write_all(response).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     };
 

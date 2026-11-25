@@ -18,7 +18,10 @@ use switchboard_central_link::{link_lane::LinkLaneHandle, link_policy::LinkStatu
 use tokio::net::TcpStream;
 use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
 
-use super::{DELIVER_FRAME, Fixture, machine, text, tick, welcome};
+use super::{
+    DELIVER_FRAME, Fixture, machine, registration_request, text, tick, welcome,
+    welcome_before_registration,
+};
 
 fn correlation(number: u8) -> CorrelationId {
     format!("01890f2e-7b4c-7cc0-98c4-{number:012x}")
@@ -64,16 +67,18 @@ async fn admit(
     welcome(socket).await;
     fixture
         .status
-        .wait_for(|status| matches!(status, LinkStatus::Welcomed { .. }))
+        .wait_for(|status| matches!(status, LinkStatus::Connected { .. }))
         .await
         .unwrap();
-    let admitted = lane.watch_admitted().borrow().clone();
-    assert!(
-        admitted.is_some(),
-        "a valid Welcome must publish admitted readiness without a registered run"
+    let admitted = lane.watch_admitted().borrow().clone().unwrap();
+    assert_eq!(
+        lane.watch_registered()
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .admitted(),
+        &admitted
     );
-    assert!(lane.watch_registered().borrow().is_none());
-    let admitted = admitted.unwrap();
     assert_eq!(
         lane.next_event().await,
         Some(LinkLaneEvent::ConnectionAdmitted(admitted.clone()))
@@ -103,7 +108,7 @@ async fn delivery_barrier(
 
 #[tokio::test]
 async fn welcome_publishes_only_admitted_readiness_with_the_elapsed_anchor() {
-    let mut fixture = Fixture::new().await;
+    let fixture = Fixture::new().await;
     let lane = fixture.inbox_events.lane.clone();
     let mut socket = fixture.accept().await;
     let command = ImmediateRequestCommand {
@@ -124,7 +129,13 @@ async fn welcome_publishes_only_admitted_readiness_with_the_elapsed_anchor() {
     fixture
         .clock
         .set_utc("2070-01-01T00:00:00Z".parse().unwrap());
-    let admitted = admit(&mut fixture, &mut socket, &lane).await;
+    welcome_before_registration(&mut socket).await;
+    let _ = registration_request(&mut socket).await;
+    assert_eq!(*fixture.status.borrow(), LinkStatus::Registering);
+    assert!(lane.watch_registered().borrow().is_none());
+    let Some(LinkLaneEvent::ConnectionAdmitted(admitted)) = lane.next_event().await else {
+        panic!("Welcome must admit while the registration acknowledgement is held");
+    };
     assert_eq!(
         admitted.clock_anchor.central_time.to_rfc3339(),
         "2030-01-01T00:00:00+00:00"
@@ -448,7 +459,7 @@ async fn full_delivery_queue_backpressures_reads_without_losing_stamps_or_reconn
     }
     let paused = tokio::select! {
         () = fixture.clock.not_due_check_now(tick(5)) => true,
-        _ = fixture.status.wait_for(|status| !matches!(status, LinkStatus::Welcomed { .. })) => false,
+        _ = fixture.status.wait_for(|status| !matches!(status, LinkStatus::Connected { .. })) => false,
     };
     assert!(
         paused,

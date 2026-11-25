@@ -19,9 +19,9 @@ pub use ready_lane::{
     ImmediateRequestCommand, InvalidDeliveryOffer, LINK_LANE_FRAME_BYTES,
     LINK_LANE_SETTLEMENT_LIMIT, LaneFrameSizeError, LinkLaneDisposition, LinkLaneEvent,
     LinkLocalFault, PendingRunRegistration, ReadyLinkLane, RegisteredConnection,
-    RequestStatusCommand, RunRegistrationEvidence, SubmitReceiptsCommand, UntouchedCommand,
-    ValidatedDeliveryOffer, WRITE_BATCH_ENVELOPE_BYTES, WelcomeClockAnchor, WriteBatchCommand,
-    WriteBatchDisposition, WriteBatchMemberDisposition, encoded_request_size,
+    RequestStatusCommand, RunRegistrationDecision, RunRegistrationEvidence, SubmitReceiptsCommand,
+    UntouchedCommand, ValidatedDeliveryOffer, WRITE_BATCH_ENVELOPE_BYTES, WelcomeClockAnchor,
+    WriteBatchCommand, WriteBatchDisposition, WriteBatchMemberDisposition, encoded_request_size,
     link_frame_answer_deadline, link_frame_write_deadline,
 };
 

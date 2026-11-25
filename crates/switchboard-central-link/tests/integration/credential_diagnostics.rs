@@ -4,7 +4,7 @@ use std::{
     io,
     sync::{
         Arc, Mutex, OnceLock,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 
@@ -16,12 +16,14 @@ static HEX_MARKERS: OnceLock<[String; 2]> = OnceLock::new();
 static LOG_CAPTURE: LogCapture = LogCapture {
     saw_inactive_close: AtomicBool::new(false),
     driver_exposed_marker: AtomicBool::new(false),
+    registration_mismatches: AtomicUsize::new(0),
     dependency_targets: Mutex::new(BTreeSet::new()),
 };
 
 struct LogCapture {
     saw_inactive_close: AtomicBool,
     driver_exposed_marker: AtomicBool,
+    registration_mismatches: AtomicUsize,
     dependency_targets: Mutex<BTreeSet<(String, log::Level)>>,
 }
 
@@ -43,6 +45,9 @@ impl log::Log for LogCapture {
             );
             self.driver_exposed_marker
                 .fetch_or(contains_marker, Ordering::Relaxed);
+            if message == "Central run registration reply did not match the pending attempt" {
+                self.registration_mismatches.fetch_add(1, Ordering::Relaxed);
+            }
         } else if contains_marker {
             self.dependency_targets
                 .lock()
@@ -52,6 +57,10 @@ impl log::Log for LogCapture {
     }
 
     fn flush(&self) {}
+}
+
+pub(super) fn registration_mismatches() -> usize {
+    LOG_CAPTURE.registration_mismatches.load(Ordering::Relaxed)
 }
 
 fn contains_credential_marker(message: &str) -> bool {

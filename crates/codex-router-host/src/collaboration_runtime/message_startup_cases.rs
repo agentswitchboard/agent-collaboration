@@ -43,7 +43,7 @@ async fn start_host(
                 remote_control_server_name: None,
                 owner_human_id: None,
             },
-            message_roots: roots,
+            message_roots: roots.map(Into::into),
             router_proxy_endpoint: SocketAddr::from(([127, 0, 0, 1], 1)),
             remote_access: None,
             provider_operation_retention_days: None,
@@ -70,7 +70,7 @@ async fn unenrolled_host_refuses_message_custody_and_serves_collaboration() {
         .expect("Router roots configured")
         .status();
     status
-        .wait_for(|status| *status == MessageSystemStatus::NotEnrolled)
+        .wait_for(|status| status.status == MessageSystemStatus::NotEnrolled)
         .await
         .expect("initial metadata observed");
     assert!(
@@ -78,7 +78,7 @@ async fn unenrolled_host_refuses_message_custody_and_serves_collaboration() {
         "Host read the machine store"
     );
     assert_eq!(
-        runtime.message_status(),
+        runtime.message_status().map(|observation| observation.status),
         Some(MessageSystemStatus::NotEnrolled)
     );
     let front = runtime.message_front().expect("Router roots configured");
@@ -130,7 +130,7 @@ async fn served_message_send_distinguishes_unenrolled_front_from_missing_link() 
             drop(
                 system
                     .status()
-                    .wait_for(|status| *status == MessageSystemStatus::NotEnrolled)
+                    .wait_for(|status| status.status == MessageSystemStatus::NotEnrolled)
                     .await
                     .expect("observe initial enrollment metadata"),
             );

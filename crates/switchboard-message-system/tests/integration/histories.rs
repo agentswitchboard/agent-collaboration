@@ -151,7 +151,7 @@ impl History {
             },
             2 => Event::MetadataObserved {
                 read,
-                metadata: Metadata::Ended,
+                metadata: super::ended_metadata(),
             },
             3 => Event::MetadataObserved {
                 read,

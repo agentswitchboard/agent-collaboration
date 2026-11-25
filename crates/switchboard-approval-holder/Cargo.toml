@@ -9,6 +9,7 @@ autotests = false
 [dependencies]
 approval-request-protocol.workspace = true
 state-machine-core.workspace = true
+switchboard-run-gate.workspace = true
 workspace-ids.workspace = true
 
 [dev-dependencies]

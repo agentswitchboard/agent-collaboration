@@ -320,11 +320,9 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
         effects: &mut Effects<Responder, Connection, Enrollment>,
     ) -> Result<(), WaitError> {
         let router_run = self.router_run.clone().ok_or(TransitionError::Stale)?;
-        effects.push(WaitEffect::RunRefused(MatchedRunRefusal {
-            call,
-            router_run,
-            refusal,
-        }));
+        effects.push(WaitEffect::RunRefused(
+            MatchedRunRefusal::from_matched_wait(call, router_run, refusal),
+        ));
         Ok(())
     }
 }

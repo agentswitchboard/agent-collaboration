@@ -4,15 +4,13 @@ use approval_request_protocol::{
     ProviderHolder, Raise, RegisterRunReply, RegisterRunRequest, SessionCallOperation,
 };
 use state_machine_core::{StateMachine, TransitionError};
-use switchboard_approval_holder::{
-    run_gate::{
-        CallAttempt, CallKey, DialAttempt, LinkAttempt, RunAuthority, RunGate, RunGateEffect,
-        RunGateEvent, RunGateState,
-    },
-    waiting_request::{
-        LinkAttemptDisposition, WaitEffect, WaitEvent, WaitState, WaitingRequest,
-        gate_access::{GateWaitEvent, step_under_gate},
-    },
+use switchboard_approval_holder::waiting_request::{
+    LinkAttemptDisposition, WaitEffect, WaitEvent, WaitState, WaitingRequest,
+    gate_access::{GateWaitEvent, step_under_gate},
+};
+use switchboard_run_gate::{
+    CallAttempt, CallKey, DialAttempt, LinkAttempt, RunAuthority, RunGate, RunGateEffect,
+    RunGateEvent, RunGateState,
 };
 
 pub const RESPONDER: u8 = 1;

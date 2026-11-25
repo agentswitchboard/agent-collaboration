@@ -10,7 +10,7 @@ use central_link_protocol::{
 };
 use router_clock::{ClockInstant, RuntimeClock};
 use std::{sync::Arc, time::Duration};
-use workspace_ids::MachineId;
+use workspace_ids::{IdValidationError, MachineId, RouterRunId};
 use workspace_model::{Caller, ResolvedSender, Timestamp};
 
 const PING_INTERVAL: Duration = Duration::from_secs(20);
@@ -658,15 +658,22 @@ impl LinkClient {
     }
 
     fn next_correlation(&mut self) -> CorrelationId {
+        CorrelationId::mint(self.id_timestamp())
+    }
+
+    /// Mint the run identifier before the binding owner attempts its first connection.
+    pub fn mint_router_run(&self) -> Result<RouterRunId, IdValidationError> {
+        uuid::Uuid::new_v7(self.id_timestamp())
+            .to_string()
+            .try_into()
+    }
+
+    fn id_timestamp(&self) -> uuid::Timestamp {
         let millis = u64::try_from(self.clock.utc_now().timestamp_millis()).unwrap_or(0);
         let nanos = u32::try_from(millis % 1000)
             .unwrap_or(0)
             .saturating_mul(1_000_000);
-        CorrelationId::mint(uuid::Timestamp::from_unix(
-            &self.id_context,
-            millis / 1000,
-            nanos,
-        ))
+        uuid::Timestamp::from_unix(&self.id_context, millis / 1000, nanos)
     }
 
     /// Rearm a fault after its owner supplies the permitted recovery input.

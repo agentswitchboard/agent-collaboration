@@ -107,7 +107,7 @@ async fn a_local_change_publishes_an_incompatible_key_without_contacting_discove
         .await
         .unwrap()
         .clone();
-    assert_eq!(published.address, Err(AddressError::InvalidLocation));
+    assert_eq!(published.address, Err(AddressError::DiscoveryPending));
     assert!(older.is_closed());
     assert!(discovery_calls.try_recv().is_err());
     stop.send_replace(true);
@@ -168,7 +168,10 @@ fn discovery_failure_uses_cached_address_only_for_unavailable_and_pins_retry_del
             Err(SignInFailure::Unavailable { retry_after: None }),
             &mut saved
         ),
-        (invalid(), Some(Duration::from_secs(30)))
+        (
+            Err(AddressError::DiscoveryUnavailable),
+            Some(Duration::from_secs(30))
+        )
     );
 
     for reason in [
@@ -339,7 +342,7 @@ async fn a_local_change_during_the_final_read_blocks_the_obsolete_address() {
 
     assert_eq!(
         settings.published.borrow().address,
-        Err(AddressError::InvalidLocation)
+        Err(AddressError::DiscoveryPending)
     );
     assert!(return_next_snapshot.send(Box::new(|| {})).is_ok());
     let held_discovery = settings.requests.recv().await.unwrap();

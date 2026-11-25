@@ -56,6 +56,13 @@ struct ObservedLeases {
 }
 
 impl LeaseSource<EnrollmentKey> for ObservedLeases {
+    fn registration_target(
+        &self,
+        key: &EnrollmentKey,
+    ) -> Result<switchboard_central_link::lease_source::ApprovalServiceTarget, LeaseFailure> {
+        self.source.registration_target(key)
+    }
+
     fn acquire<'a>(
         &'a self,
         key: &'a EnrollmentKey,
@@ -230,7 +237,7 @@ async fn real_central_revocation_ends_the_sqlite_enrollment_and_never_redials_it
         .wait_for(|status| {
             matches!(
                 status,
-                LinkStatus::Welcomed { .. }
+                LinkStatus::Connected { .. }
                     | LinkStatus::Fault { .. }
                     | LinkStatus::EnrollmentEnded { .. }
             )
@@ -238,7 +245,7 @@ async fn real_central_revocation_ends_the_sqlite_enrollment_and_never_redials_it
         .await
         .unwrap()
         .clone();
-    assert!(matches!(seen, LinkStatus::Welcomed { .. }));
+    assert!(matches!(seen, LinkStatus::Connected { .. }));
 
     changes.borrow_and_update();
     let private = reqwest::Client::builder()

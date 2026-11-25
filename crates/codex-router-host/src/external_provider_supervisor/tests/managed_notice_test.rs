@@ -1,5 +1,7 @@
 use super::*;
 
+#[path = "notice_admission_test.rs"]
+mod admission;
 #[path = "notice_started_turn_test.rs"]
 mod started_turn;
 use crate::ManagedAcpNoticeAdapter;
@@ -12,12 +14,17 @@ use switchboard_message_custody::{
     },
 };
 
+const NOTICE_TEXT: &str = "You have 1 new message. Read them with message_inbox.";
+const HUMAN_TEXT: &str = "human prompt";
+
 #[derive(Clone, Copy)]
 enum NoticeScript {
     NoWrite,
     Direct,
     DirectWithLoggedOutReport,
     DirectThenSteer,
+    HumanThenNoticeSteer,
+    HumanWithQueuedPrompt,
     DirectThenProviderDeclinesSteer,
     DirectThenProviderStartsTurn,
     DirectWithSteeringAvailable,
@@ -96,7 +103,7 @@ async fn managed_notice_fixture(
                 "protocolVersion": 1,
                 "agentCapabilities": {"loadSession": true, "mcpCapabilities": {"http": true}},
                 "agentInfo": {"name": "managed-notice-fixture", "version": "1"},
-                "_meta": {"steering": {"supported": matches!(notices, NoticeScript::DirectThenSteer | NoticeScript::DirectThenProviderDeclinesSteer | NoticeScript::DirectThenProviderStartsTurn | NoticeScript::DirectWithSteeringAvailable)}}
+                "_meta": {"steering": {"supported": matches!(notices, NoticeScript::DirectThenSteer | NoticeScript::HumanThenNoticeSteer | NoticeScript::HumanWithQueuedPrompt | NoticeScript::DirectThenProviderDeclinesSteer | NoticeScript::DirectThenProviderStartsTurn | NoticeScript::DirectWithSteeringAvailable)}}
             }),
         )
         .expect_request(
@@ -107,10 +114,10 @@ async fn managed_notice_fixture(
         .respond("load", json!({}))
         .record_diagnostics(receipt.clone());
     let script = if !matches!(notices, NoticeScript::NoWrite) {
-        let foreground = if matches!(notices, NoticeScript::DirectThenProviderStartsTurn) {
-            "Hold the foreground turn"
-        } else {
-            "You have 1 new message. Read them with message_inbox."
+        let foreground = match notices {
+            NoticeScript::DirectThenProviderStartsTurn => "Hold the foreground turn",
+            NoticeScript::HumanThenNoticeSteer | NoticeScript::HumanWithQueuedPrompt => HUMAN_TEXT,
+            _ => NOTICE_TEXT,
         };
         let script = script
             .expect_request(
@@ -139,7 +146,7 @@ async fn managed_notice_fixture(
                     "session/prompt",
                     json!({
                         "sessionId": "saved-notice-session",
-                        "prompt": [{"type": "text", "text": "You have 1 new message. Read them with message_inbox."}]
+                        "prompt": [{"type": "text", "text": NOTICE_TEXT}]
                     }),
                 )
                 .write_marker(&receipt.with_extension("retry"))
@@ -151,7 +158,7 @@ async fn managed_notice_fixture(
                     "_session/steering",
                     json!({
                         "sessionId": "saved-notice-session",
-                        "prompt": [{"type": "text", "text": "You have 1 new message. Read them with message_inbox."}]
+                        "prompt": [{"type": "text", "text": NOTICE_TEXT}]
                     }),
                     &receipt.with_extension("traffic"),
                 )
@@ -159,20 +166,37 @@ async fn managed_notice_fixture(
                 .wait_for_socket_signal(&receipt.with_extension("sock"))
                 .respond("steer", json!({"outcome": "startedNewTurn"}))
         } else {
-            let script = if matches!(notices, NoticeScript::DirectThenSteer) {
-                script.expect_request("steer", "_session/steering", json!({
-                "sessionId": "saved-notice-session",
-                "prompt": [{"type": "text", "text": "You have 1 new message. Read them with message_inbox."}]
-            })).write_marker(&receipt.with_extension("steer")).respond("steer", json!({"outcome": "injected"}))
+            let script = if matches!(
+                notices,
+                NoticeScript::DirectThenSteer
+                    | NoticeScript::HumanThenNoticeSteer
+                    | NoticeScript::HumanWithQueuedPrompt
+            ) {
+                script
+                    .expect_request(
+                        "steer",
+                        "_session/steering",
+                        json!({
+                            "sessionId": "saved-notice-session",
+                            "prompt": [{"type": "text", "text": NOTICE_TEXT}]
+                        }),
+                    )
+                    .write_marker(&receipt.with_extension("steer"))
+                    .respond("steer", json!({"outcome": "injected"}))
             } else {
                 script
             };
-            script
+            let script = script
                 .expect_message(json!({
                     "jsonrpc": "2.0", "method": "session/cancel",
                     "params": {"sessionId": "saved-notice-session"}
                 }))
-                .respond("notice", json!({"stopReason": "cancelled"}))
+                .respond("notice", json!({"stopReason": "cancelled"}));
+            if matches!(notices, NoticeScript::HumanWithQueuedPrompt) {
+                admission::expect_queued_prompt(script, &receipt)
+            } else {
+                script
+            }
         }
     } else {
         script
