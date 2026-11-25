@@ -1,5 +1,6 @@
 //! Shared types and ports for the session controller and its harnesses.
 
+mod harness_binding;
 mod harness_dispatch;
 mod harness_identity;
 mod harness_reply_ports;
@@ -10,6 +11,7 @@ mod provider_model_reasoning;
 mod provider_setting_choice;
 mod provider_settings_data;
 
+pub use harness_binding::*;
 pub use harness_dispatch::*;
 pub use harness_identity::*;
 pub use harness_reply_ports::*;
