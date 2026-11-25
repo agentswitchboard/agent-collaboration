@@ -161,8 +161,10 @@ impl<Binding: Clone + Eq> RunRegistration<Binding> {
             }
             None => {}
         }
-        if !matches!(transport, LinkStatus::Welcomed { .. }) {
-            return transport;
+        match transport {
+            LinkStatus::Welcomed { .. } => {}
+            LinkStatus::Connected { .. } => return LinkStatus::Connecting,
+            other => return other,
         }
         match self.exchange {
             Exchange::AwaitingWelcome => LinkStatus::Connecting,
@@ -348,6 +350,10 @@ impl<Binding: Clone + Eq> RunRegistration<Binding> {
         ReplyAction::KeepSocket
     }
 }
+
+#[cfg(test)]
+#[path = "run_registration_test.rs"]
+mod tests;
 
 const fn requires_long_wait(reason: LinkCallRefusal) -> bool {
     matches!(

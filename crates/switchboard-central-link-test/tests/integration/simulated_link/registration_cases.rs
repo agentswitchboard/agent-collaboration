@@ -352,6 +352,10 @@ fn native_run_not_registered_withdraws_only_the_denied_physical_socket() {
         assert!(denied.lane.watch_registered().borrow().is_none());
         assert_eq!(*denied.status.borrow(), LinkStatus::Connecting);
 
+        // The breaker receiver lives in the old physical transport. Wait for
+        // that receiver to drop before opening a dial that could replace it.
+        denied.break_socket.closed().await;
+        assert!(denied.break_socket.is_closed());
         denied.reconnect().await;
         let redial = denied
             .network
