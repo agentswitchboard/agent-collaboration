@@ -240,7 +240,10 @@ pub fn admission_before_person(
 }
 
 // Existing admin step-up check. Person approval commands never require it.
-fn fresh_admin_second_factor(second_factor_at: Option<i64>, now_ms: i64) -> Option<UnixSeconds> {
+pub(super) fn fresh_admin_second_factor(
+    second_factor_at: Option<i64>,
+    now_ms: i64,
+) -> Option<UnixSeconds> {
     let at = second_factor_at.and_then(|seconds| UnixSeconds::try_from(seconds).ok())?;
     let age_ms =
         at.0.checked_mul(1000)

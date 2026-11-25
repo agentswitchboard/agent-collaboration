@@ -74,7 +74,8 @@ use central_link_protocol::{
     ProtocolError, ReplyPayload, RequestRefusal, RequestStatusAnswer, TokenRenewalRefusal,
     TokenRenewalResult, TypedCallResult, decode_text,
     person_link_rpc::{
-        ListOrganizationWorkspaces, LookupOrganizationWorkspace, ReadOrganizationChangeRecords,
+        CreateOrganizationWorkspace, ListOrganizationWorkspaces, LookupOrganizationWorkspace,
+        ReadOrganizationChangeRecords,
     },
 };
 use fleet_rpc::Envelope;
@@ -87,6 +88,10 @@ pub enum PersonFrame {
     ListWorkspaces {
         correlation: CorrelationId,
         request: Envelope<OrganizationId, ListOrganizationWorkspaces>,
+    },
+    CreateWorkspace {
+        correlation: CorrelationId,
+        request: Envelope<OrganizationId, CreateOrganizationWorkspace>,
     },
     LookupWorkspace {
         correlation: CorrelationId,
@@ -140,6 +145,14 @@ pub fn dispatch(connection: &PersonSocketAttachment, text: &str) -> PersonFrame 
                     request,
                 }
             }
+            CentralCall::CreateOrganizationWorkspace(request)
+                if &request.target == connection.organization() =>
+            {
+                PersonFrame::CreateWorkspace {
+                    correlation: correlation_id,
+                    request,
+                }
+            }
             CentralCall::LookupOrganizationWorkspace(request)
                 if &request.target == connection.organization() =>
             {
@@ -183,7 +196,8 @@ pub fn dispatch(connection: &PersonSocketAttachment, text: &str) -> PersonFrame 
                     answer: request.body.answer,
                 }),
             ),
-            CentralCall::ListOrganizationWorkspaces(_)
+            CentralCall::CreateOrganizationWorkspace(_)
+            | CentralCall::ListOrganizationWorkspaces(_)
             | CentralCall::LookupOrganizationWorkspace(_)
             | CentralCall::ReadOrganizationChangeRecords(_)
             | CentralCall::RegisterRun(_)

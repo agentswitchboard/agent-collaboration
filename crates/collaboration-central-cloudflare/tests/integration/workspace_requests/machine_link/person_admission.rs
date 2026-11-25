@@ -4,7 +4,8 @@ use collaboration_central_conformance::{
     signin_fixtures::{
         NOW_SECONDS, Person,
         person_link::{
-            PersonLinkFixture, check_person_link_admission, check_workspace_list,
+            CreateCallCase, PersonLinkFixture, check_person_link_admission, check_workspace_create,
+            check_workspace_list,
             organization_reads::{OrganizationReadCase, check_organization_read},
             person_link_bearer,
         },
@@ -206,3 +207,83 @@ async fn check_empty_person_upgrade_response(
     }
     Ok(())
 }
+
+async fn check_create(case: CreateCallCase) -> ConformanceResult<()> {
+    let fixture = Fixture::with_production_dispatcher().await?;
+    let result = async {
+        let machine_url = fixture.link_url(ORGANIZATION);
+        let person_url = person_link_url(fixture.host.public_origin());
+        check_workspace_create(
+            PersonLinkFixture {
+                client: &fixture.client,
+                person_url: &person_url,
+                machine_url: &machine_url,
+                organization: ORGANIZATION,
+                machine_token: &fixture.token,
+            },
+            case,
+            async |path, body, headers| {
+                let mut request = fixture
+                    .client
+                    .post(format!("{}{path}", fixture.host.signin_origin()))
+                    .json(body);
+                for (name, value) in headers {
+                    request = request.header(name, value);
+                }
+                let response = request.send().await?;
+                Ok((response.status().as_u16(), response.bytes().await?.to_vec()))
+            },
+            async |elapsed| super::renewal::advance_time(&fixture, elapsed).await,
+        )
+        .await
+    }
+    .await;
+    fixture.close().await?;
+    result
+}
+
+macro_rules! create_case {
+    ($name:ident, $case:ident) => {
+        #[tokio::test]
+        async fn $name() -> ConformanceResult<()> {
+            check_create(CreateCallCase::$case).await
+        }
+    };
+}
+
+create_case!(
+    workerd_person_create_rejects_exclusive_factor_start,
+    AtFactorTime
+);
+create_case!(
+    workerd_person_create_rejects_exclusive_factor_end,
+    AtFactorLimit
+);
+create_case!(
+    workerd_person_create_rejects_shortened_stale_factor_window,
+    PastFactorLimit
+);
+create_case!(
+    workerd_person_create_rejects_shortened_missing_factor_window,
+    MissingFactor
+);
+create_case!(
+    workerd_person_create_rejects_shortened_future_factor_window,
+    FutureFactor
+);
+create_case!(
+    workerd_person_create_rejects_permission_conflict_projection,
+    NoPermission
+);
+create_case!(
+    workerd_person_create_rejects_name_collision_permission_projection,
+    DuplicateName
+);
+create_case!(
+    workerd_person_create_rejects_changed_operation_name_projection,
+    ChangedOperation
+);
+create_case!(
+    workerd_person_create_rejects_conflicting_cross_transport_replay,
+    RetainedAcrossTransports
+);

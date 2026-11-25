@@ -12,6 +12,9 @@ use futures_util::SinkExt;
 use reqwest_websocket::{Message, RequestBuilderExt, WebSocket};
 use serde_json::{Value, json};
 
+mod create_workspace;
+pub use create_workspace::{CreateCallCase, check_workspace_create};
+
 const REVISIONS: &str = "/internal/organization-authorization-revisions";
 
 pub struct PersonLinkFixture<'a> {
