@@ -19,8 +19,8 @@ use crate::{
     },
     person_proof::{
         AdmissionRefusal, PersonProofFacts, PersonProofVerifier, PersonRequestRefusal,
-        admission_before_person, decide_admission, decide_retained_approval_admission,
-        request_time_refusal,
+        PersonSocketAttachment, admission_before_person, decide_admission,
+        decide_retained_approval_admission, request_time_refusal,
     },
     person_proof_store::{proof_was_used, reserve_approval_proof, used_proof_statement},
 };
@@ -155,7 +155,9 @@ impl VerifiedApprovalPersonRequest {
                     )?
                     .is_ok() =>
             {
-                ApprovalPersonAccess::RetainedOnly
+                ApprovalPersonAccess::RetainedOnly {
+                    intent_digest: proof.intent_digest.clone(),
+                }
             }
             Err(refusal) => return Ok(Err(refusal)),
         };
@@ -168,59 +170,141 @@ impl VerifiedApprovalPersonRequest {
             person: self.person,
             organization: organization.clone(),
         };
-        let approval = match (access, self.operation) {
-            (ApprovalPersonAccess::Granted, ApprovalPersonOperation::List(request)) => {
-                AdmittedApprovalPersonOperation::List(AdmittedApprovalCommand::new(
-                    transaction,
-                    identity,
-                    self.proof,
-                    reservation,
-                    sampled,
-                    request,
-                ))
-            }
-            (ApprovalPersonAccess::Granted, ApprovalPersonOperation::Read(request)) => {
-                AdmittedApprovalPersonOperation::Read(AdmittedApprovalCommand::new(
-                    transaction,
-                    identity,
-                    self.proof,
-                    reservation,
-                    sampled,
-                    request,
-                ))
-            }
-            (ApprovalPersonAccess::Granted, ApprovalPersonOperation::Decide(request)) => {
-                AdmittedApprovalPersonOperation::Decide(AdmittedApprovalCommand::new(
-                    transaction,
-                    identity,
-                    self.proof,
-                    reservation,
-                    sampled,
-                    request,
-                ))
-            }
-            (ApprovalPersonAccess::RetainedOnly, ApprovalPersonOperation::Decide(request)) => {
-                AdmittedApprovalPersonOperation::Retry(AdmittedApprovalCommand::new(
-                    transaction,
-                    identity,
-                    self.proof,
-                    reservation,
-                    sampled,
-                    RetainedDecisionRequest(request),
-                ))
-            }
-            (
-                ApprovalPersonAccess::RetainedOnly,
-                ApprovalPersonOperation::List(_) | ApprovalPersonOperation::Read(_),
-            ) => return Ok(Err(AdmissionRefusal::NotPermitted)),
-        };
-        Ok(Ok(approval))
+        Ok(bind_approval_command(
+            transaction,
+            identity,
+            self.operation,
+            access,
+            Some(reservation),
+            sampled,
+        ))
     }
+}
+
+/// Recheck the socket's applying authority inside the transaction. The authenticated
+/// connection owns the person and target, and carries no per-operation proof to reserve.
+pub async fn admit_person_link_approval<'loan, Transaction: ApprovalPersonTransaction>(
+    attachment: &PersonSocketAttachment,
+    operation: ApprovalPersonOperation,
+    transaction: &'loan mut Transaction,
+) -> Result<
+    Result<AdmittedApprovalPersonOperation<'loan, Transaction>, AdmissionRefusal>,
+    StoreFailure,
+> {
+    let organization = attachment.organization();
+    let person = attachment.person();
+    if transaction.organization_id() != organization || operation.organization() != organization {
+        return Ok(Err(AdmissionRefusal::NotPermitted));
+    }
+    let sampled = transaction.sample_person_authorization_time()?;
+    if !attachment.is_current(sampled.unix_millis()) {
+        return Ok(Err(AdmissionRefusal::Expired));
+    }
+    let organization_rows = transaction
+        .read_person_authorization(organization_floor_statement(organization.as_str()))
+        .await?;
+    let organization_floor = decode_organization_floor(&organization_rows, organization.as_str())?;
+    let person_rows = transaction
+        .read_person_authorization(person_floor_statement(
+            organization.as_str(),
+            person.as_str(),
+        ))
+        .await?;
+    let person_floor = decode_person_floor(&person_rows, organization.as_str(), person.as_str())?;
+    if !organization_floor
+        .zip(person_floor)
+        .is_some_and(|(organization, person)| attachment.still_matches(&organization, &person))
+    {
+        return Ok(Err(AdmissionRefusal::RefreshRequired));
+    }
+
+    let access = if attachment.permits(FleetPermission::DecideApproval) {
+        ApprovalPersonAccess::Granted
+    } else if matches!(&operation, ApprovalPersonOperation::Decide(_)) {
+        let intent_digest = operation
+            .intent()
+            .digest()
+            .map_err(|_| StoreFailure::Unavailable)?;
+        ApprovalPersonAccess::RetainedOnly { intent_digest }
+    } else {
+        return Ok(Err(AdmissionRefusal::NotPermitted));
+    };
+    let identity = ApprovalPersonAdmission {
+        person: person.clone(),
+        organization: organization.clone(),
+    };
+    Ok(bind_approval_command(
+        transaction,
+        identity,
+        operation,
+        access,
+        None,
+        sampled,
+    ))
 }
 
 enum ApprovalPersonAccess {
     Granted,
-    RetainedOnly,
+    RetainedOnly { intent_digest: String },
+}
+
+fn bind_approval_command<'loan, Transaction>(
+    transaction: &'loan mut Transaction,
+    identity: ApprovalPersonAdmission,
+    operation: ApprovalPersonOperation,
+    access: ApprovalPersonAccess,
+    reservation: Option<GuardedStatement>,
+    sampled: SyncTime,
+) -> Result<AdmittedApprovalPersonOperation<'loan, Transaction>, AdmissionRefusal> {
+    let command = match (access, operation) {
+        (ApprovalPersonAccess::Granted, ApprovalPersonOperation::List(request)) => {
+            AdmittedApprovalPersonOperation::List(AdmittedApprovalCommand::new(
+                transaction,
+                identity,
+                reservation,
+                sampled,
+                request,
+            ))
+        }
+        (ApprovalPersonAccess::Granted, ApprovalPersonOperation::Read(request)) => {
+            AdmittedApprovalPersonOperation::Read(AdmittedApprovalCommand::new(
+                transaction,
+                identity,
+                reservation,
+                sampled,
+                request,
+            ))
+        }
+        (ApprovalPersonAccess::Granted, ApprovalPersonOperation::Decide(request)) => {
+            AdmittedApprovalPersonOperation::Decide(AdmittedApprovalCommand::new(
+                transaction,
+                identity,
+                reservation,
+                sampled,
+                request,
+            ))
+        }
+        (
+            ApprovalPersonAccess::RetainedOnly { intent_digest },
+            ApprovalPersonOperation::Decide(request),
+        ) => AdmittedApprovalPersonOperation::Retry(AdmittedApprovalCommand::new(
+            transaction,
+            identity,
+            reservation,
+            sampled,
+            RetainedDecisionRequest {
+                request,
+                intent_digest,
+            },
+        )),
+        (
+            ApprovalPersonAccess::RetainedOnly { .. },
+            ApprovalPersonOperation::List(_) | ApprovalPersonOperation::Read(_),
+        ) => {
+            return Err(AdmissionRefusal::NotPermitted);
+        }
+    };
+    Ok(command)
 }
 
 pub enum AdmittedApprovalPersonOperation<'loan, Transaction> {
@@ -231,9 +315,12 @@ pub enum AdmittedApprovalPersonOperation<'loan, Transaction> {
 }
 
 /// An exact retry can read the retained result, without authority to apply a decision.
-pub struct RetainedDecisionRequest(ApprovalDecideRequest);
+pub struct RetainedDecisionRequest {
+    request: ApprovalDecideRequest,
+    intent_digest: String,
+}
 
-/// The signed operation, verified proof and applying loan are consumed together.
+/// The operation, person authority and applying loan are consumed together.
 ///
 /// ```compile_fail,E0382
 /// use fleet_signin::AdmittedApprovalCommand;
@@ -256,23 +343,21 @@ pub struct RetainedDecisionRequest(ApprovalDecideRequest);
 /// ```
 pub struct AdmittedApprovalCommand<'loan, Transaction, Request> {
     transaction: &'loan mut Transaction,
-    signed: AdmittedApprovalFacts<'loan, Request>,
+    admitted: AdmittedApprovalFacts<'loan, Request>,
 }
 
 impl<'loan, Transaction, Request> AdmittedApprovalCommand<'loan, Transaction, Request> {
     fn new(
         transaction: &'loan mut Transaction,
         identity: ApprovalPersonAdmission,
-        proof: PersonProofFacts,
-        reservation: GuardedStatement,
+        reservation: Option<GuardedStatement>,
         sampled: SyncTime,
         request: Request,
     ) -> Self {
         Self {
             transaction,
-            signed: AdmittedApprovalFacts {
+            admitted: AdmittedApprovalFacts {
                 identity,
-                proof,
                 reservation,
                 sampled,
                 request,
@@ -290,14 +375,13 @@ impl<'loan, Transaction, Request> AdmittedApprovalCommand<'loan, Transaction, Re
         &'loan mut Transaction,
         AdmittedApprovalFacts<'loan, Request>,
     ) {
-        (self.transaction, self.signed)
+        (self.transaction, self.admitted)
     }
 }
 
 pub struct AdmittedApprovalFacts<'loan, Request> {
     identity: ApprovalPersonAdmission,
-    proof: PersonProofFacts,
-    reservation: GuardedStatement,
+    reservation: Option<GuardedStatement>,
     sampled: SyncTime,
     request: Request,
     loan: PhantomData<&'loan mut ()>,
@@ -319,7 +403,7 @@ impl<Request> AdmittedApprovalFacts<'_, Request> {
         self.sampled
     }
 
-    pub fn into_reservation(self) -> GuardedStatement {
+    pub fn into_reservation(self) -> Option<GuardedStatement> {
         self.reservation
     }
 }
@@ -329,8 +413,8 @@ impl AdmittedApprovalFacts<'_, RetainedDecisionRequest> {
     pub const fn retained_decision(&self) -> VerifiedApprovalDecideRetry<'_> {
         VerifiedApprovalDecideRetry {
             person: self.identity.person(),
-            request: &self.request.0,
-            intent_digest: self.proof.intent_digest.as_str(),
+            request: &self.request.request,
+            intent_digest: self.request.intent_digest.as_str(),
         }
     }
 }

@@ -1,5 +1,6 @@
 //! Read the organization's workspace directory over an admitted person link.
 
+use approval_request_protocol::ApprovalRequestId;
 use fleet_identity_protocol::OrganizationId;
 use fleet_rpc::{IndependentReplyRpc, Rpc};
 use serde::{Deserialize, Serialize};
@@ -76,4 +77,104 @@ pub enum OrganizationWorkspaceState {
     Active,
     Archiving,
     Archived,
+}
+
+pub struct ListPersonApprovalsRpc;
+
+impl IndependentReplyRpc for ListPersonApprovalsRpc {}
+
+impl Rpc for ListPersonApprovalsRpc {
+    type Target = OrganizationId;
+    type Request = ListPersonApprovals;
+    type Reply = approval_request_protocol::ApprovalListReply;
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ListPersonApprovals {
+    pub filter: approval_request_protocol::ApprovalListFilter,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<ApprovalRequestId>,
+}
+
+pub struct ReadPersonApprovalRpc;
+
+impl IndependentReplyRpc for ReadPersonApprovalRpc {}
+
+impl Rpc for ReadPersonApprovalRpc {
+    type Target = OrganizationId;
+    type Request = ReadPersonApproval;
+    type Reply = Box<approval_request_protocol::ApprovalReadReply>;
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReadPersonApproval {
+    pub request_id: ApprovalRequestId,
+}
+
+pub struct DecidePersonApprovalRpc;
+
+impl IndependentReplyRpc for DecidePersonApprovalRpc {}
+
+impl Rpc for DecidePersonApprovalRpc {
+    type Target = OrganizationId;
+    type Request = DecidePersonApproval;
+    type Reply = approval_request_protocol::ApprovalDecideReply;
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DecidePersonApproval {
+    pub request_id: ApprovalRequestId,
+    pub operation_id: RequestId,
+    pub answer: approval_request_protocol::Answer,
+}
+
+// The bodies use the same strict named-map decoding as the approval records.
+impl<'de> Deserialize<'de> for ListPersonApprovals {
+    fn deserialize<D: serde::Deserializer<'de>>(input: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Fields {
+            filter: approval_request_protocol::ApprovalListFilter,
+            cursor: Option<ApprovalRequestId>,
+        }
+        let Fields { filter, cursor } = approval_request_protocol::decode_named_map(input)?;
+        Ok(Self { filter, cursor })
+    }
+}
+
+impl<'de> Deserialize<'de> for ReadPersonApproval {
+    fn deserialize<D: serde::Deserializer<'de>>(input: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Fields {
+            request_id: ApprovalRequestId,
+        }
+        let Fields { request_id } = approval_request_protocol::decode_named_map(input)?;
+        Ok(Self { request_id })
+    }
+}
+
+impl<'de> Deserialize<'de> for DecidePersonApproval {
+    fn deserialize<D: serde::Deserializer<'de>>(input: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Fields {
+            request_id: ApprovalRequestId,
+            operation_id: RequestId,
+            answer: approval_request_protocol::Answer,
+        }
+        let Fields {
+            request_id,
+            operation_id,
+            answer,
+        } = approval_request_protocol::decode_named_map(input)?;
+        Ok(Self {
+            request_id,
+            operation_id,
+            answer,
+        })
+    }
 }

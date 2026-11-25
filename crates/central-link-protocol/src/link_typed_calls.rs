@@ -6,7 +6,10 @@ use crate::{
         ListApprovalsForSessionRpc, PassOnApprovalForSessionRpc, RaiseApprovalRpc,
         ReadApprovalForSessionRpc, RegisterRunRpc, StopApprovalRpc,
     },
-    person_link_rpc::ListOrganizationWorkspacesRpc,
+    person_link_rpc::{
+        DecidePersonApprovalRpc, ListOrganizationWorkspacesRpc, ListPersonApprovalsRpc,
+        ReadPersonApprovalRpc,
+    },
     session_lifecycle_rpc::{BindFleetSessionRpc, CreateFleetSessionRpc, EndFleetSessionRpc},
 };
 use fleet_rpc::{Envelope, Rpc};
@@ -21,6 +24,7 @@ use std::{fmt, marker::PhantomData};
 pub enum LinkCallRefusal {
     UnknownCall,
     WrongTarget,
+    NotPermitted,
     /// The call's cause is advisory. The link close and the next refresh carry enrollment authority.
     AuthorityLapsed {
         cause: MachineLinkCloseCode,
@@ -39,6 +43,7 @@ impl LinkCallRefusal {
             Self::AuthorityLapsed { cause } => Some(cause),
             Self::UnknownCall
             | Self::WrongTarget
+            | Self::NotPermitted
             | Self::SessionProofNotAccepted
             | Self::CentralFault => None,
         }
@@ -52,6 +57,7 @@ impl<'de> Deserialize<'de> for LinkCallRefusal {
         enum NamedRefusal {
             UnknownCall {},
             WrongTarget {},
+            NotPermitted {},
             AuthorityLapsed { cause: MachineLinkCloseCode },
             SessionProofNotAccepted {},
             CentralFault {},
@@ -59,6 +65,7 @@ impl<'de> Deserialize<'de> for LinkCallRefusal {
         Ok(match named_map(input)? {
             NamedRefusal::UnknownCall {} => Self::UnknownCall,
             NamedRefusal::WrongTarget {} => Self::WrongTarget,
+            NamedRefusal::NotPermitted {} => Self::NotPermitted,
             NamedRefusal::SessionProofNotAccepted {} => Self::SessionProofNotAccepted,
             NamedRefusal::CentralFault {} => Self::CentralFault,
             NamedRefusal::AuthorityLapsed { cause } => Self::AuthorityLapsed { cause },
@@ -257,6 +264,9 @@ macro_rules! register_calls {
 register_calls! {
     CentralCall, "CentralCall", CentralCallReader, CentralCallReply, "CentralCallReply", CentralCallReplyReader, CentralLinkRpc;
     "listOrganizationWorkspaces" => ListOrganizationWorkspaces(ListOrganizationWorkspacesRpc),
+    "listPersonApprovals" => ListPersonApprovals(ListPersonApprovalsRpc),
+    "readPersonApproval" => ReadPersonApproval(ReadPersonApprovalRpc),
+    "decidePersonApproval" => DecidePersonApproval(DecidePersonApprovalRpc),
     "registerRun" => RegisterRun(RegisterRunRpc),
     "raise" => Raise(RaiseApprovalRpc),
     "stop" => Stop(StopApprovalRpc),

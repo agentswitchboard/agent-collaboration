@@ -30,12 +30,55 @@ impl SignedRequest {
         host: &impl PersonApprovalHarness,
         person: &Person,
     ) -> ConformanceResult<(u16, Vec<u8>)> {
+        #[cfg(feature = "session-link-test-support")]
+        if let Some(endpoint) = host.person_socket() {
+            return self.send_on_socket(endpoint, person).await;
+        }
         host.post(
             self.path,
             &self.body,
             self.headers(person, &fresh_request_id(NOW_SECONDS)?, &|_| {})?,
         )
         .await
+    }
+
+    #[cfg(feature = "session-link-test-support")]
+    async fn send_on_socket(
+        &self,
+        endpoint: super::super::approval_socket::PersonApprovalEndpoint<'_>,
+        person: &Person,
+    ) -> ConformanceResult<(u16, Vec<u8>)> {
+        use super::super::approval_socket::{self, SocketApprovalReply};
+
+        let call = match self.path {
+            LIST => approval_socket::LIST,
+            READ => approval_socket::READ,
+            DECIDE => approval_socket::DECIDE,
+            _ => return Err("unknown conformance approval operation".into()),
+        };
+        let mut body = self.body.clone();
+        let organization = body
+            .as_object_mut()
+            .and_then(|fields| fields.remove("organization"))
+            .ok_or("missing approval operation target")?;
+        let organization = organization
+            .as_str()
+            .ok_or("invalid approval operation target")?;
+        let mut socket = endpoint.connect(person).await?;
+
+        // The moved domain cases share their existing body and store assertions.
+        // Translate only the equivalent transport outcomes they used on HTTP.
+        match socket.call(call, organization, &body).await? {
+            SocketApprovalReply::Answer(body) => Ok((200, body)),
+            SocketApprovalReply::Refused { reason } if reason == "notPermitted" => {
+                Ok((200, serde_json::to_vec(&super::refusal(&reason))?))
+            }
+            SocketApprovalReply::Refused { reason } if reason == "centralFault" => {
+                Ok((503, Vec::new()))
+            }
+            SocketApprovalReply::Closed { code: 1011 } => Ok((503, Vec::new())),
+            response => Err(format!("{call}: unexpected socket outcome {response:?}").into()),
+        }
     }
 }
 

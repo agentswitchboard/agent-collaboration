@@ -2,8 +2,10 @@
 pub(crate) mod engine_admin_dispatch;
 pub(crate) mod engine_dispatch;
 
+use crate::person_approval_application::{PersonApprovalAnswer, PersonApprovalApplication};
+use central_storage::StoreFailure;
 use fleet_contracts::MailDeliveryReady;
-use fleet_runtime::FleetRuntime;
+use fleet_runtime::{FleetRuntime, TurnGuard};
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
 use fleet_workspace_access::WorkspaceAccess;
 use std::sync::Arc;
@@ -143,6 +145,55 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         self.enrollment_invalidated = observer;
         self
     }
+    /// Expose answers and hand holder effects off only after the owning transaction commits.
+    pub(super) async fn commit_person_approval(
+        &self,
+        turn: TurnGuard<'_>,
+        application: PersonApprovalApplication,
+    ) -> Result<PersonApprovalAnswer, StoreFailure> {
+        let transactions = self
+            .person_approval_transactions
+            .as_deref()
+            .ok_or(StoreFailure::Unavailable)?;
+        let schedule = self
+            .approval_delivery_completion
+            .as_ref()
+            .ok_or(StoreFailure::Unavailable)?;
+        #[cfg(feature = "test-support")]
+        let operation_id = application.decide_operation_id().cloned();
+        #[cfg(feature = "test-support")]
+        self.execution
+            .pause_points()
+            .reached_central(fleet_runtime::PausePoint::BeforeSignInSample)
+            .await;
+        let (proof, applied) = application.commit(transactions).await?;
+        #[cfg(feature = "test-support")]
+        let reply_was_admitted = applied.is_admitted();
+        let publication_failure = applied.publication_failure();
+        let (answer, offers) = applied.publish(&proof)?;
+        drop(turn);
+        if let Some(completion) = transactions.delivery_after_commit(offers) {
+            schedule(completion);
+        }
+        if let Some(reason) = publication_failure {
+            return Err(StoreFailure::AlarmUnpublishable { reason });
+        }
+        #[cfg(feature = "test-support")]
+        self.execution
+            .pause_points()
+            .reached_central(fleet_runtime::PausePoint::AfterPersonApprovalCommit)
+            .await;
+        #[cfg(feature = "test-support")]
+        if reply_was_admitted
+            && operation_id
+                .as_ref()
+                .is_some_and(|id| self.execution.take_lost_reply(id))
+        {
+            return Err(StoreFailure::AnswerLost);
+        }
+        Ok(answer)
+    }
+
     pub fn with_person_approval_transactions(
         mut self,
         transactions: Arc<dyn crate::PersonApprovalTransactions>,
