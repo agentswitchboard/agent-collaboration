@@ -36,6 +36,9 @@ use super::{
 
 const PROVIDER_SESSION: &str = "019f0000-0000-7000-8000-000000000001";
 const TEST_URL: &str = "http://127.0.0.1:12345/mcp/managed/019f0000-0000-7000-8000-000000000002";
+const OWNER: OwnerIncarnation = OwnerIncarnation(uuid::Uuid::from_u128(
+    0x019f_0000_0000_7000_8000_0000_0000_0003,
+));
 
 struct ProviderFixture {
     client: AgentSessionClient<NoopInteractionPort>,
@@ -131,7 +134,7 @@ fn assert_managed_server(frame: &Value, method: &str, canary: u8) {
 async fn claude_new_load_and_resume_forward_strict_setup_fails_on_connection_wide_mcp() {
     let mut provider = ProviderFixture::start(true, || {}).await;
     let wire = provider.client.owner_wire();
-    let incarnation = OwnerIncarnation(uuid::Uuid::now_v7());
+    let incarnation = OWNER;
     let opened = wire
         .create_managed(
             incarnation,
@@ -165,7 +168,9 @@ async fn claude_new_load_and_resume_forward_strict_setup_fails_on_connection_wid
         let restored = wire
             .restore_managed(
                 run,
-                LoadAttempt(uuid::Uuid::now_v7()),
+                LoadAttempt(uuid::Uuid::from_u128(
+                    0x019f_0000_0000_7000_8000_0000_0000_0010 + generation as u128,
+                )),
                 PROVIDER_SESSION.to_owned(),
                 via,
                 session_setup(),
@@ -200,7 +205,7 @@ async fn cursor_requires_fresh_setup_fails_on_fallback_or_cached_evidence() {
         .await;
         let observe = move |_: &ManagedToolDescriptor| handshakes.load(Ordering::Acquire);
         let wire = provider.client.owner_wire();
-        let incarnation = OwnerIncarnation(uuid::Uuid::now_v7());
+        let incarnation = OWNER;
         let result = wire
             .create_managed(
                 incarnation,
@@ -222,7 +227,9 @@ async fn cursor_requires_fresh_setup_fails_on_fallback_or_cached_evidence() {
         let result = wire
             .restore_managed(
                 run,
-                LoadAttempt(uuid::Uuid::now_v7()),
+                LoadAttempt(uuid::Uuid::from_u128(
+                    0x019f_0000_0000_7000_8000_0000_0000_0012,
+                )),
                 PROVIDER_SESSION.to_owned(),
                 RestoreVia::Load,
                 session_setup(),
@@ -269,7 +276,7 @@ async fn managed_open_requires_advertised_http_mcp_before_dispatch() {
         .client
         .owner_wire()
         .create_managed(
-            OwnerIncarnation(uuid::Uuid::now_v7()),
+            OWNER,
             session_setup(),
             ManagedAcpToolSetup::claude(descriptor(6)),
         )
@@ -317,7 +324,7 @@ async fn acp_bearer_never_reaches_target_specific_trace_fails_without_connection
     let _subscriber = tracing::subscriber::set_default(trace);
     let mut provider = ProviderFixture::start(true, || {}).await;
     let wire = provider.client.owner_wire();
-    let incarnation = OwnerIncarnation(uuid::Uuid::now_v7());
+    let incarnation = OWNER;
     let opened = wire
         .create_managed(
             incarnation,
