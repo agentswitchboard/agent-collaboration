@@ -40,6 +40,10 @@ test("allows coalesced item sequences and fails on an explicit stream gap", () =
   wrap(view, { kind: "snapshotEnd", cursor: { epoch: 1, afterSequence: 10 } });
   assert.equal(view.activeTurn, "coalesced-turn");
   assert.throws(
+    () => wrap(view, { sequence: 10, event: { kind: "turnStarted", turnId: "replayed-turn" } }),
+    /reordered or replayed/u,
+  );
+  assert.throws(
     () => wrap(view, { sequence: 11, event: { kind: "resyncRequired" } }),
     /contiguous coverage/u,
   );

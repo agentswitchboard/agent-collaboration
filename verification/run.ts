@@ -11,12 +11,12 @@ function printPreparation(): boolean {
       "node verification/run.ts PRIVATE_DECLARATION.json\n" +
         `${crossMachineUnavailable}\n` +
         "node verification/run.ts --staging-message PRIVATE_DECLARATION.json\n" +
-        "Observe a same-Mac idle or running Claude notice through enrolled staging Central.\n" +
+        "Observe an idle or running Claude notice through staging Central, optionally with a declared sender handoff.\n" +
         "node verification/run.ts --d1-plan\n" +
         "Print D1 O1–O11 requirements and all-open coverage. No launch, network, credentials or writes.\n" +
         "node verification/run.ts --d1-readback PRIVATE_DECLARATION.json\n" +
         "Read exact stopped task stores after consumer checks.\n" +
-        "D1 full outcome credit requires declared controls/target; staging is never executed here.\n",
+        "D1 full outcome credit requires declared controls/target. D1 staging remains unavailable.\n",
     );
     return true;
   }

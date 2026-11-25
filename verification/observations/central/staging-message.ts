@@ -1,76 +1,25 @@
 import { spawn } from "node:child_process";
 import { randomUUIDv7 } from "node:crypto";
-import { lstat, mkdir, readFile, realpath } from "node:fs/promises";
-import { homedir } from "node:os";
-import { isAbsolute, join, relative } from "node:path";
+import { mkdir, realpath } from "node:fs/promises";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { setTimeout } from "node:timers/promises";
-import { pathToFileURL } from "node:url";
 import { z } from "zod";
-import { artifactSchema, fileSchema, sessionSchema } from "../../declaration.ts";
-import {
-  command,
-  fingerprint,
-  privateDirectory,
-  qualifyArtifact,
-} from "../../machines/owned-process.ts";
+import { privateDirectory } from "../../machines/owned-process.ts";
 import { ObservationFailure, Receipt } from "../../receipt.ts";
 import { StagingMessageEvents } from "./staging-message-events.ts";
+import { awaitRemoteSend, readRemoteReceipt } from "./staging-message-sender.ts";
+import {
+  cli,
+  inspect,
+  parseCommand,
+  prepare,
+  readPlan,
+  serviceDirectory,
+  type CommandResult,
+  type Plan,
+} from "./staging-message-plan.ts";
 
-const absolutePath = z.string().refine(isAbsolute);
-const declarationSchema = z.strictObject({
-  journey: z.enum(["idle", "running"]),
-  answerLines: z.number().int().min(4000).max(12000).default(8000),
-  source: z.string().regex(/^[a-f0-9]{40}$/u),
-  router: artifactSchema,
-  collaboration: artifactSchema,
-  root: absolutePath,
-  port: z.number().int().min(1024).max(65535),
-  machineId: z.uuid(),
-  hostPid: z.number().int().positive(),
-  claudeAdapter: fileSchema,
-  claudeAdapterPid: z.number().int().positive(),
-  sender: sessionSchema,
-  recipient: sessionSchema,
-  evidence: absolutePath,
-});
-type Plan = z.infer<typeof declarationSchema>;
-type CommandResult = Awaited<ReturnType<typeof command>>;
-
-const inspectSchema = z.object({
-  result: z.object({
-    record: z.object({
-      target: sessionSchema,
-      state: z.string(),
-      capabilities: z.object({
-        steer: z.boolean(),
-        authStatus: z.object({ kind: z.string() }).optional(),
-      }),
-      settingsCatalog: z.object({
-        configOptions: z.array(
-          z.object({
-            id: z.string(),
-            currentValue: z.object({ value: z.string() }).optional(),
-          }),
-        ),
-      }),
-    }),
-  }),
-});
-const senderSchema = z.object({
-  result: z.object({
-    record: z.object({ session: sessionSchema, endpointRegistered: z.literal(true) }),
-  }),
-});
-const quotaSchema = z.object({
-  accounts: z.array(
-    z.object({
-      provider: z.string(),
-      credential_store_status: z.string(),
-      oauth_maintenance_state: z.string(),
-    }),
-  ),
-});
 const sendSchema = z.object({
   kind: z.literal("returned"),
   value: z.object({
@@ -89,7 +38,14 @@ const statusSchema = z.object({
       delivery: z
         .object({
           kind: z.string(),
-          value: z.object({ kind: z.string(), deadlinePassed: z.boolean().optional() }).optional(),
+          value: z
+            .object({
+              kind: z.string(),
+              arrivedAt: z.iso.datetime().optional(),
+              completedAt: z.iso.datetime().optional(),
+              deadlinePassed: z.boolean().optional(),
+            })
+            .optional(),
         })
         .optional(),
     })
@@ -102,166 +58,6 @@ function holdPrompt(answerLines: number): string {
     "Write every number yourself without tools. Do not use ellipses or ranges. " +
     "If an unrelated notice arrives, continue the numbered answer without tools."
   );
-}
-
-function firstLine(value: string): string {
-  return value.split("\n", 1)[0] ?? "";
-}
-
-function serviceDirectory(plan: Plan): string {
-  return join(plan.root, "agent-communication");
-}
-
-function cli(plan: Plan, args: readonly string[], timeoutSeconds = 20): Promise<CommandResult> {
-  return command(
-    plan.collaboration.path,
-    [...args, "--service-directory", serviceDirectory(plan)],
-    {
-      timeoutSeconds,
-    },
-  );
-}
-
-function parseCommand(result: CommandResult, label: string): unknown {
-  if (result.exit !== 0) throw new Error(`${label} failed with exit ${String(result.exit)}`);
-  try {
-    return JSON.parse(result.stdout);
-  } catch {
-    throw new Error(`${label} returned invalid JSON`);
-  }
-}
-
-async function readPlan(file: string): Promise<Plan> {
-  if (!isAbsolute(file) || (await realpath(file)) !== file)
-    throw new Error("pass a canonical absolute path to the private declaration");
-  const info = await lstat(file);
-  if (!info.isFile() || info.uid !== process.getuid?.() || (info.mode & 0o077) !== 0)
-    throw new Error("the declaration must be an owner-private file");
-  const outside = relative(process.cwd(), file);
-  if (!outside.startsWith("../") && !isAbsolute(outside))
-    throw new Error("keep the private declaration outside the checkout");
-  return declarationSchema.parse(JSON.parse(await readFile(file, "utf8")));
-}
-
-async function requireLocalClaudeRoute(plan: Plan): Promise<void> {
-  const host = await command("/bin/ps", ["-ww", "-p", String(plan.hostPid), "-o", "command="]);
-  if (
-    host.exit !== 0 ||
-    !host.stdout.startsWith(`${plan.router.path} host `) ||
-    !host.stdout.includes(`--router-root ${plan.root} `) ||
-    !host.stdout.includes("--require-debug-isolation") ||
-    !host.stdout.includes(`--port ${plan.port} `)
-  )
-    throw new Error("declared Host PID is not the signed debug Host on this root and port");
-  const relation = await command("/bin/ps", ["-p", String(plan.claudeAdapterPid), "-o", "ppid="]);
-  if (relation.exit !== 0 || Number(relation.stdout.trim()) !== plan.hostPid)
-    throw new Error("declared Claude adapter is not a child of the declared Host");
-  // Only the expected non-secret route and script path are compared. Do not save ps environment output.
-  const adapter = await command("/bin/ps", [
-    "eww",
-    "-p",
-    String(plan.claudeAdapterPid),
-    "-o",
-    "command=",
-  ]);
-  const assigned = adapter.stdout.match(/(?:^|\s)ANTHROPIC_BASE_URL=([^\s]*)/gu) ?? [];
-  if (
-    adapter.exit !== 0 ||
-    !adapter.stdout.includes(pathToFileURL(plan.claudeAdapter.path).href) ||
-    assigned.length !== 1 ||
-    assigned[0]?.trim() !== `ANTHROPIC_BASE_URL=http://127.0.0.1:${plan.port}/anthropic`
-  )
-    throw new Error("cannot confirm the managed Claude adapter's actual debug proxy route");
-}
-
-async function prepare(plan: Plan, receipt: Receipt): Promise<void> {
-  const production = join(homedir(), ".codex-router");
-  if (
-    (await realpath(plan.root)) !== plan.root ||
-    plan.root === production ||
-    plan.root.startsWith(`${production}/`) ||
-    [8787, 8788, 19741, 19742, 19743, 43127].includes(plan.port) ||
-    plan.router.identifier !== "dev.shravansunder.codex-router.debug" ||
-    plan.collaboration.identifier !== "dev.shravansunder.agent-collaboration.debug" ||
-    plan.router.team !== "974QD84WVC" ||
-    plan.collaboration.team !== "974QD84WVC"
-  )
-    throw new Error("a non-production root, debug port and signed debug artifacts are required");
-  await qualifyArtifact(plan.router);
-  await qualifyArtifact(plan.collaboration);
-  if ((await fingerprint(plan.claudeAdapter.path)) !== plan.claudeAdapter.sha256)
-    throw new Error("Claude adapter fingerprint changed");
-  await requireLocalClaudeRoute(plan);
-  const environment = { ...process.env, CODEX_ROUTER_DEBUG_ROUTER_ROOT: plan.root };
-  Reflect.deleteProperty(environment, "CODEX_ROUTER_USE_HOME_DEFAULT");
-  const enrollment = await command(plan.router.path, ["enrollment", "status"], { environment });
-  const enrolled =
-    enrollment.exit === 0 &&
-    firstLine(enrollment.stdout) === "enrolled, connected" &&
-    enrollment.stdout.includes(`Machine: ${plan.machineId}\n`) &&
-    enrollment.stdout.includes("Sign-in: https://auth-staging.agent-collaboration.com/\n");
-  await receipt.record("readiness", { enrolled, exit: enrollment.exit });
-  if (!enrolled) throw new Error("declared debug Host is not enrolled and connected to staging");
-  const quota = await command(
-    plan.router.path,
-    ["quota", "--router-root", plan.root, "--format", "json", "--no-refresh"],
-    { environment },
-  );
-  const { accounts } = quotaSchema.parse(parseCommand(quota, "debug Claude credential readiness"));
-  const readyClaude = accounts.some(
-    (account) =>
-      account.provider === "claude" &&
-      account.credential_store_status === "ready" &&
-      account.oauth_maintenance_state === "healthy",
-  );
-  await receipt.record("debug-claude-credentials", { ready: readyClaude, exit: quota.exit });
-  if (!readyClaude) throw new Error("no already authenticated Claude account on the debug root");
-  const identity = senderSchema.parse(
-    parseCommand(await cli(plan, ["whoami", "--json"]), "sender identity"),
-  );
-  if (
-    identity.result.record.session.sessionId !== plan.sender.sessionId ||
-    identity.result.record.session.endpoint.endpointId !== plan.sender.endpoint.endpointId ||
-    identity.result.record.session.endpoint.serviceId !== plan.sender.endpoint.serviceId ||
-    plan.sender.endpoint.serviceId !== plan.recipient.endpoint.serviceId ||
-    plan.sender.sessionId === plan.recipient.sessionId ||
-    plan.recipient.endpoint.endpointId !== "claude-local"
-  )
-    throw new Error("same-Mac sender and recipient identities do not match the declaration");
-  const inspected = await inspect(plan);
-  if (inspected.state !== "idle" || (plan.journey === "running" && !inspected.capabilities.steer))
-    throw new Error(
-      "recipient must be open and idle, with steering advertised for the running case",
-    );
-  await receipt.record("recipient-ready", {
-    model: "haiku",
-    steer: inspected.capabilities.steer,
-    adapterAuth: inspected.capabilities.authStatus?.kind,
-    proxy: `http://127.0.0.1:${plan.port}/anthropic`,
-  });
-}
-
-async function inspect(plan: Plan): Promise<z.infer<typeof inspectSchema>["result"]["record"]> {
-  const result = await cli(plan, [
-    "session",
-    "inspect",
-    "--to",
-    JSON.stringify(plan.recipient),
-    "--json",
-  ]);
-  const { record } = inspectSchema.parse(parseCommand(result, "recipient inspect")).result;
-  const model = record.settingsCatalog.configOptions.find(({ id }) => id === "model")?.currentValue
-    ?.value;
-  if (
-    record.target.sessionId !== plan.recipient.sessionId ||
-    record.target.endpoint.serviceId !== plan.recipient.endpoint.serviceId ||
-    record.target.endpoint.endpointId !== "claude-local" ||
-    model !== "haiku"
-  )
-    throw new Error(
-      "exact declared Claude recipient or effective Haiku setting cannot be confirmed",
-    );
-  return record;
 }
 
 interface RecipientStream {
@@ -374,20 +170,7 @@ async function observe(plan: Plan, receipt: Receipt): Promise<void> {
     const requestId = randomUUIDv7();
     await receipt.record("send-attempt", { requestId, runningTurn });
     assertStream();
-    const output = await cli(plan, [
-      "message",
-      "send",
-      "--to",
-      JSON.stringify({ machineId: plan.machineId, sessionId: plan.recipient.sessionId }),
-      "--request-id",
-      requestId,
-      "--body",
-      `Staging notice verification ${requestId}`,
-      "--json",
-    ]);
-    const send = sendSchema.parse(parseCommand(output, "send"));
-    if (send.value.requestId !== requestId) throw new Error("send returned another request ID");
-    await receipt.record("send", send);
+    await sendMessage(plan, receipt, requestId, runningTurn);
     await checkDelivery({ plan, receipt, view, requestId, runningTurn, startCount, assertStream });
   } finally {
     const runTurn = runningTurn ?? (hold === undefined ? undefined : view.starts[0]);
@@ -417,6 +200,55 @@ async function observe(plan: Plan, receipt: Receipt): Promise<void> {
       notices: view.notices,
     });
   }
+}
+
+async function sendMessage(
+  plan: Plan,
+  receipt: Receipt,
+  requestId: string,
+  runningTurn: string | undefined,
+): Promise<void> {
+  const to = { machineId: plan.machineId, sessionId: plan.recipient.sessionId };
+  const body = `Staging notice verification ${requestId}`;
+  let output: unknown;
+  if (plan.senderHandoff === undefined) {
+    output = parseCommand(
+      await cli(plan, [
+        "message",
+        "send",
+        "--to",
+        JSON.stringify(to),
+        "--request-id",
+        requestId,
+        "--body",
+        body,
+        "--json",
+      ]),
+      "send",
+    );
+  } else {
+    const armedAt = Date.now();
+    const sendBefore = new Date(armedAt + 60_000).toISOString();
+    const relayed = await awaitRemoteSend({
+      handoff: plan.senderHandoff,
+      sender: plan.sender,
+      requestId,
+      receipt,
+      intent: { requestId, to, body, runningTurn, source: plan.source, sendBefore },
+    });
+    if (relayed.exit !== 0) throw new Error("remote sender reported a failed send; do not replay");
+    if (Date.parse(relayed.observedAt) < armedAt || relayed.observedAt > sendBefore)
+      throw new Error("remote send receipt is outside the armed window; do not replay");
+    await receipt.record("remote-send-readback", {
+      requestId,
+      observedAt: relayed.observedAt,
+      exit: relayed.exit,
+    });
+    output = relayed.output;
+  }
+  const send = sendSchema.parse(output);
+  if (send.value.requestId !== requestId) throw new Error("send returned another request ID");
+  await receipt.record("send", send);
 }
 
 async function requireIdleObservation(plan: Plan, stream: RecipientStream): Promise<void> {
@@ -478,16 +310,26 @@ async function checkDelivery(check: DeliveryCheck): Promise<void> {
   const expires = performance.now() + 275_000;
   let seen: string | undefined;
   let messageId: string | undefined;
-  let deliveryWitnessedWhileRunningAt: number | undefined;
+  let arrivedAt: number | undefined;
   let firstNoticeAt: number | undefined;
   let previousStatus: string | undefined;
   for (let elapsed = performance.now(); elapsed < expires; elapsed = performance.now()) {
     assertStream();
-    const result = await cli(plan, ["message", "status", "--request-id", requestId, "--json"]);
-    const status = statusSchema.parse(parseCommand(result, "sender status"));
+    const result = await senderStatus(plan, requestId);
+    if (result === undefined) {
+      await setTimeout(2500);
+      continue;
+    }
+    if (result.exit !== 0) throw new Error("sender status failed; do not replay the send");
+    const status = statusSchema.parse(result.output);
     const encoded = JSON.stringify(status);
     if (encoded !== previousStatus) {
-      await receipt.record("sender-status", { requestId, status, exit: result.exit });
+      await receipt.record("sender-status", {
+        requestId,
+        status,
+        exit: result.exit,
+        observedAt: result.observedAt,
+      });
       previousStatus = encoded;
     }
     const delivery = status.value?.delivery?.value;
@@ -515,17 +357,19 @@ async function checkDelivery(check: DeliveryCheck): Promise<void> {
         view.toolTurns.has(runningTurn)
       )
         throw new Error("the held turn used a tool");
-      if (view.activeTurn === runningTurn && delivery?.kind === "delivered")
-        deliveryWitnessedWhileRunningAt ??= performance.now();
+      if (delivery?.kind === "delivered" && delivery.arrivedAt !== undefined)
+        arrivedAt ??= Date.parse(delivery.arrivedAt);
       if (
         view.starts.length !== startCount ||
         (notice !== undefined && notice.turnId !== runningTurn)
       )
         throw new ObservationFailure("notice started or entered a different turn");
       if (view.ends.includes(runningTurn) && notice === undefined) {
+        const endObservedAt = view.endObservedAt.get(runningTurn);
         if (
-          deliveryWitnessedWhileRunningAt !== undefined &&
-          performance.now() - deliveryWitnessedWhileRunningAt >= 65_000
+          arrivedAt !== undefined &&
+          endObservedAt !== undefined &&
+          endObservedAt - arrivedAt >= 65_000
         )
           throw new ObservationFailure("accepted message did not enter the already-running turn");
         throw new Error("hold ended before a full notice window after recipient Mac custody");
@@ -556,6 +400,21 @@ async function checkDelivery(check: DeliveryCheck): Promise<void> {
   if (seen !== undefined)
     throw new Error("observation ended before the notice window was complete");
   throw new Error("the observation bound ended without a sender Seen receipt");
+}
+
+async function senderStatus(
+  plan: Plan,
+  requestId: string,
+): Promise<{ exit: number | null; output: unknown; observedAt?: string } | undefined> {
+  if (plan.senderHandoff !== undefined)
+    return await readRemoteReceipt({
+      handoff: plan.senderHandoff,
+      sender: plan.sender,
+      requestId,
+      operation: "status",
+    });
+  const result = await cli(plan, ["message", "status", "--request-id", requestId, "--json"]);
+  return { exit: result.exit, output: parseCommand(result, "sender status") };
 }
 
 export async function runStagingMessage(file: string): Promise<void> {

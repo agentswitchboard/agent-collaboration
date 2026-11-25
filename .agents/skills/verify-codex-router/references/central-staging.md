@@ -4,7 +4,7 @@ For central-storage-reset D1, use [D1 central mail](d1-central-mail.md). O5 rese
 
 ## Current entry
 
-The staging notice journey uses the existing CLI and session event stream on a declared, already-running signed debug Host. It covers two same-Mac cases through staging Central. The two-Mac run, the legacy staging cases and independent D1 routes retain their own qualification and scope. The legacy entry still refuses with exit 2. No staging access, enrollment, sign-in or deployment authority follows from this recipe.
+The staging notice journey uses the existing CLI and session event stream on a declared, already-running signed debug Host. It supports a local sender and a declared separate-Mac sender handoff through staging Central. The legacy staging entry still refuses with exit 2. Independent D1 routes retain their own scope. No staging access, enrollment, sign-in or deployment authority follows from this recipe.
 
 ```sh
 node verification/run.ts --staging-message /absolute/private/staging-message.json
@@ -12,7 +12,7 @@ node verification/run.ts --staging-message /absolute/private/staging-message.jso
 
 Create the declaration outside the checkout, mode `0600`, with a fresh `evidence` directory under an existing owner-private directory. Supply:
 
-- `journey` as `idle` or `running`, and the 40-character `source` pin. For `running`, optional `answerLines` chooses the bounded no-tools answer length from 4,000 to 12,000. The default is 8,000.
+- `journey` as `idle` or `running`, and the 40-character `source` pin. For `running`, optional `answerLines` chooses the bounded no-tools answer length from 4,000 to 20,000. The default is 8,000.
 - `router` and `collaboration`, each with canonical absolute `path`, `sha256`, signing `identifier` and `team`. Use the signed debug artifacts. Pin the approved `root`, loopback `port`, enrolled `machineId` and `hostPid` of that Host.
 - `claudeAdapter` with absolute `path` and `sha256`, and its actual `claudeAdapterPid` under that Host. The driver compares only the actual process's expected local Anthropic route and keeps no process arguments or environment in evidence. Use the normal Host launch path with its already authenticated debug-only account. Stop on a login or permission request.
 - `sender` and `recipient`, distinct exact SessionRef objects of the form `{endpoint: {serviceId, endpointId}, sessionId}`. Use the real current sender session's identity and an isolated idle managed Claude recipient created under this Host with model `haiku` (Haiku 5.5). Use the existing session create and inspect commands, and a fresh test recipient for each run. A failed or uncertain send is not replayed.
@@ -21,7 +21,13 @@ The driver checks the debug process, staging enrollment, debug-account health, t
 
 Use a no-tools hold. The public prompt CLI refuses permission requests ([conversation command](../../../../crates/agent-collaboration/src/conversation_commands.rs#L50)), so a permissioned sleep can cancel the fixture before any message is sent. If the no-tools answer finishes before a complete notice window, retain that run as blocked. A fresh fixture can use a larger bounded answer on the same Haiku model.
 
-The adopted expectations come from the messages design's recipient-state table and the notice slice's scope ruling. The idle-only baseline should reach recipient Mac custody and complete the held turn without the notice in it. An unavailable hold, lost stream or wrong target is a setup failure and does not establish the baseline red. Run `running` on the declared old build and on the candidate, and `idle` on the candidate. Retain the private receipts for each. An interrupted test cleans up its own captured hold turn and observer, leaving the Host and fixture sessions to their allocator. The two-Mac positive remains open until an authorized second debug Host and sender are assigned and the journey supports that route.
+The adopted expectations come from the messages design's recipient-state table and the notice slice's scope ruling. The idle-only baseline should reach recipient Mac custody and complete the held turn without the notice in it. Compare the reported custody time to the observed end of that turn so delayed status publication does not shorten the measured window. An unavailable hold, lost stream or wrong target is a setup failure and does not establish the baseline red. Run `running` on the declared old build and on the candidate, and `idle` on the candidate. Retain the private receipts for each. An interrupted test cleans up its own captured hold turn and observer, leaving the Host and fixture sessions to their allocator.
+
+### Separate-Mac sender
+
+After the local positives, allocate a distinct already-enrolled debug Mac, its signed candidate build at the same source pin and its actual sender session. Use the same command with the remote `sender` SessionRef and optional `senderHandoff: { machineId, directory }`. The sender operator qualifies the actual debug Host and sender with product reads and strict signatures. Stash the outcome as `sender-qualified.json` in the declaration's fresh private handoff directory. Its fields are `source`, `machineId`, `sender`, `debugOnly: true`, `enrolledConnected: true`, `routerSha256`, and `cliSha256`.
+
+When the recipient driver is armed, it emits the path to `sender-intent.json`. Relay it through the authorized operator channel. The sender operator uses the exact `to`, `body`, and `requestId` for one signed `agent-collaboration message send --json` from its debug service before `sendBefore`. Relay its CLI response as `<requestId>-send.json` in the private handoff directory. Poll the same signed CLI's `message status --json --request-id` on the sender and relay changing outcomes through `<requestId>-status.json`. Each file is an atomic private publication with `requestId`, `machineId`, `sender`, UTC `observedAt`, exact process `exit`, and the actual CLI JSON as `output`. Do not retry uncertain sends or substitute a local sender. A missing allocation, timely send or matching sender readback blocks the two-Mac result. This route uses two authenticated operators and needs no SSH access.
 
 ## Retained obligations and historical evidence
 

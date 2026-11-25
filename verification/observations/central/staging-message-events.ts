@@ -40,6 +40,7 @@ export class StagingMessageEvents {
   activeTurn: string | null = null;
   readonly starts: string[] = [];
   readonly ends: string[] = [];
+  readonly endObservedAt = new Map<string, number>();
   readonly notices: NoticeObservation[] = [];
   readonly answeringTurns = new Set<string>();
   readonly toolTurns = new Set<string>();
@@ -111,6 +112,7 @@ export class StagingMessageEvents {
       if (this.activeTurn !== turnId) throw new Error("recipient turn end has no matching start");
       this.activeTurn = null;
       this.ends.push(turnId);
+      this.endObservedAt.set(turnId, Date.now());
     }
     if (kind === "interactionRequested")
       throw new Error("recipient requires approval, sign-in, or an answer");
