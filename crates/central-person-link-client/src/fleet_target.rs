@@ -1,8 +1,11 @@
-use std::path::Path;
+use std::{
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    path::Path,
+};
 
 use fleet_identity_protocol::OrganizationId;
 use serde::Deserialize;
-use url::Url;
+use url::{Host, Url};
 
 use crate::FleetTargetError;
 
@@ -14,6 +17,7 @@ struct FleetTargetDocument {
     organization_id: OrganizationId,
     central_admin_audience: Option<String>,
     owner_fleet_cli_client_id: Option<String>,
+    owner_cli_redirect_uri: Option<String>,
 }
 
 pub struct FleetTarget {
@@ -22,6 +26,7 @@ pub struct FleetTarget {
     organization: OrganizationId,
     admin_audience: String,
     client_id: String,
+    redirect_uri: Option<String>,
 }
 
 impl FleetTarget {
@@ -58,6 +63,7 @@ impl FleetTarget {
             organization: document.organization_id,
             admin_audience,
             client_id,
+            redirect_uri: document.owner_cli_redirect_uri,
         })
     }
 
@@ -78,17 +84,43 @@ impl FleetTarget {
     }
 
     pub(crate) fn token_url(&self) -> Url {
-        let mut url = self.issuer_url.clone();
-        url.set_path("/api/auth/oauth2/token");
-        url
+        self.issuer_route("/api/auth/oauth2/token")
     }
 
     pub(crate) fn person_link_url(&self) -> Url {
-        let mut url = self.issuer_url.clone();
-        url.set_path(&format!(
+        self.issuer_route(&format!(
             "/api/fleet/person-link/{}",
             self.organization.as_str()
-        ));
+        ))
+    }
+
+    pub(crate) fn issuer_route(&self, path: &str) -> Url {
+        let mut url = self.issuer_url.clone();
+        url.set_path(path);
         url
+    }
+
+    pub(crate) fn loopback_redirect(&self) -> Result<(Url, SocketAddr), FleetTargetError> {
+        let invalid = FleetTargetError::InvalidRedirect;
+        let redirect = self
+            .redirect_uri
+            .as_deref()
+            .and_then(|redirect| Url::parse(redirect).ok())
+            .ok_or(invalid)?;
+        let address = match redirect.host() {
+            Some(Host::Domain("localhost")) => IpAddr::V4(Ipv4Addr::LOCALHOST),
+            Some(Host::Ipv4(Ipv4Addr::LOCALHOST)) => IpAddr::V4(Ipv4Addr::LOCALHOST),
+            Some(Host::Ipv6(address)) if address.is_loopback() => IpAddr::V6(address),
+            _ => return Err(invalid),
+        };
+        if redirect.scheme() != "http"
+            || !redirect.username().is_empty()
+            || redirect.password().is_some()
+            || redirect.fragment().is_some()
+        {
+            return Err(invalid);
+        }
+        let socket = SocketAddr::new(address, redirect.port().unwrap_or(0));
+        Ok((redirect, socket))
     }
 }

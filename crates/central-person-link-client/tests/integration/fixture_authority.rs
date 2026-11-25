@@ -1,9 +1,3 @@
-use std::sync::{Arc, Mutex};
-
-use aws_lc_rs::{
-    encoding::AsBigEndian,
-    signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair as AwsKeyPair},
-};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B64};
 use central_person_link_client::{FleetCredentialError, FleetCredentialStore};
 use collaboration_central_conformance::signin_fixtures::{
@@ -12,9 +6,16 @@ use collaboration_central_conformance::signin_fixtures::{
 use ring::{
     digest::{SHA256, digest},
     rand::SystemRandom,
-    signature::{ECDSA_P256_SHA256_FIXED, ED25519, Ed25519KeyPair, KeyPair, UnparsedPublicKey},
+    signature::{
+        ECDSA_P256_SHA256_FIXED, ECDSA_P256_SHA256_FIXED_SIGNING, ED25519, EcdsaKeyPair,
+        Ed25519KeyPair, KeyPair, UnparsedPublicKey,
+    },
 };
 use serde_json::{Value, json};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 use zeroize::Zeroizing;
 
 pub(super) const INITIAL_SECONDS: i64 = 1_900_000_000;
@@ -24,65 +25,89 @@ pub(super) const AUDIENCE: &str = "https://central.example.invalid/identity";
 pub(super) const PUBLIC_ORIGIN: &str = "https://central.example.invalid";
 
 pub(super) struct FixtureCredential {
-    stored: Mutex<Zeroizing<Vec<u8>>>,
+    stored: Mutex<Option<Zeroizing<Vec<u8>>>>,
+    pub refuse_successor: AtomicBool,
     pub public_key: Vec<u8>,
     pub jkt: String,
 }
 
 impl FixtureCredential {
     pub fn new() -> Arc<Self> {
-        let key = EcdsaKeyPair::generate(&ECDSA_P256_SHA256_FIXED_SIGNING).unwrap();
+        let random = SystemRandom::new();
+        let pkcs8 =
+            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &random).unwrap();
+        let key =
+            EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref(), &random)
+                .unwrap();
         let public = key.public_key().as_ref();
         let coordinates = json!({
             "crv":"P-256", "kty":"EC", "x":B64.encode(public.get(1..33).unwrap()),
             "y":B64.encode(public.get(33..65).unwrap()),
         });
         let jkt = sha256_url(&serde_json::to_vec(&coordinates).unwrap());
-        let mut private = coordinates;
-        private.as_object_mut().unwrap().insert(
-            "d".to_owned(),
-            json!(B64.encode(key.private_key().as_be_bytes().unwrap().as_ref())),
-        );
-        let stored =
-            json!({"privateJwk":private,"refreshToken":fresh_request_id(INITIAL_SECONDS).unwrap()});
+        let stored = json!({
+            "state":"ready",
+            "private_key":B64.encode(pkcs8.as_ref()),
+            "refresh_token":fresh_request_id(INITIAL_SECONDS).unwrap(),
+        });
         Arc::new(Self {
-            stored: Mutex::new(Zeroizing::new(
-                B64.encode(serde_json::to_vec(&stored).unwrap())
-                    .into_bytes(),
-            )),
+            stored: Mutex::new(Some(Zeroizing::new(serde_json::to_vec(&stored).unwrap()))),
+            refuse_successor: AtomicBool::new(false),
             public_key: public.to_vec(),
             jkt,
         })
     }
 
+    pub fn empty() -> Arc<Self> {
+        Arc::new(Self {
+            stored: Mutex::new(None),
+            refuse_successor: AtomicBool::new(false),
+            public_key: Vec::new(),
+            jkt: String::new(),
+        })
+    }
+
     pub fn refresh_matches(&self, expected: &str) -> bool {
-        let stored = self.stored.lock().unwrap();
-        let decoded: Value =
-            serde_json::from_slice(&B64.decode(stored.as_slice()).unwrap()).unwrap();
-        decoded.get("refreshToken").and_then(Value::as_str) == Some(expected)
+        self.document().get("refresh_token").and_then(Value::as_str) == Some(expected)
     }
 
     pub fn initial_refresh(&self) -> String {
-        let stored = self.stored.lock().unwrap();
-        let decoded: Value =
-            serde_json::from_slice(&B64.decode(stored.as_slice()).unwrap()).unwrap();
-        decoded
-            .get("refreshToken")
+        self.document()
+            .get("refresh_token")
             .and_then(Value::as_str)
             .unwrap()
             .to_owned()
     }
+
+    pub fn document(&self) -> Value {
+        let item = self.load().unwrap().unwrap();
+        serde_json::from_slice(&item).unwrap()
+    }
 }
 
 impl FleetCredentialStore for FixtureCredential {
-    fn load(&self) -> Result<Zeroizing<Vec<u8>>, FleetCredentialError> {
+    fn load(&self) -> Result<Option<Zeroizing<Vec<u8>>>, FleetCredentialError> {
         let stored = self.stored.lock().map_err(|_| FleetCredentialError::Read)?;
         Ok(stored.clone())
     }
 
-    fn replace(&self, credential: &[u8]) -> Result<(), FleetCredentialError> {
-        *self.stored.lock().map_err(|_| FleetCredentialError::Save)? =
-            Zeroizing::new(credential.to_vec());
+    fn compare_and_save(
+        &self,
+        expected: Option<&[u8]>,
+        replacement: &[u8],
+    ) -> Result<(), FleetCredentialError> {
+        let mut saved = self.stored.lock().map_err(|_| FleetCredentialError::Save)?;
+        if saved.as_ref().map(|value| value.as_slice()) != expected {
+            return Err(FleetCredentialError::Changed);
+        }
+        let incoming: Value =
+            serde_json::from_slice(replacement).map_err(|_| FleetCredentialError::Save)?;
+        if incoming.get("state").and_then(Value::as_str) == Some("ready")
+            && self.refuse_successor.load(Ordering::SeqCst)
+        {
+            return Err(FleetCredentialError::Save);
+        }
+        *saved = Some(Zeroizing::new(replacement.to_vec()));
         Ok(())
     }
 }
@@ -153,13 +178,33 @@ pub(super) fn verify_dpop(
     at: i64,
     access_token: Option<&str>,
 ) -> Option<uuid::Uuid> {
+    verify_dpop_key(
+        proof,
+        &credential.public_key,
+        &credential.jkt,
+        method,
+        url,
+        at,
+        access_token,
+    )
+}
+
+pub(super) fn verify_dpop_key(
+    proof: &str,
+    public_key: &[u8],
+    jkt: &str,
+    method: &str,
+    url: &str,
+    at: i64,
+    access_token: Option<&str>,
+) -> Option<uuid::Uuid> {
     let (signing_input, signature) = proof.rsplit_once('.')?;
     let (header, claims) = signing_input.split_once('.')?;
     let header = decode_segment(header)?;
     let claims = decode_segment(claims)?;
     if header.get("typ")?.as_str()? != "dpop+jwt"
         || header.get("alg")?.as_str()? != "ES256"
-        || sha256_url(&serde_json::to_vec(header.get("jwk")?).ok()?) != credential.jkt
+        || sha256_url(&serde_json::to_vec(header.get("jwk")?).ok()?) != jkt
         || claims.get("htm")?.as_str()? != method
         || claims.get("htu")?.as_str()? != url
         || claims.get("iat")?.as_i64()? != at
@@ -171,7 +216,7 @@ pub(super) fn verify_dpop(
     {
         return None;
     }
-    UnparsedPublicKey::new(&ECDSA_P256_SHA256_FIXED, &credential.public_key)
+    UnparsedPublicKey::new(&ECDSA_P256_SHA256_FIXED, public_key)
         .verify(signing_input.as_bytes(), &B64.decode(signature).ok()?)
         .ok()?;
     let id: uuid::Uuid = claims.get("jti")?.as_str()?.parse().ok()?;
@@ -186,6 +231,6 @@ fn segment(value: &Value) -> String {
     B64.encode(serde_json::to_vec(value).unwrap())
 }
 
-fn decode_segment(value: &str) -> Option<Value> {
+pub(super) fn decode_segment(value: &str) -> Option<Value> {
     serde_json::from_slice(&B64.decode(value).ok()?).ok()
 }

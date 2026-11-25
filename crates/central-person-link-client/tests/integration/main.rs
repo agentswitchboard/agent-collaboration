@@ -5,4 +5,5 @@
 
 mod fixture_authority;
 mod fixture_signin;
+mod login_and_refresh;
 mod workspace_reconnect;

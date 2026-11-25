@@ -25,6 +25,8 @@ pub enum CentralCommandError {
     FleetTarget(#[from] central_person_link_client::FleetTargetError),
     #[error(transparent)]
     PersonLink(#[from] central_person_link_client::PersonLinkError),
+    #[error(transparent)]
+    PersonLogin(#[from] central_person_link_client::FleetLoginError),
     #[error("central commands require async dispatch")]
     AsyncDispatchRequired,
 }
@@ -36,6 +38,9 @@ pub(crate) async fn run_central_command(
 ) -> Result<(), CentralCommandError> {
     match command {
         CentralCommand::Help(help) => stdout.write_all(help.as_bytes())?,
+        CentralCommand::Login(arguments) => {
+            workspace_directory::login(&arguments.target, stdout).await?;
+        }
         CentralCommand::Workspaces(arguments) => {
             workspace_directory::run(&arguments.target, interactive, stdout).await?;
         }

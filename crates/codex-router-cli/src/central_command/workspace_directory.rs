@@ -2,16 +2,13 @@ use std::{io::Write, path::Path};
 
 #[cfg(not(target_os = "macos"))]
 use central_person_link_client::FleetCredentialError;
+#[cfg(target_os = "macos")]
+use central_person_link_client::{FleetTarget, LoginKeychainCredential, PersonWorkspaceClient};
 
 use super::CentralCommandError;
 
 #[cfg(target_os = "macos")]
-pub(super) async fn run(
-    target: &Path,
-    interactive: bool,
-    stdout: &mut (impl Write + Send),
-) -> Result<(), CentralCommandError> {
-    use central_person_link_client::{FleetTarget, LoginKeychainCredential, PersonWorkspaceClient};
+async fn person_client(target: &Path) -> Result<PersonWorkspaceClient, CentralCommandError> {
     use std::sync::Arc;
 
     let path = target.to_owned();
@@ -20,7 +17,34 @@ pub(super) async fn run(
         .map_err(|_| CentralCommandError::LocalTask)??;
     let store = Arc::new(LoginKeychainCredential::for_target(&target));
     let clock = Arc::new(router_clock::SystemRuntimeClock::new());
-    let mut client = PersonWorkspaceClient::new(target, store, clock)?;
+    Ok(PersonWorkspaceClient::new(target, store, clock)?)
+}
+
+#[cfg(target_os = "macos")]
+pub(super) async fn login(
+    target: &Path,
+    stdout: &mut (impl Write + Send),
+) -> Result<(), CentralCommandError> {
+    person_client(target)
+        .await?
+        .login(|address| {
+            writeln!(stdout, "Open this address in your browser to sign in:")?;
+            writeln!(stdout, "{address}")?;
+            stdout.flush()
+        })
+        .await?;
+    writeln!(stdout, "Central login saved.")?;
+    stdout.flush()?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub(super) async fn run(
+    target: &Path,
+    interactive: bool,
+    stdout: &mut (impl Write + Send),
+) -> Result<(), CentralCommandError> {
+    let mut client = person_client(target).await?;
     loop {
         for workspace in client.list_workspaces().await? {
             writeln!(stdout, "{}", workspace.name.as_str())?;
@@ -40,6 +64,18 @@ pub(super) async fn run(
             return Ok(());
         }
     }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(super) async fn login(
+    _target: &Path,
+    _stdout: &mut (impl Write + Send),
+) -> Result<(), CentralCommandError> {
+    std::future::ready(Err(central_person_link_client::FleetLoginError::from(
+        FleetCredentialError::UnsupportedPlatform,
+    )
+    .into()))
+    .await
 }
 
 #[cfg(not(target_os = "macos"))]

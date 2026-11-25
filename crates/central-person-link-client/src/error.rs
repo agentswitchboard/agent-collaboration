@@ -13,6 +13,8 @@ pub enum FleetTargetError {
     InvalidIssuer,
     #[error("the Fleet target needs a Central admin audience and Owner Fleet CLI client ID")]
     MissingFleetSettings,
+    #[error("the Fleet target needs an HTTP loopback ownerCliRedirectUri for central login")]
+    InvalidRedirect,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -20,27 +22,67 @@ pub enum FleetCredentialError {
     #[error("Fleet credentials require the macOS login Keychain")]
     UnsupportedPlatform,
     #[error(
-        "Fleet credential missing from the login Keychain. Run the Node owner CLI's fleet-login first"
+        "Central login missing from the Keychain. Run codex-router central login --target <file>"
     )]
     Missing,
     #[error("could not read the Fleet credential from the login Keychain")]
     Read,
     #[error("the stored Fleet credential is invalid")]
     InvalidStoredCredential,
-    #[error(
-        "could not save the rotated Fleet credential to the login Keychain. Run fleet-login again"
-    )]
+    #[error("could not save the Central login to the Keychain")]
     Save,
+    #[error(
+        "the Central login changed underneath this command. Run it again to read the current item"
+    )]
+    Changed,
+    #[error(
+        "the saved Central credential may have been spent ({0}). Run codex-router central login --target <file> again"
+    )]
+    SignInAgain(RefreshUncertainty),
     #[error("could not sign the Fleet DPoP proof")]
     Proof,
+    #[error(transparent)]
+    Exchange(#[from] TokenExchangeError),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum RefreshUncertainty {
+    #[error("a prior refresh has no saved successor")]
+    NoSavedSuccessor,
+    #[error("the refresh reached its deadline")]
+    Deadline,
+    #[error(transparent)]
+    Exchange(TokenExchangeError),
+    #[error("the successor could not be saved")]
+    Save,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum TokenExchangeError {
     #[error("the Sign-in token endpoint could not be reached")]
-    TokenEndpoint,
-    #[error("Sign-in refused the Fleet refresh with HTTP {0}")]
-    RefreshRefused(StatusCode),
+    Transport,
+    #[error("Sign-in refused the Fleet token exchange with HTTP {0}")]
+    Refused(StatusCode),
     #[error("Sign-in returned an invalid Fleet token response")]
-    InvalidTokenResponse,
-    #[error("the refreshed Fleet token does not match this audience, client and proof key")]
-    TokenBinding,
+    InvalidResponse,
+    #[error("the Fleet token does not match this audience, client and proof key")]
+    Binding,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum FleetLoginError {
+    #[error(transparent)]
+    Target(#[from] FleetTargetError),
+    #[error(transparent)]
+    Credential(#[from] FleetCredentialError),
+    #[error("could not start the owner sign-in loopback listener")]
+    Listener,
+    #[error("could not show the owner sign-in address")]
+    ShowAddress,
+    #[error("owner sign-in refused")]
+    Refused,
+    #[error("owner sign-in reached its deadline")]
+    Deadline,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]

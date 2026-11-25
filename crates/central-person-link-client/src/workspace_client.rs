@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::{io, sync::Arc, time::Duration};
 
 use central_link_protocol::{
     CorrelationId,
@@ -15,12 +15,13 @@ use state_machine_core::{StateMachine, TransitionError};
 use workspace_ids::{RequestId, WorkspaceId};
 
 use crate::{
-    FleetCredentialStore, FleetTarget, PersonLinkError, clock_uuid,
+    FleetCredentialStore, FleetLoginError, FleetTarget, PersonLinkError, clock_uuid,
     connection_machine::{
         ConnectionEffect, ConnectionEvent, ConnectionMachine, ConnectionRefusal, ConnectionState,
         ReadAttempt,
     },
     fleet_credential::refresh_for_upgrade,
+    fleet_login,
     person_socket::{receive_event, send_read, upgrade},
 };
 
@@ -69,6 +70,7 @@ impl PersonWorkspaceClient {
         let http = builder
             .https_only(true)
             .http1_only()
+            .retry(reqwest::retry::never())
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|_| PersonLinkError::HttpClient)?;
@@ -80,6 +82,22 @@ impl PersonWorkspaceClient {
             state: None,
             socket: None,
         })
+    }
+
+    pub async fn login(
+        &mut self,
+        show_address: impl FnOnce(&url::Url) -> io::Result<()>,
+    ) -> Result<(), FleetLoginError> {
+        self.state = None;
+        self.socket = None;
+        fleet_login::login(
+            &self.http,
+            &self.target,
+            self.store.clone(),
+            self.clock.as_ref(),
+            show_address,
+        )
+        .await
     }
 
     pub async fn list_workspaces(&mut self) -> Result<Vec<OrganizationWorkspace>, PersonLinkError> {

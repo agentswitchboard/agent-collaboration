@@ -873,6 +873,7 @@ commands:
   host app-server update         Update managed Codex and activate it if changed
   host router restart            Restart the router when host-owned
   central serve --config FILE   Run a self-hosted central
+  central login --target FILE   Sign in to Central as a person
   central workspaces --target FILE   List an organization’s workspaces through Sign-in
   enroll --organization <uuid> --sign-in <https-origin>  Enroll this Mac
   enrollment status             Show this Mac's stored enrollment

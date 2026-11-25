@@ -27,6 +27,7 @@ use router_clock::{ManualClock, RuntimeClock};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Notify;
 use tokio_rustls::{
     TlsAcceptor,
     rustls::{ServerConfig, pki_types::PrivateKeyDer},
@@ -96,6 +97,7 @@ pub(super) struct ObservedRead {
 }
 
 pub(super) struct SignInEvidence {
+    pub refresh_attempts: usize,
     pub refreshes: usize,
     pub upgrades: usize,
     pub closes: Vec<u16>,
@@ -113,6 +115,13 @@ pub(super) struct TestSignIn {
     pub credential: Arc<FixtureCredential>,
     pub evidence: Mutex<SignInEvidence>,
     pub sockets: TaskTracker,
+    refresh_gate: Mutex<Option<Arc<RefreshGate>>>,
+}
+
+#[derive(Default)]
+pub(super) struct RefreshGate {
+    pub committed: Notify,
+    pub release: Notify,
 }
 
 impl TestSignIn {
@@ -131,6 +140,7 @@ impl TestSignIn {
             signing,
             credential,
             evidence: Mutex::new(SignInEvidence {
+                refresh_attempts: 0,
                 refreshes: 0,
                 upgrades: 0,
                 closes: Vec::new(),
@@ -140,6 +150,7 @@ impl TestSignIn {
                 used_proofs: HashSet::new(),
             }),
             sockets: TaskTracker::new(),
+            refresh_gate: Mutex::new(None),
         })
     }
 
@@ -153,6 +164,12 @@ impl TestSignIn {
     pub fn rotation_saved(&self) -> bool {
         let evidence = self.evidence.lock().unwrap();
         self.credential.refresh_matches(&evidence.refresh_expected)
+    }
+
+    pub fn hold_next_refresh(&self) -> Arc<RefreshGate> {
+        let gate = Arc::new(RefreshGate::default());
+        *self.refresh_gate.lock().unwrap() = Some(gate.clone());
+        gate
     }
 }
 
@@ -169,6 +186,7 @@ async fn refresh(
     headers: HeaderMap,
     Form(form): Form<RefreshForm>,
 ) -> Result<Json<Value>, StatusCode> {
+    signin.evidence.lock().unwrap().refresh_attempts += 1;
     let now = signin.clock.utc_now().timestamp();
     let invalid = StatusCode::UNAUTHORIZED;
     let proof = verify_dpop(
@@ -180,26 +198,34 @@ async fn refresh(
         None,
     )
     .ok_or(invalid)?;
-    let mut evidence = signin.evidence.lock().unwrap();
-    if form.grant_type != "refresh_token"
-        || form.client_id != CLIENT_ID
-        || form.resource != ADMIN_AUDIENCE
-        || form.refresh_token != evidence.refresh_expected
-        || !evidence.used_proofs.insert(proof)
-    {
-        return Err(invalid);
-    }
+    let response = {
+        let mut evidence = signin.evidence.lock().unwrap();
+        if form.grant_type != "refresh_token"
+            || form.client_id != CLIENT_ID
+            || form.resource != ADMIN_AUDIENCE
+            || form.refresh_token != evidence.refresh_expected
+            || !evidence.used_proofs.insert(proof)
+        {
+            return Err(invalid);
+        }
 
-    let access = signin.signing.sign(
-        "at+jwt",
-        &fleet_claims(&signin.origin, now, &signin.credential.jkt),
-    );
-    evidence.refresh_expected = fresh_request_id(now).unwrap();
-    evidence.refreshes += 1;
-    evidence.access_issued = Some(access.clone());
-    Ok(Json(json!({
-        "access_token":access,"token_type":"DPoP","refresh_token":evidence.refresh_expected,
-    })))
+        let access = signin.signing.sign(
+            "at+jwt",
+            &fleet_claims(&signin.origin, now, &signin.credential.jkt),
+        );
+        evidence.refresh_expected = fresh_request_id(now).unwrap();
+        evidence.refreshes += 1;
+        evidence.access_issued = Some(access.clone());
+        Json(json!({
+            "access_token":access,"token_type":"DPoP","refresh_token":evidence.refresh_expected,
+        }))
+    };
+    let gate = signin.refresh_gate.lock().unwrap().take();
+    if let Some(gate) = gate {
+        gate.committed.notify_one();
+        gate.release.notified().await;
+    }
+    Ok(response)
 }
 
 async fn person_link(

@@ -4,11 +4,15 @@ mod connection_machine;
 mod error;
 mod fleet_target;
 
-pub use error::{FleetCredentialError, FleetTargetError, PersonLinkError};
+pub use error::{
+    FleetCredentialError, FleetLoginError, FleetTargetError, PersonLinkError, RefreshUncertainty,
+    TokenExchangeError,
+};
 pub use fleet_target::FleetTarget;
 
 mod dpop_proof;
 mod fleet_credential;
+mod fleet_login;
 pub use fleet_credential::FleetCredentialStore;
 #[cfg(target_os = "macos")]
 mod login_keychain;

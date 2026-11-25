@@ -2,36 +2,27 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use reqwest::header::HeaderValue;
 use ring::{
     digest::{SHA256, digest},
-    rand::SystemRandom,
-    signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair},
+    rand::{SecureRandom, SystemRandom},
+    signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair},
 };
 use router_clock::RuntimeClock;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use url::Url;
-use zeroize::{ZeroizeOnDrop, Zeroizing};
+use zeroize::Zeroizing;
 
 use crate::{FleetCredentialError, clock_uuid};
 
-#[derive(Deserialize, Serialize, ZeroizeOnDrop)]
-pub(crate) struct PrivateJwk {
-    kty: String,
-    crv: String,
+#[derive(Serialize)]
+struct PublicJwk {
+    // This order is part of RFC 7638 thumbprinting.
+    crv: &'static str,
+    kty: &'static str,
     x: String,
     y: String,
-    d: String,
 }
 
-#[derive(Serialize)]
-struct PublicJwk<'key> {
-    // This order is part of RFC 7638 thumbprinting.
-    crv: &'key str,
-    kty: &'key str,
-    x: &'key str,
-    y: &'key str,
-}
-
-pub(crate) struct DpopKey<'key> {
-    public: PublicJwk<'key>,
+pub(crate) struct DpopKey {
+    public: PublicJwk,
     signing: EcdsaKeyPair,
 }
 
@@ -40,44 +31,42 @@ pub(crate) enum ProofRequest<'request> {
     PersonUpgrade { access_token: &'request str },
 }
 
-impl PrivateJwk {
-    pub(crate) fn import(&self) -> Result<DpopKey<'_>, FleetCredentialError> {
+impl DpopKey {
+    pub(crate) fn generate() -> Result<(Self, Zeroizing<String>), FleetCredentialError> {
+        let document =
+            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
+                .map_err(|_| FleetCredentialError::Proof)?;
+        let encoded = Zeroizing::new(URL_SAFE_NO_PAD.encode(document.as_ref()));
+        Ok((Self::import(&encoded)?, encoded))
+    }
+
+    pub(crate) fn import(encoded: &str) -> Result<Self, FleetCredentialError> {
         let invalid = FleetCredentialError::InvalidStoredCredential;
-        let decode_coordinate = |encoded: &str| -> Result<[u8; 32], FleetCredentialError> {
-            URL_SAFE_NO_PAD
-                .decode(encoded)
-                .map_err(|_| invalid)?
-                .try_into()
-                .map_err(|_| invalid)
-        };
-        if self.kty != "EC" || self.crv != "P-256" {
-            return Err(invalid);
-        }
-        let mut public = Vec::with_capacity(65);
-        public.push(4);
-        public.extend_from_slice(&decode_coordinate(&self.x)?);
-        public.extend_from_slice(&decode_coordinate(&self.y)?);
-        let private = Zeroizing::new(URL_SAFE_NO_PAD.decode(&self.d).map_err(|_| invalid)?);
-        let signing = EcdsaKeyPair::from_private_key_and_public_key(
+        let document = Zeroizing::new(URL_SAFE_NO_PAD.decode(encoded).map_err(|_| invalid)?);
+        let signing = EcdsaKeyPair::from_pkcs8(
             &ECDSA_P256_SHA256_FIXED_SIGNING,
-            &private,
-            &public,
+            &document,
             &SystemRandom::new(),
         )
         .map_err(|_| invalid)?;
-        Ok(DpopKey {
+        let public = signing.public_key().as_ref();
+        let [4, coordinates @ ..] = public else {
+            return Err(invalid);
+        };
+        let (x, y) = coordinates.split_at_checked(32).ok_or(invalid)?;
+        if y.len() != 32 {
+            return Err(invalid);
+        }
+        Ok(Self {
             public: PublicJwk {
-                crv: &self.crv,
-                kty: &self.kty,
-                x: &self.x,
-                y: &self.y,
+                crv: "P-256",
+                kty: "EC",
+                x: URL_SAFE_NO_PAD.encode(x),
+                y: URL_SAFE_NO_PAD.encode(y),
             },
             signing,
         })
     }
-}
-
-impl DpopKey<'_> {
     pub(crate) fn thumbprint(&self) -> Result<String, FleetCredentialError> {
         let canonical =
             serde_json::to_vec(&self.public).map_err(|_| FleetCredentialError::Proof)?;
@@ -94,7 +83,7 @@ impl DpopKey<'_> {
         struct DpopHeader<'key> {
             typ: &'static str,
             alg: &'static str,
-            jwk: &'key PublicJwk<'key>,
+            jwk: &'key PublicJwk,
         }
 
         #[derive(Serialize)]
@@ -141,7 +130,15 @@ impl DpopKey<'_> {
     }
 }
 
-fn sha256_base64url(bytes: &[u8]) -> String {
+pub(crate) fn oauth_nonce() -> Result<Zeroizing<String>, FleetCredentialError> {
+    let mut bytes = Zeroizing::new([0; 32]);
+    SystemRandom::new()
+        .fill(bytes.as_mut())
+        .map_err(|_| FleetCredentialError::Proof)?;
+    Ok(Zeroizing::new(URL_SAFE_NO_PAD.encode(bytes.as_slice())))
+}
+
+pub(crate) fn sha256_base64url(bytes: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(digest(&SHA256, bytes))
 }
 
