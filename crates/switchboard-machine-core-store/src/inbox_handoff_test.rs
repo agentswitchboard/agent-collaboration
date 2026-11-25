@@ -4,7 +4,7 @@ use super::super::{
 };
 use super::{
     DirectHandoff, DirectHandoffChange, HandoffCommit, InboxStoreError, NoticeAttemptId,
-    SeenReceiptState,
+    NoticeRefusalReason, SeenReceiptState,
 };
 use crate::{MachineLocalStore, RowCorruptionReason};
 use uuid::Uuid;
@@ -33,6 +33,60 @@ async fn keep(store: &mut InboxStore, delivery: &MessageRecord) {
         )
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn reopening_a_refused_notice_keeps_the_reason_and_never_offers_it_again() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("machine_local.sqlite");
+    let mut store = InboxStore::new(MachineLocalStore::open(&path).await.unwrap());
+    let message = message(1);
+    keep(&mut store, &message).await;
+    let writing = DirectHandoff::Writing { attempt: attempt() };
+    let refused = DirectHandoff::NoticeRefused {
+        reason: NoticeRefusalReason::CannotSteer,
+    };
+    for (expected, next) in [(DirectHandoff::Waiting, writing), (writing, refused)] {
+        let committed = store
+            .compare_and_set_direct_handoffs(
+                &message.target,
+                &[DirectHandoffChange {
+                    message_id: message.message_id.clone(),
+                    expected,
+                    next,
+                }],
+                at(ARRIVAL + 1),
+            )
+            .await
+            .unwrap();
+        assert_eq!(committed, HandoffCommit::Committed);
+    }
+    drop(store);
+
+    let mut reopened = InboxStore::new(MachineLocalStore::open(&path).await.unwrap());
+    let retained = reopened
+        .direct_handoff_for_recipient(&message.target, &message.message_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(retained.handoff, refused);
+    assert!(
+        reopened
+            .scan_waiting_notice_handoffs()
+            .await
+            .unwrap()
+            .expect_clean()
+            .is_empty()
+    );
+    assert!(!reopened.has_seen_receipt_owed().await.unwrap());
+    assert_eq!(
+        reopened
+            .message_for(&message.message_id)
+            .await
+            .unwrap()
+            .expect_clean(),
+        Some(message)
+    );
 }
 
 #[tokio::test]

@@ -335,10 +335,10 @@ impl SessionOwnerExecution {
     ) -> Result<Option<OwnerEvent>, OwnerTaskError> {
         let provider_id = self.session_id();
         let notice = match &work {
-            AuthorizedWork::Prompt(input) => self.calls.notice(&input.input),
-            AuthorizedWork::Cancel(_)
-            | AuthorizedWork::Steer(_)
-            | AuthorizedWork::Setting { .. } => None,
+            AuthorizedWork::Prompt(input) | AuthorizedWork::Steer(input) => {
+                self.calls.notice(&input.input)
+            }
+            AuthorizedWork::Cancel(_) | AuthorizedWork::Setting { .. } => None,
         };
         let setting_operation = match &work {
             AuthorizedWork::Setting { setting, .. } => Some(setting.change.attempt.0),
@@ -385,9 +385,20 @@ impl SessionOwnerExecution {
                 let content = self.calls.content(&input.input);
                 if let Some(content) = content {
                     let completion = completions.reserve(owner)?;
-                    self.wire
-                        .offer_steer(authorization.clone(), provider_id, content, completion)
-                        .is_ok()
+                    if notice.is_some() {
+                        self.wire
+                            .offer_exact_steer(
+                                authorization.clone(),
+                                provider_id,
+                                content,
+                                completion,
+                            )
+                            .is_ok()
+                    } else {
+                        self.wire
+                            .offer_steer(authorization.clone(), provider_id, content, completion)
+                            .is_ok()
+                    }
                 } else {
                     false
                 }

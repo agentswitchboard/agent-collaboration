@@ -69,6 +69,14 @@ impl PersonSocketAttachment {
         self.permissions.contains(&permission)
     }
 
+    pub fn has_fresh_second_factor(&self, now_ms: i64) -> bool {
+        super::admission::fresh_admin_second_factor(
+            self.second_factor.as_ref().map(|factor| factor.at.0),
+            now_ms,
+        )
+        .is_some()
+    }
+
     pub fn is_current(&self, now_ms: i64) -> bool {
         now_ms
             < self

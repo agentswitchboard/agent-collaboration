@@ -212,19 +212,6 @@ impl CollaborationRuntime {
         )
         .await?;
         let provider_face_endpoints = startup.endpoints.clone();
-        let claude_endpoint_id =
-            EndpointId::try_from("claude-local".to_owned()).map_err(io::Error::other)?;
-        let managed_claude_endpoint = startup
-            .endpoints
-            .iter()
-            .find(|description| {
-                description.endpoint.endpoint_id == claude_endpoint_id
-                    && matches!(
-                        description.availability,
-                        collaboration_protocol::EndpointAvailability::Available { .. }
-                    )
-            })
-            .map(|description| description.endpoint.clone());
         let provider_retirements = startup.retirements;
         let external_provider_supervisor = startup.supervisor;
         let provider_session_hub = startup.hub;
@@ -504,20 +491,14 @@ impl CollaborationRuntime {
                     },
                 ));
                 let events = MessageSystemEvents::new(custody_events);
-                let events = match (
-                    external_provider_supervisor.clone(),
-                    managed_claude_endpoint,
-                ) {
-                    (Some(supervisor), Some(endpoint)) => {
-                        events.with_managed_notice(move |machine| {
-                            Arc::new(crate::ManagedClaudeNoticeAdapter::new(
-                                supervisor.clone(),
-                                machine.clone(),
-                                endpoint.clone(),
-                            ))
-                        })
-                    }
-                    _ => events,
+                let events = match external_provider_supervisor.clone() {
+                    Some(supervisor) => events.with_managed_notice(move |machine| {
+                        Arc::new(crate::ManagedAcpNoticeAdapter::new(
+                            supervisor.clone(),
+                            machine.clone(),
+                        ))
+                    }),
+                    None => events,
                 };
                 let system = MessageSystem::start(
                     roots,

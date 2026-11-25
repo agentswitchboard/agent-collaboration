@@ -15,13 +15,13 @@ use crate::{
     custody_run_group::{CustodyRunState, wait_for_stop},
     flush_marks::next_mark_after,
     handover::{HandoffEvent, HandoverError, changes_for},
-    handover_notice::{ClaimedNotice, ManagedClaudeNoticePort, NoticeAuthority},
+    handover_notice::{ClaimedNotice, ManagedNoticePort, NoticeAuthority},
     offer_taker::SharedRecipientInbox,
     recipient_sessions::RecipientSessionAnswer,
 };
 
 pub(super) struct HandoverRunner {
-    port: Arc<dyn ManagedClaudeNoticePort>,
+    port: Arc<dyn ManagedNoticePort>,
     inbox: SharedRecipientInbox,
     clock: Arc<dyn RuntimeClock>,
     authority: Arc<NoticeAuthority>,
@@ -30,7 +30,7 @@ pub(super) struct HandoverRunner {
 
 impl HandoverRunner {
     pub(super) fn new(
-        port: Arc<dyn ManagedClaudeNoticePort>,
+        port: Arc<dyn ManagedNoticePort>,
         inbox: SharedRecipientInbox,
         clock: Arc<dyn RuntimeClock>,
         authority: Arc<NoticeAuthority>,

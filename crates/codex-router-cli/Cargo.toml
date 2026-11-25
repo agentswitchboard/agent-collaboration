@@ -68,6 +68,7 @@ unicode-width.workspace = true
 ui-preference-store = { path = "../ui-preference-store", version = "0.1.118" }
 
 [target.'cfg(unix)'.dependencies]
+central-person-link-client.workspace = true
 collaboration-central-core = { path = "../collaboration-central-core", version = "0.1.156" }
 collaboration-central-tokio = { path = "../collaboration-central-tokio", version = "0.1.156" }
 fs2.workspace = true

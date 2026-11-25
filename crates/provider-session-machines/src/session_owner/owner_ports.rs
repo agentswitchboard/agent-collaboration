@@ -128,6 +128,7 @@ pub enum RevokeReason {
     ConnectionLost,
     TurnEnded,
     ProviderSteerRefused,
+    ProviderSteerNeedsPrompt,
 }
 
 impl RevokeReason {
@@ -167,6 +168,7 @@ impl RevokeReason {
             Self::ConnectionLost => "the provider connection ended; reconnect and send again",
             Self::TurnEnded => "the turn you steered had already ended; send again",
             Self::ProviderSteerRefused => "steerFailed",
+            Self::ProviderSteerNeedsPrompt => "the provider requires a new prompt",
         }
     }
 
@@ -208,6 +210,7 @@ pub enum DispatchResult {
         outcome: super::WireOutcome<()>,
     },
     SteerInvalidReply(DispatchAuthorization),
+    SteerNeedsPrompt(DispatchAuthorization),
     SteerStartedNewTurn {
         authorization: DispatchAuthorization,
         turn: TurnId,

@@ -14,7 +14,7 @@ use workspace_model::{
 
 pub use inbox_handoff::{
     DirectHandoff, DirectHandoffChange, DirectHandoffRow, HandoffCommit, InvalidNoticeAttemptId,
-    NoticeAttemptId, SeenReceiptRejection, SeenReceiptState,
+    NoticeAttemptId, NoticeRefusalReason, SeenReceiptRejection, SeenReceiptState,
 };
 
 const INBOX_RETENTION_MILLIS: i64 = 60 * 24 * 60 * 60 * 1_000;

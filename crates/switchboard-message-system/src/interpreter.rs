@@ -16,7 +16,7 @@ use switchboard_machine_enrollment::{
 };
 use switchboard_machine_enrollment_store::{EnrollmentWorkerExit, MachineEnrollmentStore};
 use switchboard_message_custody::{
-    custody_task::CustodyEventSink, handover_notice::ManagedClaudeNoticePort,
+    custody_task::CustodyEventSink, handover_notice::ManagedNoticePort,
     recipient_sessions::RecipientSessionDirectory,
 };
 use tokio::sync::{mpsc, watch};
@@ -46,9 +46,9 @@ impl MessageRoots {
     }
 }
 
-type ManagedNoticeForMachine = dyn Fn(&MachineId) -> Arc<dyn ManagedClaudeNoticePort> + Send + Sync;
+type ManagedNoticeForMachine = dyn Fn(&MachineId) -> Arc<dyn ManagedNoticePort> + Send + Sync;
 
-/// The Host supplies operator events and, for managed Claude, a notice port factory.
+/// The Host supplies operator events and a managed notice port factory.
 pub struct MessageSystemEvents {
     custody: Arc<dyn CustodyEventSink>,
     notice_for_machine: Option<Box<ManagedNoticeForMachine>>,
@@ -66,10 +66,7 @@ impl MessageSystemEvents {
     #[must_use]
     pub fn with_managed_notice(
         mut self,
-        notice_for_machine: impl Fn(&MachineId) -> Arc<dyn ManagedClaudeNoticePort>
-        + Send
-        + Sync
-        + 'static,
+        notice_for_machine: impl Fn(&MachineId) -> Arc<dyn ManagedNoticePort> + Send + Sync + 'static,
     ) -> Self {
         self.notice_for_machine = Some(Box::new(notice_for_machine));
         self

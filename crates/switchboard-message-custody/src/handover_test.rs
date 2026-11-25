@@ -1,12 +1,47 @@
 use super::{
     DirectHandoff, DirectHandoffMachine, Handoff, HandoffEffect, HandoffEvent, HandoffRefusal,
-    NoticeAttemptId, NoticePreTakeRefusal, NoticeUncertainty, NoticeWriteOutcome, SeenReceiptState,
+    NoticeAttemptId, NoticePreTakeRefusal, NoticeRefusalReason, NoticeUncertainty,
+    NoticeWriteOutcome, SeenReceiptState,
 };
 use hegel::generators as gs;
 use state_machine_core::{StateMachine, TransitionError, check_state_machine_transitions};
 use workspace_model::Timestamp;
 
 const CUTOFF: i64 = 60_000;
+
+#[test]
+fn cannot_steer_retires_the_notice_before_the_next_mark_without_a_receipt() {
+    let claim = attempt(1);
+    let writing = Handoff {
+        expires_at: at(CUTOFF),
+        phase: DirectHandoff::Writing { attempt: claim },
+    };
+    let refused = HandoffEvent::WriteFinished {
+        attempt: claim,
+        outcome: NoticeWriteOutcome::DefinitelyNotWritten(NoticePreTakeRefusal::CannotSteer),
+        now: at(5),
+    };
+    let (settled, effects) = DirectHandoffMachine::transition(&writing, refused).unwrap();
+    assert_eq!(
+        settled.phase,
+        DirectHandoff::NoticeRefused {
+            reason: NoticeRefusalReason::CannotSteer
+        }
+    );
+    assert!(effects.is_empty());
+    for later in [
+        HandoffEvent::RecoverWriting,
+        HandoffEvent::EligibleAtMark {
+            attempt: attempt(2),
+            now: at(30),
+        },
+    ] {
+        assert!(matches!(
+            DirectHandoffMachine::transition(&settled, later),
+            Err(TransitionError::NotAllowed { .. })
+        ));
+    }
+}
 
 fn at(millis: i64) -> Timestamp {
     Timestamp::from_timestamp_millis(millis).unwrap()
@@ -23,12 +58,12 @@ fn seen(completed_at: Timestamp) -> DirectHandoff {
     }
 }
 
-fn events(active: NoticeAttemptId, stale: NoticeAttemptId) -> [HandoffEvent; 13] {
+fn events(active: NoticeAttemptId, stale: NoticeAttemptId) -> [HandoffEvent; 17] {
     let before = at(CUTOFF - 1);
     let cutoff = at(CUTOFF);
     let after = at(CUTOFF + 1);
     let written = NoticeWriteOutcome::Written { taken_at: before };
-    let missed = NoticeWriteOutcome::DefinitelyNotWritten(NoticePreTakeRefusal::Busy);
+    let missed = NoticeWriteOutcome::DefinitelyNotWritten(NoticePreTakeRefusal::RejectedBeforeTake);
     [
         HandoffEvent::EligibleAtMark {
             attempt: active,
@@ -71,10 +106,30 @@ fn events(active: NoticeAttemptId, stale: NoticeAttemptId) -> [HandoffEvent; 13]
         },
         HandoffEvent::WriteFinished {
             attempt: active,
+            outcome: NoticeWriteOutcome::SteerNotInjected,
+            now: before,
+        },
+        HandoffEvent::WriteFinished {
+            attempt: active,
+            outcome: NoticeWriteOutcome::SteerNotInjected,
+            now: cutoff,
+        },
+        HandoffEvent::WriteFinished {
+            attempt: active,
+            outcome: NoticeWriteOutcome::SteerRefused,
+            now: before,
+        },
+        HandoffEvent::WriteFinished {
+            attempt: active,
             outcome: NoticeWriteOutcome::NotKnown(NoticeUncertainty::WriterOutcomeLost),
             now: after,
         },
         HandoffEvent::RecoverWriting,
+        HandoffEvent::WriteFinished {
+            attempt: active,
+            outcome: NoticeWriteOutcome::DefinitelyNotWritten(NoticePreTakeRefusal::CannotSteer),
+            now: before,
+        },
         HandoffEvent::ReadAcknowledged {
             completed_at: after,
         },
@@ -89,6 +144,9 @@ fn the_declared_handover_table_matches_the_reducer() {
         DirectHandoff::Writing { attempt: current },
         DirectHandoff::NotKnown,
         DirectHandoff::NotSeen,
+        DirectHandoff::NoticeRefused {
+            reason: NoticeRefusalReason::CannotSteer,
+        },
         seen(at(CUTOFF - 1)),
     ]
     .into_iter()
@@ -153,10 +211,16 @@ struct NoticeHistory {
     expired_waiting: bool,
     cannot_offer_again: bool,
     confirmed_at: Option<Timestamp>,
+    refused: bool,
 }
 
 impl NoticeHistory {
     fn phase(&self) -> DirectHandoff {
+        if self.refused {
+            return DirectHandoff::NoticeRefused {
+                reason: NoticeRefusalReason::CannotSteer,
+            };
+        }
         if let Some(completed_at) = self.confirmed_at {
             return seen(completed_at);
         }
@@ -173,7 +237,10 @@ impl NoticeHistory {
     }
 
     fn apply(&mut self, event: HandoffEvent) -> Result<Vec<HandoffEffect>, ExpectedFailure> {
-        let waiting = self.offered.is_none() && !self.expired_waiting && !self.cannot_offer_again;
+        let waiting = self.offered.is_none()
+            && !self.expired_waiting
+            && !self.cannot_offer_again
+            && !self.refused;
         match event {
             HandoffEvent::EligibleAtMark { attempt, now } => {
                 if !waiting {
@@ -205,8 +272,15 @@ impl NoticeHistory {
                     return Err(ExpectedFailure::Stale);
                 }
                 match outcome {
-                    NoticeWriteOutcome::DefinitelyNotWritten(_) => {
+                    NoticeWriteOutcome::DefinitelyNotWritten(NoticePreTakeRefusal::CannotSteer) => {
+                        self.refused = true;
+                    }
+                    NoticeWriteOutcome::DefinitelyNotWritten(_)
+                    | NoticeWriteOutcome::SteerNotInjected => {
                         self.expired_waiting = now.timestamp_millis() >= CUTOFF;
+                    }
+                    NoticeWriteOutcome::SteerRefused => {
+                        self.expired_waiting = true;
                     }
                     NoticeWriteOutcome::NotKnown(_) => {
                         self.cannot_offer_again = true;

@@ -1,6 +1,7 @@
 mod arguments;
 mod root_lock;
 mod serve_configuration;
+mod workspace_directory;
 
 pub(crate) use arguments::CentralCommand;
 use collaboration_central_tokio::TokioWorkspaceServer;
@@ -20,16 +21,29 @@ pub enum CentralCommandError {
     ServeConfiguration(#[from] serve_configuration::ServeConfigurationError),
     #[error("central local task failed")]
     LocalTask,
-    #[error("central serve requires async dispatch")]
+    #[error(transparent)]
+    FleetTarget(#[from] central_person_link_client::FleetTargetError),
+    #[error(transparent)]
+    PersonLink(#[from] central_person_link_client::PersonLinkError),
+    #[error(transparent)]
+    PersonLogin(#[from] central_person_link_client::FleetLoginError),
+    #[error("central commands require async dispatch")]
     AsyncDispatchRequired,
 }
 
 pub(crate) async fn run_central_command(
     command: CentralCommand,
+    interactive: bool,
     stdout: &mut (impl Write + Send),
 ) -> Result<(), CentralCommandError> {
     match command {
         CentralCommand::Help(help) => stdout.write_all(help.as_bytes())?,
+        CentralCommand::Login(arguments) => {
+            workspace_directory::login(&arguments.target, stdout).await?;
+        }
+        CentralCommand::Workspaces(arguments) => {
+            workspace_directory::run(&arguments.target, interactive, stdout).await?;
+        }
         CentralCommand::Serve(arguments) => {
             let (config, _root_lock) = tokio::task::spawn_blocking(move || {
                 let config = serve_configuration::ServeConfiguration::read(&arguments.config)?;

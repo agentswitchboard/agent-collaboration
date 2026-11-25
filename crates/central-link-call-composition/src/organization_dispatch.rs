@@ -289,6 +289,7 @@ where
         Box::pin(async move {
             match request {
                 CentralCall::ListOrganizationWorkspaces(_)
+                | CentralCall::CreateOrganizationWorkspace(_)
                 | CentralCall::LookupOrganizationWorkspace(_)
                 | CentralCall::ReadOrganizationChangeRecords(_)
                 | CentralCall::ListPersonApprovals(_)

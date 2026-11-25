@@ -118,7 +118,7 @@ pub struct CustodyLink {
     jitter: Arc<dyn FlushJitter>,
     outbox_driver: OutboxDriver,
     pub(crate) inbox: SharedRecipientInbox,
-    pub(crate) notice_port: Option<Arc<dyn crate::handover_notice::ManagedClaudeNoticePort>>,
+    pub(crate) notice_port: Option<Arc<dyn crate::handover_notice::ManagedNoticePort>>,
 }
 
 impl CustodyLink {
@@ -140,11 +140,11 @@ impl CustodyLink {
         }
     }
 
-    /// Supply the managed-Claude writer for the custody unit's local notice lane.
+    /// Supply the managed-session writer for the custody unit's local notice lane.
     #[must_use]
     pub fn with_notice_port(
         mut self,
-        port: Arc<dyn crate::handover_notice::ManagedClaudeNoticePort>,
+        port: Arc<dyn crate::handover_notice::ManagedNoticePort>,
     ) -> Self {
         self.notice_port = Some(port);
         self
