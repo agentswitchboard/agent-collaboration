@@ -23,29 +23,9 @@ pub struct EffectiveProviderSettings {
     pub fast: Option<FastObserved>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ProviderConfigValue {
-    Select(String),
-    Boolean(bool),
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ProviderConfigOption {
-    pub id: String,
-    pub name: String,
-    pub category: Option<ProviderSettingKind>,
-    pub current_value: ProviderConfigValue,
-    pub choices: Vec<ProviderSettingChoice>,
-}
-
-/// Last options advertised by a provider Session. The Host supervisor may keep
-/// this snapshot after the Session unloads for model/list and settings inspect.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum ProviderModeObservation {
-    #[default]
-    FromCatalogue,
-    Unconfirmed,
-}
+pub use switchboard_harness_contracts::{
+    ProviderConfigOption, ProviderConfigValue, ProviderModeObservation,
+};
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ProviderSettingsCatalog {

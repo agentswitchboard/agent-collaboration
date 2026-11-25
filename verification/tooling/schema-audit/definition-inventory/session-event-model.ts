@@ -29,18 +29,18 @@ export const rows: InventoryRow[] = [
     owner: "router-vocabulary",
     kind: "rust-type",
     defines:
-      "CapabilityReport, QueueCapability, QueueSupport, PromptContentCapabilities and ProviderAuthStatus (tag kind: notReported, loggedOut, account, apiKey, gateway, external) carried in SessionEvent::CapabilitiesChanged and in _meta.sessionProfile.capabilities (session_profile_codec.rs:557)",
+      "CapabilityReport, QueueCapability, QueueSupport, PromptContentCapabilities and ProviderAuthStatus (tag kind: notReported, loggedOut, account, apiKey, gateway, external) carried in SessionEvent::CapabilitiesChanged and in _meta.sessionProfile.capabilities (session_profile_codec.rs:426)",
     usedBy: [{ part: "N5" }, { part: "N8" }, { part: "N9" }],
     duplicateGroup: null,
     disposition: "boundary-encoding",
   },
   {
-    file: "crates/session-event-model/src/input_identity.rs",
+    file: "crates/switchboard-harness-contracts/src/input_identity.rs",
     line: 9,
     owner: "router-vocabulary",
     kind: "rust-type",
     defines:
-      "InputId, Router-assigned identity of one accepted Session Input: string newtype (serde try_from String, 1 to 4096 bytes without NUL) generated as UUIDv7 (21-23); profile queue types carry the same identity as a plain String input_id (session_profile_codec.rs:319,345,354)",
+      "InputId, Router-assigned identity of one accepted Session Input: string newtype (serde try_from String, 1 to 4096 bytes without NUL) generated as UUIDv7 (21-23); profile queue types carry the same identity as a plain String input_id (session_profile_codec.rs:188,214,223)",
     usedBy: [{ part: "N4" }, { part: "N5" }],
     duplicateGroup: null,
     disposition: "boundary-encoding",
@@ -68,12 +68,12 @@ export const rows: InventoryRow[] = [
     disposition: "boundary-encoding",
   },
   {
-    file: "crates/session-event-model/src/prompt_content.rs",
-    line: 89,
+    file: "crates/switchboard-harness-contracts/src/prompt_content.rs",
+    line: 90,
     owner: "router-vocabulary",
     kind: "rust-type",
     defines:
-      "PromptContent (text, resource link, image, audio, embedded resource) with validated newtypes (PromptData 51, PromptEmbeddedSource 81 and the text/uri/mime newtypes). No Serde derive here; Serialize and Deserialize are implemented in session_profile_codec.rs:160,211 through PromptContentWire (row :129)",
+      "PromptContent (text, resource link, image, audio, embedded resource) with validated newtypes (PromptData 52, PromptEmbeddedSource 82 and the text/uri/mime newtypes). No Serde derive here; Serialize and Deserialize are implemented beside the type at :218 and :271 through PromptContentWire (row :187)",
     usedBy: [{ part: "N4" }],
     duplicateGroup: "content-parsers",
     disposition: "boundary-encoding",
@@ -90,30 +90,30 @@ export const rows: InventoryRow[] = [
     disposition: "boundary-encoding",
   },
   {
-    file: "crates/session-event-model/src/session_event.rs",
-    line: 7,
+    file: "crates/switchboard-harness-contracts/src/harness_dispatch.rs",
+    line: 50,
     owner: "router-vocabulary",
     kind: "rust-type",
     defines:
-      "StopReason (camelCase, five named reasons plus Unknown(String)): the canonical Router stop reason. collaboration-protocol ProviderPromptStopReason (provider_conversation_contract.rs:636, snake_case) independently declares the same five plus Unknown and is mapped from this type at codex-router-host external_provider_runtime.rs:59-76, then again into collaboration-client ConversationStopReason; those copies and mappings carry the duplicate finding in their own rows",
+      "StopReason (camelCase, five named reasons plus Unknown(String)): the canonical Router stop reason. LocalCause (61) records why a Router-side terminal condition occurred. collaboration-protocol ProviderPromptStopReason (provider_conversation_contract.rs:636, snake_case) independently declares the same five plus Unknown and is mapped from this type at codex-router-host external_provider_runtime.rs:59-76, then again into collaboration-client ConversationStopReason; those copies and mappings carry the duplicate finding in their own rows",
     usedBy: [{ part: "N5" }],
     duplicateGroup: "stop-reason-mapping",
     disposition: "boundary-encoding",
   },
   {
     file: "crates/session-event-model/src/session_event.rs",
-    line: 33,
+    line: 17,
     owner: "router-vocabulary",
     kind: "schema-mechanism",
     defines:
-      "InteractionCancelReason (nine named reasons turnCancelled, providerRetired, approverUnreachable, requesterUnavailable, hostRestarted, eventPublicationFailed, agentCancelled, approverCancelled, timedOut plus Other, 33-60) and ProviderSettingFailureReason (invalidSetting, outcomeUnknown plus Other, 98-111): string tables via as_str and From<String> (47-77,104-121) with hand-written JsonSchema impls returning plain String schemas (86,130)",
+      "InteractionCancelReason (nine named reasons turnCancelled, providerRetired, approverUnreachable, requesterUnavailable, hostRestarted, eventPublicationFailed, agentCancelled, approverCancelled, timedOut plus Other, 17-44) and ProviderSettingFailureReason (invalidSetting, outcomeUnknown plus Other, 82-95): string tables via as_str and From<String> (31-61,88-105) with hand-written JsonSchema impls returning plain String schemas (70,114)",
     usedBy: [{ part: "N5" }],
     duplicateGroup: "schema-mechanism",
     disposition: "boundary-encoding",
   },
   {
     file: "crates/session-event-model/src/session_event.rs",
-    line: 143,
+    line: 127,
     owner: "router-vocabulary",
     kind: "rust-type",
     defines: "TurnOutcome (Ended with StopReason and LocalCause, Lost with TurnLostReason)",
@@ -123,7 +123,7 @@ export const rows: InventoryRow[] = [
   },
   {
     file: "crates/session-event-model/src/session_event.rs",
-    line: 155,
+    line: 139,
     owner: "router-vocabulary",
     kind: "rust-type",
     defines:
@@ -134,7 +134,7 @@ export const rows: InventoryRow[] = [
   },
   {
     file: "crates/session-event-model/src/session_event.rs",
-    line: 187,
+    line: 171,
     owner: "router-vocabulary",
     kind: "json-in-string",
     defines:
@@ -146,11 +146,11 @@ export const rows: InventoryRow[] = [
   },
   {
     file: "crates/session-event-model/src/session_event.rs",
-    line: 201,
+    line: 185,
     owner: "router-vocabulary",
     kind: "rust-type",
     defines:
-      "SessionEvent (201, tag kind: turnStarted, inputAccepted, turnEnded, itemStarted/Updated/Completed, interactionRequested/Resolved, stateChanged, capabilitiesChanged, settingsChanged, resyncRequired) and SessionItem (187 {itemId, kind, text}) with SessionItemKind (164): the Router event vocabulary the hub publishes. They derive Serde but no JsonSchema; internal Router vocabulary is not schema-checked as JSON (Program Design owner table), so the missing derive is not a defect by itself. The SessionItem.text JSON carriage is its own malformed row (:187)",
+      "SessionEvent (185, tag kind: turnStarted, inputAccepted, turnEnded, itemStarted/Updated/Completed, interactionRequested/Resolved, stateChanged, capabilitiesChanged, settingsChanged, resyncRequired) and SessionItem (171 {itemId, kind, text}) with SessionItemKind (148): the Router event vocabulary the hub publishes. They derive Serde but no JsonSchema; internal Router vocabulary is not schema-checked as JSON (Program Design owner table), so the missing derive is not a defect by itself. The SessionItem.text JSON carriage is its own malformed row (:171)",
     usedBy: [{ part: "N5" }],
     duplicateGroup: null,
     disposition: "boundary-encoding",
@@ -178,45 +178,45 @@ export const rows: InventoryRow[] = [
     disposition: "boundary-encoding",
   },
   {
-    file: "crates/session-event-model/src/session_profile_codec.rs",
-    line: 129,
+    file: "crates/switchboard-harness-contracts/src/prompt_content.rs",
+    line: 187,
     owner: "router-extension",
     kind: "content-parser",
     defines:
-      "PromptContentWire (129): the Router profile's wire form of canonical PromptContent for steering and queue requests; Serialize/Deserialize for PromptContent (160-250) go through it and the validated constructors. Its shape differs from the ACP ContentBlock (flattened embeddedResource {uri, mimeType, text, blob}); the ACP conversion is a separate projection at acp-client-runtime provider_prompt_content.rs:16-65. One encoding of one Router extension contract, no second copy of it found",
+      "PromptContentWire (187): the Router profile's wire form of canonical PromptContent for steering and queue requests; Serialize/Deserialize for PromptContent (218-308) go through it and the validated constructors. Its shape differs from the ACP ContentBlock (flattened embeddedResource {uri, mimeType, text, blob}); the ACP conversion is a separate projection at acp-client-runtime provider_prompt_content.rs:16-65. One encoding of one Router extension contract, no second copy of it found",
     usedBy: [{ part: "N8" }, { part: "N9" }],
     duplicateGroup: "content-parsers",
     disposition: "boundary-encoding",
   },
   {
     file: "crates/session-event-model/src/session_profile_codec.rs",
-    line: 253,
+    line: 122,
     owner: "router-extension",
     kind: "rust-type",
     defines:
-      "SteeringRequest (253), SteeringMetadata (269), SteeringOptions (275) with IdleSteeringBehavior (281), SteeringOutcome (287) with SteeringResult (295), QueueAddRequest/Result (304,318), QueueListRequest/Result (325,338) with QueuedInput (344), QueueCancelRequest/Result (352,366)",
+      "SteeringRequest (122), SteeringMetadata (138), SteeringOptions (144) with IdleSteeringBehavior (150), SteeringOutcome (156) with SteeringResult (164), QueueAddRequest/Result (173,187), QueueListRequest/Result (194,207) with QueuedInput (213), QueueCancelRequest/Result (221,235)",
     usedBy: [{ part: "N8" }, { part: "N9" }],
     duplicateGroup: "router-extension-meta",
     disposition: "boundary-encoding",
   },
   {
     file: "crates/session-event-model/src/session_profile_codec.rs",
-    line: 381,
+    line: 250,
     owner: "router-extension",
     kind: "rust-type",
     defines:
-      "StateNotification (381) and ProfileState (371) for _session/state, encoded by hand Serialize/Deserialize impls (447-485) that map ProfileState to StateNotificationWire (427) with StateName (438, snake_case) plus a separate requiresAction field",
+      "StateNotification (250) and ProfileState (240) for _session/state, encoded by hand Serialize/Deserialize impls (316-354) that map ProfileState to StateNotificationWire (296) with StateName (307, snake_case) plus a separate requiresAction field",
     usedBy: [{ part: "N8" }, { part: "N9" }],
     duplicateGroup: "router-extension-meta",
     disposition: "boundary-encoding",
   },
   {
     file: "crates/session-event-model/src/session_profile_codec.rs",
-    line: 394,
+    line: 263,
     owner: "router-extension",
     kind: "rust-type",
     defines:
-      "ProfileTurn (tag status: running, completed, interrupted, failed, lost) on _session/state, with stop_reason: Option<String> and reason: String as open strings rather than the typed StopReason, TurnLostReason (session_event.rs:7,25)",
+      "ProfileTurn (tag status: running, completed, interrupted, failed, lost) on _session/state, with stop_reason: Option<String> and reason: String as open strings rather than the typed StopReason, TurnLostReason (harness_dispatch.rs:50 and session_event.rs:9)",
     usedBy: [{ part: "N8" }, { part: "N9" }],
     duplicateGroup: "stop-reason-mapping",
     disposition: "duplicate",
@@ -224,7 +224,7 @@ export const rows: InventoryRow[] = [
   },
   {
     file: "crates/session-event-model/src/session_profile_codec.rs",
-    line: 489,
+    line: 358,
     owner: "router-extension",
     kind: "rust-type",
     defines:
@@ -235,11 +235,11 @@ export const rows: InventoryRow[] = [
   },
   {
     file: "crates/session-event-model/src/session_profile_codec.rs",
-    line: 520,
+    line: 389,
     owner: "router-extension",
     kind: "approval-table",
     defines:
-      "encode_choice_metadata hand-builds the choice JSON object with literal effect names allow/decline/abort and scope names once/session/persistent plus where (520-538) instead of serializing ChoiceMetadataWire (504); decode_choice_metadata reads the same object through derived ChoiceMetadataWire and ChoiceScopeName (513) (540-552). The hand encoder is a second, independently maintained definition of that wire object",
+      "encode_choice_metadata hand-builds the choice JSON object with literal effect names allow/decline/abort and scope names once/session/persistent plus where (389-407) instead of serializing ChoiceMetadataWire (373); decode_choice_metadata reads the same object through derived ChoiceMetadataWire and ChoiceScopeName (382) (409-421). The hand encoder is a second, independently maintained definition of that wire object",
     usedBy: [{ part: "N8" }, { part: "N9" }],
     duplicateGroup: "approval-option-tables",
     disposition: "duplicate",
@@ -247,7 +247,7 @@ export const rows: InventoryRow[] = [
   },
   {
     file: "crates/session-event-model/src/session_profile_codec.rs",
-    line: 557,
+    line: 426,
     owner: "router-extension",
     kind: "rust-type",
     defines:
@@ -258,22 +258,22 @@ export const rows: InventoryRow[] = [
   },
   {
     file: "crates/session-event-model/src/session_profile_codec.rs",
-    line: 572,
+    line: 441,
     owner: "claude-extra",
     kind: "rust-type",
     defines:
-      "decode_connection_auth_status with AuthStatusNotification, AuthStatusFields and AuthStatusKind (594-614): decodes the Claude connection-scoped authStatus notification and maps AuthStatusKind none/account/api_key/gateway/external to ProviderAuthStatus LoggedOut/Account/ApiKey/Gateway/External (576-590), dropping other account fields",
+      "decode_connection_auth_status with AuthStatusNotification, AuthStatusFields and AuthStatusKind (463-483): decodes the Claude connection-scoped authStatus notification and maps AuthStatusKind none/account/api_key/gateway/external to ProviderAuthStatus LoggedOut/Account/ApiKey/Gateway/External (445-459), dropping other account fields",
     usedBy: [{ part: "N6" }],
     duplicateGroup: "claude-extras",
     disposition: "boundary-encoding",
   },
   {
     file: "crates/session-event-model/src/session_profile_codec.rs",
-    line: 619,
+    line: 488,
     owner: "cursor-extra",
     kind: "rust-type",
     defines:
-      "ProviderEdge (619), CursorTodo (633), CursorTodoStatus (641, snake_case) and translate_provider_edge into TranslatedPlanChange (657) with PlanChangeMode (649, no serde) for cursor plan and todo extension updates",
+      "ProviderEdge (488), CursorTodo (502), CursorTodoStatus (510, snake_case) and translate_provider_edge into TranslatedPlanChange (526) with PlanChangeMode (518, no serde) for cursor plan and todo extension updates",
     usedBy: [{ part: "N6" }],
     duplicateGroup: "cursor-extras",
     disposition: "boundary-encoding",
@@ -345,7 +345,7 @@ export const rows: InventoryRow[] = [
     owner: "router-vocabulary",
     kind: "rust-type",
     defines:
-      "SessionState (tag kind: unloaded, idle, running, requiresAction with nonempty PendingInteractions 15, authenticationRequired, closed) and InteractionKind (5), carried in SessionEvent::StateChanged; the profile wire re-encodes it as ProfileState (session_profile_codec.rs:371)",
+      "SessionState (tag kind: unloaded, idle, running, requiresAction with nonempty PendingInteractions 15, authenticationRequired, closed) and InteractionKind (5), carried in SessionEvent::StateChanged; the profile wire re-encodes it as ProfileState (session_profile_codec.rs:240)",
     usedBy: [{ part: "N5" }],
     duplicateGroup: null,
     disposition: "boundary-encoding",

@@ -13,7 +13,7 @@ use crate::session_setting_machine::{SettingApplication, SettingValueId};
 use crate::session_turn_machine::{SessionTurn, TurnId};
 use crate::tool_ownership::{ToolObservation, ToolOwnership};
 use crate::{ProviderSettingsCatalog, SessionGeneration};
-use session_event_model::{InputId, LocalCause, StopReason, TurnOutcome};
+use session_event_model::{InputId, TurnOutcome};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -128,20 +128,7 @@ pub enum SessionOwnerCommand {
     },
 }
 
-/// The local decision can finish while the peer's effect remains unknown.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum WireOutcome<Reply> {
-    Confirmed(Reply),
-    Refused,
-    Unknown,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PromptCompletion {
-    pub stop_reason: StopReason,
-    pub local_cause: Option<LocalCause>,
-    pub response: String,
-}
+pub use switchboard_harness_contracts::{PromptCompletion, WireOutcome};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LastLiveTurn {

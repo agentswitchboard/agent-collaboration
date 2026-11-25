@@ -5497,12 +5497,11 @@ dependencies = [
 name = "session-event-model"
 version = "0.1.158"
 dependencies = [
- "base64 0.22.1",
  "message-board",
  "schemars 1.2.2",
  "serde",
  "serde_json",
- "uuid",
+ "switchboard-harness-contracts",
 ]
 
 [[package]]
@@ -6101,6 +6100,9 @@ dependencies = [
 name = "switchboard-harness-contracts"
 version = "0.1.158"
 dependencies = [
+ "base64 0.22.1",
+ "schemars 1.2.2",
+ "serde",
  "uuid",
 ]
 

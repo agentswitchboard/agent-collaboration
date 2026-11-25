@@ -2,23 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{CapabilityReport, PendingInteraction, SessionSettings, SessionState};
 
-#[derive(schemars::JsonSchema, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum StopReason {
-    EndTurn,
-    MaxTokens,
-    MaxTurnRequests,
-    Refusal,
-    Cancelled,
-    Unknown(String),
-}
-
-#[derive(schemars::JsonSchema, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum LocalCause {
-    OutputOverflow,
-    Other(String),
-}
+pub use switchboard_harness_contracts::{LocalCause, StopReason};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
