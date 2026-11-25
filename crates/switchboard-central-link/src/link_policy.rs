@@ -149,6 +149,21 @@ impl<Binding> LinkState<Binding> {
         }
     }
 
+    pub(super) fn can_finish_lifecycle_write_by(&self, write_until: ClockInstant) -> bool {
+        match &self.phase {
+            LinkPhase::Welcomed {
+                renewal: Renewal::Scheduled(renew_at),
+                ..
+            } => write_until <= *renew_at,
+            LinkPhase::Welcomed {
+                renewal: Renewal::Acquiring,
+                ..
+            } => false,
+            LinkPhase::Welcomed { .. } => true,
+            _ => false,
+        }
+    }
+
     pub(super) fn ending(&self) -> Option<EnrollmentEnd> {
         match self.phase {
             LinkPhase::EnrollmentEnded { cause, .. } => Some(cause),

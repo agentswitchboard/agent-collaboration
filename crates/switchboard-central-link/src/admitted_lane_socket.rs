@@ -218,32 +218,37 @@ impl<'fence> AdmittedSocketLane<'fence> {
         self.state.admitted().is_some()
     }
 
-    pub(super) fn reply_deadline(&self) -> Option<ClockInstant> {
-        self.state.reply_deadline()
+    pub(super) fn next_reply_deadline(&self) -> Option<ClockInstant> {
+        self.state
+            .reply_deadline()
+            .into_iter()
+            .chain(self.lifecycle.deadline())
+            .min()
     }
 
     pub(super) fn expire(&mut self, now: ClockInstant) {
         if self
+            .state
             .reply_deadline()
             .is_some_and(|deadline| now >= deadline)
         {
             self.apply(LaneInput::Elapsed { now });
         }
+        self.lifecycle.expire(now);
     }
 
-    pub(super) async fn keeping_reply_deadline<Output>(
+    pub(super) async fn keeping_reply_deadlines<Output>(
         &mut self,
         clock: &dyn RuntimeClock,
         write: impl Future<Output = Output>,
     ) -> Output {
-        let Some(deadline) = self.reply_deadline() else {
-            return write.await;
-        };
         let mut write = pin!(write);
-        tokio::select! {
-            biased;
-            () = clock.sleep_until(deadline) => self.expire(clock.monotonic_now()),
-            output = &mut write => return output,
+        while let Some(deadline) = self.next_reply_deadline() {
+            tokio::select! {
+                biased;
+                () = clock.sleep_until(deadline) => self.expire(clock.monotonic_now()),
+                output = &mut write => return output,
+            }
         }
         write.await
     }

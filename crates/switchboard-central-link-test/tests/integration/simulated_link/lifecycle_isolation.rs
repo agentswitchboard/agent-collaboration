@@ -95,8 +95,8 @@ fn lifecycle_writes_while_a_real_custody_answer_is_held() {
 #[test]
 fn due_renewal_writes_on_its_reserved_path_while_a_lifecycle_answer_is_held() {
     run_link_case(|link| async move {
-        let before_renewal = ClockInstant::ZERO.after(Duration::from_secs(539));
-        let renewal_at = before_renewal.after(Duration::from_secs(1));
+        let before_renewal = ClockInstant::ZERO.after(Duration::from_secs(534));
+        let renewal_at = before_renewal.after(Duration::from_secs(6));
         link.driver_clock
             .wait_until_pending(ClockInstant::ZERO.after(Duration::from_secs(20)))
             .await;
@@ -121,7 +121,9 @@ fn due_renewal_writes_on_its_reserved_path_while_a_lifecycle_answer_is_held() {
             _ = &mut call => panic!("Central's lifecycle answer must be held"),
             held = link.network.seen(after, FrameKind::LifecycleReply) => held,
         };
-        link.clock.advance(Duration::from_secs(1)).unwrap();
+        link.clock
+            .advance(renewal_at.saturating_duration_since(link.clock.monotonic_now()))
+            .unwrap();
         let renewal = tokio::select! {
             biased;
             _ = &mut call => panic!("renewal must write while the lifecycle answer is held"),

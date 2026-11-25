@@ -466,7 +466,6 @@ where
         loop {
             let now = self.clock.monotonic_now();
             admitted_lane.expire(now);
-            admitted_lane.lifecycle.expire(now);
             let effects = self.apply(LinkInput::Tick { now }).unwrap_or_default();
             for effect in effects {
                 match effect {
@@ -512,7 +511,7 @@ where
             match client_action {
                 Some(ClientAction::SendPing) => {
                     if !admitted_lane
-                        .keeping_reply_deadline(
+                        .keeping_reply_deadlines(
                             clock.as_ref(),
                             self.write_heartbeat(socket, attempt, control),
                         )
@@ -538,16 +537,21 @@ where
                 .flatten()
                 .into_iter()
                 .chain(self.state.next_deadline())
-                .chain(admitted_lane.reply_deadline())
-                .chain(admitted_lane.lifecycle.deadline())
+                .chain(admitted_lane.next_reply_deadline())
                 .chain(delivery_stall_at)
                 .min();
+            let lifecycle_write_window = || {
+                let write_until = link_frame_write_deadline(clock.monotonic_now());
+                self.state
+                    .can_finish_lifecycle_write_by(write_until)
+                    .then_some(write_until)
+            };
             let input = control
                 .during(async {
                     tokio::select! {
                         biased;
                         () = sleep_if_due(self.clock.as_ref(), deadline) => SocketInput::Timer,
-                        input = next_socket_input(socket, &mut acquiring, lane_owner, &admitted_lane, priority) => input,
+                        input = next_socket_input(socket, &mut acquiring, lane_owner, &admitted_lane, priority, &lifecycle_write_window) => input,
                     }
                 })
                 .await?;
@@ -558,11 +562,14 @@ where
                 SocketInput::Timer | SocketInput::EventSpace => priority,
                 SocketInput::Frame(..) => SocketPriority::AcquireLease,
                 SocketInput::Lease(_) => SocketPriority::AcceptCommand,
-                SocketInput::Command(_) if !lane_owner.lifecycle.commands.is_empty() => {
+                SocketInput::Command(_)
+                    if !lane_owner.lifecycle.commands.is_empty()
+                        && lifecycle_write_window().is_some() =>
+                {
                     SocketPriority::AcceptLifecycle
                 }
                 SocketInput::Command(_) => SocketPriority::ReadFrame,
-                SocketInput::Lifecycle(_) => SocketPriority::ReadFrame,
+                SocketInput::Lifecycle { .. } => SocketPriority::ReadFrame,
             };
             match input {
                 SocketInput::Timer => {}
@@ -641,11 +648,15 @@ where
                                 clock.as_ref(),
                                 timing.writes,
                             ));
-                            let outcome = tokio::select! {
-                                biased;
-                                () = stalled => None,
-                                outcome = writing => Some(outcome),
-                            };
+                            let outcome = admitted_lane
+                                .keeping_reply_deadlines(clock.as_ref(), async {
+                                    tokio::select! {
+                                        biased;
+                                        () = stalled => None,
+                                        outcome = writing => Some(outcome),
+                                    }
+                                })
+                                .await;
                             let Some(outcome) = outcome else {
                                 if timing.writes.crossed() {
                                     admitted_lane.start_write();
@@ -684,7 +695,10 @@ where
                         }
                     }
                 }
-                SocketInput::Lifecycle(request) => {
+                SocketInput::Lifecycle {
+                    request,
+                    write_until,
+                } => {
                     if !self
                         .write_lifecycle_call(
                             request,
@@ -695,6 +709,7 @@ where
                             lifecycle::LifecycleWriteContext {
                                 writes: timing.writes,
                                 delivery_stall_at,
+                                write_until,
                             },
                         )
                         .await?
@@ -728,7 +743,7 @@ where
                                 });
                                 let stalled = admitted_lane
                                     .wait_for_delivery_stall(clock.as_ref(), delivery_stall_at);
-                                let renewal = admitted_lane.keeping_reply_deadline(
+                                let renewal = admitted_lane.keeping_reply_deadlines(
                                     clock.as_ref(),
                                     self.write(socket, frame, control),
                                 );

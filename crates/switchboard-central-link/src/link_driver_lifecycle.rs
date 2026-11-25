@@ -2,7 +2,7 @@
 
 use central_link_client::{
     ConnectionAttempt, LifecycleCallNotSent, LinkLocalFault, UntouchedCommand,
-    link_frame_answer_deadline, link_frame_write_deadline,
+    link_frame_answer_deadline,
 };
 use central_link_protocol::DataFrame;
 use futures_util::Sink;
@@ -23,6 +23,7 @@ use crate::{
 pub(super) struct LifecycleWriteContext<'socket> {
     pub(super) writes: &'socket WireWriteFence,
     pub(super) delivery_stall_at: Option<ClockInstant>,
+    pub(super) write_until: ClockInstant,
 }
 
 struct InFlightLifecycleWrite<'socket> {
@@ -98,7 +99,7 @@ where
         let fence = SendFence {
             send_before,
             authority_until,
-            write_until: link_frame_write_deadline(now),
+            write_until: context.write_until,
         };
         let outcome = {
             let _in_flight = InFlightLifecycleWrite {
@@ -115,7 +116,7 @@ where
                 context.writes,
             ));
             admitted
-                .keeping_reply_deadline(self.clock.as_ref(), async {
+                .keeping_reply_deadlines(self.clock.as_ref(), async {
                     tokio::select! {
                         biased;
                         () = stalled => Ok(None),

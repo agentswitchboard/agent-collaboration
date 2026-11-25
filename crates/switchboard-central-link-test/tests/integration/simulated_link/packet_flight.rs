@@ -305,10 +305,15 @@ pub(super) fn decode_segment(mut bytes: &[u8], to_central: bool) -> Vec<LinkFram
     let mut frames = Vec::new();
     while !bytes.is_empty() {
         let mut cursor = Cursor::new(bytes);
-        let (header, payload_size) = FrameHeader::parse(&mut cursor).unwrap().unwrap();
+        let Some((header, payload_size)) = FrameHeader::parse(&mut cursor).unwrap() else {
+            // A test may cut the TCP stream after only a frame prefix.
+            break;
+        };
         let payload_start = usize::try_from(cursor.position()).unwrap();
         let payload_end = payload_start + usize::try_from(payload_size).unwrap();
-        let payload = bytes.get(payload_start..payload_end).unwrap();
+        let Some(payload) = bytes.get(payload_start..payload_end) else {
+            break;
+        };
         if header.opcode == coding::OpCode::Data(coding::Data::Text) {
             assert!(
                 header.is_final,

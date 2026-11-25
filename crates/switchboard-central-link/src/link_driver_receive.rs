@@ -123,7 +123,7 @@ where
             writes,
         ));
         let outcome = admitted_lane
-            .keeping_reply_deadline(self.clock.as_ref(), write)
+            .keeping_reply_deadlines(self.clock.as_ref(), write)
             .await?;
         Ok(matches!(outcome, FrameWrite::Flushed) && self.clock.monotonic_now() < authority_until)
     }

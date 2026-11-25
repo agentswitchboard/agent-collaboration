@@ -39,6 +39,7 @@ use self::{
 
 mod custody_cases;
 mod lifecycle_cases;
+mod lifecycle_timing;
 mod mac_capabilities;
 mod packet_flight;
 mod simulation_clock;

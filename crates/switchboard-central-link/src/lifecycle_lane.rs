@@ -144,7 +144,7 @@ impl LifecycleCallHandle {
                 completion: LifecycleCompletion {
                     answer: Some(answer),
                     fallback: not_sent(LifecycleCallNotSent::LinkNotReady),
-                    _slot: slot,
+                    slot: Some(slot),
                 },
             })
             .map_err(|error| match error {
@@ -270,7 +270,7 @@ pub(super) struct LifecycleCompletion {
     answer: Option<oneshot::Sender<LifecycleResult>>,
     fallback: LifecycleCallError,
     // The same slot covers queue residence, a write, and answer retention.
-    _slot: OwnedSemaphorePermit,
+    slot: Option<OwnedSemaphorePermit>,
 }
 
 impl LifecycleCompletion {
@@ -285,6 +285,12 @@ impl LifecycleCompletion {
     }
 
     pub(super) fn finish(mut self, result: LifecycleResult) {
+        self.settle(result);
+    }
+
+    fn settle(&mut self, result: LifecycleResult) {
+        // A caller may submit its next call as soon as its answer wakes it.
+        drop(self.slot.take());
         if let Some(answer) = self.answer.take() {
             let _ = answer.send(result);
         }
@@ -293,9 +299,7 @@ impl LifecycleCompletion {
 
 impl Drop for LifecycleCompletion {
     fn drop(&mut self) {
-        if let Some(answer) = self.answer.take() {
-            let _ = answer.send(Err(self.fallback));
-        }
+        self.settle(Err(self.fallback));
     }
 }
 
