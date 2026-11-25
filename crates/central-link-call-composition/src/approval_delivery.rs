@@ -343,6 +343,7 @@ where
                 reason:
                     reason @ (LinkCallRefusal::UnknownCall
                     | LinkCallRefusal::WrongTarget
+                    | LinkCallRefusal::NotPermitted
                     | LinkCallRefusal::SessionProofNotAccepted
                     | LinkCallRefusal::CentralFault
                     | LinkCallRefusal::AuthorityLapsed { .. }),

@@ -166,7 +166,9 @@ approval_wire_record! {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Eq, PartialEq, thiserror::Error, schemars::JsonSchema, Serialize, Deserialize,
+)]
 #[serde(
     tag = "kind",
     content = "reason",

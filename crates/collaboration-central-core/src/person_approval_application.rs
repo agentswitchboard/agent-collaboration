@@ -1,6 +1,8 @@
 //! The person approval transaction checks proof freshness and applies lifecycle changes.
 
+use crate::WorkspaceRuntime;
 use central_engine_model::IdSource as EngineIdSource;
+use central_person_link::PersonSocketAttachment;
 use central_storage::{AlarmPublicationFailure, StoreFailure};
 use fleet_approvals::{
     ApprovalApplyFailure, ApprovalCommitOwner, ApprovalCommitProof, ApprovalCommitScope,
@@ -9,12 +11,13 @@ use fleet_approvals::{
     complete_approval_commit,
 };
 use fleet_identity_protocol::OrganizationId;
-use fleet_runtime_ports::IdSource;
-#[cfg(feature = "test-support")]
-use fleet_signin::approval_person_wire::ApprovalPersonOperation;
+use fleet_runtime::TurnGuard;
+use fleet_runtime_ports::{CentralStore, IdSource, WorkspaceStores};
 use fleet_signin::{
     VerifiedApprovalPersonRequest,
-    approval_person_wire::{ApprovalDecideReply, ApprovalListReply, ApprovalReadReply},
+    approval_person_wire::{
+        ApprovalDecideReply, ApprovalListReply, ApprovalPersonOperation, ApprovalReadReply,
+    },
     person_proof::AdmissionRefusal,
 };
 use futures_util::future::BoxFuture;
@@ -45,22 +48,43 @@ pub trait PersonApprovalTransactions: Send + Sync + 'static {
 
 /// Verified input for the current organization turn. Only Core builds this.
 pub struct PersonApprovalApplication {
-    verified: VerifiedApprovalPersonRequest,
+    input: ApprovalInput,
     organization: OrganizationId,
 }
 
+enum ApprovalInput {
+    Signed(VerifiedApprovalPersonRequest),
+    PersonLink {
+        connection: PersonSocketAttachment,
+        operation: ApprovalPersonOperation,
+    },
+}
+
 impl PersonApprovalApplication {
-    pub(super) fn new(
+    pub(super) fn from_signed_request(
         organization: &OrganizationId,
         verified: VerifiedApprovalPersonRequest,
     ) -> Self {
         Self {
-            verified,
+            input: ApprovalInput::Signed(verified),
             organization: organization.clone(),
         }
     }
 
-    pub(super) async fn commit(
+    pub(super) fn from_person_link(
+        connection: &PersonSocketAttachment,
+        operation: ApprovalPersonOperation,
+    ) -> Self {
+        Self {
+            input: ApprovalInput::PersonLink {
+                connection: connection.clone(),
+                operation,
+            },
+            organization: connection.organization().clone(),
+        }
+    }
+
+    async fn commit(
         self,
         transactions: &dyn PersonApprovalTransactions,
     ) -> Result<(ApprovalCommitProof, AppliedPersonApproval), StoreFailure> {
@@ -81,7 +105,14 @@ impl PersonApprovalApplication {
         commit: &ApprovalCommitScope,
         ids: &dyn IdSource,
     ) -> Result<AppliedPersonApproval, StoreFailure> {
-        let command = match self.verified.admit(transaction).await? {
+        let admission = match self.input {
+            ApprovalInput::Signed(verified) => verified.admit(transaction).await?,
+            ApprovalInput::PersonLink {
+                connection,
+                operation,
+            } => connection.admit_approval(operation, transaction).await?,
+        };
+        let command = match admission {
             Ok(command) => command,
             Err(refusal) => return Ok(AppliedPersonApproval::refused(refusal)),
         };
@@ -96,13 +127,68 @@ impl PersonApprovalApplication {
             None => AppliedPersonApproval::refused(AdmissionRefusal::NotPermitted),
         })
     }
+
+    #[cfg(feature = "test-support")]
+    fn decide_operation_id(&self) -> Option<&RequestId> {
+        let operation = match &self.input {
+            ApprovalInput::Signed(verified) => verified.operation(),
+            ApprovalInput::PersonLink { operation, .. } => operation,
+        };
+        match operation {
+            ApprovalPersonOperation::Decide(request) => Some(&request.operation_id),
+            ApprovalPersonOperation::List(_) | ApprovalPersonOperation::Read(_) => None,
+        }
+    }
 }
 
-#[cfg(feature = "test-support")]
-pub(super) fn decide_operation_id(operation: &ApprovalPersonOperation) -> Option<&RequestId> {
-    match operation {
-        ApprovalPersonOperation::Decide(request) => Some(&request.operation_id),
-        ApprovalPersonOperation::List(_) | ApprovalPersonOperation::Read(_) => None,
+impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
+    /// Expose answers and hand holder effects off only after the owning transaction commits.
+    pub(super) async fn commit_person_approval(
+        &self,
+        turn: TurnGuard<'_>,
+        application: PersonApprovalApplication,
+    ) -> Result<PersonApprovalAnswer, StoreFailure> {
+        let transactions = self
+            .person_approval_transactions
+            .as_deref()
+            .ok_or(StoreFailure::Unavailable)?;
+        let schedule = self
+            .approval_delivery_completion
+            .as_ref()
+            .ok_or(StoreFailure::Unavailable)?;
+        #[cfg(feature = "test-support")]
+        let operation_id = application.decide_operation_id().cloned();
+        #[cfg(feature = "test-support")]
+        self.execution
+            .pause_points()
+            .reached_central(fleet_runtime::PausePoint::BeforeSignInSample)
+            .await;
+        let (proof, applied) = application.commit(transactions).await?;
+        #[cfg(feature = "test-support")]
+        let reply_was_admitted = applied.is_admitted();
+        let publication_failure = applied.publication_failure();
+        let (answer, offers) = applied.publish(&proof)?;
+        drop(turn);
+        if let Some(completion) = transactions.delivery_after_commit(offers) {
+            schedule(completion);
+        }
+        if let Some(reason) = publication_failure {
+            return Err(StoreFailure::AlarmUnpublishable { reason });
+        }
+        #[cfg(feature = "test-support")]
+        self.execution
+            .pause_points()
+            .reached_central(fleet_runtime::PausePoint::AfterPersonApprovalCommit)
+            .await;
+        #[cfg(feature = "test-support")]
+        if reply_was_admitted
+            && operation_id
+                .as_ref()
+                .is_some_and(|id| self.execution.take_lost_reply(id))
+        {
+            return Err(StoreFailure::AnswerLost);
+        }
+        Ok(answer)
     }
 }
 

@@ -1,8 +1,13 @@
+use collaboration_central_conformance::approval_link_scenarios::ApprovalLinkFixture;
 use collaboration_central_conformance::{
     ConformanceResult as Result,
-    signin_fixtures::person_approval_races::{
-        DecisionCompetitor, DecisionRaceOrder, PersonApprovalPause, PersonApprovalRaceFixture,
-        RacePauseStep, check_decision_race, check_person_session_race,
+    signin_fixtures::{
+        Person,
+        approval_socket::{PersonApprovalEndpoint, PersonApprovalSocket},
+        person_approval_races::{
+            DecisionCompetitor, DecisionRaceOrder, PersonApprovalPause, PersonApprovalRaceFixture,
+            RacePauseStep, check_decision_race, check_person_session_race,
+        },
     },
 };
 use serde_json::Value;
@@ -14,6 +19,16 @@ impl PersonApprovalRaceFixture for Fixture {
 
     fn link(&self) -> &Self::Link {
         self
+    }
+
+    async fn connect_person(&self, person: &Person) -> Result<PersonApprovalSocket> {
+        PersonApprovalEndpoint {
+            client: &self.client,
+            origin: self.host.public_origin(),
+            now_seconds: self.now_seconds(),
+        }
+        .connect(person)
+        .await
     }
 
     async fn post_private(
@@ -91,16 +106,20 @@ macro_rules! race_tests {
     };
 }
 
-race_tests!(Stop, stop_before_person_decide, person_decide_before_stop);
+race_tests!(
+    Stop,
+    socket_stop_before_person_decide,
+    socket_person_decide_before_stop
+);
 race_tests!(
     Deadline,
-    deadline_before_person_decide,
-    person_decide_before_deadline
+    socket_deadline_before_person_decide,
+    socket_person_decide_before_deadline
 );
 race_tests!(
     EnrollmentEnd,
-    enrollment_end_before_person_decide,
-    person_decide_before_enrollment_end
+    socket_enrollment_end_before_person_decide,
+    socket_person_decide_before_enrollment_end
 );
 
 async fn check_person_session(order: DecisionRaceOrder) -> Result<()> {
@@ -111,11 +130,11 @@ async fn check_person_session(order: DecisionRaceOrder) -> Result<()> {
 }
 
 #[tokio::test]
-async fn session_decide_before_signed_person_decide() -> Result<()> {
+async fn session_decide_before_socket_person_decide() -> Result<()> {
     check_person_session(DecisionRaceOrder::CompetitorFirst).await
 }
 
 #[tokio::test]
-async fn signed_person_decide_before_session_decide() -> Result<()> {
+async fn socket_person_decide_before_session_decide() -> Result<()> {
     check_person_session(DecisionRaceOrder::PersonFirst).await
 }
