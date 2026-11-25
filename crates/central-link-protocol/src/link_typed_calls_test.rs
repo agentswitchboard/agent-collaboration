@@ -122,6 +122,46 @@ fn call_wrappers_require_tags_and_envelope_fields_by_name() {
 }
 
 #[test]
+fn create_workspace_codec_rejects_a_complete_positional_body() {
+    let named = json!({
+        "kind": "callCentral",
+        "correlationId": CORRELATION,
+        "request": {
+            "call": "createOrganizationWorkspace",
+            "envelope": {
+                "target": CORRELATION,
+                "body": {
+                    "operationId": "019f0000-0000-7000-8000-000000000003",
+                    "name": "Fixture workspace",
+                    "description": "Created over the person link"
+                }
+            }
+        }
+    });
+    let direction = FrameDirection::ToCentral;
+    let decoded = decode_text(&named.to_string(), direction).expect("named create request");
+    assert!(matches!(
+        &decoded,
+        LinkFrame::Data(DataFrame::CallCentral { request, .. })
+            if matches!(request.as_ref(), CentralCall::CreateOrganizationWorkspace(_))
+    ));
+    let encoded = encode_text(&decoded, direction).expect("encode named create request");
+    assert_eq!(serde_json::from_str::<Value>(&encoded).unwrap(), named);
+
+    let mut positional = named;
+    positional["request"]["envelope"]["body"] = json!([
+        "019f0000-0000-7000-8000-000000000003",
+        "Fixture workspace",
+        "Created over the person link"
+    ]);
+    let result = decode_text(&positional.to_string(), direction);
+    assert!(
+        matches!(result, Err(ProtocolError::Json(_))),
+        "create body must be a named object, got {result:?}"
+    );
+}
+
+#[test]
 fn refusal_is_separate_from_a_registered_service_answer() {
     for (cause, expected) in [
         (MachineLinkCloseCode::Expired, "expired"),

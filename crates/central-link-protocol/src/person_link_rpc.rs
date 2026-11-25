@@ -90,12 +90,34 @@ impl Rpc for CreateOrganizationWorkspaceRpc {
     type Reply = CreateOrganizationWorkspaceResult;
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateOrganizationWorkspace {
     pub operation_id: RequestId,
     pub name: WorkspaceCreateName,
     pub description: WorkspaceCreateDescription,
+}
+
+impl<'de> Deserialize<'de> for CreateOrganizationWorkspace {
+    fn deserialize<D: serde::Deserializer<'de>>(input: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Fields {
+            operation_id: RequestId,
+            name: WorkspaceCreateName,
+            description: WorkspaceCreateDescription,
+        }
+        let Fields {
+            operation_id,
+            name,
+            description,
+        } = approval_request_protocol::decode_named_map(input)?;
+        Ok(Self {
+            operation_id,
+            name,
+            description,
+        })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
