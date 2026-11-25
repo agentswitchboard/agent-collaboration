@@ -289,7 +289,10 @@ where
         Box::pin(async move {
             match request {
                 CentralCall::ListOrganizationWorkspaces(_)
-                | CentralCall::CreateOrganizationWorkspace(_) => Ok(TypedCallResult::Refused {
+                | CentralCall::CreateOrganizationWorkspace(_)
+                | CentralCall::ListPersonApprovals(_)
+                | CentralCall::ReadPersonApproval(_)
+                | CentralCall::DecidePersonApproval(_) => Ok(TypedCallResult::Refused {
                     reason: LinkCallRefusal::WrongTarget,
                 }
                 .into()),

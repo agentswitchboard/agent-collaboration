@@ -64,6 +64,9 @@ pub fn is_approval_holder_call(request: Option<&CentralCall>) -> bool {
         Some(
             CentralCall::ListOrganizationWorkspaces(_)
             | CentralCall::CreateOrganizationWorkspace(_)
+            | CentralCall::ListPersonApprovals(_)
+            | CentralCall::ReadPersonApproval(_)
+            | CentralCall::DecidePersonApproval(_)
             | CentralCall::CreateFleetSession(_)
             | CentralCall::BindFleetSession(_)
             | CentralCall::EndFleetSession(_)

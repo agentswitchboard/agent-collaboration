@@ -4,13 +4,13 @@ use serde_json::{Value, json};
 
 use super::{
     DECIDE, DecisionRaceOrder, OWNER, Person, PersonApprovalPause, PersonApprovalRaceFixture,
-    RacePauseStep, Result, expect_ok, fresh_request_id, publish_person_floors, read_winner, text,
+    RacePauseStep, Result, fresh_request_id, publish_person_floors, read_winner, text,
 };
 use crate::approval_link_scenarios::{
     ApprovalLinkFixture, heartbeat, raise, receive_decision, register_run, require_receipt,
 };
 
-/// A signed person and an authenticated destination session decide the same passed request.
+/// A person connection and an authenticated destination session decide the same passed request.
 pub async fn check_person_session_race(
     fixture: &impl PersonApprovalRaceFixture,
     order: DecisionRaceOrder,
@@ -82,19 +82,17 @@ pub async fn check_person_session_race(
     let person_operation = fresh_request_id(sampled)?;
     let session_operation = typed_id(0x7351)?;
     let person_value = json!({"kind": "approval", "optionId": 1});
-    let body = json!({"organization": organization, "requestId": id, "operationId": person_operation, "answer": person_value});
-    let intent = json!({"v":1, "operation":"ApprovalDecide", "organization":organization,
-        "target":id, "operationId":person_operation, "params":{"answer":person_value}});
-    let headers = owner.headers(DECIDE, &intent, &fresh_request_id(sampled)?, sampled)?;
+    let body = json!({"requestId": id, "operationId": person_operation, "answer": person_value});
+    let mut person_socket = fixture.connect_person(&owner).await?;
     let pause = match order {
         DecisionRaceOrder::CompetitorFirst => PersonApprovalPause::BeforeTurn,
         DecisionRaceOrder::PersonFirst => PersonApprovalPause::AfterCommit,
     };
     fixture.control_pause(pause, RacePauseStep::Arm).await?;
-    let mut deciding = std::pin::pin!(fixture.post_private(DECIDE, &body, headers));
+    let mut deciding = std::pin::pin!(person_socket.call(DECIDE, organization.as_str(), &body));
     let reached = tokio::select! {
         reached = fixture.control_pause(pause, RacePauseStep::Wait) => reached,
-        reply = &mut deciding => Err(format!("signed Decide returned before its hold: {reply:?}").into()),
+        reply = &mut deciding => Err(format!("person socket Decide returned before its hold: {reply:?}").into()),
     };
     let person_first = matches!(order, DecisionRaceOrder::PersonFirst);
     let winner = if person_first {
@@ -176,7 +174,7 @@ pub async fn check_person_session_race(
     let after_first = observed?;
     released?;
 
-    let actual: Value = serde_json::from_slice(&expect_ok(deciding.await?)?)?;
+    let actual: Value = serde_json::from_slice(&deciding.await?.answer()?)?;
     let expected = if person_first {
         json!({"kind":"savedDecision","decision":{"by":winner,"answer":person_value}})
     } else {

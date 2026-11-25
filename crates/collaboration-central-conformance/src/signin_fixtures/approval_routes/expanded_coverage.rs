@@ -5,8 +5,8 @@ use serde_json::{Value, json};
 use super::request::{decide, decide_in_organization, list, read};
 use super::{
     AnswerClass, InitialApproval, NOW_SECONDS, ORGANIZATION, Person, PersonApprovalHarness,
-    REVISIONS, assert_count, expect, expect_status, fresh_request_id, id, refusal, require, saved,
-    seed, time,
+    REVISIONS, assert_count, assert_proof_count, expect, expect_status, fresh_request_id, id,
+    refusal, require, saved, seed, time,
 };
 use crate::ConformanceResult;
 use crate::signin_fixtures::approval_rows::seed_in_organization;
@@ -138,7 +138,7 @@ async fn check_binding(
         reply.get("kind").and_then(Value::as_str) == Some(kind),
         &reply,
     )?;
-    assert_count(host, "SELECT COUNT(*) FROM admin_used_requests", 1).await
+    assert_proof_count(host, 1).await
 }
 
 async fn check_sparse_page(
@@ -195,7 +195,7 @@ async fn check_sparse_page(
     )?;
     assert_count(host, "SELECT COUNT(*) FROM actor_persons", 0).await?;
     assert_count(host, "SELECT COUNT(*) FROM runtime_request_log", 0).await?;
-    assert_count(host, "SELECT COUNT(*) FROM admin_used_requests", 2).await
+    assert_proof_count(host, 2).await
 }
 
 async fn check_other_destination(
@@ -250,7 +250,7 @@ async fn check_other_destination(
     )?;
     assert_count(host, "SELECT COUNT(*) FROM actor_persons", 1).await?;
     assert_count(host, "SELECT COUNT(*) FROM runtime_request_log", 1).await?;
-    assert_count(host, "SELECT COUNT(*) FROM admin_used_requests", 3).await
+    assert_proof_count(host, 3).await
 }
 
 async fn check_applying_boundary(
@@ -297,7 +297,7 @@ async fn check_applying_boundary(
                 1,
             )
             .await?;
-            assert_count(host, "SELECT COUNT(*) FROM admin_used_requests", 1).await?;
+            assert_proof_count(host, 1).await?;
             assert_count(host, "SELECT COUNT(*) FROM runtime_request_log", 1).await
         }
     }
@@ -363,7 +363,7 @@ async fn check_signed_in_decisions(
         6,
     )
     .await?;
-    assert_count(host, "SELECT COUNT(*) FROM admin_used_requests", 6).await?;
+    assert_proof_count(host, 6).await?;
     assert_count(host, "SELECT COUNT(*) FROM runtime_request_log", 6).await?;
     assert_count(host, "SELECT COUNT(*) FROM actor_persons", 1).await
 }

@@ -1,13 +1,32 @@
 /// Register each contract row as its own isolated integration test.
 #[macro_export]
 macro_rules! person_approval_cases {
-    ($case:ident) => {
+    ($case:ident, $socket:ident) => {
         use $crate::signin_fixtures::approval_routes::{
             ClockBoundary, ExpandedCase, RetainedCase, SignedMutation,
         };
-        $case!(list_page, Case::ListPage);
-        $case!(list_deadline_precedence, Case::ListDeadlinePrecedence);
-        $case!(read_request, Case::ReadRequest);
+        $socket!(socket_list_pages_at_the_requested_cursor, Case::ListPage);
+        $socket!(
+            socket_can_list_read_and_decide_on_the_same_person_connection,
+            Case::SocketRoundTrip
+        );
+        $socket!(
+            socket_refuses_foreign_targets_and_closes_superseded_person_authority,
+            Case::SocketAuthority
+        );
+        $socket!(
+            socket_replays_the_exact_signed_answer_after_permission_loss,
+            Case::SocketRetainedSignedAnswer
+        );
+        $socket!(
+            socket_decide_refuses_authority_that_expires_before_the_transaction_sample,
+            Case::SocketExpiryAtApplyingSample
+        );
+        $socket!(
+            socket_list_excludes_expired_waiting_requests,
+            Case::ListDeadlinePrecedence
+        );
+        $socket!(socket_read_returns_the_addressed_offer, Case::ReadRequest);
         $case!(
             signed_option_tamper,
             Case::Expanded(ExpandedCase::Binding(SignedMutation::Option))
@@ -44,53 +63,80 @@ macro_rules! person_approval_cases {
             applying_deadline_crossed_after_verification,
             Case::Expanded(ExpandedCase::Applying(ClockBoundary::DeadlineCutoff))
         );
-        $case!(
-            sparse_waiting_page_excludes_foreign_rows,
+        $socket!(
+            socket_list_excludes_foreign_and_hidden_rows_across_sparse_pages,
             Case::Expanded(ExpandedCase::SparseWaitingPage)
         );
-        $case!(
-            other_destination_answer_read_projection,
+        $socket!(
+            socket_read_hides_another_givers_answer,
             Case::Expanded(ExpandedCase::OtherDestinationAnswer)
         );
-        $case!(
-            approval_decide_with_no_factor,
+        $socket!(
+            socket_decide_accepts_signed_in_person_without_second_factor,
             Case::Expanded(ExpandedCase::SignedInDecisions)
         );
-        $case!(
-            retained_saved_decision_missing_ending,
+        $socket!(
+            socket_replay_refuses_saved_answer_without_committed_ending,
             Case::Retained(RetainedCase::SavedDecisionMissingEnding)
         );
-        $case!(
-            retained_already_decided_wrong_winner,
+        $socket!(
+            socket_replay_refuses_a_changed_winner,
             Case::Retained(RetainedCase::AlreadyDecidedWrongWinner)
         );
-        $case!(
-            retained_already_decided_wrong_time,
+        $socket!(
+            socket_replay_refuses_a_changed_ending_time,
             Case::Retained(RetainedCase::AlreadyDecidedWrongTime)
         );
-        $case!(
-            people_visibility_uses_destination_index,
+        $socket!(
+            socket_read_uses_the_destination_index,
             Case::Retained(RetainedCase::PeopleVisibilityUsesDestinationIndex)
         );
-        $case!(read_deadline_precedence, Case::ReadDeadlinePrecedence);
-        $case!(read_not_visible, Case::ReadNotVisible);
-        $case!(decide_not_visible, Case::DecideNotVisible);
-        $case!(decide_timeout, Case::DecideTimeout);
-        $case!(decide_cancelled, Case::DecideCancelled);
-        $case!(applying_time_floor, Case::ApplyingTimeFloor);
-        $case!(already_decided, Case::AlreadyDecided);
+        $socket!(
+            socket_read_projects_expiration_at_deadline,
+            Case::ReadDeadlinePrecedence
+        );
+        $socket!(
+            socket_read_gives_hidden_and_missing_requests_the_same_answer,
+            Case::ReadNotVisible
+        );
+        $socket!(
+            socket_decide_gives_hidden_and_missing_requests_the_same_answer,
+            Case::DecideNotVisible
+        );
+        $socket!(
+            socket_decide_at_deadline_returns_too_late,
+            Case::DecideTimeout
+        );
+        $socket!(
+            socket_decide_after_cancellation_returns_too_late,
+            Case::DecideCancelled
+        );
+        $socket!(
+            socket_decide_respects_the_durable_applying_time_floor,
+            Case::ApplyingTimeFloor
+        );
+        $socket!(
+            socket_decide_with_fresh_id_returns_the_actual_earlier_winner,
+            Case::AlreadyDecided
+        );
         $case!(
             stored_milliseconds_round_trip_on_all_routes,
             Case::Expanded(ExpandedCase::StoredMilliseconds)
         );
-        $case!(invalid_answer, Case::InvalidAnswer);
-        $case!(
-            operation_conflict,
+        $socket!(
+            socket_decide_rejects_unoffered_option_without_ending_request,
+            Case::InvalidAnswer
+        );
+        $socket!(
+            socket_decide_rejects_changed_answer_under_same_operation_id,
             Case::Replay(ReplayCase::OperationConflict)
         );
-        $case!(exact_replay, Case::Replay(ReplayCase::Exact));
-        $case!(
-            replay_after_permission_loss,
+        $socket!(
+            socket_decide_replays_the_exact_first_answer,
+            Case::Replay(ReplayCase::Exact)
+        );
+        $socket!(
+            socket_decide_after_permission_loss_only_replays_the_committed_answer,
             Case::Replay(ReplayCase::AfterPermissionLoss)
         );
         $case!(

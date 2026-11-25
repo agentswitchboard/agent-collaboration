@@ -1,21 +1,26 @@
 //! Apply signed person-link authority to the owning organization's live floors.
 
 use crate::{
-    AdminRefusal, OrganizationAdminResult, WorkspaceRuntime,
+    AdminRefusal, OrganizationAdminResult, PersonApprovalAnswer, WorkspaceRuntime,
     organization_authority_cache::StampStanding,
-    organization_workspace_plans::apply_workspace_create, person_request::CreateWorkspaceRequest,
+    organization_workspace_plans::apply_workspace_create,
+    person_approval_application::PersonApprovalApplication, person_request::CreateWorkspaceRequest,
 };
 use central_link_protocol::{
-    CentralLinkRpc, DataFrame, LinkCallRefusal, LinkFrame, TypedCallResult,
+    CentralCallReply, CentralLinkRpc, CorrelationId, DataFrame, LinkCallRefusal, LinkFrame,
+    TypedCallResult,
     person_link_rpc::{
         CreateOrganizationWorkspace, CreateOrganizationWorkspaceRefusal,
-        CreateOrganizationWorkspaceResult, CreateOrganizationWorkspaceRpc,
-        ListOrganizationWorkspaces, ListOrganizationWorkspacesRpc, OrganizationWorkspace,
-        OrganizationWorkspacePage, OrganizationWorkspaceState,
+        CreateOrganizationWorkspaceResult, CreateOrganizationWorkspaceRpc, DecidePersonApprovalRpc,
+        ListOrganizationWorkspaces, ListOrganizationWorkspacesRpc, ListPersonApprovalsRpc,
+        OrganizationWorkspace, OrganizationWorkspacePage, OrganizationWorkspaceState,
+        ReadPersonApprovalRpc,
     },
 };
 use central_person_link::{PersonFrame, PersonSocketAttachment, dispatch};
 use central_storage::StoreFailure;
+use fleet_identity_protocol::OrganizationId;
+use fleet_rpc::Envelope;
 use fleet_runtime_ports::{CentralStore, WorkspaceStores, workspace_decode_error::corrupt};
 use fleet_signin::{
     FleetPermission,
@@ -23,7 +28,8 @@ use fleet_signin::{
         organization_guard, person_guard, read_organization_floor, read_person_floor,
     },
     person_proof::{
-        OrganizationFloor, PersonFloor, PersonRequestRefusal, SECOND_FACTOR_WINDOW_SECONDS,
+        AdmissionRefusal, OrganizationFloor, PersonFloor, PersonRequestRefusal,
+        SECOND_FACTOR_WINDOW_SECONDS,
     },
 };
 
@@ -134,12 +140,20 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         connection: &PersonSocketAttachment,
         text: &str,
     ) -> Result<PersonLinkReply, StoreFailure> {
+        let request = dispatch(connection, text);
+        #[cfg(feature = "test-support")]
+        if matches!(&request, PersonFrame::Approval { .. }) {
+            self.execution
+                .pause_points()
+                .reached_central(fleet_runtime::PausePoint::BeforePersonApprovalTurn)
+                .await;
+        }
         let turn = self.execution.take_central_turn().await;
         let Some((organization, person)) = self.current_person_link_floors(connection).await?
         else {
             return Ok(PersonLinkReply::Reconnect);
         };
-        Ok(match dispatch(connection, text) {
+        Ok(match request {
             PersonFrame::Reply(frames) => PersonLinkReply::Frames(frames),
             PersonFrame::ProtocolViolation => PersonLinkReply::ProtocolViolation,
             PersonFrame::CreateWorkspace {
@@ -163,7 +177,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
                 let _ = self.after_event().await;
                 let result = match answer {
                     Ok(answer) => TypedCallResult::Answered {
-                        reply: CreateOrganizationWorkspaceRpc::reply(fleet_rpc::Envelope {
+                        reply: CreateOrganizationWorkspaceRpc::reply(Envelope {
                             target: request.target,
                             body: answer,
                         }),
@@ -172,10 +186,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
                         reason: LinkCallRefusal::CentralFault,
                     },
                 };
-                PersonLinkReply::Frames(vec![LinkFrame::Data(DataFrame::CentralCallReply {
-                    correlation_id: correlation,
-                    result: Box::new(result),
-                })])
+                person_call_reply(correlation, result)
             }
             PersonFrame::ListWorkspaces {
                 correlation,
@@ -183,7 +194,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             } => {
                 let result = match self.read_person_workspace_page(request.body).await {
                     Ok(page) => TypedCallResult::Answered {
-                        reply: ListOrganizationWorkspacesRpc::reply(fleet_rpc::Envelope {
+                        reply: ListOrganizationWorkspacesRpc::reply(Envelope {
                             target: request.target,
                             body: page,
                         }),
@@ -192,10 +203,36 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
                         reason: LinkCallRefusal::CentralFault,
                     },
                 };
-                PersonLinkReply::Frames(vec![LinkFrame::Data(DataFrame::CentralCallReply {
-                    correlation_id: correlation,
-                    result: Box::new(result),
-                })])
+                person_call_reply(correlation, result)
+            }
+            PersonFrame::Approval {
+                correlation,
+                operation,
+            } => {
+                let result = self
+                    .commit_person_approval(
+                        turn,
+                        PersonApprovalApplication::from_person_link(connection, operation),
+                    )
+                    .await;
+                let _ = self.after_event().await;
+                match result {
+                    Ok(answer) => approval_reply(correlation, connection.organization(), answer),
+                    // The caller has no definitive answer and can reconcile with the
+                    // same operation ID.
+                    Err(
+                        error
+                        @ (StoreFailure::AnswerLost | StoreFailure::AlarmUnpublishable { .. }),
+                    ) => {
+                        return Err(error);
+                    }
+                    Err(_) => person_call_reply(
+                        correlation,
+                        TypedCallResult::Refused {
+                            reason: LinkCallRefusal::CentralFault,
+                        },
+                    ),
+                }
             }
         })
     }
@@ -306,4 +343,62 @@ fn project_workspace(
             message_board::WorkspaceState::Archived => OrganizationWorkspaceState::Archived,
         },
     })
+}
+
+fn person_call_reply(
+    correlation_id: CorrelationId,
+    result: TypedCallResult<CentralCallReply>,
+) -> PersonLinkReply {
+    PersonLinkReply::Frames(vec![LinkFrame::Data(DataFrame::CentralCallReply {
+        correlation_id,
+        result: Box::new(result),
+    })])
+}
+
+fn approval_reply(
+    correlation: CorrelationId,
+    organization: &OrganizationId,
+    answer: PersonApprovalAnswer,
+) -> PersonLinkReply {
+    let target = organization.clone();
+    let reply = match answer {
+        PersonApprovalAnswer::List(body) => {
+            ListPersonApprovalsRpc::reply(Envelope { target, body })
+        }
+        PersonApprovalAnswer::Read(body) => ReadPersonApprovalRpc::reply(Envelope {
+            target,
+            body: Box::new(body),
+        }),
+        PersonApprovalAnswer::Decide(body) => {
+            DecidePersonApprovalRpc::reply(Envelope { target, body })
+        }
+        PersonApprovalAnswer::Refused(AdmissionRefusal::NotPermitted) => {
+            return person_call_reply(
+                correlation,
+                TypedCallResult::Refused {
+                    reason: LinkCallRefusal::NotPermitted,
+                },
+            );
+        }
+        PersonApprovalAnswer::Unauthenticated
+        | PersonApprovalAnswer::Refused(
+            AdmissionRefusal::Expired | AdmissionRefusal::RefreshRequired,
+        ) => {
+            return PersonLinkReply::Reconnect;
+        }
+        PersonApprovalAnswer::Refused(
+            AdmissionRefusal::AuthorizationSyncRequired
+            | AdmissionRefusal::SecondFactorRequired
+            | AdmissionRefusal::RequestTime
+            | AdmissionRefusal::RequestReused,
+        ) => {
+            return person_call_reply(
+                correlation,
+                TypedCallResult::Refused {
+                    reason: LinkCallRefusal::CentralFault,
+                },
+            );
+        }
+    };
+    person_call_reply(correlation, TypedCallResult::Answered { reply })
 }

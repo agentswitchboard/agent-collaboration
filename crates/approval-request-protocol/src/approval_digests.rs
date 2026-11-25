@@ -5,7 +5,15 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 #[derive(
-    Clone, Copy, Debug, Eq, PartialEq, thiserror::Error, serde::Serialize, serde::Deserialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    PartialEq,
+    thiserror::Error,
+    schemars::JsonSchema,
+    serde::Serialize,
+    serde::Deserialize,
 )]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(
