@@ -9,23 +9,31 @@ import type { Receipt } from "../../receipt.ts";
 import { qualifyRemoteSender, senderHandoffSchema } from "./staging-message-sender.ts";
 
 const absolutePath = z.string().refine(isAbsolute);
-const declarationSchema = z.strictObject({
-  journey: z.enum(["idle", "running"]),
-  answerLines: z.number().int().min(4000).max(20000).default(8000),
-  source: z.string().regex(/^[a-f0-9]{40}$/u),
-  router: artifactSchema,
-  collaboration: artifactSchema,
-  root: absolutePath,
-  port: z.number().int().min(1024).max(65535),
-  machineId: z.uuid(),
-  hostPid: z.number().int().positive(),
-  claudeAdapter: fileSchema,
-  claudeAdapterPid: z.number().int().positive(),
-  sender: sessionSchema,
-  senderHandoff: senderHandoffSchema.optional(),
-  recipient: sessionSchema,
-  evidence: absolutePath,
-});
+const declarationSchema = z
+  .strictObject({
+    journey: z.enum(["idle", "running"]),
+    timing: z.enum(["notice", "control"]).optional(),
+    answerLines: z.number().int().min(4000).max(20000).default(8000),
+    source: z.string().regex(/^[a-f0-9]{40}$/u),
+    router: artifactSchema,
+    collaboration: artifactSchema,
+    root: absolutePath,
+    port: z.number().int().min(1024).max(65535),
+    machineId: z.uuid(),
+    hostPid: z.number().int().positive(),
+    claudeAdapter: fileSchema,
+    claudeAdapterPid: z.number().int().positive(),
+    sender: sessionSchema,
+    senderHandoff: senderHandoffSchema.optional(),
+    recipient: sessionSchema,
+    evidence: absolutePath,
+  })
+  .refine(
+    (plan) =>
+      plan.timing === undefined ||
+      (plan.journey === "running" &&
+        (plan.timing === "notice" || plan.senderHandoff === undefined)),
+  );
 export type Plan = z.infer<typeof declarationSchema>;
 export type CommandResult = Awaited<ReturnType<typeof command>>;
 

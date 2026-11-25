@@ -29,9 +29,24 @@ test("captures the exact notice under the live turn without counting item update
   wrap(view, { sequence: 9, event: { kind: "turnStarted", turnId: "live-turn" } });
   wrap(view, { sequence: 10, event: { kind: "itemStarted", item } });
   wrap(view, { sequence: 11, event: { kind: "itemUpdated", item } });
-  wrap(view, { sequence: 12, event: { kind: "turnEnded", turnId: "live-turn" } });
+  wrap(view, {
+    sequence: 12,
+    event: {
+      kind: "itemUpdated",
+      item: { itemId: "answer", kind: { kind: "agentMessage" }, text: "three" },
+    },
+  });
+  wrap(view, {
+    sequence: 13,
+    event: { kind: "turnEnded", turnId: "live-turn", outcome: { stop_reason: "endTurn" } },
+  });
   assert.deepEqual(view.notices, [{ turnId: "live-turn", itemId: "notice-item", sequence: 10 }]);
   assert.deepEqual(view.ends, ["live-turn"]);
+  const timing = view.timings.get("live-turn");
+  assert.equal(timing?.answerUpdatesAfterNotice, 1);
+  assert.equal(timing?.longestAnswerChars, 5);
+  assert.equal(timing?.stopReason, "endTurn");
+  assert.equal(JSON.stringify(timing).includes("three"), false);
 });
 
 test("allows coalesced item sequences and fails on an explicit stream gap", () => {

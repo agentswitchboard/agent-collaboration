@@ -81,7 +81,7 @@ function attachRecipient(plan: Plan): RecipientStream {
       "--service-directory",
       serviceDirectory(plan),
       "--timeout-seconds",
-      plan.senderHandoff === undefined ? "420" : "600",
+      plan.senderHandoff === undefined ? "540" : "1320",
     ],
     { stdio: ["ignore", "pipe", "ignore"] },
   );
@@ -126,6 +126,7 @@ async function observe(plan: Plan, receipt: Receipt): Promise<void> {
   try {
     await requireIdleObservation(plan, stream);
     if (plan.journey === "running") {
+      const holdSeconds = plan.timing === undefined ? 320 : 420;
       holdOperationId = randomUUIDv7();
       await receipt.record("hold-command", {
         operationId: holdOperationId,
@@ -143,10 +144,10 @@ async function observe(plan: Plan, receipt: Receipt): Promise<void> {
           "--text",
           holdPrompt(plan.answerLines),
           "--timeout-seconds",
-          "320",
+          String(holdSeconds),
           "--json",
         ],
-        325,
+        holdSeconds + 5,
       ).catch(() => undefined);
       for (let attempt = 0; attempt < 180; attempt++) {
         assertStream();
@@ -166,12 +167,9 @@ async function observe(plan: Plan, receipt: Receipt): Promise<void> {
         throw new Error("the bounded no-tools answer did not produce an observable running turn");
       await receipt.record("held-recipient-turn", { turnId: runningTurn });
     }
-    const startCount = view.starts.length;
-    const requestId = randomUUIDv7();
-    await receipt.record("send-attempt", { requestId, runningTurn });
-    assertStream();
-    await sendMessage(plan, receipt, requestId, runningTurn);
-    await checkDelivery({ plan, receipt, view, requestId, runningTurn, startCount, assertStream });
+    if (plan.timing !== "control") await driveNotice(plan, receipt, stream, runningTurn);
+    if (plan.timing !== undefined && runningTurn !== undefined)
+      await recordNaturalTurn(plan, receipt, stream, runningTurn);
   } finally {
     const runTurn = runningTurn ?? (hold === undefined ? undefined : view.starts[0]);
     if (runTurn !== undefined && view.activeTurn === runTurn) {
@@ -200,6 +198,59 @@ async function observe(plan: Plan, receipt: Receipt): Promise<void> {
       notices: view.notices,
     });
   }
+}
+
+async function driveNotice(
+  plan: Plan,
+  receipt: Receipt,
+  stream: RecipientStream,
+  runningTurn: string | undefined,
+): Promise<void> {
+  const { view, assertContinuous: assertStream } = stream;
+  const startCount = view.starts.length;
+  const requestId = randomUUIDv7();
+  await receipt.record("send-attempt", { requestId, runningTurn });
+  assertStream();
+  await sendMessage(plan, receipt, requestId, runningTurn);
+  await checkDelivery({ plan, receipt, view, requestId, runningTurn, startCount, assertStream });
+}
+
+async function recordNaturalTurn(
+  plan: Plan,
+  receipt: Receipt,
+  stream: RecipientStream,
+  turnId: string,
+): Promise<void> {
+  const { view, assertContinuous } = stream;
+  const expires = performance.now() + 425_000;
+  while (!view.ends.includes(turnId) && performance.now() < expires) {
+    assertContinuous();
+    await setTimeout(250);
+  }
+  assertContinuous();
+  const timing = view.timings.get(turnId);
+  if (
+    timing?.endedAt === undefined ||
+    timing.durationMs === undefined ||
+    !["endTurn", "end_turn", "maxTokens", "max_tokens"].includes(timing.stopReason ?? "") ||
+    view.starts.length !== 1 ||
+    (plan.timing === "control" && (view.notices.length !== 0 || view.toolTurns.has(turnId)))
+  )
+    throw new Error("timing specimen did not complete its expected no-tools turn naturally");
+  await receipt.record("turn-timing", {
+    turnId,
+    condition: plan.timing,
+    requestedAnswerLines: plan.answerLines,
+    startedAt: new Date(timing.startedAt).toISOString(),
+    endedAt: new Date(timing.endedAt).toISOString(),
+    noticeAt: timing.noticeAt === undefined ? null : new Date(timing.noticeAt).toISOString(),
+    durationMs: Math.round(timing.durationMs),
+    stopReason: timing.stopReason,
+    answerUpdates: timing.answerUpdates,
+    answerUpdatesAfterNotice: timing.answerUpdatesAfterNotice,
+    longestAnswerChars: timing.longestAnswerChars,
+    toolsObserved: view.toolTurns.has(turnId),
+  });
 }
 
 async function sendMessage(
@@ -306,15 +357,22 @@ interface DeliveryCheck {
   readonly assertStream: () => void;
 }
 
+// After the notice, allow the next minute mark, then receipt publication.
 async function checkDelivery(check: DeliveryCheck): Promise<void> {
   const { plan, receipt, view, requestId, runningTurn, startCount, assertStream } = check;
-  const expires = performance.now() + 275_000;
+  let expires = performance.now() + 275_000;
+  const seenWindow = plan.senderHandoff === undefined ? 125_000 : 600_000;
   let seen: string | undefined;
   let messageId: string | undefined;
   let arrivedAt: number | undefined;
   let firstNoticeAt: number | undefined;
   let previousStatus: string | undefined;
-  for (let elapsed = performance.now(); elapsed < expires; elapsed = performance.now()) {
+  for (let elapsed = performance.now(); ; elapsed = performance.now()) {
+    if (view.notices.length > 0 && firstNoticeAt === undefined) {
+      firstNoticeAt = elapsed;
+      expires = Math.max(expires, firstNoticeAt + seenWindow);
+    }
+    if (elapsed >= expires) break;
     assertStream();
     const result = await senderStatus(plan, requestId);
     if (result === undefined) {
@@ -350,7 +408,6 @@ async function checkDelivery(check: DeliveryCheck): Promise<void> {
     if (view.notices.length > 1)
       throw new ObservationFailure("recipient received multiple notices");
     const notice = view.notices[0];
-    if (notice !== undefined) firstNoticeAt ??= performance.now();
     if (runningTurn !== undefined) {
       if (
         notice === undefined &&
@@ -397,10 +454,12 @@ async function checkDelivery(check: DeliveryCheck): Promise<void> {
     }
     await setTimeout(2500);
   }
-  if (seen !== undefined && view.notices.length === 0)
-    throw new ObservationFailure("Seen without a matching visible notice");
-  if (seen !== undefined)
-    throw new Error("observation ended before the notice window was complete");
+  reportExpiredObservation(seen !== undefined, view.notices.length);
+}
+
+function reportExpiredObservation(seen: boolean, noticeCount: number): never {
+  if (seen && noticeCount === 0) throw new ObservationFailure("Seen without notice");
+  if (seen) throw new Error("observation ended during the notice window");
   throw new Error("the observation bound ended without a sender Seen receipt");
 }
 
@@ -430,7 +489,8 @@ export async function runStagingMessage(file: string): Promise<void> {
     await prepare(plan, receipt);
     await observe(plan, receipt);
     await receipt.save("outcome.json", { kind: "passed", journey: plan.journey });
-    process.stdout.write(`Staging ${plan.journey} notice observed. Receipt: ${plan.evidence}\n`);
+    const observed = plan.timing === "control" ? "no-notice hold" : `${plan.journey} notice`;
+    process.stdout.write(`Staging ${observed} observed. Receipt: ${plan.evidence}\n`);
   } catch (error: unknown) {
     const failed = error instanceof ObservationFailure;
     const reason =
