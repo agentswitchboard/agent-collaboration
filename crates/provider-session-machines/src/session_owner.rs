@@ -18,6 +18,11 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 pub use switchboard_harness_contracts::RunAttempt;
+pub use switchboard_harness_contracts::{
+    CancelDrainStart, CancelDrainWait, CancelReservationRefusal, HarnessBinding, RefusedWorkMove,
+    ReplyAdmission, ReservedWorkReply, SettingOffer, SteerIdlePolicy, WorkOfferRefusal,
+    WriterState,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct OwnerInput {

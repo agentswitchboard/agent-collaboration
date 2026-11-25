@@ -1,9 +1,10 @@
 //! The managed notice's writer fence and take-time evidence.
 
-use acp_client_runtime::owner_wire::OwnerAcpWire;
 use provider_session_machines::{
     SessionGeneration,
-    session_owner::{DispatchAuthorization, DispatchResult, OwnerAddress, SessionSnapshot},
+    session_owner::{
+        DispatchAuthorization, DispatchResult, HarnessBinding, OwnerAddress, SessionSnapshot,
+    },
     session_turn_machine::TurnId,
 };
 use std::sync::{Arc, OnceLock};
@@ -59,11 +60,11 @@ impl NoticeWriterTake {
     pub(crate) fn take(
         &self,
         authorization: &DispatchAuthorization,
-        wire: &OwnerAcpWire,
+        binding: &dyn HarnessBinding,
     ) -> Option<DispatchResult> {
         let mut checked_at = None;
         let result = self.notice.while_live(|| {
-            wire.take_when(authorization, || {
+            binding.hand_over(authorization, &mut || {
                 let taken_at = self.clock.utc_now();
                 if !self.notice.can_take_at(self.clock.as_ref(), taken_at)
                     || notice_waits_for_session(&self.snapshots.borrow())
@@ -76,7 +77,7 @@ impl NoticeWriterTake {
         });
         let result = match result {
             Some(result) => result,
-            None => wire.take_when(authorization, || false),
+            None => binding.hand_over(authorization, &mut || false),
         }
         .ok()?;
         if matches!(result, DispatchResult::Taken(_))
