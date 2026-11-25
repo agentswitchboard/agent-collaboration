@@ -69,9 +69,6 @@ for (const selected of linkBundle === undefined ? [bundle] : [bundle, linkBundle
     }
   }
 }
-const sourceUrl = plan?.textBindings.CENTRAL_SIGN_IN_JWKS_URL;
-if (plan !== undefined && sourceUrl === undefined)
-  throw new Error("sign-in plan requires CENTRAL_SIGN_IN_JWKS_URL");
 const organizations = new Set<string>();
 const host = await WorkerdStorage.start(
   {
@@ -81,14 +78,17 @@ const host = await WorkerdStorage.start(
     ...(witness === undefined ? {} : { c2Witness: witness }),
     ...(ordinaryProbe ? { c2OrdinaryAcceptProbe: true } : {}),
   },
-  plan === undefined || sourceUrl === undefined || linkBundle === undefined
+  plan === undefined || linkBundle === undefined
     ? undefined
     : {
         linkBundle: {
           ...linkBundle,
           textBindings: { ...bundle.textBindings, ...plan.textBindings },
         },
-        jwks: { sourceUrl, fixtureUrl: plan.jwksFixtureUrl },
+        jwks: {
+          ...(plan.jwksFixtureUrl === undefined ? {} : { fixtureUrl: plan.jwksFixtureUrl }),
+          ...(plan.publicTrapJwks === undefined ? {} : { publicTrapJwks: plan.publicTrapJwks }),
+        },
       },
   milliseconds === undefined
     ? undefined
@@ -119,7 +119,10 @@ async function answer(line: string): Promise<unknown> {
     return { answer: "refused", error: "invalid bridge command" };
   }
   const parsed = workerdBridgeCommandSchema.safeParse(input);
-  if (!parsed.success || milliseconds === undefined)
+  if (!parsed.success) return { answer: "refused", error: "invalid bridge command" };
+  if ("jwksRequests" in parsed.data && plan !== undefined)
+    return { answer: "jwksRequests", ...host.observeJwksRequests() };
+  if ("jwksRequests" in parsed.data || milliseconds === undefined)
     return { answer: "refused", error: "invalid bridge command" };
   try {
     if ("c2Evict" in parsed.data) {

@@ -18,7 +18,7 @@ use switchboard_message_custody::{
     custody_task::{CustodyEventSink, CustodyTaskEvent},
     recipient_sessions::{
         InventoryRead, RECIPIENT_LOOKUP_BUDGET, SessionId, SessionInventory,
-        SessionInventoryAnswer, SessionInventoryPart,
+        SessionInventoryAnswer, SessionInventoryPart, SessionInventorySource,
     },
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -199,6 +199,7 @@ impl SessionInventory for ClaudeTerminalSessionInventory {
         deadline: Option<ClockInstant>,
     ) -> Vec<SessionInventoryPart<'lookup>> {
         vec![SessionInventoryPart {
+            source: SessionInventorySource::ClaudeTerminal,
             observed: UNAVAILABLE,
             read: self.lookup(target, deadline),
         }]

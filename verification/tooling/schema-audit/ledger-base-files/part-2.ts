@@ -3,7 +3,6 @@ export const files: readonly string[] = [
   "crates/codex-router-host/src/collaboration_runtime/collaboration_api_serving.rs",
   "crates/codex-router-host/src/collaboration_runtime/lifecycle.rs",
   "crates/codex-router-host/src/collaboration_runtime/native_backend.rs",
-  "crates/codex-router-host/src/collaboration_runtime/observation_recheck.rs",
   "crates/codex-router-host/src/collaboration_runtime/provider_retention.rs",
   "crates/codex-router-host/src/collaboration_runtime/schema_bundle_retention.rs",
   "crates/codex-router-host/src/collaboration_runtime/scratch_sweep.rs",

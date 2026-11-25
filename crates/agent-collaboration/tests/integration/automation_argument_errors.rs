@@ -1,7 +1,7 @@
 //! Argument rejection is machine-readable before service discovery or native dispatch.
 
 /// Retired command groups paired with an argument they once accepted.
-const RETIRED_GROUP_COMMANDS: [[&str; 2]; 33] = [
+const RETIRED_GROUP_COMMANDS: [[&str; 2]; 36] = [
     ["wake", "send"],
     ["schedule", "create"],
     ["instruction", "show"],
@@ -35,13 +35,19 @@ const RETIRED_GROUP_COMMANDS: [[&str; 2]; 33] = [
     ["show", "push-id"],
     ["approval", "list"],
     ["question", "list"],
+    ["journal", "status"],
+    ["journal", "read"],
+    ["addresses", "list"],
 ];
 
 #[test]
 fn retired_command_groups_answer_not_available_in_json_and_never_reach_the_picker() {
+    let service = tempfile::tempdir().expect("empty service directory");
     for [group, leaf] in RETIRED_GROUP_COMMANDS {
         let output = std::process::Command::new(env!("CARGO_BIN_EXE_agent-collaboration"))
             .args([group, leaf, "--json"])
+            .arg("--service-directory")
+            .arg(service.path())
             .output()
             .expect("CLI executes");
         assert_eq!(output.status.code(), Some(2), "{group} {leaf}");
@@ -69,10 +75,13 @@ fn retired_command_groups_answer_not_available_in_json_and_never_reach_the_picke
 
 #[test]
 fn retired_command_groups_and_their_help_refuse_in_plain_output() {
+    let service = tempfile::tempdir().expect("empty service directory");
     for [group, leaf] in RETIRED_GROUP_COMMANDS {
         for arguments in [[group, leaf], [group, "--help"]] {
             let output = std::process::Command::new(env!("CARGO_BIN_EXE_agent-collaboration"))
                 .args(arguments)
+                .arg("--service-directory")
+                .arg(service.path())
                 .output()
                 .expect("CLI executes");
             assert_eq!(output.status.code(), Some(2), "{arguments:?}");
@@ -88,11 +97,14 @@ fn retired_command_groups_and_their_help_refuse_in_plain_output() {
 
 #[test]
 fn a_retired_command_passed_as_one_argument_refuses_and_never_reaches_the_picker() {
+    let service = tempfile::tempdir().expect("empty service directory");
     for [group, leaf] in RETIRED_GROUP_COMMANDS {
         let quoted = format!("{group} {leaf}");
         // Plain output for the quoted command alone.
         let plain = std::process::Command::new(env!("CARGO_BIN_EXE_agent-collaboration"))
             .arg(&quoted)
+            .arg("--service-directory")
+            .arg(service.path())
             .output()
             .expect("CLI executes");
         assert_eq!(plain.status.code(), Some(2), "{quoted:?}");
@@ -108,6 +120,8 @@ fn a_retired_command_passed_as_one_argument_refuses_and_never_reaches_the_picker
         for arguments in [inside, after] {
             let output = std::process::Command::new(env!("CARGO_BIN_EXE_agent-collaboration"))
                 .args(&arguments)
+                .arg("--service-directory")
+                .arg(service.path())
                 .output()
                 .expect("CLI executes");
             assert_eq!(output.status.code(), Some(2), "{arguments:?}");
@@ -206,8 +220,6 @@ fn top_level_help_no_longer_lists_retired_command_groups() {
 fn finite_control_groups_keep_json_for_missing_required_arguments() {
     let cases: &[&[&str]] = &[
         &["endpoints", "invalid-action", "--json"],
-        &["addresses", "list", "--json"],
-        &["journal", "read", "--json"],
         &["sessions", "list", "--json"],
         &["session", "inspect", "--json"],
         &["conversation", "prompt", "--json"],

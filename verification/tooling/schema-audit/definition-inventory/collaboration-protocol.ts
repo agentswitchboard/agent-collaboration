@@ -141,26 +141,13 @@ export const rows: InventoryRow[] = [
     disposition: "boundary-encoding",
   },
   {
-    file: `${P}lifecycle_observation.rs`,
-    line: 47,
+    file: `${P}native_session_catalog.rs`,
+    line: 17,
     owner: "codex",
     kind: "rust-type",
     defines:
-      "TerminalStatus completed/interrupted/failed: the terminal Codex turn statuses copied for LifecycleChange::TurnTerminal (L86)",
-    usedBy: [{ crate: "lifecycle-observation" }, { part: "N11" }],
-    duplicateGroup: "turn-outcome-mapping",
-    disposition: "duplicate",
-    fixedBy: "D1",
-  },
-  {
-    file: `${P}lifecycle_observation.rs`,
-    line: 61,
-    owner: "codex",
-    kind: "rust-type",
-    defines:
-      "NativeThreadStatus {type: notLoaded|idle|systemError|active{activeFlags}} with NativeActiveFlag L54: a pinned hand projection of Codex ThreadStatus (comment L58)",
+      "NativeThreadStatus {type: notLoaded|idle|systemError|active{activeFlags}} with NativeActiveFlag L11: a pinned hand projection of Codex ThreadStatus (comment L58)",
     usedBy: [
-      { crate: "lifecycle-observation" },
       { crate: "collaboration-service" },
       { crate: "codex-acp-adapter" },
       { crate: "agent-session-inventory" },

@@ -1,8 +1,8 @@
-//! Stored discovery publishes only metadata observations, even without a live backend.
+//! Stored discovery reads the native catalogue without requiring a live backend.
 #[cfg(test)]
 mod tests {
     use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-    use collaboration_client::{ClientError, JournalStatus};
+    use collaboration_client::ClientError;
     use collaboration_mcp::test_support::ServedCollaborationApi;
     use collaboration_protocol::{
         NativeSessionListParams, NativeSessionScope, NativeSessionSource, NativeSessionView,
@@ -10,12 +10,10 @@ mod tests {
     use collaboration_runtime::NativeControlBackend;
     use collaboration_runtime::NativeGenerationGate;
     use collaboration_service::ApplicationFixture;
-    use lifecycle_observation::{LifecycleStore, ObservationJournal};
     use serde_json::json;
     use std::{
         os::unix::fs::{DirBuilderExt, PermissionsExt},
         path::PathBuf,
-        sync::Arc,
     };
 
     #[tokio::test]
@@ -103,9 +101,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn paged_stored_discovery_records_addresses_without_claiming_live_state() {
-        // Arrange: real read-only native catalog and distinct lifecycle storage; no native socket.
-        let root = PathBuf::from(format!("/tmp/stored-journal-{}", std::process::id()));
+    async fn paged_stored_discovery_preserves_catalogue_and_frame_budget() {
+        // Arrange: real read-only native catalogue without a native socket.
+        let root = PathBuf::from(format!("/tmp/stored-catalogue-{}", std::process::id()));
         std::fs::DirBuilder::new()
             .mode(0o700)
             .create(&root)
@@ -136,19 +134,11 @@ mod tests {
         let epoch = "00000000-0000-4000-8000-000000000002";
         let endpoint: collaboration_protocol::EndpointRef =
             serde_json::from_value(json!({"serviceId":id,"endpointId":"codex-local"})).unwrap();
-        let journal = ObservationJournal::open(
-            &root.join("journal.sqlite"),
-            id.to_owned().try_into().unwrap(),
-        )
-        .await
-        .unwrap();
-        let store = Arc::new(LifecycleStore::new(journal));
         let description = serde_json::from_value(json!({"endpoint":endpoint,"label":"Stored fixture","availability":{"state":"unprobed"},"channels":[{"kind":"nativeCodex","transport":"unixWebSocket","path":"absent-native.sock","schemaDigest":null,"generation":null}]})).unwrap();
         let identity = ApplicationFixture::new(id, epoch)
             .unwrap()
             .with_endpoints(vec![description])
             .unwrap()
-            .with_journal(Arc::clone(&store))
             .with_native_backend(NativeControlBackend {
                 endpoint: endpoint.clone(),
                 gate: NativeGenerationGate::default(),
@@ -156,7 +146,7 @@ mod tests {
             })
             .unwrap();
         let served = ServedCollaborationApi::start(&root, (identity).build()).unwrap();
-        let client = served.client("stored-journal-test").await.unwrap();
+        let client = served.client("stored-catalogue-test").await.unwrap();
         let request = |cursor| NativeSessionListParams {
             endpoint: endpoint.clone(),
             view: NativeSessionView::Stored,
@@ -167,26 +157,10 @@ mod tests {
             page_size: 100,
             cursor,
         };
-        // Act: page from the catalog through the public SDK, then read the public address book.
+        // Act: page from the catalogue through the public SDK.
         let first = client.list_sessions(request(None)).await.unwrap();
         let second = client
             .list_sessions(request(first.next_cursor.clone()))
-            .await
-            .unwrap();
-        let addresses = client.list_addresses(&endpoint, 100, None).await.unwrap();
-        let JournalStatus::Available { bounds } = client.journal_status().await.unwrap() else {
-            panic!("storage should be available");
-        };
-        let history = client
-            .read_journal(
-                &endpoint,
-                collaboration_protocol::JournalPosition {
-                    journal_id: bounds.journal_id,
-                    sequence: 0,
-                },
-                100,
-                0,
-            )
             .await
             .unwrap();
         // Cursor mutations must not silently restart paging from its first row.
@@ -199,7 +173,7 @@ mod tests {
                 URL_SAFE_NO_PAD.encode(serde_json::to_vec(&malformed).unwrap()),
             )))
             .await;
-        let changed_filter_client = served.client("stored-journal-test").await.unwrap();
+        let changed_filter_client = served.client("stored-catalogue-test").await.unwrap();
         let changed_empty_filter = changed_filter_client
             .list_sessions(NativeSessionListParams {
                 endpoint: endpoint.clone(),
@@ -215,16 +189,11 @@ mod tests {
         drop(changed_filter_client);
         drop(client);
         served.stop().await.unwrap();
-        Arc::try_unwrap(store)
-            .unwrap_or_else(|_| panic!("journal still shared"))
-            .close()
-            .await;
         let unchanged_catalog = std::fs::read(&database).unwrap();
-        std::fs::remove_file(root.join("journal.sqlite")).unwrap();
         std::fs::remove_file(database).unwrap();
         std::fs::remove_dir(home).unwrap();
         std::fs::remove_dir(root).unwrap();
-        // Assert: stored references are historical discovery, never invented runtime status.
+        // Assert: the catalogue rows retain their order and content across the page boundary.
         assert_eq!(
             String::from(first.sessions.first().unwrap().target.session_id.clone()),
             "stored-b"
@@ -233,7 +202,6 @@ mod tests {
             String::from(second.sessions.first().unwrap().target.session_id.clone()),
             "stored-a"
         );
-        assert_eq!(addresses.entries.len(), 2);
         assert_eq!(
             first.sessions.len(),
             1,
@@ -259,33 +227,6 @@ mod tests {
         assert_eq!(first.sessions.first().unwrap().title, "PRIVATE_TITLE");
         assert_eq!(second.sessions.first().unwrap().title, "PRIVATE_TITLE");
         assert!(second.next_cursor.is_none());
-        assert!(
-            addresses
-                .entries
-                .iter()
-                .all(|entry| entry.last_status.is_none() && entry.status_scope.is_none())
-        );
-        assert_ne!(
-            addresses.coverage.state,
-            collaboration_protocol::CoverageState::Observing
-        );
-        assert_eq!(history.records.len(), 2);
-        assert!(
-            history
-                .records
-                .iter()
-                .all(|record| record.observation.scope.generation.is_none()
-                    && matches!(
-                        record.observation.change,
-                        collaboration_protocol::LifecycleChange::ThreadDiscovered
-                    ))
-        );
-        let encoded = serde_json::to_string(&history).unwrap();
-        assert!(
-            !encoded.contains("PRIVATE_TITLE")
-                && !encoded.contains("PRIVATE_BODY")
-                && !encoded.contains("private-fixture-workspace")
-        );
         assert_eq!(original_catalog, unchanged_catalog);
         assert!(matches!(
             invalid_cursor,
@@ -313,19 +254,11 @@ mod tests {
         let epoch = "00000000-0000-4000-8000-000000000012";
         let endpoint: collaboration_protocol::EndpointRef =
             serde_json::from_value(json!({"serviceId":id,"endpointId":"codex-local"})).unwrap();
-        let journal = ObservationJournal::open(
-            &root.join("journal.sqlite"),
-            id.to_owned().try_into().unwrap(),
-        )
-        .await
-        .unwrap();
-        let store = Arc::new(LifecycleStore::new(journal));
         let description = serde_json::from_value(json!({"endpoint":endpoint,"label":"Scoped fixture","availability":{"state":"unprobed"},"channels":[{"kind":"nativeCodex","transport":"unixWebSocket","path":"absent-native.sock","schemaDigest":null,"generation":null}]})).unwrap();
         let identity = ApplicationFixture::new(id, epoch)
             .unwrap()
             .with_endpoints(vec![description])
             .unwrap()
-            .with_journal(Arc::clone(&store))
             .with_native_backend(NativeControlBackend {
                 endpoint: endpoint.clone(),
                 gate: NativeGenerationGate::default(),
@@ -358,11 +291,6 @@ mod tests {
         }
         drop(client);
         served.stop().await.unwrap();
-        Arc::try_unwrap(store)
-            .unwrap_or_else(|_| panic!("journal still shared"))
-            .close()
-            .await;
-        std::fs::remove_file(root.join("journal.sqlite")).unwrap();
         pages
     }
 

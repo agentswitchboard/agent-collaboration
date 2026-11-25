@@ -105,15 +105,13 @@ impl CollaborationLifecycle {
             if self.published_child.take().is_some()
                 && let Some(runtime) = &mut self.runtime
             {
-                runtime
-                    .backend_unavailable(
-                        timestamp()?,
-                        "Native backend transitioning"
-                            .to_owned()
-                            .try_into()
-                            .map_err(io::Error::other)?,
-                    )
-                    .await?;
+                runtime.backend_unavailable(
+                    timestamp()?,
+                    "Native backend transitioning"
+                        .to_owned()
+                        .try_into()
+                        .map_err(io::Error::other)?,
+                )?;
             }
             return Ok(());
         };

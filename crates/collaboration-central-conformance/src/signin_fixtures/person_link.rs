@@ -197,6 +197,15 @@ fn sign_bearer(claims: &Value) -> Result<String> {
     )
 }
 
+pub fn person_link_bearer(
+    person: &Person,
+    now: i64,
+    snapshot: i64,
+    session: i64,
+) -> Result<String> {
+    sign_bearer(&claims(person, now, snapshot, session)?)
+}
+
 pub async fn open_person(
     fixture: &PersonLinkFixture<'_>,
     person: &Person,
@@ -207,7 +216,7 @@ pub async fn open_person(
     dial(
         fixture.client,
         fixture.person_url,
-        &sign_bearer(&claims(person, now, snapshot, session)?)?,
+        &person_link_bearer(person, now, snapshot, session)?,
     )
     .await
 }

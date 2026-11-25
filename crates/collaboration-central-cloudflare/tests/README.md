@@ -111,8 +111,9 @@ produce two consecutive changes, both are drained, and replay preserves the curs
 `workspace_requests::organization_signin` sends actual HTTP requests through a
 gateway service binding to a separately compiled private-link Worker, then to the
 public Worker's owning central object. Real Worker fetch and WebCrypto verify the
-Rust fixture's published keys. Only one configured HTTPS JWKS URL maps to its
-owned loopback fixture; Rust owns signing, key rotation and all business assertions.
+Rust fixture's published keys. The storage Worker reads them through the named
+`SIGN_IN_KEYS` service binding. The fixture counts private GETs and global
+outbound requests separately. Rust owns signing, rotation and business assertions.
 
 ```sh
 worker-build crates/collaboration-central-cloudflare --dev --no-opt --out-dir build-test-support -- --locked --features test-support

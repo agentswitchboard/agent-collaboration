@@ -151,15 +151,39 @@ macro_rules! create_case {
     };
 }
 
-create_case!(native_person_create_at_factor_time, AtFactorTime);
-create_case!(native_person_create_at_factor_limit, AtFactorLimit);
-create_case!(native_person_create_past_factor_limit, PastFactorLimit);
-create_case!(native_person_create_missing_factor, MissingFactor);
-create_case!(native_person_create_future_factor, FutureFactor);
-create_case!(native_person_create_without_permission, NoPermission);
-create_case!(native_person_create_duplicate_name, DuplicateName);
-create_case!(native_person_create_changed_operation, ChangedOperation);
 create_case!(
-    native_person_create_retained_across_transports,
+    native_person_create_rejects_exclusive_factor_start,
+    AtFactorTime
+);
+create_case!(
+    native_person_create_rejects_exclusive_factor_end,
+    AtFactorLimit
+);
+create_case!(
+    native_person_create_rejects_shortened_stale_factor_window,
+    PastFactorLimit
+);
+create_case!(
+    native_person_create_rejects_shortened_missing_factor_window,
+    MissingFactor
+);
+create_case!(
+    native_person_create_rejects_shortened_future_factor_window,
+    FutureFactor
+);
+create_case!(
+    native_person_create_rejects_permission_conflict_projection,
+    NoPermission
+);
+create_case!(
+    native_person_create_rejects_name_collision_permission_projection,
+    DuplicateName
+);
+create_case!(
+    native_person_create_rejects_changed_operation_name_projection,
+    ChangedOperation
+);
+create_case!(
+    native_person_create_rejects_conflicting_cross_transport_replay,
     RetainedAcrossTransports
 );

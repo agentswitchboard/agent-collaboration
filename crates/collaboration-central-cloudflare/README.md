@@ -56,8 +56,11 @@ node verification/tooling/check-central-worker-bundle.ts production --bundle-dir
 ```
 
 Trust settings belong to the public central object: `CENTRAL_SIGN_IN_ISSUER`,
-`CENTRAL_SIGN_IN_AUDIENCE`, `CENTRAL_SIGN_IN_JWKS_URL`, `CENTRAL_ADMIN_AUDIENCE`,
-`CENTRAL_PUBLIC_ORIGIN`, and `CENTRAL_SIGN_IN_SERVICE_ID` for person admin calls.
+`CENTRAL_SIGN_IN_AUDIENCE`, `CENTRAL_ADMIN_AUDIENCE`, `CENTRAL_MACHINE_AUDIENCE`,
+`CENTRAL_PUBLIC_ORIGIN`, `CENTRAL_PERSON_LINK_AUDIENCE` for person links, and
+`CENTRAL_SIGN_IN_SERVICE_ID` for person admin calls.
+The storage Worker requires the `SIGN_IN_KEYS` service binding to Sign-in's
+`SignInJwks` entrypoint. Deploy that entrypoint before switching Central.
 The runtime verifies organization stamps and person proofs with its injected clock,
 then applies static guarded batches under the organization turn. The active routes
 cover provisioning, statement digest, revision delivery, change records and unknown

@@ -20,7 +20,6 @@ fn write_plan(path: &Path, keys: &signed::SignInKeys) -> ConformanceResult<()> {
             "CENTRAL_MACHINE_AUDIENCE":signed::MACHINE_AUDIENCE,
                 "CENTRAL_SIGN_IN_ISSUER":signed::ISSUER,
             "CENTRAL_SIGN_IN_AUDIENCE":signed::AUDIENCE,
-            "CENTRAL_SIGN_IN_JWKS_URL":"https://signin.test/.well-known/jwks.json",
             "CENTRAL_ADMIN_AUDIENCE":signed::ADMIN_AUDIENCE,
             "CENTRAL_PUBLIC_ORIGIN":signed::PUBLIC_ORIGIN,
             "CENTRAL_SIGN_IN_SERVICE_ID":"019f0000-0000-7000-8000-00000000d290"

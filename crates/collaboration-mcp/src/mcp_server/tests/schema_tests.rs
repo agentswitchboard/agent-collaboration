@@ -238,7 +238,7 @@ fn advertised_tool_schemas_validate_available_success_and_every_error_sample() {
         .into_iter()
         .filter_map(|tool| tool.output_schema.map(|schema| (tool.name, schema)))
         .collect::<std::collections::BTreeMap<_, _>>();
-    assert_eq!(advertised.len(), 27);
+    assert_eq!(advertised.len(), 24);
 
     let provider_endpoint = serde_json::json!({
         "serviceId":"00000000-0000-4000-8000-000000000001","endpointId":"claude-local"
@@ -306,10 +306,6 @@ fn advertised_tool_schemas_validate_available_success_and_every_error_sample() {
             "conversation_prompt",
             serde_json::json!({"kind":"pending","operationId":OperationId::generate(),
                 "target":{"endpoint":{"serviceId":"00000000-0000-4000-8000-000000000001","endpointId":"codex-local"},"sessionId":"fixture"}}),
-        ),
-        (
-            "journal_status",
-            serde_json::json!({"storage":"unavailable"}),
         ),
         (
             "provider_sessions_list",
@@ -542,7 +538,7 @@ async fn real_tools_list_reports_input_and_output_bytes_separately() {
         output_bytes += serde_json::to_vec(&tool["outputSchema"]).unwrap().len();
         jsonschema::validator_for(&tool["inputSchema"]).expect("all local references resolve");
     }
-    assert_eq!(tools.len(), 27);
+    assert_eq!(tools.len(), 24);
     println!(
         "tools={} input_bytes={input_bytes} output_bytes={output_bytes}",
         tools.len()

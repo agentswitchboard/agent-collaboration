@@ -58,7 +58,6 @@ impl CollaborationRuntime {
         if let Some(route) = self.provider_delivery_route.take() {
             route.shutdown_queue().await;
         }
-        self.drain_native_observer().await;
         while let Some(result) = self.tasks.join_next().await {
             match result {
                 Ok(Ok(())) => {}
@@ -88,14 +87,6 @@ impl CollaborationRuntime {
                 }
             }
         }
-        if let Some(maintenance) = self.maintenance.take() {
-            match maintenance.await {
-                Ok(Ok(())) => {}
-                _ => {
-                    failure.get_or_insert(io::Error::other("lifecycle maintenance failed"));
-                }
-            }
-        }
         if let Some(task) = self.provider_retention.take()
             && task.await.is_err()
         {
@@ -118,18 +109,6 @@ impl CollaborationRuntime {
                 Err(_) => {
                     failure.get_or_insert(io::Error::other(
                         "provider operation storage still owned after listener shutdown",
-                    ));
-                }
-            }
-        }
-        if let Some(journal) = self.journal.take() {
-            match std::sync::Arc::try_unwrap(journal) {
-                Ok(journal) => {
-                    journal.close().await;
-                }
-                Err(_) => {
-                    failure.get_or_insert(io::Error::other(
-                        "lifecycle storage still owned after listener shutdown",
                     ));
                 }
             }

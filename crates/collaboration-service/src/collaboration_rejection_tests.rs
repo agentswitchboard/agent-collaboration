@@ -3,9 +3,8 @@
 //! published `-32050` payload kinds, never the mapping code itself.
 use super::{CollaborationRejection, CollaborationRejectionReason as Reason};
 use crate::collaboration_application::{
-    ConversationFailure, INVALID_NATIVE_PARAMETERS, JournalFailure, JournalUnavailableKind,
-    NativeSessionFailure, NativeSessionFailureKind, NativeSessionStage, ObservationFailure,
-    ProviderInventoryFailure, ProviderInventoryFailureKind,
+    ConversationFailure, INVALID_NATIVE_PARAMETERS, NativeSessionFailure, NativeSessionFailureKind,
+    NativeSessionStage, ObservationFailure, ProviderInventoryFailure, ProviderInventoryFailureKind,
 };
 use collaboration_protocol::{
     ConversationOperationFailure, ConversationOperationFailureKind,
@@ -146,23 +145,6 @@ fn a_result_too_large_for_its_response_is_not_the_concurrency_limit() {
     assert_eq!(
         ProviderInventoryFailure::InvalidRequest("Provider session page size must be 1..100")
             .rejection_reason(),
-        Some(Reason::InvalidShape)
-    );
-}
-
-#[test]
-fn a_full_address_snapshot_cache_is_overload() {
-    // Arrange.
-    let full = JournalFailure::Unavailable(JournalUnavailableKind::Overloaded);
-    let unknown_endpoint = JournalFailure::Unavailable(JournalUnavailableKind::EndpointNotFound);
-
-    // Act & assert.
-    assert_eq!(full.rejection_reason(), Some(Reason::Overloaded));
-    assert_eq!(wire_kind(&full), "overloaded");
-    assert_eq!(unknown_endpoint.rejection_reason(), None);
-    assert_eq!(JournalFailure::SnapshotExpired.rejection_reason(), None);
-    assert_eq!(
-        JournalFailure::InvalidRequest.rejection_reason(),
         Some(Reason::InvalidShape)
     );
 }

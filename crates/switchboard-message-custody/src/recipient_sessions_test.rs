@@ -1,7 +1,8 @@
 use super::{
     CombinedRecipientSessionDirectory, RecipientSessionAnswer, RecipientSessionDirectory,
-    RecipientSessionSources, SessionInventory, SessionInventoryAnswer, UnavailableSessionInventory,
-    combine_inventory_answers,
+    RecipientSessionSources, SessionInventory, SessionInventoryAnswer, SessionInventoryPart,
+    SessionInventorySource, UnavailableSessionInventory, combine_inventory_answers,
+    resolve_recipient_parts,
 };
 use crate::recipient_inbox::{InboxOfferResult, RecipientInbox};
 use central_link_client::ValidatedDeliveryOffer;
@@ -373,4 +374,96 @@ async fn custody_keeps_two_proved_claims_when_answer_and_deadline_are_ready_toge
         .await
         .unwrap();
     assert_eq!(receipt.healthy.unwrap().decision, decision);
+}
+
+#[test]
+fn claude_precedence_preserves_distinct_claims_and_lookup_completeness() {
+    use RecipientSessionAnswer::{AmbiguousSession, CouldNotTell, KnownOnce, UnknownSession};
+    use SessionInventoryAnswer::{AtLeast, Complete};
+    use SessionInventorySource::{ClaudeTerminal, Independent, ManagedClaude};
+
+    for (managed, terminal, independent, expected) in [
+        (Complete(1), Complete(2), Complete(0), KnownOnce),
+        (Complete(1), Complete(1), Complete(1), AmbiguousSession),
+        (Complete(1), AtLeast(2), Complete(0), CouldNotTell),
+        (AtLeast(1), Complete(2), Complete(0), CouldNotTell),
+        (AtLeast(0), Complete(2), Complete(0), CouldNotTell),
+        (AtLeast(0), Complete(2), Complete(1), AmbiguousSession),
+        (Complete(0), Complete(2), Complete(0), AmbiguousSession),
+        (Complete(0), Complete(1), Complete(0), KnownOnce),
+        (Complete(0), Complete(0), Complete(0), UnknownSession),
+    ] {
+        let parts = [
+            (ManagedClaude, managed),
+            (ClaudeTerminal, terminal),
+            (Independent, independent),
+        ];
+        assert_eq!(resolve_recipient_parts(parts), expected, "{parts:?}");
+        assert_eq!(
+            resolve_recipient_parts(parts.into_iter().rev()),
+            expected,
+            "{parts:?}"
+        );
+    }
+}
+
+struct ScopedObservation {
+    source: SessionInventorySource,
+    count: usize,
+    release: Option<tokio::sync::Notify>,
+}
+
+impl SessionInventory for ScopedObservation {
+    fn lookup_session<'lookup>(
+        &'lookup self,
+        _: &'lookup SessionId,
+    ) -> super::InventoryRead<'lookup> {
+        Box::pin(async {
+            if let Some(release) = &self.release {
+                release.notified().await;
+            }
+            SessionInventoryAnswer::Complete(self.count)
+        })
+    }
+
+    fn lookup_parts<'lookup>(
+        &'lookup self,
+        target: &'lookup SessionId,
+        _: Option<router_clock::ClockInstant>,
+    ) -> Vec<SessionInventoryPart<'lookup>> {
+        vec![SessionInventoryPart {
+            source: self.source,
+            observed: SessionInventoryAnswer::AtLeast(0),
+            read: self.lookup_session(target),
+        }]
+    }
+}
+
+#[tokio::test]
+async fn terminal_twins_wait_for_managed_presence_or_absence() {
+    for (count, expected) in [
+        (0, RecipientSessionAnswer::AmbiguousSession),
+        (1, RecipientSessionAnswer::KnownOnce),
+    ] {
+        let managed = Arc::new(ScopedObservation {
+            source: SessionInventorySource::ManagedClaude,
+            count,
+            release: Some(tokio::sync::Notify::new()),
+        });
+        let directory = CombinedRecipientSessionDirectory::new(RecipientSessionSources {
+            codex: Arc::new(FixedObservation(0)),
+            managed_providers: managed.clone(),
+            claude_terminal: Arc::new(ScopedObservation {
+                source: SessionInventorySource::ClaudeTerminal,
+                count: 2,
+                release: None,
+            }),
+        });
+        let target = "target".parse().unwrap();
+        let mut lookup = directory.query_recipient_session(&target);
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(lookup.as_mut().poll(&mut cx).is_pending());
+        managed.release.as_ref().unwrap().notify_one();
+        assert_eq!(lookup.await, expected);
+    }
 }

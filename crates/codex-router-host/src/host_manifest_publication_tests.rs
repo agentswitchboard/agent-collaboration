@@ -176,13 +176,11 @@ async fn host_discovers_and_closes_its_stores_without_touching_predecessor_mail(
                 .service_id,
             runtime.service_id(),
         );
-        assert!(client.journal_status().await.is_ok());
         drop(client);
         runtime
             .shutdown()
             .await
-            .expect("Host releases provider store and journal");
-        assert!(root.path().join("session-registry.sqlite").is_file());
+            .expect("Host releases the provider store");
         assert!(root.path().join("provider-operations.sqlite").is_file());
         assert!(!root.path().join("service.json").exists());
         for (name, expected) in MAIL_FILES.into_iter().zip(contents) {

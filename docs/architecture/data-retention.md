@@ -7,9 +7,11 @@ The standard history window is **two calendar months**, measured with calendar-m
 | Store | Open path owner | Journal mode | `auto_vacuum` | One-time conversion or recovery |
 |---|---|---|---|---|
 | `state.sqlite` | [`codex-router-state`](../../crates/codex-router-state/src/sqlite.rs) | WAL | Incremental (`2`) on new and converted files | Existing files are checked on open and converted by the shared maintenance crate when needed. |
-| `session-registry.sqlite` | [`lifecycle-observation`](../../crates/lifecycle-observation/src/observation_journal.rs) | WAL | Incremental (`2`) on new and converted files | Existing files are checked on open and converted by the shared maintenance crate when needed. |
 | `provider-operations.sqlite` | [`collaboration-runtime`](../../crates/collaboration-runtime/src/provider_operation_store.rs) | WAL | Incremental (`2`) on new and converted files | Existing files are checked on open and converted by the shared maintenance crate when needed. |
 | `interaction.sqlite` | [`interaction-storage`](../../crates/interaction-storage/src/interaction_history_database.rs) | WAL, explicitly selected by the opener | Not enabled by Router; the pinned Turso path has no Router `auto_vacuum` setup | The pinned Turso API does not expose the Router's native conversion or `VACUUM` path. |
+
+The session registry is retired. The Router never opens `session-registry.sqlite`
+or its `-wal` and `-shm` files. It leaves any existing copies untouched.
 
 ## Retention policy
 
@@ -33,8 +35,6 @@ The standard history window is **two calendar months**, measured with calendar-m
 | `interaction.sqlite` | `_fleet_sync_migrations`, `_fleet_sync_operations`, `_fleet_sync_steps`, `_fleet_sync_schema`, `_fleet_sync_delivery_migrations`, `_fleet_sync_mail_items`, `_fleet_sync_mail_controls`, `_fleet_sync_mail_state`, `_fleet_sync_outbox_items`, `_fleet_sync_inbox_items`, `_fleet_sync_inbox_state`, `_fleet_sync_reports`, `_fleet_sync_status_owed`, `_fleet_sync_status_events`, `_fleet_sync_status_state`, `_fleet_sync_delivery_receipts`, `_fleet_sync_mail_cancel_links`, `_fleet_sync_outbox_cancel_links`, `_fleet_sync_outbox_status`, `_fleet_sync_inbox_cancel_links` | Library-owned custody and frontier state; Router retention does not delete it | Library frontier and custody rules | Pinned `fleet-sync-delivery` and `durable-steps` libraries | Library-owned |
 | `provider-operations.sqlite` | Terminal `provider_operations` | 2 calendar months by default; `--provider-operation-retention-days` remains an explicit day override | `terminal_at_ms` | [`collaboration-runtime`](../../crates/collaboration-runtime/src/provider_operation_store.rs), maintained by the Host | `PROVIDER_OPERATION_RETENTION_MONTHS` |
 | `provider-operations.sqlite` | `provider_session_records` | Current session inventory; no age pruning | None | [`collaboration-runtime`](../../crates/collaboration-runtime/src/provider_operation_store.rs) | None |
-| `session-registry.sqlite` | `lifecycle_records` | 2 calendar months | `retention_at` | [`lifecycle-observation`](../../crates/lifecycle-observation/src/journal_retention.rs), maintained by the Host | `LIFECYCLE_RECORD_RETENTION_MONTHS` |
-| `session-registry.sqlite` | `checkpoint_addresses` and corresponding stale `thread_addresses` | 2 calendar months after last observation | `last_seen_ms` | [`lifecycle-observation`](../../crates/lifecycle-observation/src/journal_retention.rs), maintained by the Host | `CHECKPOINT_ADDRESS_RETENTION_MONTHS` |
 
 At startup, the Host imports `approval-routes.json` into `interaction.sqlite` in one transaction and removes it after commit. Invalid route JSON refuses startup and is kept for recovery. The Host deletes `approval-history.json` without importing it. Native approval outcomes are stored as `NativeApproval` records in the existing `typed_interaction_history` table, alongside typed approval and question history, and follow the same two-calendar-month settled-history retention window.
 
@@ -46,11 +46,11 @@ The maintenance path validates stored state before deletion and processes bounde
 
 ### Native SQLite files
 
-`state.sqlite`, `session-registry.sqlite`, and `provider-operations.sqlite` use WAL and the shared `sqlite-storage-maintenance` crate. New files set `auto_vacuum=INCREMENTAL` before their first schema write. On existing files, the opener checks the mode and, if conversion is needed, checkpoints WAL, sets `auto_vacuum=INCREMENTAL`, then performs one full `VACUUM` and verifies the resulting mode. It requires free space equal to twice the database-plus-WAL size. This rewrites the database once and can hold its SQLite writer for the duration; the conversion path does not wait on a busy database and defers when it cannot safely proceed. Owners call bounded `PRAGMA incremental_vacuum(64)` steps after retention work, followed by a PASSIVE checkpoint.
+`state.sqlite` and `provider-operations.sqlite` use WAL and the shared `sqlite-storage-maintenance` crate. New files set `auto_vacuum=INCREMENTAL` before their first schema write. On existing files, the opener checks the mode and, if conversion is needed, checkpoints WAL, sets `auto_vacuum=INCREMENTAL`, then performs one full `VACUUM` and verifies the resulting mode. It requires free space equal to twice the database-plus-WAL size. This rewrites the database once and can hold its SQLite writer for the duration; the conversion path does not wait on a busy database and defers when it cannot safely proceed. Owners call bounded `PRAGMA incremental_vacuum(64)` steps after retention work, followed by a PASSIVE checkpoint.
 
 SQLite only applies `auto_vacuum` when it is selected before tables are created, or after a full `VACUUM` converts an existing file. See SQLite's [auto-vacuum pragma](https://www.sqlite.org/pragma.html#pragma_auto_vacuum) and [VACUUM documentation](https://www.sqlite.org/lang_vacuum.html).
 
-The owning maintenance paths are [proxy maintenance](../../crates/codex-router-proxy/src/maintenance_actor.rs), [lifecycle journal retention](../../crates/lifecycle-observation/src/journal_retention.rs), and [provider-operation retention](../../crates/codex-router-host/src/collaboration_runtime/provider_retention.rs). The shared conversion and bounded step are in [sqlite-storage-maintenance](../../crates/sqlite-storage-maintenance/src/lib.rs).
+The proxy and Host run [proxy maintenance](../../crates/codex-router-proxy/src/maintenance_actor.rs) and [provider-operation retention](../../crates/codex-router-host/src/collaboration_runtime/provider_retention.rs), respectively. They share the conversion and bounded vacuum code in [sqlite-storage-maintenance](../../crates/sqlite-storage-maintenance/src/lib.rs).
 
 ### Turso files
 
