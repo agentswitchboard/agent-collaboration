@@ -27,6 +27,7 @@ use crate::{
     lease_source::{LeaseFailure, LeaseFuture, LeaseSource},
     link_lane::LinkLaneOwner,
     link_policy::{DialFailure, LinkEffect, LinkInput, LinkPolicy, LinkState, LinkStatus},
+    run_registration::RunRegistration,
     socket_input::{SocketInput, SocketPriority, next_socket_input},
     socket_upgrade::{MAX_CREDENTIAL_BYTES, MAX_OUTBOUND_TEXT_BYTES},
     wire_write_fence::{LinkConnector, WireWriteFence, default_http_connector},
@@ -34,6 +35,8 @@ use crate::{
 
 #[path = "link_driver_receive.rs"]
 mod receive;
+#[path = "link_driver_registration.rs"]
+mod registration;
 
 const MIN_LEASE_RETRY: Duration = Duration::from_secs(1);
 
@@ -100,6 +103,7 @@ struct BindingDriver<'source, Binding, Source, MakeConnector> {
     machine_id: MachineId,
     state: LinkState<Binding>,
     client: LinkClient,
+    registration: RunRegistration<Binding>,
     lease_retry_at: Option<ClockInstant>,
 }
 
@@ -110,6 +114,7 @@ struct SocketAttemptTiming<'attempt> {
 
 enum OpenExit<Binding> {
     Resume,
+    RunParked,
     Final {
         binding: Binding,
         cause: central_link_client::EnrollmentEnd,
@@ -164,6 +169,16 @@ where
                 continue;
             }
             terminal_binding = None;
+            let client = LinkClient::new(self.machine_id.clone(), self.clock.clone());
+            let Ok(router_run) = client.mint_router_run() else {
+                self.status.send_replace(LinkStatus::Fault {
+                    kind: central_link_client::LinkFault::LeaseSource,
+                });
+                if matches!(control.wait().await, Interrupted::Stopped) {
+                    return;
+                }
+                continue;
+            };
             let mut driver = BindingDriver {
                 lease_source: self.lease_source.as_ref(),
                 make_connector: &make_connector,
@@ -172,7 +187,8 @@ where
                 address: settings.address,
                 machine_id: self.machine_id.clone(),
                 state: LinkState::new(self.machine_id.clone()),
-                client: LinkClient::new(self.machine_id.clone(), self.clock.clone()),
+                client,
+                registration: RunRegistration::new(binding.clone(), router_run),
                 lease_retry_at: None,
             };
             match driver
@@ -197,7 +213,14 @@ where
     fn apply(&mut self, event: LinkInput<Binding>) -> Option<Vec<LinkEffect<Binding>>> {
         let (state, effects) = LinkPolicy::transition(&self.state, event).ok()?;
         self.state = state;
-        let next = self.state.status();
+        self.publish_status();
+        Some(effects)
+    }
+
+    fn publish_status(&self) {
+        let next = self
+            .registration
+            .status(self.state.status(), &self.machine_id);
         self.status.send_if_modified(|current| {
             if *current == next {
                 return false;
@@ -205,7 +228,6 @@ where
             *current = next;
             true
         });
-        Some(effects)
     }
 
     fn close(&mut self, attempt: &ConnectionAttempt, code: Option<MachineLinkCloseCode>) {
@@ -224,9 +246,13 @@ where
     ) -> (Interrupted, bool) {
         let _ = self.apply(LinkInput::BindingAvailable(binding.clone()));
         loop {
-            let interruption = if self.address.is_err() {
-                self.status.send_replace(LinkStatus::Fault {
-                    kind: central_link_client::LinkFault::MalformedAddress,
+            let interruption = if let Err(reason) = self.address {
+                self.status.send_replace(match reason {
+                    AddressError::DiscoveryPending => LinkStatus::DiscoveryPending,
+                    AddressError::DiscoveryUnavailable => LinkStatus::DiscoveryUnavailable,
+                    AddressError::InvalidLocation => LinkStatus::Fault {
+                        kind: central_link_client::LinkFault::MalformedAddress,
+                    },
                 });
                 control.wait().await
             } else {
@@ -235,6 +261,7 @@ where
                         self.lease_source.end(&binding, cause);
                         return (control.wait().await, true);
                     }
+                    Ok(OpenExit::RunParked) => return (control.wait().await, true),
                     Ok(OpenExit::Resume) => control.wait().await,
                     Err(reason) => reason,
                 }
@@ -263,10 +290,14 @@ where
     ) -> Result<OpenExit<Binding>, Interrupted> {
         loop {
             if let Some(cause) = self.state.ending() {
+                self.registration.enrollment_ended(binding.clone());
                 return Ok(OpenExit::Final {
                     binding: binding.clone(),
                     cause,
                 });
+            }
+            if self.registration.parked() {
+                return Ok(OpenExit::RunParked);
             }
             if let LinkStatus::Fault { .. } = self.state.status() {
                 let Some(due) = self.state.next_deadline() else {
@@ -337,14 +368,17 @@ where
                 })
                 .is_none()
                 || self.client.dial_started(&attempt).is_err()
+                || !self.registration.dial_started(attempt.clone())
             {
                 let _ = self.client.finish_attempt(&attempt, AttemptOutcome::Retry);
                 return Ok(OpenExit::Resume);
             }
             let Some(deadline) = self.client.next_deadline() else {
+                self.registration.connection_lost(&attempt);
                 return Ok(OpenExit::Resume);
             };
             let Ok(address) = &self.address else {
+                self.registration.connection_lost(&attempt);
                 return Ok(OpenExit::Resume);
             };
             let result = control
@@ -380,6 +414,7 @@ where
                     }
                 }
                 Err(reason) => {
+                    self.registration.connection_lost(&attempt);
                     let _ = self.apply(LinkInput::DialFailed {
                         attempt: attempt.clone(),
                         reason,
@@ -400,6 +435,7 @@ where
         attempt: &ConnectionAttempt,
         reason: Interrupted,
     ) -> Result<OpenExit<Binding>, Interrupted> {
+        self.registration.connection_lost(attempt);
         if matches!(reason, Interrupted::SettingsChanged) {
             let _ = self.client.closed(attempt);
             let _ = self.apply(LinkInput::AddressChanged {
@@ -427,6 +463,8 @@ where
         let done = self
             .open_socket(&mut socket, attempt, binding, timing, control, lane_owner)
             .await;
+        self.registration.connection_lost(attempt);
+        self.publish_status();
         lane_owner.reject_queued();
         finish_socket(&mut socket, writes);
         done
@@ -455,7 +493,9 @@ where
         loop {
             let now = self.clock.monotonic_now();
             admitted_lane.expire(now);
+            self.registration.expire(now);
             let effects = self.apply(LinkInput::Tick { now }).unwrap_or_default();
+            self.publish_status();
             for effect in effects {
                 match effect {
                     LinkEffect::NeedLease { newer_than, .. } => {
@@ -486,6 +526,33 @@ where
                     self.close(attempt, None);
                     return Ok(());
                 }
+            }
+            if !self.registration.has_welcome()
+                && let Some(admission) = admitted_lane.admitted_connection()
+            {
+                if !self.registration.welcomed(admission.clone()) {
+                    self.close(attempt, None);
+                    return Ok(());
+                }
+                self.publish_status();
+            }
+            if self.registration.write_due(now) {
+                if !self
+                    .write_registration(
+                        socket,
+                        attempt,
+                        binding,
+                        control,
+                        &mut admitted_lane,
+                        timing.writes,
+                        delivery_stall_at,
+                    )
+                    .await?
+                {
+                    return Ok(());
+                }
+                self.publish_status();
+                continue;
             }
             let client_action = if can_read {
                 if let Some(paused_at) = read_paused_at.take() {
@@ -527,6 +594,7 @@ where
                 .into_iter()
                 .chain(self.state.next_deadline())
                 .chain(admitted_lane.reply_deadline())
+                .chain(self.registration.next_deadline())
                 .chain(delivery_stall_at)
                 .min();
             let input = control

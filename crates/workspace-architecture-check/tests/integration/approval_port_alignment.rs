@@ -4,10 +4,6 @@ use approval_request_protocol::{
 };
 use state_machine_core::{StateMachine, TransitionError};
 use std::num::NonZeroU64;
-use switchboard_approval_holder::run_gate::{
-    CallAttempt, CallKey, DialAttempt, LinkAttempt, RunAuthority, RunGate, RunGateEvent,
-    RunGateRefusal, RunGateState,
-};
 use switchboard_approval_holder::waiting_request::{
     LinkAttemptDisposition, LocalNegative, ProviderReply, RaiseRefusal, WaitEffect, WaitEvent,
     WaitRefusal, WaitState, WaitingRequest, WriterOutcome,
@@ -16,6 +12,10 @@ use switchboard_approval_holder::waiting_request::{
 use switchboard_approval_ports::{
     ApprovalScope, ApprovalTurnId, ProviderAskOffer, ReplyableStopCause, TerminalRaiseRefusal,
     WaitingRequestId, approval_value_builders,
+};
+use switchboard_run_gate::{
+    CallAttempt, CallKey, DialAttempt, LinkAttempt, RunAuthority, RunGate, RunGateEvent,
+    RunGateRefusal, RunGateState,
 };
 
 macro_rules! raise_refusal_pairs {

@@ -55,9 +55,11 @@ pub(super) const MAX_OUTBOUND_TEXT_BYTES: usize = central_link_client::LINK_LANE
 pub(super) const MAX_CREDENTIAL_BYTES: usize =
     UPGRADE_RESPONSE_MAX_BYTES - "Authorization: Bearer \r\n".len();
 
-/// Invalid address supplied by the trusted link configuration owner.
+/// Why the link settings owner cannot supply a dial address.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AddressError {
+    DiscoveryPending,
+    DiscoveryUnavailable,
     InvalidLocation,
 }
 

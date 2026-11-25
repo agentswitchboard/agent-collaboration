@@ -97,7 +97,7 @@ fn observation_only_until_an_active_row_and_read_changes_replace_the_timer() {
     );
     for (metadata, why, delay) in [
         (Metadata::Empty, FrontRefusal::NotEnrolled, 15),
-        (Metadata::Ended, FrontRefusal::EnrollmentEnded, 15),
+        (super::ended_metadata(), FrontRefusal::EnrollmentEnded, 15),
         (Metadata::ReadFailed, FrontRefusal::MetadataUnreadable, 5),
     ] {
         let effects = observe(&mut supervisor, metadata);
@@ -136,7 +136,7 @@ fn empty_and_ended_withdraw_immediately_during_opening_and_running() {
     for setup in [start, running] {
         for (metadata, why) in [
             (Metadata::Empty, FrontRefusal::NotEnrolled),
-            (Metadata::Ended, FrontRefusal::EnrollmentEnded),
+            (super::ended_metadata(), FrontRefusal::EnrollmentEnded),
         ] {
             let mut supervisor = setup();
             let effects = observe(&mut supervisor, metadata);
@@ -312,7 +312,7 @@ fn failed_and_exited_units_join_every_piece_and_require_a_new_read_after_drain()
 #[test]
 fn normal_drain_waits_for_timed_out_owner_and_fences_unsettled_enrollments() {
     let mut supervisor = running();
-    observe(&mut supervisor, Metadata::Ended);
+    observe(&mut supervisor, super::ended_metadata());
     let driver = target(FIRST, UnitPiece::Driver);
     let effects = stop(&mut supervisor, driver, StopResult::TimedOut);
     assert!(effects.contains(&Effect::ReportFault(Fault::StopTimedOut { target: driver })));
@@ -469,19 +469,19 @@ fn final_timeouts_name_all_live_owners_and_late_joins_settle_without_effects() {
 fn loss_drain_shows_the_latest_enrollment_evidence_until_a_fresh_read() {
     for (later, expected) in [
         (
-            vec![(Metadata::Ended, FrontRefusal::EnrollmentEnded)],
+            vec![(super::ended_metadata(), FrontRefusal::EnrollmentEnded)],
             FrontRefusal::EnrollmentEnded,
         ),
         (
             vec![
-                (Metadata::Ended, FrontRefusal::EnrollmentEnded),
+                (super::ended_metadata(), FrontRefusal::EnrollmentEnded),
                 (active(1, 1, 2), FrontRefusal::Restarting),
             ],
             FrontRefusal::Restarting,
         ),
         (
             vec![
-                (Metadata::Ended, FrontRefusal::EnrollmentEnded),
+                (super::ended_metadata(), FrontRefusal::EnrollmentEnded),
                 (Metadata::Empty, FrontRefusal::NotEnrolled),
             ],
             FrontRefusal::NotEnrolled,
@@ -580,7 +580,7 @@ fn rejected_events_distinguish_stale_ownership_from_inapplicable_or_future_input
         Err(TransitionError::Stale)
     );
     supervisor = running();
-    observe(&mut supervisor, Metadata::Ended);
+    observe(&mut supervisor, super::ended_metadata());
     let driver = target(FIRST, UnitPiece::Driver);
     stop(&mut supervisor, driver, StopResult::TimedOut);
     let duplicate = Event::StopFinished(report(driver, StopResult::TimedOut));
@@ -697,7 +697,7 @@ fn shared_checker_reaches_the_full_declared_table() {
         for metadata in [
             Metadata::ReadFailed,
             Metadata::Empty,
-            Metadata::Ended,
+            super::ended_metadata(),
             active(1, 1, 1),
             active(2, 1, 2),
         ] {

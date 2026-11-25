@@ -2,13 +2,24 @@
 
 use std::{marker::PhantomData, time::Duration};
 
-use central_link_client::{ConnectionAttempt, EnrollmentEnd, LinkFault};
-use central_link_protocol::{CorrelationId, MachineLinkCloseCode, TokenRenewalRefusal};
+use central_link_client::{ConnectionAttempt, EnrollmentEnd};
+pub use central_link_client::{LinkFault, UntouchedCommand};
+use central_link_protocol::{
+    CorrelationId, LinkCallRefusal, MachineLinkCloseCode, TokenRenewalRefusal,
+};
 use router_clock::ClockInstant;
 use state_machine_core::{
     EventTag, RefusalTag, StateMachine, StateMachineResult, StateTag, Transition, TransitionError,
 };
 use workspace_ids::MachineId;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RegistrationFailure {
+    TimedOut,
+    NotWritten(UntouchedCommand),
+    Refused(LinkCallRefusal),
+    CentralEnrollmentEnded,
+}
 
 const FRESH_CREDENTIAL_FAULT_DELAY: Duration = Duration::from_secs(60);
 const RENEWAL_MARGIN: Duration = Duration::from_secs(60);
@@ -30,7 +41,13 @@ pub struct LeaseWindow<Binding> {
 pub enum LinkStatus {
     NotEnrolled,
     Connecting,
+    DiscoveryPending,
+    DiscoveryUnavailable,
     Welcomed { machine_id: MachineId },
+    Registering,
+    RegistrationFailed { reason: RegistrationFailure },
+    RegistrationFault { reason: LinkCallRefusal },
+    RunRetired,
     Connected { machine_id: MachineId },
     Fault { kind: LinkFault },
     EnrollmentEnded { cause: EnrollmentEnd },

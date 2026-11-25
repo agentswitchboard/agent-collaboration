@@ -14,6 +14,7 @@ use crate::{
     AddressError,
     lease_source::{LeaseFailure, LeaseFuture, LeaseSource},
     link_policy::{LeaseVersion, LinkState, LinkStatus},
+    run_registration::RunRegistration,
     wire_write_fence::{WireWriteFence, default_http_connector},
 };
 
@@ -23,12 +24,25 @@ mod renewal_lane;
 #[path = "control_write_test.rs"]
 mod control_write;
 
+#[path = "registration_write_test.rs"]
+mod registration_write;
 #[path = "write_cancellation_test.rs"]
 mod write_cancellation;
 
 struct NoLeaseSource;
 
 impl LeaseSource<u8> for NoLeaseSource {
+    fn registration_target(
+        &self,
+        _binding: &u8,
+    ) -> Result<crate::lease_source::ApprovalServiceTarget, LeaseFailure> {
+        let organization_id = "01890f2e-7b4c-7cc0-98c4-000000000010"
+            .to_owned()
+            .try_into()
+            .map_err(|_| LeaseFailure::Fault)?;
+        Ok(crate::lease_source::ApprovalServiceTarget { organization_id })
+    }
+
     fn acquire<'source>(
         &'source self,
         _binding: &'source u8,
@@ -85,6 +99,7 @@ impl HeartbeatFixture {
                 address: Err(AddressError::InvalidLocation),
                 machine_id: self.machine.clone(),
                 state: LinkState::new(self.machine.clone()),
+                registration: RunRegistration::new(1, client.mint_router_run().unwrap()),
                 client,
                 lease_retry_at: None,
             },
@@ -350,6 +365,7 @@ async fn first_byte_to_disposition_stays_within_the_exported_limit_during_a_bloc
         panic!("first connection should be due");
     };
     driver.client.dial_started(&attempt).unwrap();
+    assert!(driver.registration.dial_started(attempt.clone()));
     driver.apply(LinkInput::BindingAvailable(1)).unwrap();
     driver
         .apply(LinkInput::DialStarted {
@@ -415,6 +431,7 @@ async fn first_byte_to_disposition_stays_within_the_exported_limit_during_a_bloc
             Ok(LinkFrame::Data(DataFrame::MacCapabilities(_)))
         )
     ));
+    control_write::complete_registration(&mut peer).await;
     transport.crossed.store(0, Ordering::Relaxed);
     transport.remaining.store(1, Ordering::Relaxed);
     let mut command = lane.request_status(RequestStatusCommand {

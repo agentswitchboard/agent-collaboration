@@ -10,7 +10,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use central_link_protocol::{DataFrame, FrameDirection, LinkFrame, decode_text};
+use central_link_protocol::{CentralCall, DataFrame, FrameDirection, LinkFrame, decode_text};
 use router_clock::{ClockInstant, ManualClock, RuntimeClock};
 use tokio::sync::watch;
 use tungstenite::protocol::frame::{FrameHeader, coding};
@@ -21,6 +21,8 @@ use super::{CENTRAL, LINK_PORT, MAC};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum FrameKind {
     Welcome,
+    RegisterRun,
+    RegisterReply,
     Batch,
     WriteAnswer,
     Offer,
@@ -35,6 +37,12 @@ impl FrameKind {
     fn classify(frame: &LinkFrame) -> Self {
         match frame {
             LinkFrame::Data(DataFrame::Welcome { .. }) => Self::Welcome,
+            LinkFrame::Data(DataFrame::CallCentral { request, .. })
+                if matches!(request.as_ref(), CentralCall::RegisterRun(_)) =>
+            {
+                Self::RegisterRun
+            }
+            LinkFrame::Data(DataFrame::CentralCallReply { .. }) => Self::RegisterReply,
             LinkFrame::Data(DataFrame::Batch { .. }) => Self::Batch,
             LinkFrame::Data(DataFrame::Reply { result, .. })
                 if matches!(

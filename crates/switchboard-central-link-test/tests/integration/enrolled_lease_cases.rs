@@ -281,7 +281,7 @@ async fn real_store_settings_see_same_scope_replacement_and_ending_without_the_k
         .clone();
     assert_eq!(
         published.address,
-        Err(switchboard_central_link::AddressError::InvalidLocation)
+        Err(switchboard_central_link::AddressError::DiscoveryPending)
     );
     let _held_replacement = discovery.recv().await.unwrap();
     assert!(held.is_closed());

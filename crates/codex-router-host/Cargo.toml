@@ -74,6 +74,11 @@ tracing-subscriber.workspace = true
 [dev-dependencies]
 central-link-client.workspace = true
 central-link-protocol.workspace = true
+switchboard-central-link = { workspace = true, features = ["test-support"] }
+switchboard-link-lease.workspace = true
+switchboard-machine-enrollment = { path = "../switchboard-machine-enrollment", version = "0.1.158" }
+switchboard-machine-enrollment-store = { path = "../switchboard-machine-enrollment-store", version = "0.1.158", features = ["test-support"] }
+switchboard-message-system = { workspace = true, features = ["test-support"] }
 switchboard-machine-core-store.workspace = true
 workspace-model.workspace = true
 switchboard-session-events = { workspace = true, features = ["test-support"] }

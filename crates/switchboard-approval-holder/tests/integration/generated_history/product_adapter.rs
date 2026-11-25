@@ -6,10 +6,10 @@
 
 use approval_request_protocol::Raise;
 use state_machine_core::{StateMachine, TransitionError};
-use switchboard_approval_holder::{
-    run_gate::{RunGate, RunGateState},
-    waiting_request::{LinkAttemptDisposition, LinkCallAnswer, WaitRefusal, WaitState},
+use switchboard_approval_holder::waiting_request::{
+    LinkAttemptDisposition, LinkCallAnswer, WaitRefusal, WaitState,
 };
+use switchboard_run_gate::{RunGate, RunGateState};
 
 use super::super::fixtures::{
     GateEffect, GateEvent, RESPONDER, RequestEffect, RequestEvent, RequestMachine, authority,

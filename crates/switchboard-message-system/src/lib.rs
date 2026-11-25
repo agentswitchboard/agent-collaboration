@@ -8,6 +8,7 @@ mod message_tool_port;
 mod message_unit;
 mod protocol;
 mod status;
+mod status_reason;
 mod stop_part;
 mod teardown;
 mod transition_table;
@@ -24,5 +25,6 @@ pub use protocol::{
     Generation, LeaseStopResult, Metadata, OrganizationId, PairError, ReadId, StopBudgets,
     StopReport, StopResult, StopTarget, UnitPiece,
 };
-pub use status::{MessageSystemStatus, message_system_status};
+pub use status::{MessageSystemObservation, MessageSystemStatus, message_system_status};
+pub use status_reason::MessageSystemReason;
 pub use teardown::{EnrollmentDuringDrain, QuiesceReason, Quiescing};

@@ -51,7 +51,7 @@ pub enum AuthorityEnd {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum LinkAdmission {
+pub enum LinkAdmission {
     Ready,
     NotReady,
     Discard,
@@ -60,12 +60,25 @@ pub(crate) enum LinkAdmission {
 /// Authority refusals come from a completed call matched by its owning wait.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MatchedRunRefusal<Connection> {
-    pub(crate) call: CallKey<Connection>,
-    pub(crate) router_run: RouterRunId,
-    pub(crate) refusal: RunRefusal,
+    call: CallKey<Connection>,
+    router_run: RouterRunId,
+    refusal: RunRefusal,
 }
 
 impl<Connection> MatchedRunRefusal<Connection> {
+    /// Carry a refusal after the owning wait has matched its reply to the exact pending call.
+    pub const fn from_matched_wait(
+        call: CallKey<Connection>,
+        router_run: RouterRunId,
+        refusal: RunRefusal,
+    ) -> Self {
+        Self {
+            call,
+            router_run,
+            refusal,
+        }
+    }
+
     pub const fn call(&self) -> &CallKey<Connection> {
         &self.call
     }
@@ -121,7 +134,7 @@ impl<Enrollment, Connection> RunGateState<Enrollment, Connection> {
 }
 
 impl<Enrollment: Eq, Connection: Eq> RunGateState<Enrollment, Connection> {
-    pub(crate) fn admit_link(
+    pub fn admit_link(
         &self,
         authority: &RunAuthority<Enrollment>,
         link: &LinkAttempt<Connection>,

@@ -30,13 +30,16 @@ pub struct CollaborationRuntimeInputs {
 /// Host-owned startup facts that are not part of the public collaboration runtime inputs.
 pub(crate) struct HostCollaborationInputs {
     pub collaboration_runtime: CollaborationRuntimeInputs,
-    pub message_roots: Option<switchboard_message_system::MessageRoots>,
+    pub message_roots: Option<HostMessageStartup>,
     pub router_proxy_endpoint: SocketAddr,
     pub remote_access: Option<crate::RemoteAccess>,
     pub provider_operation_retention_days: Option<std::num::NonZeroU32>,
 }
 
 mod message_startup;
+pub(crate) use message_startup::HostMessageStartup;
+#[cfg(all(debug_assertions, feature = "runtime-test-support"))]
+pub use message_startup::HostMessageSystemFixture;
 #[cfg(test)]
 pub(crate) use message_startup::v0_message_admission_for_test;
 
@@ -179,7 +182,7 @@ impl CollaborationRuntime {
     }
 
     /// The latest live observation from the message system.
-    pub fn message_status(&self) -> Option<switchboard_message_system::MessageSystemStatus> {
+    pub fn message_status(&self) -> Option<switchboard_message_system::MessageSystemObservation> {
         self.message_system
             .as_ref()
             .map(|system| *system.status().borrow())

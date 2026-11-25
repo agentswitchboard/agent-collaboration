@@ -9,7 +9,7 @@ use std::{
 
 use central_link_client::{
     AdmittedConnection, ClientEvent, ConnectionAttempt, LinkLaneEvent, LinkLocalFault,
-    UntouchedCommand, ValidatedDeliveryOffer, link_frame_answer_deadline,
+    RegisteredConnection, UntouchedCommand, ValidatedDeliveryOffer, link_frame_answer_deadline,
 };
 use central_link_protocol::CorrelationId;
 use router_clock::{ClockInstant, RuntimeClock};
@@ -41,6 +41,7 @@ pub(super) struct AdmittedSocketLane<'fence> {
     write_fence: &'fence WireWriteFence,
     state: LaneState,
     admitted: watch::Sender<Option<AdmittedConnection>>,
+    registered: watch::Sender<Option<RegisteredConnection>>,
     intake: Arc<CommandIntake>,
     events: mpsc::Sender<LinkLaneEvent>,
     pending_admission: Option<AdmittedConnection>,
@@ -71,6 +72,7 @@ impl<'fence> AdmittedSocketLane<'fence> {
             write_fence,
             state: LaneState::WaitingForAdmission,
             admitted: owner.admitted.clone(),
+            registered: owner.registered.clone(),
             intake: owner.intake.clone(),
             events: owner.events.clone(),
             pending_admission: None,
@@ -212,6 +214,14 @@ impl<'fence> AdmittedSocketLane<'fence> {
 
     pub(super) fn is_admitted(&self) -> bool {
         self.state.admitted().is_some()
+    }
+
+    pub(super) fn admitted_connection(&self) -> Option<&AdmittedConnection> {
+        self.state.admitted()
+    }
+
+    pub(super) fn publish_registered(&self, registered: RegisteredConnection) {
+        self.registered.send_replace(Some(registered));
     }
 
     pub(super) fn reply_deadline(&self) -> Option<ClockInstant> {
@@ -359,6 +369,8 @@ impl Drop for AdmittedSocketLane<'_> {
             if self.write_fence.crossed() {
                 self.start_write();
             }
+            self.registered
+                .send_if_modified(|current| current.take().is_some());
             self.admitted.send_replace(None);
             self.apply(LaneInput::Close {
                 connection: connection.clone(),

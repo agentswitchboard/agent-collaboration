@@ -10,6 +10,9 @@ use tokio::{io::AsyncReadExt as _, io::AsyncWriteExt as _, sync::oneshot};
 const BOUND: Duration = Duration::from_secs(20);
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
+#[cfg(debug_assertions)]
+mod registration_rebuild;
+
 #[tokio::test]
 async fn schema_replacement_answers_pending_status_and_await_host_start() -> TestResult {
     for request in [OperatorRequest::Status, OperatorRequest::AwaitHostStart] {
@@ -28,22 +31,7 @@ async fn assert_pending_request_is_answered(request: OperatorRequest) -> TestRes
     let router = GatedRouterProbe::start().await?;
     let paths = HostCoordinationPaths::for_router_root(directory.path());
     let socket = directory.path().join("native.sock");
-    let executable = directory.path().join("codex-fixture");
-    write_native_executable(&executable, 1)?;
-    let identity = codex_native_integration::executable_identity(&executable).await?;
-    let plan = AppServerLaunchPlan::new(
-        ChildCommandSpec::new(executable.clone())
-            .with_arguments([
-                "--exact",
-                &crate::child_test_selector(module_path!(), "native_child_entrypoint"),
-                "--nocapture",
-            ])
-            .with_environment("CODEX_HOST_N1_NATIVE_SOCKET", &socket)
-            .with_output(ChildOutput::Null),
-        identity,
-        "1.2.3".to_owned(),
-    )
-    .with_schema_directory(directory.path().join("schemas"));
+    let (executable, plan) = native_launch(directory.path(), &socket).await?;
     let collaboration = directory.path().join("collaboration");
     let config = HostConfig::new(HostConfigInputs {
         coordination_paths: paths.clone(),
@@ -142,6 +130,29 @@ async fn assert_pending_request_is_answered(request: OperatorRequest) -> TestRes
     assert_eq!(answer.request(), &request);
     assert_eq!(answer.classification(), TerminalClassification::Unavailable);
     Ok(())
+}
+
+async fn native_launch(
+    directory: &Path,
+    socket: &Path,
+) -> TestResult<(std::path::PathBuf, AppServerLaunchPlan)> {
+    let executable = directory.join("codex-fixture");
+    write_native_executable(&executable, 1)?;
+    let identity = codex_native_integration::executable_identity(&executable).await?;
+    let plan = AppServerLaunchPlan::new(
+        ChildCommandSpec::new(executable.clone())
+            .with_arguments([
+                "--exact",
+                &crate::child_test_selector(module_path!(), "native_child_entrypoint"),
+                "--nocapture",
+            ])
+            .with_environment("CODEX_HOST_N1_NATIVE_SOCKET", socket)
+            .with_output(ChildOutput::Null),
+        identity,
+        "1.2.3".to_owned(),
+    )
+    .with_schema_directory(directory.join("schemas"));
+    Ok((executable, plan))
 }
 
 fn terminal(frames: &[OperatorFrame]) -> TestResult<&codex_router_host::HostTerminalResponse> {

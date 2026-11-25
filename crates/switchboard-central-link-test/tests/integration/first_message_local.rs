@@ -177,7 +177,7 @@ impl EnrolledFixtureMac {
         let mut status = system.status();
         drop(
             status
-                .wait_for(|found| *found == MessageSystemStatus::Connected)
+                .wait_for(|found| found.status == MessageSystemStatus::Connected)
                 .await
                 .unwrap(),
         );

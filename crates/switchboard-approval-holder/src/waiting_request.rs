@@ -12,7 +12,7 @@ use state_machine_core::{
 };
 use workspace_ids::{ApprovalRequestId, RouterRunId};
 
-use crate::run_gate::{CallKey, LinkAttempt, MatchedRunRefusal, RunAuthority};
+use switchboard_run_gate::{CallKey, LinkAttempt, MatchedRunRefusal, RunAuthority};
 
 #[path = "waiting_request/central_calls.rs"]
 mod central_calls;

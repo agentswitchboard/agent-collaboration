@@ -41,7 +41,7 @@ pub struct LinkLaneOwner {
     pub(super) intake: Arc<CommandIntake>,
     pub(super) events: mpsc::Sender<LinkLaneEvent>,
     pub(super) admitted: watch::Sender<Option<AdmittedConnection>>,
-    _registered: watch::Sender<Option<RegisteredConnection>>,
+    pub(super) registered: watch::Sender<Option<RegisteredConnection>>,
 }
 
 /// Create the paired user handle and socket endpoint for one driver lifetime.
@@ -64,7 +64,7 @@ pub fn link_lane_channel() -> (LinkLaneHandle, LinkLaneOwner) {
             intake,
             events,
             admitted,
-            _registered: registered,
+            registered,
         },
     )
 }

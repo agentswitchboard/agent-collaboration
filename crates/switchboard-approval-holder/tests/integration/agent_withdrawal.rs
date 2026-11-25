@@ -4,10 +4,8 @@ use approval_request_protocol::{
 };
 use state_machine_core::{StateMachine, TransitionError};
 use switchboard_approval_holder::waiting_request::{LinkAttemptDisposition, LinkCallAnswer};
-use switchboard_approval_holder::{
-    run_gate::CallAttempt,
-    waiting_request::{ProviderReply, WriterOutcome},
-};
+use switchboard_approval_holder::waiting_request::{ProviderReply, WriterOutcome};
+use switchboard_run_gate::CallAttempt;
 
 use super::fixtures::{
     Mac, RESPONDER, RequestEffect, RequestEvent, RequestMachine, authority, call, ending_reply,

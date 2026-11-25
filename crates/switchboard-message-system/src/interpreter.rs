@@ -12,7 +12,8 @@ use switchboard_central_link::link_policy::LinkStatus;
 use switchboard_link_lease::LeaseWorkerExit;
 use switchboard_machine_core_store::{MACHINE_LOCAL_DATABASE, load_or_create_machine_id};
 use switchboard_machine_enrollment::{
-    CredentialStore as _, EnrollmentContext, EnrollmentMetadata, MachineId, SignInDeployment,
+    CredentialStore as _, EnrollmentContext, EnrollmentEnd, EnrollmentKey, EnrollmentMetadata,
+    MachineId, SignInDeployment,
 };
 use switchboard_machine_enrollment_store::{EnrollmentWorkerExit, MachineEnrollmentStore};
 use switchboard_message_custody::{
@@ -23,8 +24,8 @@ use tokio::sync::{mpsc, watch};
 
 use crate::{
     ActiveEnrollment, Effect, EnrollmentId, EnrollmentPair, Event, Fault, Front, FrontRefusal,
-    Generation, MessageSystemStatus, Metadata, ReadId, State, StopBudgets, StopTarget, Supervisor,
-    UnitPiece, message_system_status,
+    Generation, MessageSystemObservation, Metadata, ReadId, State, StopBudgets, StopTarget,
+    Supervisor, UnitPiece,
 };
 use crate::{
     message_front::{ForwardingMessageFront, FrontPublication},
@@ -116,12 +117,13 @@ impl OpenedEnrollment {
 pub(crate) struct Interpreter {
     pub(crate) inputs: MessageInputs,
     pub(crate) front: FrontPublication,
-    pub(crate) status: watch::Sender<MessageSystemStatus>,
+    pub(crate) status: watch::Sender<MessageSystemObservation>,
     pub(crate) events: mpsc::UnboundedSender<Event>,
     pub(crate) queue: mpsc::UnboundedReceiver<Event>,
     link_publication: watch::Sender<LinkStatus>,
     link_status: watch::Receiver<LinkStatus>,
     enrollment: Option<OpenedEnrollment>,
+    stored_ending: Option<(EnrollmentKey, EnrollmentEnd)>,
     unit: Option<(Generation, MessageUnit)>,
     timer: Option<BoxFuture<'static, ReadId>>,
     exits: FuturesUnordered<BoxFuture<'static, Option<Event>>>,
@@ -132,7 +134,7 @@ impl Interpreter {
     pub(crate) fn new(
         inputs: MessageInputs,
         front: FrontPublication,
-        status: watch::Sender<MessageSystemStatus>,
+        status: watch::Sender<MessageSystemObservation>,
         events: mpsc::UnboundedSender<Event>,
         queue: mpsc::UnboundedReceiver<Event>,
         enrollment: Option<OpenedEnrollment>,
@@ -147,6 +149,7 @@ impl Interpreter {
             link_publication,
             link_status,
             enrollment,
+            stored_ending: None,
             unit: None,
             timer: None,
             exits: FuturesUnordered::new(),
@@ -203,9 +206,23 @@ impl Interpreter {
                     }
                 };
                 if let Some(event) = event {
+                    let ending_read = match &event {
+                        Event::MetadataObserved {
+                            metadata: Metadata::Ended { key, why },
+                            ..
+                        } => Some(Some((key.clone(), *why))),
+                        Event::MetadataObserved {
+                            metadata: Metadata::Empty | Metadata::Active(_),
+                            ..
+                        } => Some(None),
+                        _ => None,
+                    };
                     let tag = event.event_tag();
                     match Supervisor::transition(&supervisor, event) {
                         Ok((next, effects)) => {
+                            if let Some(ending) = ending_read {
+                                self.stored_ending = ending;
+                            }
                             supervisor = next;
                             break effects;
                         }
@@ -318,7 +335,11 @@ impl Interpreter {
     }
 
     fn publish_status(&self, state: &State) {
-        let status = message_system_status(state, &self.link_status.borrow());
+        let status = MessageSystemObservation::project(
+            state,
+            &self.link_status.borrow(),
+            self.stored_ending.as_ref().map(|(_, cause)| *cause),
+        );
         self.status.send_if_modified(|published| {
             if *published == status {
                 return false;
@@ -355,7 +376,12 @@ impl Interpreter {
         };
         match opened.store.read_metadata().await {
             Ok(EnrollmentMetadata::Empty) => Metadata::Empty,
-            Ok(EnrollmentMetadata::Ended { .. }) => Metadata::Ended,
+            Ok(EnrollmentMetadata::Ended { key, why, .. })
+                if key.machine_id == opened.machine_id =>
+            {
+                Metadata::Ended { key, why }
+            }
+            Ok(EnrollmentMetadata::Ended { .. }) => Metadata::ReadFailed,
             Ok(EnrollmentMetadata::Active {
                 key, deployment, ..
             }) => {

@@ -5,8 +5,8 @@ use central_link_client::{
     link_frame_write_deadline,
 };
 use central_link_protocol::{
-    CorrelationId, DataFrame, FrameDirection, HandledMacCalls, LinkCallRefusal, LinkFrame,
-    MacCapabilities, ProtocolError, TokenRenewalResult, TypedCallResult, decode_text,
+    CentralCallReply, CorrelationId, DataFrame, FrameDirection, HandledMacCalls, LinkCallRefusal,
+    LinkFrame, MacCapabilities, ProtocolError, TokenRenewalResult, TypedCallResult, decode_text,
 };
 use futures_util::Sink;
 use router_clock::ClockInstant;
@@ -27,6 +27,11 @@ pub(super) enum SocketReceive {
     Close,
     AnnounceCapabilities(AdmittedConnection),
     RefuseCall(CorrelationId),
+    RegistrationReply {
+        attempt: ConnectionAttempt,
+        correlation_id: CorrelationId,
+        result: Box<TypedCallResult<CentralCallReply>>,
+    },
 }
 
 impl<Binding, Source, MakeConnector, Connector> BindingDriver<'_, Binding, Source, MakeConnector>
@@ -74,6 +79,16 @@ where
         match received {
             SocketReceive::Continue => Ok(true),
             SocketReceive::Close => Ok(false),
+            SocketReceive::RegistrationReply {
+                attempt,
+                correlation_id,
+                result,
+            } => Ok(self.settle_registration_reply(
+                &attempt,
+                &correlation_id,
+                &result,
+                admitted_lane,
+            )),
             SocketReceive::AnnounceCapabilities(admission) => {
                 let frame = DataFrame::MacCapabilities(MacCapabilities {
                     handled_calls: HandledMacCalls::default(),
@@ -267,6 +282,14 @@ where
                 }
             }
             ClientEvent::Pong => SocketReceive::Continue,
+            ClientEvent::CentralCallReply {
+                correlation_id,
+                result,
+            } if admitted_lane.is_admitted() => SocketReceive::RegistrationReply {
+                attempt: attempt.clone(),
+                correlation_id,
+                result,
+            },
             ClientEvent::CallMac { correlation_id, .. } if admitted_lane.is_admitted() => {
                 SocketReceive::RefuseCall(correlation_id)
             }

@@ -6,6 +6,7 @@ mod lane_writer;
 pub mod lease_source;
 pub mod link_lane;
 pub mod link_policy;
+mod run_registration;
 mod socket_input;
 mod socket_upgrade;
 mod wire_write_fence;

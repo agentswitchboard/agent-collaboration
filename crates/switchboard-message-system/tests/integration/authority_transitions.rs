@@ -16,7 +16,7 @@ fn late_lease_join_uses_only_the_final_retirement_snapshot() {
         let enrollment_a = enrollment(1);
         // The executor's provisional fence has A when the worker times out.
         let mut pending = vec![enrollment_a];
-        observe(&mut supervisor, Metadata::Ended);
+        observe(&mut supervisor, super::ended_metadata());
         for piece in [UnitPiece::Driver, UnitPiece::Custody, UnitPiece::Settings] {
             stop(&mut supervisor, target(FIRST, piece), StopResult::Joined);
         }
@@ -103,7 +103,7 @@ fn the_last_issued_read_is_stale_once_close_store_exit_or_mismatch_retires_it() 
                 &supervisor,
                 Event::MetadataObserved {
                     read: future,
-                    metadata: Metadata::Ended
+                    metadata: super::ended_metadata()
                 }
             ),
             Err(TransitionError::NotAllowed {
