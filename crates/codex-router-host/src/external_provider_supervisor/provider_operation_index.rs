@@ -301,7 +301,7 @@ impl LiveOperation {
     }
 
     pub(super) fn is_notice(&self) -> bool {
-        self.class == AdmissionClass::Notice
+        self.class.is_notice()
     }
 
     fn holds_dispatch(&self) -> bool {
@@ -443,7 +443,7 @@ impl LiveOperations {
         binding: &ProviderBindingIdentity,
         request: AdmissionRequest<'_>,
     ) -> Vec<OperationId> {
-        let blocks = if request.mode.class == AdmissionClass::Notice {
+        let blocks = if request.mode.class.is_notice() {
             LiveOperation::holds_custody
         } else {
             LiveOperation::blocks_independent_admission

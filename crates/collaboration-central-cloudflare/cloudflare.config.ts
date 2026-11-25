@@ -10,6 +10,11 @@ export default {
     previewUrls: false,
     env: {
       CENTRAL: { type: "durable-object", worker: "replace-worker-name", exportName: "CentralObject" },
+      SIGN_IN_KEYS: {
+        type: "worker",
+        worker: "replace-sign-in-worker-name",
+        exportName: "SignInJwks",
+      },
       // One store per workspace, named by its workspace id; it runs only the statements
       // central sends it.
       WORKSPACE_STORE: {

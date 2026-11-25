@@ -1,6 +1,4 @@
 //! The private sign-in link delegates organization work to a scoped runtime.
-#[cfg(feature = "test-support")]
-use crate::person_approval_application::decide_operation_id;
 use crate::{
     PersonApprovalAnswer,
     identity_contract::{AuthorizationRevision, AuthorizationRevisionAcknowledgement},
@@ -213,47 +211,10 @@ impl<H: CentralStore, S: WorkspaceStores> crate::WorkspaceRuntime<H, S> {
         if self.signin_authority.standing(time) != StampStanding::Valid {
             return Err(StoreFailure::Unavailable);
         }
-        #[cfg(feature = "test-support")]
-        let operation_id = decide_operation_id(verified.operation()).cloned();
-        let transactions = self
-            .person_approval_transactions
-            .as_deref()
-            .ok_or(StoreFailure::Unavailable)?;
-        let schedule = self
-            .approval_delivery_completion
-            .as_ref()
-            .ok_or(StoreFailure::Unavailable)?;
-        #[cfg(feature = "test-support")]
-        self.execution
-            .pause_points()
-            .reached_central(fleet_runtime::PausePoint::BeforeSignInSample)
-            .await;
-        let application = PersonApprovalApplication::new(organization, verified);
-        let (proof, applied) = application.commit(transactions).await?;
-        #[cfg(feature = "test-support")]
-        let reply_was_admitted = applied.is_admitted();
-        let publication_failure = applied.publication_failure();
-        let (answer, offers) = applied.publish(&proof)?;
-        drop(turn);
-        if let Some(completion) = transactions.delivery_after_commit(offers) {
-            schedule(completion);
-        }
-        if let Some(reason) = publication_failure {
-            return Err(StoreFailure::AlarmUnpublishable { reason });
-        }
-        #[cfg(feature = "test-support")]
-        self.execution
-            .pause_points()
-            .reached_central(fleet_runtime::PausePoint::AfterPersonApprovalCommit)
-            .await;
-        #[cfg(feature = "test-support")]
-        if reply_was_admitted
-            && operation_id
-                .as_ref()
-                .is_some_and(|id| self.execution.take_lost_reply(id))
-        {
-            return Err(StoreFailure::AnswerLost);
-        }
-        Ok(answer)
+        self.commit_person_approval(
+            turn,
+            PersonApprovalApplication::from_signed_request(organization, verified),
+        )
+        .await
     }
 }

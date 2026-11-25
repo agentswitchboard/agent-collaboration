@@ -15,6 +15,7 @@ mod destination_admission;
 mod destination_requests;
 mod holder_requests;
 mod parent_session_calls;
+mod person_approval_replies;
 mod question_fields;
 mod unproven_session_call;
 
@@ -66,6 +67,10 @@ pub use parent_session_calls::{
     DecideApprovalAsSessionReply, DecideApprovalAsSessionRequest, ListApprovalsForSessionReply,
     ListApprovalsForSessionRequest, PassOnApprovalReply, PassOnApprovalRequest,
     ReadApprovalForSessionReply, ReadApprovalForSessionRequest,
+};
+pub use person_approval_replies::{
+    ApprovalDecideReply, ApprovalInvalidReason, ApprovalListFilter, ApprovalListReply,
+    ApprovalReadReply,
 };
 pub use question_fields::{
     ChoiceOption, ChoiceOptions, InvalidChoiceRange, InvalidOfferedOptions, InvalidQuestionFields,

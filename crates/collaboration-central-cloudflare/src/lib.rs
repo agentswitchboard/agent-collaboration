@@ -39,7 +39,7 @@ pub use workspace_central_object::CentralObject;
 pub use workspace_central_object::workspace_typed_link::call_machine;
 pub use workspace_store_object::WorkspaceStoreObject;
 
-/// Carrier-facing ingress for the machine link.
+/// Carrier-facing ingress for machine and person links.
 #[cfg(not(feature = "link"))]
 #[worker::event(fetch)]
 pub async fn main(
@@ -52,8 +52,7 @@ pub async fn main(
         Ok(response) => return Ok(response),
         Err(request) => request,
     };
-    use workspace_link_entry::{LinkRoute, link_route};
-    if let Some(route @ LinkRoute::Machine(_)) = link_route(&request.path()) {
+    if let Some(route) = workspace_link_entry::link_route(&request.path()) {
         return workspace_link_entry::forward(request, &env, route).await;
     }
     worker::Response::error("no such route", 404)

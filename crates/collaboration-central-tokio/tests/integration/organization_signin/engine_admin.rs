@@ -1,10 +1,9 @@
-//! V13 on the native host: EngineHealth, the retired list with paging, retry
-//! that wakes an idle object, discard through the machine's own transition and
-//! admission, each through the real admin route with a real person proof.
+//! Engine health, retired paging, retry and discard on the real store.
 // Test-only module: clippy's test allowances (clippy.toml) apply to its helpers.
 #![cfg(test)]
 use super::engine_admin_support::*;
 use super::support::text;
+use collaboration_central_core::EngineAttemptAction;
 use fleet_runtime::PausePoint;
 use serde_json::json;
 
@@ -143,18 +142,11 @@ async fn health_lists_every_kind_and_the_retired_list_pages_in_attempt_order() {
     assert_eq!(seen, sorted, "ascending attemptId, each row once");
     assert_eq!(seen.len(), 5, "the failing row is not listed");
 
-    // The reads need organization:readAudit.
-    let no_audit = engine.person(&["organization:view"], false);
-    assert_eq!(engine.health_as(&no_audit).await, refused("notPermitted"));
-    assert_eq!(
-        engine.retired_as(None, 2, &no_audit).await,
-        refused("notPermitted")
-    );
     engine.close().await;
 }
 
 #[tokio::test]
-async fn retry_wakes_an_idle_object_and_refuses_missing_failing_and_unadmitted_changes() {
+async fn retry_wakes_an_idle_object_and_refuses_missing_and_failing_attempts() {
     let engine = EngineOrg::new().await;
     let (wakes, _, original_target) = retired_wakes(&engine, 3).await;
     assert_eq!(engine.alarm_ms().await, None, "everything else is idle");
@@ -166,30 +158,7 @@ async fn retry_wakes_an_idle_object_and_refuses_missing_failing_and_unadmitted_c
         )
         .await;
 
-    // Admission first: nothing changes without a second factor or the permission.
     let operation = engine.fresh();
-    assert_eq!(
-        engine
-            .change_as(
-                RETRY,
-                &operation,
-                &attempt,
-                &engine.person(&[READ_AUDIT, REPAIR_WORK], false)
-            )
-            .await,
-        refused("secondFactorRequired")
-    );
-    assert_eq!(
-        engine
-            .change_as(
-                RETRY,
-                &engine.fresh(),
-                &attempt,
-                &engine.person(&[READ_AUDIT], true)
-            )
-            .await,
-        refused("notPermitted")
-    );
     assert_eq!(
         engine.record("wake_timer", &wakes[0]).await[0][0],
         text("retired")
@@ -199,7 +168,7 @@ async fn retry_wakes_an_idle_object_and_refuses_missing_failing_and_unadmitted_c
     // its floor, last start + 30 s. (V13 as ruled: re-published by P4's rule.)
     let last_start = engine.now();
     let answer = engine
-        .change_as(RETRY, &operation, &attempt, &engine.repairer())
+        .change(EngineAttemptAction::Retry, &operation, &attempt)
         .await;
 
     assert_eq!(answer, json!({"result":"engineRetried"}));
@@ -215,7 +184,7 @@ async fn retry_wakes_an_idle_object_and_refuses_missing_failing_and_unadmitted_c
     );
     assert_eq!(
         engine
-            .change_as(RETRY, &operation, &attempt, &engine.repairer())
+            .change(EngineAttemptAction::Retry, &operation, &attempt)
             .await,
         answer,
         "a replay with the same operation ID returns the stored answer"
@@ -293,6 +262,54 @@ async fn retry_wakes_an_idle_object_and_refuses_missing_failing_and_unadmitted_c
     engine.close().await;
 }
 
+#[tokio::test]
+async fn engine_retry_applying_guard_refuses_not_found() {
+    check_engine_applying_guard(EngineAttemptAction::Retry, "notFound").await;
+}
+
+#[tokio::test]
+async fn engine_discard_applying_guard_refuses_conflict() {
+    check_engine_applying_guard(EngineAttemptAction::Discard, "conflict").await;
+}
+
+async fn check_engine_applying_guard(action: EngineAttemptAction, reason: &str) {
+    let engine = EngineOrg::new().await;
+    let attempt = match action {
+        EngineAttemptAction::Retry => {
+            let (wakes, _, _) = retired_wakes(&engine, 1).await;
+            engine.attempt_id("wake_timer", &wakes[0]).await
+        }
+        // An absent attempt prepares a refusal and its retained answer, so
+        // discard reaches the outer applying batch instead of committing in the finisher.
+        EngineAttemptAction::Discard => engine.fresh(),
+    };
+    let operation = engine.fresh();
+    let fault = fleet_runtime::EngineCommitFault {
+        key: collaboration_central_core::engine_probe::InstanceKey(operation.clone()),
+        kind: fleet_runtime::EngineCommitFaultKind::GuardFailed,
+    };
+    let runtime = engine.runtime().await;
+    let store = runtime.runtime().statement_host();
+    store.inject_engine_commit_fault(fault);
+    let reply = engine.change(action, &operation, &attempt).await;
+    assert!(
+        !store.engine_commit_fault_pending(),
+        "the applying batch must consume the guard fault"
+    );
+    assert_eq!(reply, refused(reason), "guard refusal for {action:?}");
+    assert!(
+        engine
+            .rows(
+                "SELECT request_id FROM runtime_request_log WHERE request_id=?1",
+                vec![text(operation)],
+            )
+            .await
+            .is_empty(),
+        "the failed guard must not retain an answer"
+    );
+    engine.close().await;
+}
+
 /// An automation retired by rejected batches; its row stays readable.
 async fn retired_automation(engine: &EngineOrg) -> (String, String) {
     let first = next_mark(engine.now());
@@ -328,31 +345,8 @@ async fn discard_runs_the_finishing_transition_and_refuses_unsupported_attempts(
     let engine = EngineOrg::new().await;
     let (automation, attempt) = retired_automation(&engine).await;
     let operation = engine.fresh();
-    assert_eq!(
-        engine
-            .change_as(
-                DISCARD,
-                &operation,
-                &attempt,
-                &engine.person(&[READ_AUDIT, REPAIR_WORK], false)
-            )
-            .await,
-        refused("secondFactorRequired")
-    );
-    assert_eq!(
-        engine
-            .change_as(
-                DISCARD,
-                &engine.fresh(),
-                &attempt,
-                &engine.person(&[READ_AUDIT], true)
-            )
-            .await,
-        refused("notPermitted")
-    );
-
     let answer = engine
-        .change_as(DISCARD, &operation, &attempt, &engine.repairer())
+        .change(EngineAttemptAction::Discard, &operation, &attempt)
         .await;
 
     assert_eq!(answer, json!({"result":"engineDiscarded"}));
@@ -368,7 +362,7 @@ async fn discard_runs_the_finishing_transition_and_refuses_unsupported_attempts(
     );
     assert_eq!(
         engine
-            .change_as(DISCARD, &operation, &attempt, &engine.repairer())
+            .change(EngineAttemptAction::Discard, &operation, &attempt)
             .await,
         answer,
         "a replay returns the stored answer"

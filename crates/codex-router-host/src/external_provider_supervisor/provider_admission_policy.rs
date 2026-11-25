@@ -13,8 +13,11 @@ pub(super) enum DispatchMark {
 pub(super) enum AdmissionClass {
     Independent,
     OwnerPlaced,
-    /// A notice yields to existing custody without reserving admission itself.
-    Notice,
+    /// A notice yields to hand-off custody without reserving admission itself.
+    Notice {
+        /// The prompt whose writer has already taken the exact turn being steered.
+        foreground: Option<uuid::Uuid>,
+    },
     RefuseWhileRunning {
         foreground: uuid::Uuid,
     },
@@ -23,6 +26,10 @@ pub(super) enum AdmissionClass {
 impl AdmissionClass {
     pub(super) const fn holds_admission(self) -> bool {
         matches!(self, Self::Independent)
+    }
+
+    pub(super) const fn is_notice(self) -> bool {
+        matches!(self, Self::Notice { .. })
     }
 }
 
@@ -112,7 +119,9 @@ impl AdmissionRequest<'_> {
             EarlierOperation::InFlight { target: None } => true,
             EarlierOperation::InFlight { target: Some(held) } => {
                 self.target == Some(held)
-                    && !matches!(self.mode.class, AdmissionClass::RefuseWhileRunning { foreground }
+                    && !matches!(self.mode.class,
+                        AdmissionClass::RefuseWhileRunning { foreground }
+                        | AdmissionClass::Notice { foreground: Some(foreground) }
                         if uuid::Uuid::parse_str(earlier.as_str()).ok() == Some(foreground))
             }
         }

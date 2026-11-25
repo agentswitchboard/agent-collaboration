@@ -69,9 +69,18 @@ enum ResponseKind {
         compact: bool,
         reader: Option<mpsc::Sender<PromptTerminal>>,
     },
-    Steer(DispatchAuthorization),
+    Steer {
+        authorization: DispatchAuthorization,
+        idle: SteerIdlePolicy,
+    },
     Close(RunAttempt<CloseAttempt>),
     Setting(Box<CorrelatedSetting>),
+}
+
+#[derive(Clone, Copy)]
+enum SteerIdlePolicy {
+    AllowOwnerPrompt,
+    Refuse,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -460,6 +469,40 @@ impl OwnerAcpWire {
         content: ProviderPromptContent,
         completion: OwnerCompletion,
     ) -> Result<(), OwnerWireRefusal> {
+        self.offer_steer_with_idle_policy(
+            authorization,
+            session,
+            content,
+            completion,
+            SteerIdlePolicy::AllowOwnerPrompt,
+        )
+    }
+
+    /// Offers a steer which must leave the session untouched if its turn ended.
+    pub fn offer_exact_steer(
+        &self,
+        authorization: DispatchAuthorization,
+        session: String,
+        content: ProviderPromptContent,
+        completion: OwnerCompletion,
+    ) -> Result<(), OwnerWireRefusal> {
+        self.offer_steer_with_idle_policy(
+            authorization,
+            session,
+            content,
+            completion,
+            SteerIdlePolicy::Refuse,
+        )
+    }
+
+    fn offer_steer_with_idle_policy(
+        &self,
+        authorization: DispatchAuthorization,
+        session: String,
+        content: ProviderPromptContent,
+        completion: OwnerCompletion,
+        idle: SteerIdlePolicy,
+    ) -> Result<(), OwnerWireRefusal> {
         let request = UntypedMessage::new(
             "_session/steering",
             serde_json::json!({
@@ -473,7 +516,10 @@ impl OwnerAcpWire {
             None,
             request,
             completion,
-            ResponseKind::Steer(authorization),
+            ResponseKind::Steer {
+                authorization,
+                idle,
+            },
         )
     }
 
@@ -819,15 +865,21 @@ impl ResponseKind {
     fn settle(self, reply: Option<Result<serde_json::Value, Error>>) -> Option<OwnerEvent> {
         Some(match self {
             Self::Prompt { .. } | Self::Setting(_) => return None,
-            Self::Steer(authorization) => OwnerEvent::Dispatch(match reply {
+            Self::Steer {
+                authorization,
+                idle,
+            } => OwnerEvent::Dispatch(match reply {
                 Some(Ok(reply)) => match reply.get("outcome").and_then(serde_json::Value::as_str) {
                     Some("startedNewTurn") => DispatchResult::SteerStartedNewTurn {
                         authorization,
                         turn: TurnId(Uuid::now_v7()),
                     },
-                    Some("promptRequired") => DispatchResult::PromptRequired {
-                        authorization,
-                        replacement_turn: TurnId(Uuid::now_v7()),
+                    Some("promptRequired") => match idle {
+                        SteerIdlePolicy::AllowOwnerPrompt => DispatchResult::PromptRequired {
+                            authorization,
+                            replacement_turn: TurnId(Uuid::now_v7()),
+                        },
+                        SteerIdlePolicy::Refuse => DispatchResult::SteerNeedsPrompt(authorization),
                     },
                     Some("injected") => DispatchResult::SteerFinished {
                         authorization,

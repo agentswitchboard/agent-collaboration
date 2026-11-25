@@ -6,6 +6,7 @@ members = [
     "crates/central-link-protocol",
     "crates/central-link-call-composition",
     "crates/central-person-link",
+    "crates/central-person-link-client",
     "crates/central-link-client",
     "crates/switchboard-central-link",
     "crates/switchboard-link-lease",
@@ -18,7 +19,6 @@ members = [
     "crates/state-machine-core",
     "crates/provider-session-machines",
     "crates/switchboard-approval-holder",
-    "crates/switchboard-session-start",
     "crates/switchboard-message-system",
     "crates/switchboard-harness-contracts",
     "crates/switchboard-harness-shared-mechanics",
@@ -59,7 +59,6 @@ members = [
     "crates/ui-preference-store",
     "crates/sqlite-storage-maintenance",
     "crates/codex-acp-adapter",
-    "crates/lifecycle-observation",
     "crates/collaboration-client",
     "crates/collaboration-mcp",
     "crates/collaboration-service",
@@ -115,13 +114,13 @@ publish = false
 approval-request-protocol = { path = "crates/approval-request-protocol", version = "0.1.158" }
 switchboard-approval-holder = { path = "crates/switchboard-approval-holder", version = "0.1.158" }
 switchboard-approval-ports = { path = "crates/switchboard-approval-ports", version = "0.1.158" }
-switchboard-session-start = { path = "crates/switchboard-session-start", version = "0.1.158" }
 switchboard-message-system = { path = "crates/switchboard-message-system", version = "0.1.158" }
 switchboard-harness-shared-mechanics = { path = "crates/switchboard-harness-shared-mechanics", version = "0.1.158" }
 switchboard-harness-contracts = { path = "crates/switchboard-harness-contracts", version = "0.1.158" }
 central-link-protocol = { path = "crates/central-link-protocol", version = "0.1.153" }
 central-link-call-composition = { path = "crates/central-link-call-composition", version = "0.1.158" }
 central-person-link = { path = "crates/central-person-link", version = "0.1.158" }
+central-person-link-client = { path = "crates/central-person-link-client", version = "0.1.158" }
 central-link-client = { path = "crates/central-link-client", version = "0.1.158" }
 switchboard-central-link = { path = "crates/switchboard-central-link", version = "0.1.158" }
 switchboard-link-lease = { path = "crates/switchboard-link-lease", version = "0.1.158" }

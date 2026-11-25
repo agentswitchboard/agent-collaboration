@@ -9,8 +9,8 @@ use crate::signin_fixtures::{NOW_SECONDS, ORGANIZATION, OWNER, Person};
 
 use super::request::{SignedRequest, decide, read};
 use super::{
-    PersonApprovalHarness, assert_count, expect, expect_status, publish_person_floor, require,
-    saved,
+    PersonApprovalHarness, assert_count, assert_proof_count, expect, expect_status,
+    publish_person_floor, require, saved,
 };
 
 #[derive(Clone, Copy)]
@@ -89,7 +89,7 @@ async fn saved_decision_missing_ending(
     )
     .await?;
     expect_corrupt_replay(&call, host, owner).await?;
-    assert_count(host, "SELECT COUNT(*) FROM admin_used_requests", 2).await?;
+    assert_proof_count(host, 2).await?;
     assert_count(
         host,
         "SELECT COUNT(*) FROM approval_requests WHERE record_state = 'waiting'",
@@ -139,7 +139,7 @@ async fn corrupted_winner(
         .retain(|permission| permission != "approval:decide");
     expect_corrupt_replay(&losing_call, host, &after_permission_loss).await?;
 
-    assert_count(host, "SELECT COUNT(*) FROM admin_used_requests", 2).await?;
+    assert_proof_count(host, 2).await?;
     assert_count(
         host,
         "SELECT COUNT(*) FROM approval_requests WHERE record_state = 'ended'",

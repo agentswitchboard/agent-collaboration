@@ -151,9 +151,7 @@ impl OwnerTransition {
             SessionOwnerCommand::DependOnRestore { operation, run } => {
                 self.depend_on_restore(operation, run)
             }
-            SessionOwnerCommand::WarmPrompt(input) | SessionOwnerCommand::NoticePrompt(input) => {
-                self.admit_idle_prompt(input)
-            }
+            SessionOwnerCommand::WarmPrompt(input) => self.admit_idle_prompt(input),
             SessionOwnerCommand::Prompt { input, admission } => self.admit_prompt(input, admission),
             SessionOwnerCommand::PromptWithSkills {
                 input,

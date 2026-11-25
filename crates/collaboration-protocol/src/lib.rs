@@ -105,8 +105,9 @@ pub use native_control_contract::{
     NativeSendReceipt,
 };
 pub use native_session_catalog::{
-    NativeSessionListParams, NativeSessionListResult, NativeSessionObservation, NativeSessionScope,
-    NativeSessionSource, NativeSessionSummary, NativeSessionView,
+    NativeActiveFlag, NativeSessionListParams, NativeSessionListResult, NativeSessionObservation,
+    NativeSessionScope, NativeSessionSource, NativeSessionSummary, NativeSessionView,
+    NativeThreadStatus,
 };
 pub use push_line::{
     MAX_MACHINE_LABEL_SCALARS, MAX_PUSH_LINE_BYTES, MachineId, MachineLabel, MachineLabelError,
@@ -150,25 +151,6 @@ pub use service_manifest::{
     ApiSelector, ApiSocketPath, ApiTransport, McpSelector, McpTransport, SERVICE_MANIFEST_VERSION,
     ServiceManifest,
 };
-mod lifecycle_observation;
-pub use lifecycle_observation::{
-    BackendStatus, LifecycleChange, LifecycleObservation, LifecycleSubject, NativeActiveFlag,
-    NativeThreadStatus, ObservationOrdering, ObservationScope, ObservationSource, TerminalStatus,
-    ThreadAddress,
-};
-
-mod journal_contract;
-pub use journal_contract::{
-    AddressListParams, JournalBounds, JournalPage, JournalPosition, JournalReadParams,
-    JournalStatus, LifecycleRecord,
-};
-
-mod address_book_contract;
-pub use address_book_contract::{
-    AddressEntry, AddressPage, ArchiveState, CoverageState, CoverageView, Existence,
-    LifecycleDisposition, StatusOrdering,
-};
-
 mod acp_schema_catalog;
 pub use acp_schema_catalog::{
     ACP_SCHEMA_BYTES, ACP_SCHEMA_DIGEST, AcpSchemaCatalog, AcpSchemaError,

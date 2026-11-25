@@ -1,4 +1,4 @@
-//! Registered RPC calls carried by an authenticated machine connection.
+//! Registered RPC calls carried by an authenticated Central link.
 use crate::{
     CorrelationId, FrameDirection, MachineLinkCloseCode,
     approval_rpc::{
@@ -6,7 +6,11 @@ use crate::{
         ListApprovalsForSessionRpc, PassOnApprovalForSessionRpc, RaiseApprovalRpc,
         ReadApprovalForSessionRpc, RegisterRunRpc, StopApprovalRpc,
     },
-    person_link_rpc::ListOrganizationWorkspacesRpc,
+    person_link_rpc::{
+        CreateOrganizationWorkspaceRpc, DecidePersonApprovalRpc, ListOrganizationWorkspacesRpc,
+        ListPersonApprovalsRpc, LookupOrganizationWorkspaceRpc, ReadOrganizationChangeRecordsRpc,
+        ReadPersonApprovalRpc,
+    },
     session_lifecycle_rpc::{BindFleetSessionRpc, CreateFleetSessionRpc, EndFleetSessionRpc},
 };
 use fleet_rpc::{Envelope, Rpc};
@@ -21,6 +25,7 @@ use std::{fmt, marker::PhantomData};
 pub enum LinkCallRefusal {
     UnknownCall,
     WrongTarget,
+    NotPermitted,
     /// The call's cause is advisory. The link close and the next refresh carry enrollment authority.
     AuthorityLapsed {
         cause: MachineLinkCloseCode,
@@ -39,6 +44,7 @@ impl LinkCallRefusal {
             Self::AuthorityLapsed { cause } => Some(cause),
             Self::UnknownCall
             | Self::WrongTarget
+            | Self::NotPermitted
             | Self::SessionProofNotAccepted
             | Self::CentralFault => None,
         }
@@ -52,6 +58,7 @@ impl<'de> Deserialize<'de> for LinkCallRefusal {
         enum NamedRefusal {
             UnknownCall {},
             WrongTarget {},
+            NotPermitted {},
             AuthorityLapsed { cause: MachineLinkCloseCode },
             SessionProofNotAccepted {},
             CentralFault {},
@@ -59,6 +66,7 @@ impl<'de> Deserialize<'de> for LinkCallRefusal {
         Ok(match named_map(input)? {
             NamedRefusal::UnknownCall {} => Self::UnknownCall,
             NamedRefusal::WrongTarget {} => Self::WrongTarget,
+            NamedRefusal::NotPermitted {} => Self::NotPermitted,
             NamedRefusal::SessionProofNotAccepted {} => Self::SessionProofNotAccepted,
             NamedRefusal::CentralFault {} => Self::CentralFault,
             NamedRefusal::AuthorityLapsed { cause } => Self::AuthorityLapsed { cause },
@@ -101,7 +109,7 @@ mod registration {
     impl<Marker: Rpc> Mac for Marker where MacCall: Binding<Marker, ReplyFrame = MacCallReply> {}
 }
 
-/// A marker explicitly registered for calls from a Mac to Central.
+/// A marker explicitly registered for calls to Central.
 ///
 /// Implementing the generic RPC trait alone does not allow a link call.
 /// ```compile_fail,E0277
@@ -257,6 +265,12 @@ macro_rules! register_calls {
 register_calls! {
     CentralCall, "CentralCall", CentralCallReader, CentralCallReply, "CentralCallReply", CentralCallReplyReader, CentralLinkRpc;
     "listOrganizationWorkspaces" => ListOrganizationWorkspaces(ListOrganizationWorkspacesRpc),
+    "createOrganizationWorkspace" => CreateOrganizationWorkspace(CreateOrganizationWorkspaceRpc),
+    "lookupOrganizationWorkspace" => LookupOrganizationWorkspace(LookupOrganizationWorkspaceRpc),
+    "readOrganizationChangeRecords" => ReadOrganizationChangeRecords(ReadOrganizationChangeRecordsRpc),
+    "listPersonApprovals" => ListPersonApprovals(ListPersonApprovalsRpc),
+    "readPersonApproval" => ReadPersonApproval(ReadPersonApprovalRpc),
+    "decidePersonApproval" => DecidePersonApproval(DecidePersonApprovalRpc),
     "registerRun" => RegisterRun(RegisterRunRpc),
     "raise" => Raise(RaiseApprovalRpc),
     "stop" => Stop(StopApprovalRpc),

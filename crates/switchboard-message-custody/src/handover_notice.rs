@@ -11,24 +11,23 @@ pub use workspace_ids::{MachineId, MessageId, SessionRef};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NoticeDeferred {
     NotOpen,
-    Busy,
     UnprovedRecipient,
-    UnsupportedProgram,
+    WaitingForSession,
     RunChanged,
 }
 
 pub type NoticeFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-/// An adapter can issue this only for a managed Claude run it found idle.
-pub trait IdleClaudeRun: Send {
+/// A writer for an exact managed session run and a claimed notice.
+pub trait ManagedNoticeRun: Send {
     fn offer(self: Box<Self>, notice: ClaimedNotice) -> NoticeFuture<'static, NoticeWriteOutcome>;
 }
 
-pub trait ManagedClaudeNoticePort: Send + Sync {
+pub trait ManagedNoticePort: Send + Sync {
     fn ready<'a>(
         &'a self,
         target: &'a SessionRef,
-    ) -> NoticeFuture<'a, Result<Box<dyn IdleClaudeRun>, NoticeDeferred>>;
+    ) -> NoticeFuture<'a, Result<Box<dyn ManagedNoticeRun>, NoticeDeferred>>;
 }
 
 /// The custody unit holds the close side. A writer holds a read guard through

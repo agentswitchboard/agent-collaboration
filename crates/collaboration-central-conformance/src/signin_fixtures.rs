@@ -10,6 +10,8 @@ mod approval_preflight;
 pub use approval_preflight::check_approval_preflight;
 pub mod approval_routes;
 mod approval_rows;
+#[cfg(feature = "session-link-test-support")]
+pub mod approval_socket;
 mod issuer_replies;
 use issuer_replies::IssuerReplies;
 pub use issuer_replies::{HeldIssuerFetch, IssuerReply};
@@ -293,8 +295,6 @@ pub use standing_trace::{StandingProbe, StandingSample, prove_standing_trace};
 pub use trust_trace::TrustTraceHost;
 
 pub mod machine_lifecycle;
-
-pub mod engine_admin_decisions;
 
 #[cfg(feature = "session-link-test-support")]
 pub mod person_link;

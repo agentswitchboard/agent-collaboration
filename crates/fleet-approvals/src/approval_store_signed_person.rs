@@ -1,4 +1,4 @@
-//! Executing a signed person command consumes the loan it was admitted on.
+//! Executing a person command consumes the loan it was admitted on.
 use central_engine_model::{EngineTime, IdSource};
 use fleet_runtime_ports::workspace_decode_error::corrupt;
 use fleet_signin::{
@@ -27,14 +27,14 @@ pub struct PersonApprovalStoreOutput {
     pub effects: PendingApprovalEffects,
 }
 
-enum SignedAction<'loan> {
+enum PersonApprovalAction<'loan> {
     List(AdmittedApprovalFacts<'loan, ApprovalListRequest>),
     Read(AdmittedApprovalFacts<'loan, ApprovalReadRequest>),
     Decide(AdmittedApprovalFacts<'loan, ApprovalDecideRequest>),
     Retry(AdmittedApprovalFacts<'loan, RetainedDecisionRequest>),
 }
 
-/// A retry without permission consumes the proof only if a retained result matched.
+/// A signed retry without permission consumes its proof only if a retained result matched.
 pub async fn apply_person_command<Transaction: ApprovalPersonStoreTransaction>(
     command: AdmittedApprovalPersonOperation<'_, Transaction>,
     commit: &ApprovalCommitScope,
@@ -42,79 +42,81 @@ pub async fn apply_person_command<Transaction: ApprovalPersonStoreTransaction>(
 ) -> Result<Option<PersonApprovalStoreOutput>, ApprovalApplyFailure> {
     let (transaction, action) = match command {
         AdmittedApprovalPersonOperation::List(command) => {
-            let (loan, signed) = command.into_application();
-            (loan, SignedAction::List(signed))
+            let (loan, admitted) = command.into_application();
+            (loan, PersonApprovalAction::List(admitted))
         }
         AdmittedApprovalPersonOperation::Read(command) => {
-            let (loan, signed) = command.into_application();
-            (loan, SignedAction::Read(signed))
+            let (loan, admitted) = command.into_application();
+            (loan, PersonApprovalAction::Read(admitted))
         }
         AdmittedApprovalPersonOperation::Decide(command) => {
-            let (loan, signed) = command.into_application();
-            (loan, SignedAction::Decide(signed))
+            let (loan, admitted) = command.into_application();
+            (loan, PersonApprovalAction::Decide(admitted))
         }
         AdmittedApprovalPersonOperation::Retry(command) => {
-            let (loan, signed) = command.into_application();
-            (loan, SignedAction::Retry(signed))
+            let (loan, admitted) = command.into_application();
+            (loan, PersonApprovalAction::Retry(admitted))
         }
     };
     let sampled = match &action {
-        SignedAction::List(signed) => signed.sampled(),
-        SignedAction::Read(signed) => signed.sampled(),
-        SignedAction::Decide(signed) => signed.sampled(),
-        SignedAction::Retry(signed) => signed.sampled(),
+        PersonApprovalAction::List(admitted) => admitted.sampled(),
+        PersonApprovalAction::Read(admitted) => admitted.sampled(),
+        PersonApprovalAction::Decide(admitted) => admitted.sampled(),
+        PersonApprovalAction::Retry(admitted) => admitted.sampled(),
     };
     let time = ApprovalApplyingTime::read(transaction, sampled).await?;
     let retained_at = EngineTime::from_timestamp_millis(sampled.unix_millis())
         .ok_or_else(|| corrupt("approval_store.applying_time"))?;
     let mut store = ApprovalApplyingStore::new(commit, transaction, &(), &time, row_ids);
     let (reply, address, reservation) = match action {
-        SignedAction::List(signed) => {
-            let request = signed.request();
+        PersonApprovalAction::List(admitted) => {
+            let request = admitted.request();
             let reply = store
-                .list_person_requests(signed.identity(), request.filter, request.cursor.as_ref())
+                .list_person_requests(admitted.identity(), request.filter, request.cursor.as_ref())
                 .await?;
             (
                 PersonApprovalStoreReply::List(reply),
-                reply_address(signed.identity()),
-                signed.into_reservation(),
+                reply_address(admitted.identity()),
+                admitted.into_reservation(),
             )
         }
-        SignedAction::Read(signed) => {
+        PersonApprovalAction::Read(admitted) => {
             let reply = store
-                .read_person_request(signed.identity(), &signed.request().request_id)
+                .read_person_request(admitted.identity(), &admitted.request().request_id)
                 .await?;
             (
                 PersonApprovalStoreReply::Read(reply),
-                reply_address(signed.identity()),
-                signed.into_reservation(),
+                reply_address(admitted.identity()),
+                admitted.into_reservation(),
             )
         }
-        SignedAction::Decide(signed) => {
+        PersonApprovalAction::Decide(admitted) => {
             let reply = store
-                .decide_person_request(signed.identity(), signed.request().clone(), retained_at)
+                .decide_person_request(admitted.identity(), admitted.request().clone(), retained_at)
                 .await?;
             (
                 PersonApprovalStoreReply::Decide(reply),
-                reply_address(signed.identity()),
-                signed.into_reservation(),
+                reply_address(admitted.identity()),
+                admitted.into_reservation(),
             )
         }
-        SignedAction::Retry(signed) => {
+        PersonApprovalAction::Retry(admitted) => {
             let Some(reply) = store
-                .replay_person_decision(&signed.retained_decision(), retained_at)
+                .replay_person_decision(&admitted.retained_decision(), retained_at)
                 .await?
             else {
                 return Ok(None);
             };
             (
                 PersonApprovalStoreReply::Decide(reply),
-                reply_address(signed.identity()),
-                signed.into_reservation(),
+                reply_address(admitted.identity()),
+                admitted.into_reservation(),
             )
         }
     };
-    store.execute_guarded_write(reservation).await?;
+    if let Some(reservation) = reservation {
+        store.execute_guarded_write(reservation).await?;
+    }
     let settled_approval = !store.holder_offers.is_empty();
     let effects = store.finish_effects();
     if settled_approval {

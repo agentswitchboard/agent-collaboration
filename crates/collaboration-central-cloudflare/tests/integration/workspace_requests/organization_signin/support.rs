@@ -48,8 +48,9 @@ impl Fixture {
         std::fs::write(&plan,serde_json::to_vec(&json!({"textBindings":{
             "CENTRAL_MACHINE_AUDIENCE":fixture::MACHINE_AUDIENCE,
             "CENTRAL_SIGN_IN_ISSUER":issuer,"CENTRAL_SIGN_IN_AUDIENCE":fixture::AUDIENCE,
-            "CENTRAL_SIGN_IN_JWKS_URL":"https://signin.test/.well-known/jwks.json",
-            "CENTRAL_ADMIN_AUDIENCE":fixture::ADMIN_AUDIENCE,"CENTRAL_PUBLIC_ORIGIN":fixture::PUBLIC_ORIGIN,
+            "CENTRAL_ADMIN_AUDIENCE":fixture::ADMIN_AUDIENCE,
+            "CENTRAL_PERSON_LINK_AUDIENCE":format!("{}/audiences/central-person-link", fixture::ISSUER),
+            "CENTRAL_PUBLIC_ORIGIN":fixture::PUBLIC_ORIGIN,
             "CENTRAL_SIGN_IN_SERVICE_ID":"019f0000-0000-7000-8000-00000000d290"
         },"jwksFixtureUrl":keys.url})).unwrap()).unwrap();
         let clock = Arc::new(

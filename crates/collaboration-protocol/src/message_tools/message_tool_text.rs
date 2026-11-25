@@ -104,7 +104,14 @@ fn delivery_text(observation: MessageDeliveryObservation) -> &'static str {
             }
             MessageStatus::Delivered { .. } => "Delivered to the recipient's Mac.",
             MessageStatus::Seen { .. } => "Seen: the recipient session was told.",
-            MessageStatus::Refused { .. } => "Refused by the recipient's Mac.",
+            MessageStatus::Refused { reason } => match reason {
+                workspace_model::central_mail::MessageRefusal::UnknownSession => {
+                    "Refused by the recipient's Mac: unknown session."
+                }
+                workspace_model::central_mail::MessageRefusal::AmbiguousSession => {
+                    "Refused by the recipient's Mac: two sessions match."
+                }
+            },
             MessageStatus::NotFound {} => "Central has no record of this message.",
         },
     }

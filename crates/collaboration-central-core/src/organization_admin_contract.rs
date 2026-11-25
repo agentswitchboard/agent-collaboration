@@ -1,7 +1,6 @@
 //! Closed answers from a verified organization admin operation.
 use crate::person_request::{AdmissionRefusal, MAXIMUM_RECORD_PAGE};
 use fleet_contracts::{MachineEnrollmentRevocationResult, WorkspaceView};
-use fleet_engine::EngineFailureClass;
 use fleet_identity_protocol::UnixMillis;
 use fleet_signin::organization_change::{
     ChangeRequestId, MachineAllowanceState, OrganizationChangeOrigin,
@@ -62,58 +61,6 @@ impl TryFrom<StoredOrganizationChange> for OrganizationChangeRecord {
             StoredOrganizationChange::TargetedChange(change) => Self::TargetedChange(change),
         })
     }
-}
-
-/// The closed set of engine kinds an admin sees; test-support machines are hidden.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-#[cfg_attr(
-    all(feature = "wire-export", not(target_arch = "wasm32")),
-    derive(specta::Type)
-)]
-pub enum EngineKindName {
-    WakeTimer,
-    AutomationTimer,
-    DirectMessage,
-    SystemMessageExpiry,
-    LegacyNoticeWindows,
-    LegacyWorkspaceDrains,
-    EngineSource,
-}
-
-/// One registered engine kind in EngineHealth; zero counts are listed too.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[cfg_attr(
-    all(feature = "wire-export", not(target_arch = "wasm32")),
-    derive(specta::Type)
-)]
-pub struct EngineKindHealth {
-    pub kind: EngineKindName,
-    pub failing: u32,
-    pub retired: u32,
-    #[schemars(with = "Option<String>", extend("format" = "date-time"))]
-    pub oldest_first_failed_at: Option<chrono::DateTime<chrono::Utc>>,
-    pub last_failure: Option<EngineFailureClass>,
-}
-
-/// One retired failure record in EngineListRetired, ascending by attempt ID.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[cfg_attr(
-    all(feature = "wire-export", not(target_arch = "wasm32")),
-    derive(specta::Type)
-)]
-pub struct EngineRetiredItem {
-    #[schemars(with = "String", extend("format" = "uuid"))]
-    pub attempt_id: uuid::Uuid,
-    pub kind: EngineKindName,
-    pub subject_key: String,
-    pub failure_class: EngineFailureClass,
-    pub count: u32,
-    #[schemars(with = "String", extend("format" = "date-time"))]
-    pub retired_at: chrono::DateTime<chrono::Utc>,
-    pub last_failure: Option<String>,
 }
 
 /// Verification failures become a bare 401; answered operations have a body.
@@ -235,46 +182,10 @@ pub enum OrganizationAdminResult {
     Records {
         records: Vec<OrganizationChangeRecord>,
     },
-    EngineHealth {
-        kinds: Vec<EngineKindHealth>,
-        #[schemars(with = "Option<String>", extend("format" = "date-time"))]
-        alarm: Option<chrono::DateTime<chrono::Utc>>,
-        alarm_missing: bool,
-    },
-    EngineRetired {
-        items: Vec<EngineRetiredItem>,
-        #[serde(deserialize_with = "Option::deserialize")]
-        #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = NullableEngineRetiredCursor))]
-        #[schemars(required, schema_with = "nullable_engine_retired_cursor_schema")]
-        next: NullableEngineRetiredCursor,
-    },
-    EngineRetried {},
-    EngineDiscarded {},
     Refused {
         reason: AdminRefusal,
     },
 }
-
-type NullableEngineRetiredCursor = Option<uuid::Uuid>;
-
-fn nullable_engine_retired_cursor_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
-    schemars::json_schema!({"type":["string","null"],"format":"uuid"})
-}
-
-// Specta needs the cursor type override in both phases. Keep the field visible
-// to the compiler so a mismatch between the two types cannot drift.
-#[cfg(all(feature = "wire-export", not(target_arch = "wasm32")))]
-const _: fn(&OrganizationAdminResult) -> Option<&NullableEngineRetiredCursor> =
-    |result| match result {
-        OrganizationAdminResult::EngineRetired { next, .. } => Some(next),
-        OrganizationAdminResult::Applied { .. }
-        | OrganizationAdminResult::Found { .. }
-        | OrganizationAdminResult::Records { .. }
-        | OrganizationAdminResult::EngineHealth { .. }
-        | OrganizationAdminResult::EngineRetried {}
-        | OrganizationAdminResult::EngineDiscarded {}
-        | OrganizationAdminResult::Refused { .. } => None,
-    };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -319,7 +230,3 @@ impl From<AdmissionRefusal> for AdminRefusal {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "organization_admin_contract_test.rs"]
-mod tests;

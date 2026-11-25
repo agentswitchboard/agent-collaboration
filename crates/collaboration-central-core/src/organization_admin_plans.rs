@@ -4,6 +4,7 @@ use crate::{
     WorkspaceRuntime,
     organization_admin_contract::OrganizationChangeRecord,
     organization_authority_cache::StampStanding,
+    organization_workspace_plans::apply_workspace_create,
     person_admission_plans::prepare_person_admission,
     person_request::{
         AdminOperation, AdminRoute, AdmissionRefusal, PersonRequestInput, PersonRequestRefusal,
@@ -16,6 +17,18 @@ use fleet_contracts::{
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
 use fleet_workspace_directory::CentralWorkspaceDirectory;
 impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
+    pub(crate) async fn find_organization_workspace(
+        &self,
+        workspace: &workspace_ids::WorkspaceId,
+    ) -> Result<Option<fleet_contracts::WorkspaceView>, StoreFailure> {
+        let directory = CentralWorkspaceDirectory::new(self.execution.statement_host());
+        directory
+            .read_by_id(workspace)
+            .await?
+            .map(|row| directory.workspace_view(row))
+            .transpose()
+    }
+
     pub(crate) async fn list_organization_workspaces(
         &self,
         after: Option<&message_board::WorkspaceId>,
@@ -90,11 +103,7 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
                 ));
             }
         };
-        let mut statements = plan.statements;
-        let mut operation = None;
-        let mut retained = None;
-        let mut alarm = central_storage::AlarmUpdate::Unchanged;
-        let mut guard_failed = AdminRefusal::Conflict;
+        let statements = plan.statements;
         let result = match &verified.operation {
             AdminOperation::RevokeMachineEnrollment(revocation) => {
                 return self
@@ -107,13 +116,15 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
                     .await;
             }
             AdminOperation::CreateWorkspace(request) => {
-                let created = self
-                    .prepare_workspace_create(&verified, request, now)
-                    .await?;
-                statements.extend(created.statements);
-                operation = Some(created.operation);
-                retained = created.retained;
-                OrganizationAdminAnswer::Answered(created.result)
+                let person = verified.person_id.try_into().map_err(|_| {
+                    fleet_runtime_ports::workspace_decode_error::corrupt("person_id")
+                })?;
+                let answer =
+                    apply_workspace_create(self, &person, request, now, statements).await?;
+                return Ok(match answer.retained {
+                    Some(retained) => OrganizationAdminAnswer::Retained(retained),
+                    None => OrganizationAdminAnswer::Answered(answer.result),
+                });
             }
             AdminOperation::WorkspaceLookup(request) => {
                 let workspace = request
@@ -124,12 +135,7 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
                     .map_err(|_| {
                         fleet_runtime_ports::workspace_decode_error::corrupt("workspace_id")
                     })?;
-                let directory = CentralWorkspaceDirectory::new(self.execution.statement_host());
-                let found = directory
-                    .read_by_id(&workspace)
-                    .await?
-                    .map(|row| directory.workspace_view(row))
-                    .transpose()?;
+                let found = self.find_organization_workspace(&workspace).await?;
                 OrganizationAdminAnswer::Answered(OrganizationAdminResult::Found {
                     workspace: found,
                 })
@@ -159,35 +165,6 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
                     .collect::<Result<_, _>>()?;
                 OrganizationAdminAnswer::Answered(OrganizationAdminResult::Records { records })
             }
-            AdminOperation::EngineHealth(_) => {
-                OrganizationAdminAnswer::Answered(self.engine_health_result().await?.result)
-            }
-            AdminOperation::EngineListRetired(request) => {
-                let planned = self
-                    .engine_retired_result(request.after, request.limit.get())
-                    .await?;
-                OrganizationAdminAnswer::Answered(planned.result)
-            }
-            AdminOperation::EngineRetry(request) => {
-                let planned = self.prepare_engine_retry(&verified, request, now).await?;
-                statements.extend(planned.statements);
-                alarm = planned.alarm;
-                retained = planned.retained;
-                // A concurrent retry deleted the record first.
-                guard_failed = AdminRefusal::NotFound;
-                OrganizationAdminAnswer::Answered(planned.result)
-            }
-            AdminOperation::EngineDiscard(request) => {
-                let planned = self
-                    .prepare_engine_discard(&verified, request, &mut statements, now)
-                    .await?;
-                if planned.committed {
-                    return Ok(OrganizationAdminAnswer::Answered(planned.result));
-                }
-                statements.extend(planned.statements);
-                retained = planned.retained;
-                OrganizationAdminAnswer::Answered(planned.result)
-            }
         };
         #[cfg(feature = "test-support")]
         self.execution
@@ -197,31 +174,18 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
         match self
             .execution
             .statement_host()
-            .run_batch(StatementBatch { statements, alarm })
+            .run_batch(StatementBatch {
+                statements,
+                alarm: central_storage::AlarmUpdate::Unchanged,
+            })
             .await?
         {
-            BatchOutcome::Applied { .. } => {
-                // Reuse the existing operation-id loss hook after a known commit;
-                // no record-only API or fake committed answer is introduced.
-                #[cfg(feature = "test-support")]
-                if operation
-                    .as_ref()
-                    .is_some_and(|id| self.execution.take_lost_reply(id))
-                {
-                    return Err(StoreFailure::AnswerLost);
-                }
-                #[cfg(not(feature = "test-support"))]
-                let _retained_operation = operation;
-                Ok(match retained {
-                    Some(answer) => OrganizationAdminAnswer::Retained(answer),
-                    None => result,
-                })
-            }
+            BatchOutcome::Applied { .. } => Ok(result),
             // A rejected statement keeps main's store-outage answer on this path.
             BatchOutcome::StatementRejected { .. } => Err(StoreFailure::Unavailable),
             _ => Ok(admin_refusal_answer(
                 verified.operation.route(),
-                guard_failed,
+                AdminRefusal::Conflict,
             )),
         }
     }

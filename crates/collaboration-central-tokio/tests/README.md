@@ -77,10 +77,11 @@ produce two consecutive changes, both are drained, and replay preserves the curs
   atomic directory/ledger/audit writes, and stored stamp facts outside both time
   bounds without granting live authority.
 
-- `organization_signin::person_approval_routes`: signed list, read and decide on
-  the Unix sign-in link. The shared decision table checks factor boundaries,
-  visibility and deadlines, retained replies, permission changes and proof replay. A signed
-  decision also reaches the live holder on the machine link.
+- `organization_signin::person_approval_routes` drives list, read and decide on
+  the person websocket and checks visibility, deadlines, authority and retained
+  replies in the owning store. The signed-route cases still check proof binding,
+  replay and admission. `workspace_link::approval_calls` checks that a socket
+  decision reaches the registered machine holder and settles once.
 
 - `organization_signin::machine_login`: the real private device/token decision
   routes, exact immutable three-field approval replies across reopen, both BA1
@@ -152,10 +153,10 @@ Ported from the paused reliability branch (alarm robustness):
   guard-failed drain batches each take their own outcome, and the two-workspace mixes keep
   CentralDown first and a committed workspace committed.
 - `organization_signin::engine_admin_support`: an organization with a workspace, today's
-  timers and the four engine admin routes over the real sign-in link with person proofs.
+  timers and the four engine methods exercised through test support.
 - `organization_signin::engine_admin`: V13 on the native host; EngineHealth lists every
   kind, the retired list pages in attempt order, retry and discard with their refusals,
-  replays and admission.
+  and retained replies.
 - `organization_signin::engine_unit_revival`: V2 notice units and `engine_source` on the
   native host; each unit recovers by itself, restarts its 60-day period, retires at 60
   days, stays stopped and returns only by EngineRetry; a retired source is never read.
@@ -166,7 +167,9 @@ The `workspace_link` integration module opens actual loopback WebSockets
 using the modern workspace host. It exercises signed admission, renewal,
 batch, immediate request and reply correlation, delivery replay, and private
 signed revocation of an idle link. The fixture owns the host, private Unix
-listener, public socket and signing keys for each case.
+listener, public socket and signing keys for each case. The person read cases
+compare workspace lookup and audit pages against signed HTTP and check the
+distinct permissions and the organization and machine boundaries.
 
 `codex-router central serve --config FILE` starts the same link and a private
 `signin.sock`. In the JSONC file, `listen` is the TCP address and port the

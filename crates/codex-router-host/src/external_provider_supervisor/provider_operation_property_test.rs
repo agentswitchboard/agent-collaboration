@@ -197,7 +197,7 @@ fn prompt_entries(foreground: uuid::Uuid) -> [ReservationEntry; 18] {
         ("Compact", Independent, false, true),
         ("Warm", Independent, false, true),
         ("direct delivery", Independent, false, true),
-        ("notice", Notice, false, false),
+        ("notice", Notice { foreground: None }, false, false),
         ("idle API Auto", OwnerPlaced, false, false),
         ("idle Steer fallback", OwnerPlaced, false, false),
         ("rowless idle Auto", OwnerPlaced, true, false),
@@ -276,7 +276,7 @@ fn the_reservation_class_table_keeps_admission_and_dispatch_holds_distinct() {
     let notice = prompt_request(
         &second,
         &session,
-        AdmissionMode::deferred(AdmissionClass::Notice),
+        AdmissionMode::deferred(AdmissionClass::Notice { foreground: None }),
     );
     for entry in prompt_entries(uuid::Uuid::now_v7()) {
         let mut index = LiveOperations::default();
@@ -286,8 +286,7 @@ fn the_reservation_class_table_keeps_admission_and_dispatch_holds_distinct() {
             // The lane still sees the dispatch mark on a notice.
             assert_eq!(
                 index.admission_blockers(&binding, asks).contains(&first),
-                entry.mode.class != AdmissionClass::Notice
-                    && (entry.admission_holder || dispatch_hold),
+                !entry.mode.class.is_notice() && (entry.admission_holder || dispatch_hold),
                 "{}",
                 entry.name
             );

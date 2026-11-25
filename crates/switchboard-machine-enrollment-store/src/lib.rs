@@ -9,6 +9,7 @@ use std::{
 };
 
 use router_clock::RuntimeClock;
+use state_machine_core::StateMachine;
 use switchboard_machine_core_store::{MachineLocalStore, MachineLocalStoreError};
 use switchboard_machine_enrollment::{
     BindingGeneration, ConditionalWrite, CredentialStore, CredentialStoreError, EnrollmentBinding,
@@ -17,9 +18,11 @@ use switchboard_machine_enrollment::{
 };
 use tokio::sync::{mpsc, oneshot, watch};
 
+mod enrollment_row_machine;
 mod enrollment_row_mapping;
 mod enrollment_status_read;
 mod enrollment_worker;
+mod enrollment_worker_machine;
 mod worker_lifecycle;
 pub use enrollment_status_read::{MachineEnrollmentStatus, read_machine_enrollment_status};
 #[cfg(all(feature = "test-support", debug_assertions))]
@@ -28,16 +31,20 @@ pub mod test_support {
 }
 
 use enrollment_worker::{EnrollmentWorker, ReadFailure};
+use enrollment_worker_machine::{
+    EnrollmentWorkerMachine, WorkerAdmission, WorkerEvent, WorkerState,
+};
 use worker_lifecycle::WorkerLifecycle;
 
-pub use enrollment_worker::EnrollmentWorkerExit;
-pub use worker_lifecycle::{EnrollmentJoin, EnrollmentObservationError};
+pub use enrollment_worker_machine::{
+    EnrollmentJoin, EnrollmentObservationError, EnrollmentStoreCloseError, EnrollmentWorkerExit,
+};
 
 /// An enrollment store with its own core connection and one FIFO worker.
 #[derive(Clone)]
 pub struct MachineEnrollmentStore {
     requests: mpsc::UnboundedSender<EnrollmentRequest>,
-    shutdown: watch::Sender<bool>,
+    shutdown: watch::Sender<WorkerAdmission>,
     enrollment_changes: watch::Sender<u64>,
     worker: WorkerLifecycle,
 }
@@ -76,7 +83,7 @@ impl MachineEnrollmentStore {
 
     fn start(worker: EnrollmentWorker) -> Self {
         let (requests, pending) = mpsc::unbounded_channel();
-        let (shutdown, closing) = watch::channel(false);
+        let (shutdown, closing) = watch::channel(WorkerAdmission::Open);
         let (enrollment_changes, _) = watch::channel(0);
         let worker = WorkerLifecycle::start(worker, pending, closing, enrollment_changes.clone());
         Self {
@@ -88,7 +95,7 @@ impl MachineEnrollmentStore {
     }
 
     #[cfg(test)]
-    fn abort_handle(&self) -> tokio::task::AbortHandle {
+    fn abort_handle(&self) -> futures_util::future::AbortHandle {
         self.worker.abort_handle()
     }
 
@@ -99,12 +106,14 @@ impl MachineEnrollmentStore {
 
     /// Stops admitting requests immediately. Repeated calls have no effect.
     pub fn request_close(&self) {
-        self.shutdown.send_if_modified(|closing| {
-            if *closing {
+        self.shutdown.send_if_modified(|admission| {
+            let Ok((WorkerState::Running(next), _)) = EnrollmentWorkerMachine::transition(
+                &WorkerState::Running(*admission),
+                WorkerEvent::RequestClose,
+            ) else {
                 return false;
-            }
-            *closing = true;
-            true
+            };
+            std::mem::replace(admission, next) != next
         });
     }
 
@@ -134,8 +143,13 @@ impl MachineEnrollmentStore {
     ) -> Result<(), CredentialStoreError> {
         // Keep the watch's read guard through the send so request_close cannot
         // set the stop flag between the check and admission to the queue.
-        let closing = self.shutdown.borrow();
-        if *closing {
+        let admission = self.shutdown.borrow();
+        if EnrollmentWorkerMachine::transition(
+            &WorkerState::Running(*admission),
+            WorkerEvent::Enqueue,
+        )
+        .is_err()
+        {
             return Err(definite_error);
         }
         self.requests.send(request).map_err(|_| definite_error)
@@ -235,15 +249,6 @@ impl CredentialStore for MachineEnrollmentStore {
     async fn mark_unusable(&self, expected: BindingGeneration, why: EnrollmentEnd) -> WriteResult {
         self.remove(expected, why).await
     }
-}
-
-/// A failure reported by the enrollment store when reaping its worker and connection.
-#[derive(Clone, Debug, thiserror::Error)]
-pub enum EnrollmentStoreCloseError {
-    #[error("the enrollment worker stopped before closing its connection")]
-    WorkerStopped,
-    #[error("could not close the enrollment database connection")]
-    Connection(#[source] Arc<MachineLocalStoreError>),
 }
 
 type WriteResult = Result<ConditionalWrite, CredentialStoreError>;

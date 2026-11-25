@@ -6,6 +6,7 @@ mod provider_operation_index;
 #[cfg(any(test, feature = "test-support"))]
 pub use provider_operation_index::HeldResult;
 use provider_operation_index::{LiveOperation, LiveOperations, UncertaintyCells};
+mod provider_notice_delivery;
 mod provider_operation_failure;
 mod provider_operation_finish;
 mod provider_operation_handoff;
@@ -13,7 +14,7 @@ mod provider_operation_handoff;
 #[path = "external_provider_supervisor/provider_operation_property_test.rs"]
 mod provider_operation_properties;
 mod provider_owner_delivery;
-pub use provider_owner_delivery::ManagedClaudeNoticeAdapter;
+pub use provider_notice_delivery::ManagedAcpNoticeAdapter;
 mod provider_owner_operations;
 mod provider_owner_prompt;
 pub(crate) use provider_owner_prompt::{SessionQueuePlan, WarmRun};

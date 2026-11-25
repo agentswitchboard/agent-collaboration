@@ -1,6 +1,45 @@
 /** Decode the declared worker_loop stderr events; absence of a worker never passes. */
 import { stripVTControlCharacters } from "node:util";
 import { z } from "zod";
+import { endpointViewSchema, exactIntegerSchema } from "../shared/evidence-models.ts";
+
+const endpointPublicationSchema = z.object({
+  serviceEpoch: z.string(),
+  sequence: exactIntegerSchema.nonnegative(),
+  endpoints: z.array(
+    z.object({
+      endpoint: endpointViewSchema,
+      availability: z.object({ state: z.enum(["available", "unavailable", "unprobed"]) }),
+      channels: z.array(z.looseObject({ kind: z.string() })),
+    }),
+  ),
+});
+
+export function requireNativeUnavailable(
+  reply: unknown,
+  expected: { readonly serviceId: string; readonly serviceEpoch: string },
+): z.infer<typeof endpointPublicationSchema> {
+  const inventory = endpointPublicationSchema.parse(reply);
+  if (
+    inventory.serviceEpoch !== expected.serviceEpoch ||
+    inventory.endpoints.some((entry): boolean => entry.endpoint.serviceId !== expected.serviceId)
+  )
+    throw new Error("endpoint inventory belongs to a different Host");
+  if (
+    inventory.endpoints.some(
+      (entry): boolean =>
+        (entry.endpoint.endpointId === "codex-local" && entry.availability.state === "available") ||
+        entry.channels.some(
+          (channel): boolean =>
+            channel.kind === "nativeCodex" &&
+            channel.generation !== null &&
+            channel.generation !== undefined,
+        ),
+    )
+  )
+    throw new Error("native backend became ready on the declared no-native journey");
+  return inventory;
+}
 
 const workerEventSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("pass-started"), worker: z.string().min(1), line: z.string() }),

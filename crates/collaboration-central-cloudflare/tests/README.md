@@ -27,7 +27,10 @@ serves the private sign-in routes.
 The `machine_link` integration module opens real workerd sockets with signed
 machine tokens. It exercises admission, batch replies, renewal, alarm rearm,
 delivery and acknowledgement replay, and private signed revocation of an idle
-link. The witness cases distinguish object eviction and restored attachments
+link. The person read cases use the public person carrier and compare workspace
+lookup and audit pages against signed private HTTP. They check the distinct
+permissions and the organization and machine boundaries. The witness cases
+distinguish object eviction and restored attachments
 from warm-socket behavior. The production bundle guard excludes the witness
 controls.
 
@@ -111,8 +114,9 @@ produce two consecutive changes, both are drained, and replay preserves the curs
 `workspace_requests::organization_signin` sends actual HTTP requests through a
 gateway service binding to a separately compiled private-link Worker, then to the
 public Worker's owning central object. Real Worker fetch and WebCrypto verify the
-Rust fixture's published keys. Only one configured HTTPS JWKS URL maps to its
-owned loopback fixture; Rust owns signing, key rotation and all business assertions.
+Rust fixture's published keys. The storage Worker reads them through the named
+`SIGN_IN_KEYS` service binding. The fixture counts private GETs and global
+outbound requests separately. Rust owns signing, rotation and business assertions.
 
 ```sh
 worker-build crates/collaboration-central-cloudflare --dev --no-opt --out-dir build-test-support -- --locked --features test-support
@@ -128,10 +132,11 @@ Setup cases exercise real signed create, non-null lookup, byte-identical replay,
 canonical name collisions, atomic directory/ledger/audit writes and facts-only
 digest reads outside both time bounds.
 
-`workspace_requests::organization_signin::person_approval_routes` runs the shared
-signed approval decision table on the private binding, including factor boundaries,
-visibility and deadlines, retained replies, permission changes and proof replay. A signed
-decision also reaches the live holder on the machine link.
+`workspace_requests::organization_signin::person_approval_routes` drives list,
+read and decide on the Workerd person websocket and checks visibility, deadlines,
+authority and retained replies in the owning store. The signed-route cases still
+check proof binding, replay and admission. `machine_link::approval_calls` checks
+that a socket decision reaches the registered machine holder and settles once.
 
 `workspace_requests::organization_signin::machine_login` drives the actual private
 Worker decision binding with exact approval snapshots, BA1 grant ordering and
@@ -234,10 +239,10 @@ These cases come from the paused reliability branch and mirror the native ones:
 - `workspace_requests::notices::engine_drain_origins`: V2 error origin on workerd; each
   drain-batch outcome forced separately, and the two-workspace mixes.
 - `workspace_requests::organization_signin::engine_admin_support`: an organization with a
-  workspace, today's timers, the four engine admin routes through the Worker sign-in
-  binding with person proofs, and the captured `central engine:` log lines.
+  workspace, today's timers, the four engine methods through test support, and the
+  captured `central engine:` log lines.
 - `workspace_requests::organization_signin::engine_admin`: V13 on workerd; health, the
-  paged retired list, retry and discard with refusals, replays and admission, and the V2
+  paged retired list, retry and discard with refusals, retained replies, and the V2
   item observations.
 - `workspace_requests::organization_signin::engine_unit_revival`: V2 notice units and
   `engine_source` on workerd; recovery, the restarted 60-day period, retirement, stopped

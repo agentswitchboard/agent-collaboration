@@ -121,8 +121,6 @@ mod router_version_warning_tests {
     }
 }
 
-pub use collaboration_protocol::JournalStatus;
-
 mod native_endpoint_selector;
 pub use native_endpoint_selector::{resolve_public_native, resolve_public_native_for_endpoint};
 

@@ -3,7 +3,7 @@ use crate::workspace_approval_transactions::WorkerApprovalTransactions;
 use crate::workspace_session_transactions::{WorkerSessionTransactions, fill_session_secret};
 use crate::{
     object_location::ObjectAddress,
-    sign_in_trust::CloudflareSignInTrust,
+    sign_in_trust::{CloudflareSignInTrust, CloudflareSignInTrustLoad},
     statement_store::{self, AlarmPolicy},
     worker_clock::WorkspaceClock,
 };
@@ -395,16 +395,12 @@ impl CentralObject {
         } else {
             central.with_link_call_dispatcher(dispatcher)
         };
-        let central = match crate::organization_signin_link::trust_settings(&self.env) {
-            Ok(Some(settings)) => {
-                match CloudflareSignInTrust::new(settings).for_organization(organization, clock) {
-                    Ok(check) => central.with_sign_in_verification(check),
-                    Err(fleet_signin::organization_authority::InvalidStampTrust) => central,
-                }
+        let central = match CloudflareSignInTrust::from_env(&self.env, organization, clock) {
+            CloudflareSignInTrustLoad::NotConfigured => central,
+            CloudflareSignInTrustLoad::Ready(check) => central.with_sign_in_verification(check),
+            CloudflareSignInTrustLoad::ConfiguredButUnavailable(check) => {
+                central.with_sign_in_verification(Arc::new(check))
             }
-            // Invalid/missing trust never permits sign-in. The default checker
-            // returns the closed InvalidConfiguration refusal for core to observe.
-            Ok(None) | Err(_) => central,
         };
         let mail_pushes = self.mail_pushes.clone();
         let mail_retirements = self.mail_retirements.clone();

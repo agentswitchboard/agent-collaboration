@@ -11,6 +11,7 @@ pub use approval_person_admission::{
     AdmittedApprovalCommand, AdmittedApprovalFacts, AdmittedApprovalPersonOperation,
     ApprovalPersonAdmission, ApprovalPersonTransaction, ApprovalPersonVerificationInput,
     RetainedDecisionRequest, VerifiedApprovalDecideRetry, VerifiedApprovalPersonRequest,
+    admit_person_link_approval,
 };
 pub use fleet_permission::FleetPermission;
 

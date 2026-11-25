@@ -1,13 +1,15 @@
-use std::time::Duration;
+use state_machine_core::StateMachine;
 
 use crate::{
-    ConditionalWrite, CredentialStore, CredentialStoreError, DeviceEnrollment,
-    DeviceEnrollmentInput, DeviceInstructions, DevicePollSchedule, EnrollmentBinding,
+    ApprovedEnrollmentSaveFailure, CredentialStore, CredentialStoreError, DeviceInstructions,
     EnrollmentContext, EnrollmentEnd, EnrollmentReceipt, EnrollmentRequest, InvalidReason,
-    PollAnswer, RefreshCredential, SignInClient, SignInFailure, StoreDurability, StoredEnrollment,
+    PollAnswer, SignInClient, SignInFailure, StoreDurability, StoredEnrollment,
+    approved_enrollment_save::install_approved_binding,
+    device_state::{
+        DeviceSignInEffect, DeviceSignInEnding, DeviceSignInEvent, DeviceSignInMachine,
+        DeviceSignInState,
+    },
 };
-
-const FINAL_POLL_GRACE: Duration = Duration::from_secs(2);
 
 /// The client reports why one human-initiated device login did not install a durable binding.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -28,25 +30,6 @@ pub enum EnrollmentFailure {
     Store(#[from] CredentialStoreError),
     #[error(transparent)]
     AfterApproval(#[from] ApprovedEnrollmentSaveFailure),
-}
-
-/// Sign-in approved the attempt, but the Mac cannot report a durable save.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-pub enum ApprovedEnrollmentSaveFailure {
-    #[error("sign-in approved the request, but the local save failed")]
-    NotSaved(#[source] EnrollmentSaveFailure),
-    #[error("sign-in approved the request, but the local save outcome is unknown")]
-    OutcomeUnknown(#[source] EnrollmentSaveFailure),
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-pub enum EnrollmentSaveFailure {
-    #[error(transparent)]
-    Store(#[from] CredentialStoreError),
-    #[error("another enrollment replaced the preceding binding")]
-    ReplacementConflict,
-    #[error("the enrollment generation cannot be advanced")]
-    GenerationExhausted,
 }
 
 impl SignInClient {
@@ -75,7 +58,7 @@ impl SignInClient {
             } => Some((key.organization_id, deployment)),
         };
         if stored_scope.is_some_and(|(organization, deployment)| {
-            organization != context.organization_id || deployment != &context.deployment
+            !context.matches_scope(organization, deployment)
         }) {
             return Err(CredentialStoreError::EnrollmentScopeMismatch.into());
         }
@@ -88,47 +71,39 @@ impl SignInClient {
         }
 
         let client_id = self.discover().await?.client_id;
-        let dispatched_at = self.clock.monotonic_now();
+        let dispatched = self.clock.monotonic_now();
         let authorization = self.start(client_id, request).await?;
-        let arrived_at = self.clock.monotonic_now();
+        let arrived = self.clock.monotonic_now();
         show_instructions(&authorization.instructions)?;
-        let mut state = DeviceEnrollment::NotEnrolled.step(
-            arrived_at,
-            DeviceEnrollmentInput::Started {
-                authorization,
-                dispatched_at,
+        let (mut state, _) = DeviceSignInMachine::transition(
+            &DeviceSignInState::Starting,
+            DeviceSignInEvent::Started {
+                dispatched,
+                arrived,
+                interval: authorization.interval,
+                expires_in: authorization.expires_in,
             },
-        );
+        )
+        .map_err(|_| transition_fault())?;
 
         loop {
-            let now = self.clock.monotonic_now();
-            match state.poll_schedule(now) {
-                DevicePollSchedule::Inactive => {
-                    return match state {
-                        DeviceEnrollment::Enrolled(receipt) => Ok(receipt),
-                        DeviceEnrollment::Ended { why } => Err(EnrollmentFailure::Ended(why)),
-                        _ => Err(invalid_attempt()),
-                    };
+            state = match state {
+                DeviceSignInState::Waiting(window) => {
+                    let now = self.clock.monotonic_now();
+                    let (next, _) =
+                        DeviceSignInMachine::transition(&state, DeviceSignInEvent::Woke(now))
+                            .map_err(|_| transition_fault())?;
+                    if matches!(next, DeviceSignInState::Waiting(_)) {
+                        self.clock.sleep_until(window.wake_at()).await;
+                    }
+                    next
                 }
-                DevicePollSchedule::DeadlineReached => {
-                    state = state.step(now, DeviceEnrollmentInput::ClockReached);
-                }
-                DevicePollSchedule::WaitUntil(at) => self.clock.sleep_until(at).await,
-                DevicePollSchedule::Due => {
-                    let DeviceEnrollment::Asking {
-                        authorization,
-                        deadline,
-                        ..
-                    } = &state
-                    else {
-                        return Err(invalid_attempt());
-                    };
-                    let deadline = *deadline;
-                    let response = router_clock::timeout_at(
+                DeviceSignInState::Polling(window) => {
+                    let reply = router_clock::timeout_at(
                         self.clock.as_ref(),
-                        deadline.after(FINAL_POLL_GRACE),
+                        window.reply_deadline(),
                         async {
-                            if self.clock.monotonic_now() >= deadline {
+                            if !window.dispatch_allowed(self.clock.monotonic_now()) {
                                 return None;
                             }
                             Some(self.poll(client_id, &authorization.device_code).await)
@@ -137,115 +112,51 @@ impl SignInClient {
                     .await
                     .ok()
                     .flatten();
-                    let now = self.clock.monotonic_now();
-                    let input = match response {
-                        Some(PollAnswer::Enrolled(grant))
-                            if now <= deadline.after(FINAL_POLL_GRACE) =>
-                        {
-                            let receipt = install_approved_binding(
-                                store,
-                                &before,
-                                &context,
-                                grant.credential,
-                            )
-                            .await?;
-                            DeviceEnrollmentInput::Committed(receipt)
-                        }
-                        _ if now >= deadline => DeviceEnrollmentInput::ClockReached,
-                        Some(PollAnswer::Pending) => DeviceEnrollmentInput::Pending,
-                        Some(PollAnswer::SlowDown) => DeviceEnrollmentInput::SlowDown,
-                        Some(PollAnswer::Denied) => DeviceEnrollmentInput::Denied,
-                        Some(PollAnswer::Expired) | None => DeviceEnrollmentInput::Expired,
-                        Some(PollAnswer::Invalid { reason }) => {
-                            DeviceEnrollmentInput::Invalid { reason }
-                        }
-                        Some(PollAnswer::Unavailable { retry_after }) => {
-                            DeviceEnrollmentInput::Unavailable { retry_after }
-                        }
-                        Some(PollAnswer::Enrolled(_)) => return Err(invalid_attempt()),
-                    };
-                    state = state.step(now, input);
+                    let (mut next, effects) = DeviceSignInMachine::transition(
+                        &state,
+                        DeviceSignInEvent::PollSettled {
+                            now: self.clock.monotonic_now(),
+                            reply: reply.as_ref(),
+                        },
+                    )
+                    .map_err(|_| transition_fault())?;
+                    if let [DeviceSignInEffect::SaveApprovedGrant] = effects.as_slice()
+                        && let Some(PollAnswer::Enrolled(grant)) = reply
+                    {
+                        let result =
+                            install_approved_binding(store, &before, &context, grant.credential)
+                                .await;
+                        next = DeviceSignInMachine::transition(
+                            &next,
+                            DeviceSignInEvent::SaveSettled(result),
+                        )
+                        .map_err(|_| transition_fault())?
+                        .0;
+                    }
+                    next
                 }
-            }
+                DeviceSignInState::Enrolled(receipt) => return Ok(receipt),
+                DeviceSignInState::Ended(ending) => {
+                    return Err(match ending {
+                        DeviceSignInEnding::SignIn(why) => EnrollmentFailure::Ended(why),
+                        DeviceSignInEnding::AfterApproval(error) => {
+                            EnrollmentFailure::AfterApproval(error)
+                        }
+                    });
+                }
+                // Start settles above and an approved grant's save effect settles
+                // before the drive loop observes its next state.
+                DeviceSignInState::Starting | DeviceSignInState::Saving => {
+                    return Err(transition_fault());
+                }
+            };
         }
     }
 }
 
-fn invalid_attempt() -> EnrollmentFailure {
+// This cannot fire because each branch feeds the event its state declares.
+// These fallbacks remain because transition returns a Result. A typed driver
+// per state would remove them.
+fn transition_fault() -> EnrollmentFailure {
     EnrollmentFailure::Ended(EnrollmentEnd::Invalid(InvalidReason::UnexpectedStatus))
-}
-
-async fn install_approved_binding(
-    store: &impl CredentialStore,
-    before: &StoredEnrollment,
-    context: &EnrollmentContext,
-    credential: RefreshCredential,
-) -> Result<EnrollmentReceipt, ApprovedEnrollmentSaveFailure> {
-    let old_identity = before.key();
-    let mut expected = before.generation();
-    let mut binding =
-        EnrollmentBinding {
-            generation: expected.binding_successor().ok_or(
-                ApprovedEnrollmentSaveFailure::NotSaved(EnrollmentSaveFailure::GenerationExhausted),
-            )?,
-            context: context.clone(),
-            credential,
-        };
-
-    let mut earlier_write_unresolved = false;
-    let result = loop {
-        let current = match store.replace(expected, &binding).await {
-            Ok(ConditionalWrite::Applied) => break Ok(()),
-            Ok(ConditionalWrite::Superseded) => match store.read().await {
-                Ok(current) => current,
-                Err(error) => break Err(error.into()),
-            },
-            Err(CredentialStoreError::OutcomeNotKnown) => {
-                let current = match store.read().await {
-                    Ok(current) => current,
-                    Err(error) => {
-                        earlier_write_unresolved = true;
-                        break Err(error.into());
-                    }
-                };
-                if matches!(&current, StoredEnrollment::Active(stored) if binding.matches_replacement(stored))
-                {
-                    break Ok(());
-                }
-                if current.generation() == expected {
-                    continue;
-                }
-                // A later generation can hide a save that committed and was
-                // then replaced. Preserve that uncertainty unless we succeed.
-                earlier_write_unresolved |= current.generation() > binding.generation;
-                current
-            }
-            Err(
-                error @ (CredentialStoreError::Read
-                | CredentialStoreError::Replace
-                | CredentialStoreError::EnrollmentScopeMismatch
-                | CredentialStoreError::Remove
-                | CredentialStoreError::CleanupTimedOut),
-            ) => break Err(error.into()),
-        };
-        if current.key() != old_identity || current.generation() <= expected {
-            break Err(EnrollmentSaveFailure::ReplacementConflict);
-        }
-        expected = current.generation();
-        let Some(successor) = expected.binding_successor() else {
-            break Err(EnrollmentSaveFailure::GenerationExhausted);
-        };
-        binding.generation = successor;
-    };
-    result.map_err(|failure| {
-        if earlier_write_unresolved {
-            ApprovedEnrollmentSaveFailure::OutcomeUnknown(failure)
-        } else {
-            ApprovedEnrollmentSaveFailure::NotSaved(failure)
-        }
-    })?;
-    Ok(EnrollmentReceipt {
-        generation: binding.generation,
-        enrollment_id: binding.credential.enrollment_id,
-    })
 }

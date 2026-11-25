@@ -1,4 +1,4 @@
-//! Force each competitor through its production entrance while signed Decide is held.
+//! Force each competitor through its production entrance while the person socket Decide is held.
 
 use crate::fixture_link_reader::read_fixture_frame;
 use std::future::Future;
@@ -24,7 +24,7 @@ use crate::{
     },
 };
 
-const DECIDE: &str = "/organization-admin/v1/approval-decide";
+use super::approval_socket::{DECIDE, PersonApprovalSocket};
 const REVISIONS: &str = "/internal/organization-authorization-revisions";
 
 #[derive(Clone, Copy)]
@@ -57,6 +57,9 @@ pub trait PersonApprovalRaceFixture {
     type Link: ApprovalLinkFixture;
 
     fn link(&self) -> &Self::Link;
+
+    fn connect_person(&self, person: &Person)
+    -> impl Future<Output = Result<PersonApprovalSocket>>;
 
     fn post_private(
         &self,
@@ -123,26 +126,16 @@ pub async fn check_decision_race(
     let operation = fresh_request_id(person_starts_at)?;
     let answer = json!({"kind": "unprovenCall", "decision": "allow"});
     let body = json!({
-        "organization": organization, "requestId": request.request_id(),
-        "operationId": operation, "answer": answer,
+        "requestId": request.request_id(), "operationId": operation, "answer": answer,
     });
-    let intent = json!({
-        "v": 1, "operation": "ApprovalDecide", "organization": organization,
-        "target": request.request_id(), "operationId": operation, "params": {"answer": answer},
-    });
-    let headers = owner.headers(
-        DECIDE,
-        &intent,
-        &fresh_request_id(person_starts_at)?,
-        person_starts_at,
-    )?;
+    let mut person_socket = fixture.connect_person(&owner).await?;
     let person_first = matches!(order, DecisionRaceOrder::PersonFirst);
     let pause = match order {
         DecisionRaceOrder::CompetitorFirst => PersonApprovalPause::BeforeTurn,
         DecisionRaceOrder::PersonFirst => PersonApprovalPause::AfterCommit,
     };
     fixture.control_pause(pause, RacePauseStep::Arm).await?;
-    let mut deciding = std::pin::pin!(fixture.post_private(DECIDE, &body, headers));
+    let mut deciding = std::pin::pin!(person_socket.call(DECIDE, organization.as_str(), &body));
     let held = tokio::select! {
         reached = fixture.control_pause(pause, RacePauseStep::Wait) => reached,
         early = &mut deciding => Err(format!("person Decide returned before its pause: {early:?}").into()),
@@ -210,7 +203,7 @@ pub async fn check_decision_race(
     } else {
         json!({"kind": "tooLate"})
     };
-    let actual: Value = serde_json::from_slice(&expect_ok(deciding.await?)?)?;
+    let actual: Value = serde_json::from_slice(&deciding.await?.answer()?)?;
     assert_eq!(actual, expected);
     assert_eq!(read_winner(link, &request).await?, winner);
     match competitor {

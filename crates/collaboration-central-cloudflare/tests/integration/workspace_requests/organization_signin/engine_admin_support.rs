@@ -1,14 +1,12 @@
-//! An organization with a real workspace, today's timers and the four P8 engine
-//! admin routes called through the real Worker sign-in binding with real person
-//! proofs. The sign-in fixture captures the Worker's logs, so the engine's
-//! `central engine:` observations are readable here.
+//! Real organization and engine operations for the host behavior tests.
 use super::super::workerd_host::RemoteRuntime;
 use super::support::*;
 use central_storage::{
     AlarmUpdate, BatchOutcome, GuardedStatement, RowExpectation, SqlValue, Statement,
-    StatementBatch,
+    StatementBatch, StoreFailure,
 };
-use collaboration_central_conformance::signin_fixtures::{self as signed, Person};
+use collaboration_central_conformance::signin_fixtures as signed;
+use collaboration_central_core::{EngineAdminControl, EngineAttemptAction};
 use router_clock::RuntimeClock;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -17,12 +15,6 @@ use workspace_model::central_mail::{
     CentralMailAnswer, CentralMailOperation, CentralMailRequest, CentralMailResult,
 };
 
-pub(super) const HEALTH: &str = "/organization-admin/v1/engine-health";
-pub(super) const RETIRED: &str = "/organization-admin/v1/engine-retired";
-pub(super) const RETRY: &str = "/organization-admin/v1/engine-retry";
-pub(super) const DISCARD: &str = "/organization-admin/v1/engine-discard";
-pub(super) const READ_AUDIT: &str = "organization:readAudit";
-pub(super) const REPAIR_WORK: &str = "organization:repairWork";
 pub(super) type Time = chrono::DateTime<chrono::Utc>;
 
 pub(super) fn text(value: impl ToString) -> SqlValue {
@@ -362,81 +354,58 @@ impl EngineOrg {
             .await;
     }
 
-    pub fn person(&self, permissions: &[&str], second_factor: bool) -> Person {
-        let mut person = Person::owner(ORG, self.now_seconds()).unwrap();
-        person.permissions = permissions
-            .iter()
-            .map(|value| (*value).to_owned())
-            .collect();
-        if !second_factor {
-            person.second_factor_at = None;
-        }
-        person
-    }
-    pub fn repairer(&self) -> Person {
-        self.person(&[READ_AUDIT, REPAIR_WORK], true)
-    }
-    async fn admin(&self, path: &str, body: Value, intent: Value, person: &Person) -> Value {
-        // Push the held time to the Worker before the proof is judged.
-        self.runtime().await;
-        let headers = person
-            .headers(path, &intent, &self.fresh(), self.now_seconds())
-            .unwrap();
-        let (status, value) = self.f.post_with(path, &body, &headers).await;
-        assert_eq!(status, 200, "{path}: {value}");
-        value
-    }
-    pub async fn health_as(&self, person: &Person) -> Value {
-        self.admin(
-            HEALTH,
-            json!({"organizationId":ORG}),
-            json!({"v":1,"operation":"EngineHealth","organization":ORG,"target":ORG,"operationId":null,"params":{}}),
-            person,
-        )
-        .await
-    }
-    pub async fn health(&self) -> Value {
-        self.health_as(&self.person(&[READ_AUDIT], false)).await
-    }
-    pub async fn retired_as(&self, after: Option<&str>, limit: u32, person: &Person) -> Value {
-        self.admin(
-            RETIRED,
-            json!({"organizationId":ORG,"after":after,"limit":limit}),
-            json!({"v":1,"operation":"EngineListRetired","organization":ORG,"target":ORG,"operationId":null,"params":{"after":after,"limit":limit}}),
-            person,
-        )
-        .await
-    }
-    pub async fn retired(&self, after: Option<&str>, limit: u32) -> Value {
-        self.retired_as(after, limit, &self.person(&[READ_AUDIT], false))
+    pub async fn engine_admin(&self, control: EngineAdminControl) -> Result<Value, StoreFailure> {
+        self.runtime()
             .await
+            .control("engine-admin-control", &control)
+            .await?
     }
-    pub async fn change_as(
+
+    pub async fn health(&self) -> Value {
+        self.engine_admin(EngineAdminControl::Health {})
+            .await
+            .unwrap()
+    }
+
+    pub async fn retired_result(
         &self,
-        path: &str,
+        after: Option<&str>,
+        limit: u32,
+    ) -> Result<Value, StoreFailure> {
+        self.engine_admin(EngineAdminControl::Retired {
+            after: after.map(|id| id.parse().unwrap()),
+            limit: limit.try_into().unwrap(),
+        })
+        .await
+    }
+
+    pub async fn retired(&self, after: Option<&str>, limit: u32) -> Value {
+        self.retired_result(after, limit).await.unwrap()
+    }
+
+    pub async fn change(
+        &self,
+        action: EngineAttemptAction,
         operation_id: &str,
         attempt: &str,
-        person: &Person,
     ) -> Value {
-        let operation = if path == RETRY {
-            "EngineRetry"
-        } else {
-            "EngineDiscard"
-        };
-        self.admin(
-            path,
-            json!({"organizationId":ORG,"operationId":operation_id,"attemptId":attempt}),
-            json!({"v":1,"operation":operation,"organization":ORG,"target":ORG,"operationId":operation_id,"params":{"attemptId":attempt}}),
-            person,
-        )
+        self.engine_admin(EngineAdminControl::Change {
+            operation_id: operation_id.parse().unwrap(),
+            attempt_id: attempt.parse().unwrap(),
+            person_id: signed::OWNER.parse().unwrap(),
+            action,
+        })
         .await
+        .unwrap()
     }
+
     pub async fn retry(&self, attempt: &str) -> Value {
-        self.change_as(RETRY, &self.fresh(), attempt, &self.repairer())
+        self.change(EngineAttemptAction::Retry, &self.fresh(), attempt)
             .await
     }
+
     pub async fn discard(&self, attempt: &str) -> Value {
-        self.change_as(DISCARD, &self.fresh(), attempt, &self.repairer())
+        self.change(EngineAttemptAction::Discard, &self.fresh(), attempt)
             .await
     }
     pub async fn close(self) {

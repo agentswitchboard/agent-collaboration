@@ -11,7 +11,7 @@ use super::{
     ProviderOperationEffect, ProviderOperationKind, ProviderOperationRecord,
     ProviderReconciliationState, SessionRef, admission_failure, failure,
     provider_admission_policy::{
-        AdmissionBlockers, AdmissionClass, AdmissionMode, AdmissionRequest, EarlierOperation,
+        AdmissionBlockers, AdmissionMode, AdmissionRequest, EarlierOperation,
     },
     provider_operation_index::Reservation,
     snapshot_failure, snapshot_from_record, unavailable_failure,
@@ -197,7 +197,7 @@ impl ExternalProviderSupervisor {
                 if self.inner.clock.monotonic_now() >= deadline {
                     return Err(admission_expired(request.operation, request.target));
                 }
-                let notice = request.mode.class == AdmissionClass::Notice;
+                let notice = request.mode.class.is_notice();
                 let pending = outcomes.as_ref().and_then(|outcomes| {
                     let target = request.target?;
                     outcomes.pending_dispatches_for(target).find(|operation| {

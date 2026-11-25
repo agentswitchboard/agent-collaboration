@@ -27,7 +27,12 @@ impl SignInTrustSettings {
     /// Validate D08's original address bytes; never rewrite the configured audience.
     #[must_use]
     pub fn machine_audience_is_valid(&self) -> bool {
-        let value = &self.machine_audience;
+        Self::is_valid_machine_audience(&self.machine_audience)
+    }
+
+    /// Check a host's configured machine audience without changing its bytes.
+    #[must_use]
+    pub fn is_valid_machine_audience(value: &str) -> bool {
         if value.is_empty()
             || value.len() > 2048
             || !value.bytes().all(|byte| (0x21..=0x7e).contains(&byte))

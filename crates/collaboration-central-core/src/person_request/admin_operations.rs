@@ -197,35 +197,6 @@ pub struct ReadChangeRecordsRequest {
     pub limit: RecordPageLimit,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct EngineHealthRequest {
-    pub organization_id: OrganizationId,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct EngineListRetiredRequest {
-    pub organization_id: OrganizationId,
-    /// The exclusive continuation returned by the previous scan, even if its items were empty.
-    /// Absent or null starts a new walk.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", extend("format" = "uuid"))]
-    pub after: Option<uuid::Uuid>,
-    pub limit: RecordPageLimit,
-}
-
-/// Retry and discard name one failure record; the operation ID makes a replay
-/// return the stored answer, as for CreateWorkspace.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct EngineAttemptRequest {
-    pub organization_id: OrganizationId,
-    pub operation_id: AdminOperationId,
-    #[schemars(with = "String", extend("format" = "uuid"))]
-    pub attempt_id: uuid::Uuid,
-}
-
 /// Revocation has only two body fields. The verified bearer supplies the
 /// person and factor time used by the proof's intent projection.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -243,10 +214,6 @@ pub enum AdminRoute {
     WorkspaceLookup,
     ListWorkspaces,
     ReadChangeRecords,
-    EngineHealth,
-    EngineListRetired,
-    EngineRetry,
-    EngineDiscard,
     RevokeMachineEnrollment,
 }
 
@@ -258,10 +225,6 @@ impl AdminRoute {
             Self::WorkspaceLookup => "/organization-admin/v1/workspace-lookup",
             Self::ListWorkspaces => "/organization-admin/v1/list-workspaces",
             Self::ReadChangeRecords => "/organization-admin/v1/change-records",
-            Self::EngineHealth => "/organization-admin/v1/engine-health",
-            Self::EngineListRetired => "/organization-admin/v1/engine-retired",
-            Self::EngineRetry => "/organization-admin/v1/engine-retry",
-            Self::EngineDiscard => "/organization-admin/v1/engine-discard",
             Self::RevokeMachineEnrollment => "/organization-admin/v1/revoke-machine-enrollment",
         }
     }
@@ -272,10 +235,6 @@ impl AdminRoute {
             Self::CreateWorkspace => "workspace:create",
             Self::WorkspaceLookup | Self::ListWorkspaces => "organization:view",
             Self::ReadChangeRecords => "organization:readAudit",
-            Self::EngineHealth | Self::EngineListRetired => "organization:readAudit",
-            Self::EngineRetry | Self::EngineDiscard => {
-                fleet_signin::FleetPermission::RepairWork.as_str()
-            }
             Self::RevokeMachineEnrollment => {
                 fleet_contracts::RevokePermission::MachineRevoke.as_str()
             }
@@ -285,15 +244,8 @@ impl AdminRoute {
     #[must_use]
     pub const fn changes_state(self) -> bool {
         match self {
-            Self::CreateWorkspace
-            | Self::EngineRetry
-            | Self::EngineDiscard
-            | Self::RevokeMachineEnrollment => true,
-            Self::WorkspaceLookup
-            | Self::ListWorkspaces
-            | Self::ReadChangeRecords
-            | Self::EngineHealth
-            | Self::EngineListRetired => false,
+            Self::CreateWorkspace | Self::RevokeMachineEnrollment => true,
+            Self::WorkspaceLookup | Self::ListWorkspaces | Self::ReadChangeRecords => false,
         }
     }
 }
@@ -306,10 +258,6 @@ pub enum AdminOperation {
     WorkspaceLookup(WorkspaceLookupRequest),
     ListWorkspaces(ListWorkspacesRequest),
     ReadChangeRecords(ReadChangeRecordsRequest),
-    EngineHealth(EngineHealthRequest),
-    EngineListRetired(EngineListRetiredRequest),
-    EngineRetry(EngineAttemptRequest),
-    EngineDiscard(EngineAttemptRequest),
     RevokeMachineEnrollment(AuthorizedMachineRevocation),
 }
 
@@ -360,34 +308,6 @@ enum OrganizationAdminIntentWire {
         target: OrganizationId,
         operation_id: (),
         params: ReadChangeRecordsParams,
-    },
-    EngineHealth {
-        v: IntentVersionOne,
-        organization: OrganizationId,
-        target: OrganizationId,
-        operation_id: (),
-        params: WorkspaceLookupParams,
-    },
-    EngineListRetired {
-        v: IntentVersionOne,
-        organization: OrganizationId,
-        target: OrganizationId,
-        operation_id: (),
-        params: ReadChangeRecordsParams,
-    },
-    EngineRetry {
-        v: IntentVersionOne,
-        organization: OrganizationId,
-        target: OrganizationId,
-        operation_id: AdminOperationId,
-        params: EngineAttemptParams,
-    },
-    EngineDiscard {
-        v: IntentVersionOne,
-        organization: OrganizationId,
-        target: OrganizationId,
-        operation_id: AdminOperationId,
-        params: EngineAttemptParams,
     },
     RevokeMachineEnrollment {
         v: IntentVersionOne,
@@ -489,17 +409,6 @@ struct ReadChangeRecordsParams {
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
 )]
-struct EngineAttemptParams {
-    #[schemars(with = "String", extend("format" = "uuid"))]
-    attempt_id: uuid::Uuid,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[cfg_attr(
-    all(feature = "wire-export", not(target_arch = "wasm32")),
-    derive(specta::Type)
-)]
 struct MachineRevocationParams {
     actor: String,
     second_factor_at: Option<UnixSeconds>,
@@ -541,18 +450,6 @@ impl AdminOperation {
             AdminRoute::ReadChangeRecords => {
                 Self::ReadChangeRecords(serde_json::from_slice(body).map_err(refusal)?)
             }
-            AdminRoute::EngineHealth => {
-                Self::EngineHealth(serde_json::from_slice(body).map_err(refusal)?)
-            }
-            AdminRoute::EngineListRetired => {
-                Self::EngineListRetired(serde_json::from_slice(body).map_err(refusal)?)
-            }
-            AdminRoute::EngineRetry => {
-                Self::EngineRetry(serde_json::from_slice(body).map_err(refusal)?)
-            }
-            AdminRoute::EngineDiscard => {
-                Self::EngineDiscard(serde_json::from_slice(body).map_err(refusal)?)
-            }
             AdminRoute::RevokeMachineEnrollment => {
                 let (actor, second_factor_at) = person.ok_or(PersonRequestRefusal::PersonClaims)?;
                 let request: RevokeMachineEnrollmentRequest =
@@ -585,10 +482,6 @@ impl AdminOperation {
             Self::WorkspaceLookup(_)
             | Self::ListWorkspaces(_)
             | Self::ReadChangeRecords(_)
-            | Self::EngineHealth(_)
-            | Self::EngineListRetired(_)
-            | Self::EngineRetry(_)
-            | Self::EngineDiscard(_)
             | Self::RevokeMachineEnrollment(_) => true,
         };
         if valid {
@@ -605,10 +498,6 @@ impl AdminOperation {
             Self::WorkspaceLookup(_) => AdminRoute::WorkspaceLookup,
             Self::ListWorkspaces(_) => AdminRoute::ListWorkspaces,
             Self::ReadChangeRecords(_) => AdminRoute::ReadChangeRecords,
-            Self::EngineHealth(_) => AdminRoute::EngineHealth,
-            Self::EngineListRetired(_) => AdminRoute::EngineListRetired,
-            Self::EngineRetry(_) => AdminRoute::EngineRetry,
-            Self::EngineDiscard(_) => AdminRoute::EngineDiscard,
             Self::RevokeMachineEnrollment(_) => AdminRoute::RevokeMachineEnrollment,
         }
     }
@@ -620,9 +509,6 @@ impl AdminOperation {
             Self::WorkspaceLookup(request) => &request.organization_id,
             Self::ListWorkspaces(request) => &request.organization_id,
             Self::ReadChangeRecords(request) => &request.organization_id,
-            Self::EngineHealth(request) => &request.organization_id,
-            Self::EngineListRetired(request) => &request.organization_id,
-            Self::EngineRetry(request) | Self::EngineDiscard(request) => &request.organization_id,
             Self::RevokeMachineEnrollment(revocation) => &revocation.request.organization_id,
         }
     }
@@ -631,14 +517,9 @@ impl AdminOperation {
     pub fn operation_id(&self) -> Option<&AdminOperationId> {
         match self {
             Self::CreateWorkspace(request) => Some(&request.operation_id),
-            Self::EngineRetry(request) | Self::EngineDiscard(request) => {
-                Some(&request.operation_id)
-            }
             Self::WorkspaceLookup(_)
             | Self::ListWorkspaces(_)
             | Self::ReadChangeRecords(_)
-            | Self::EngineHealth(_)
-            | Self::EngineListRetired(_)
             | Self::RevokeMachineEnrollment(_) => None,
         }
     }
@@ -683,41 +564,6 @@ impl AdminOperation {
                 params: ReadChangeRecordsParams {
                     after: request.after,
                     limit: request.limit,
-                },
-            },
-            Self::EngineHealth(_) => OrganizationAdminIntentWire::EngineHealth {
-                v: IntentVersionOne,
-                organization: organization.clone(),
-                target: organization,
-                operation_id: (),
-                params: WorkspaceLookupParams {},
-            },
-            Self::EngineListRetired(request) => OrganizationAdminIntentWire::EngineListRetired {
-                v: IntentVersionOne,
-                organization: organization.clone(),
-                target: organization,
-                operation_id: (),
-                params: ReadChangeRecordsParams {
-                    after: request.after,
-                    limit: request.limit,
-                },
-            },
-            Self::EngineRetry(request) => OrganizationAdminIntentWire::EngineRetry {
-                v: IntentVersionOne,
-                organization: organization.clone(),
-                target: organization,
-                operation_id: request.operation_id.clone(),
-                params: EngineAttemptParams {
-                    attempt_id: request.attempt_id,
-                },
-            },
-            Self::EngineDiscard(request) => OrganizationAdminIntentWire::EngineDiscard {
-                v: IntentVersionOne,
-                organization: organization.clone(),
-                target: organization,
-                operation_id: request.operation_id.clone(),
-                params: EngineAttemptParams {
-                    attempt_id: request.attempt_id,
                 },
             },
             Self::RevokeMachineEnrollment(revocation) => {

@@ -2,9 +2,9 @@
 use crate::{
     AdminRefusal, OrganizationAdminResult, WorkspaceRuntime,
     organization_admin_contract::RetainedOrganizationAdminAnswer,
-    person_request::{CreateWorkspaceRequest, VerifiedPersonRequest},
+    person_request::{AdminOperation, CreateWorkspaceRequest},
 };
-use central_storage::{GuardedStatement, StoreFailure};
+use central_storage::{AlarmUpdate, BatchOutcome, GuardedStatement, StatementBatch, StoreFailure};
 use fleet_contracts::{DirectoryWorkspace, WorkspaceDirectory};
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
 use fleet_runtime_ports::{
@@ -21,11 +21,69 @@ use workspace_model::{
     WorkspaceId, WorkspaceState,
 };
 
-pub(crate) struct WorkspaceCreatePlan {
+struct WorkspaceCreatePlan {
     pub result: OrganizationAdminResult,
     pub statements: Vec<GuardedStatement>,
     pub operation: RequestId,
     pub retained: Option<RetainedOrganizationAdminAnswer>,
+}
+
+pub(crate) struct WorkspaceCreateAnswer {
+    pub result: OrganizationAdminResult,
+    pub retained: Option<RetainedOrganizationAdminAnswer>,
+}
+
+/// Both ingress paths admit their person and reserve their guards under the owning organization turn.
+pub(crate) async fn apply_workspace_create<H: CentralStore, S: WorkspaceStores>(
+    runtime: &WorkspaceRuntime<H, S>,
+    person: &PersonId,
+    request: &CreateWorkspaceRequest,
+    now: Timestamp,
+    mut statements: Vec<GuardedStatement>,
+) -> Result<WorkspaceCreateAnswer, StoreFailure> {
+    // Both paths must use the existing ledger digest, including for receipts committed via HTTP.
+    let intent_digest = AdminOperation::CreateWorkspace(request.clone())
+        .intent_digest()
+        .map_err(|_| StoreFailure::Unavailable)?;
+    let created = runtime
+        .prepare_workspace_create(person, &intent_digest, request, now)
+        .await?;
+    statements.extend(created.statements);
+    #[cfg(feature = "test-support")]
+    runtime
+        .execution
+        .pause_points()
+        .reached_central(fleet_runtime::PausePoint::AfterSignInSample)
+        .await;
+    match runtime
+        .execution
+        .statement_host()
+        .run_batch(StatementBatch {
+            statements,
+            alarm: AlarmUpdate::Unchanged,
+        })
+        .await?
+    {
+        BatchOutcome::Applied { .. } => {
+            #[cfg(feature = "test-support")]
+            if runtime.execution.take_lost_reply(&created.operation) {
+                return Err(StoreFailure::AnswerLost);
+            }
+            #[cfg(not(feature = "test-support"))]
+            let _operation = created.operation;
+            Ok(WorkspaceCreateAnswer {
+                result: created.result,
+                retained: created.retained,
+            })
+        }
+        BatchOutcome::StatementRejected { .. } => Err(StoreFailure::Unavailable),
+        BatchOutcome::GuardFailed { .. } | BatchOutcome::ConstraintViolated { .. } => {
+            Ok(WorkspaceCreateAnswer {
+                result: refused(AdminRefusal::Conflict),
+                retained: None,
+            })
+        }
+    }
 }
 
 fn refused(reason: AdminRefusal) -> OrganizationAdminResult {
@@ -60,10 +118,10 @@ fn retained_result(
 }
 
 impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
-    /// Caller has already admitted this fresh person proof at `now` under the org turn.
-    pub(crate) async fn prepare_workspace_create(
+    async fn prepare_workspace_create(
         &self,
-        person: &VerifiedPersonRequest,
+        person: &PersonId,
+        intent_digest: &str,
         request: &CreateWorkspaceRequest,
         now: Timestamp,
     ) -> Result<WorkspaceCreatePlan, StoreFailure> {
@@ -74,8 +132,7 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
             .try_into()
             .map_err(|_| corrupt("operation_id"))?;
         let identity = Identity::Person {
-            person_id: PersonId::try_from(person.person_id.clone())
-                .map_err(|_| corrupt("person_id"))?,
+            person_id: person.clone(),
         };
         let actor = self.access().prepare_identity(&identity, now).await?;
         let cutoff = (now - chrono::Duration::hours(24)).to_rfc3339();
@@ -94,7 +151,7 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
                 .parse()
                 .map_err(|_| corrupt("runtime_request_log.caller"))?;
             let (result, retained) = if stored_actor != actor.actor
-                || string(&logged, row, "content_digest")? != person.intent_digest
+                || string(&logged, row, "content_digest")? != intent_digest
             {
                 (refused(AdminRefusal::Conflict), None)
             } else {
@@ -148,8 +205,10 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
                 request_id: ChangeRequestId::try_from(request.operation_id.as_str().to_owned())?,
                 kind: OrganizationChangeKind::WorkspaceCreated,
                 origin: OrganizationChangeOrigin::Person {
-                    person_id: person.person_id.clone(),
-                    permission_checked: person.operation.route().permission().to_owned(),
+                    person_id: person.to_string(),
+                    permission_checked: fleet_signin::FleetPermission::CreateWorkspace
+                        .as_str()
+                        .to_owned(),
                 },
                 target_id: workspace_id.to_string(),
                 created_at_millis: now
@@ -169,7 +228,7 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
         statements.extend(fleet_request_log::retain_organization_request(
             &operation,
             &actor.actor,
-            &person.intent_digest,
+            intent_digest,
             &result,
             &now.to_rfc3339(),
             &cutoff,

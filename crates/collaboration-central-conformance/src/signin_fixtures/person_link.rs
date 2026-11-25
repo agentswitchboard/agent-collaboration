@@ -1,5 +1,7 @@
 //! The production person upgrade and lifecycle on either Central host.
 
+pub mod organization_reads;
+
 use super::{
     ADMIN_AUDIENCE, ISSUER, LIST_WORKSPACES, NOW_SECONDS, OWNER, OWNER_SUBJECT, POLICY, Person,
     fresh_request_id, list_workspaces_body, list_workspaces_intent, sign,
@@ -9,6 +11,9 @@ use central_link_protocol::PersonLinkCloseCode;
 use futures_util::SinkExt;
 use reqwest_websocket::{Message, RequestBuilderExt, WebSocket};
 use serde_json::{Value, json};
+
+mod create_workspace;
+pub use create_workspace::{CreateCallCase, check_workspace_create};
 
 const REVISIONS: &str = "/internal/organization-authorization-revisions";
 
@@ -182,7 +187,8 @@ fn claims(person: &Person, now: i64, snapshot: i64, session: i64) -> Result<Valu
         "permission_policy_digest":person.policy_digest, "permissions":person.permissions,
         "session_expires_at_ms":(now+session)*1000, "authorization_snapshot_at_ms":now*1000,
         "authorization_snapshot_valid_until_ms":(now+snapshot)*1000,
-        "second_factor_at":person.second_factor_at, "second_factor_method":"totp",
+        "second_factor_at":person.second_factor_at,
+        "second_factor_method":person.second_factor_at.map(|_| "totp"),
     }))
 }
 
@@ -192,6 +198,15 @@ fn sign_bearer(claims: &Value) -> Result<String> {
         claims,
         7,
     )
+}
+
+pub fn person_link_bearer(
+    person: &Person,
+    now: i64,
+    snapshot: i64,
+    session: i64,
+) -> Result<String> {
+    sign_bearer(&claims(person, now, snapshot, session)?)
 }
 
 pub async fn open_person(
@@ -204,7 +219,7 @@ pub async fn open_person(
     dial(
         fixture.client,
         fixture.person_url,
-        &sign_bearer(&claims(person, now, snapshot, session)?)?,
+        &person_link_bearer(person, now, snapshot, session)?,
     )
     .await
 }

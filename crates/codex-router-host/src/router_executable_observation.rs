@@ -27,6 +27,18 @@ struct ExecutableFileIdentity {
     modified_nanoseconds: i64,
 }
 
+#[derive(Debug, thiserror::Error)]
+enum VersionProbeError {
+    #[error("Router version probe timed out")]
+    TimedOut,
+    #[error("Router version probe could not launch or collect output")]
+    CommandIo(#[source] std::io::Error),
+    #[error("Router version probe exited with {0}")]
+    FailedExit(std::process::ExitStatus),
+    #[error("Router version probe returned unparsable output")]
+    UnparsableOutput(#[source] codex_native_integration::ExecutableIdentityError),
+}
+
 impl RouterExecutableObserver {
     /// Captures only the startup file's stat identity; it does no file reads or hashing.
     pub fn capture(launch_path: Result<PathBuf, std::io::Error>, running_version: String) -> Self {
@@ -89,9 +101,13 @@ impl RouterExecutableObserver {
                 running_version: self.running_version.clone(),
                 installed_version: Some(installed_version),
             },
-            Err(()) => RouterExecutableRelation::Unknown {
-                reason: "the changed Router launch path could not report its version".to_owned(),
-            },
+            Err(error) => {
+                tracing::warn!(failure = ?error, "changed Router executable version probe failed");
+                RouterExecutableRelation::Unknown {
+                    reason: "the changed Router launch path could not report its version"
+                        .to_owned(),
+                }
+            }
         };
         self.publish_relation(relation)
     }
@@ -136,17 +152,18 @@ fn executable_file_identity(path: &std::path::Path) -> std::io::Result<Executabl
     })
 }
 
-async fn installed_version(path: &std::path::Path) -> Result<String, ()> {
+async fn installed_version(path: &std::path::Path) -> Result<String, VersionProbeError> {
     let mut command = tokio::process::Command::new(path);
     command.arg("--version").kill_on_drop(true);
     let output = tokio::time::timeout(INSTALLED_VERSION_TIMEOUT, command.output())
         .await
-        .map_err(|_elapsed| ())?
-        .map_err(|_error| ())?;
+        .map_err(|_| VersionProbeError::TimedOut)?
+        .map_err(VersionProbeError::CommandIo)?;
     if !output.status.success() {
-        return Err(());
+        return Err(VersionProbeError::FailedExit(output.status));
     }
-    codex_native_integration::parse_executable_version(&output.stdout).map_err(|_error| ())
+    codex_native_integration::parse_executable_version(&output.stdout)
+        .map_err(VersionProbeError::UnparsableOutput)
 }
 
 #[cfg(test)]

@@ -10,7 +10,6 @@ pub struct ApplicationFixture {
     pub(crate) service_epoch: UuidIdentity,
     pub(crate) directory: EndpointDirectory,
     clock: Option<std::sync::Arc<dyn router_clock::RuntimeClock>>,
-    pub(crate) journal: Option<std::sync::Arc<lifecycle_observation::LifecycleStore>>,
     pub(crate) native_backend: Option<collaboration_runtime::NativeControlBackend>,
     pub(crate) provider_operations: Option<
         std::sync::Arc<tokio::sync::Mutex<switchboard_session_store::ProviderOperationStore>>,
@@ -148,14 +147,6 @@ impl ApplicationFixture {
         self.directory.clone()
     }
 
-    pub fn with_journal(
-        mut self,
-        journal: std::sync::Arc<lifecycle_observation::LifecycleStore>,
-    ) -> Self {
-        self.journal = Some(journal);
-        self
-    }
-
     pub fn new(service_id: &str, service_epoch: &str) -> Result<Self, String> {
         let service_id =
             UuidIdentity::try_from(service_id.to_owned()).map_err(|error| error.to_string())?;
@@ -168,7 +159,6 @@ impl ApplicationFixture {
             machine_identity,
             service_epoch: UuidIdentity::try_from(service_epoch.to_owned())
                 .map_err(|error| error.to_string())?,
-            journal: None,
             native_backend: None,
             provider_operations: None,
             provider_session_hub: None,
@@ -211,7 +201,6 @@ impl ApplicationFixture {
             self.router_identity(),
             self.directory.clone(),
             self.native_backend.clone(),
-            self.journal.clone(),
         );
         let provider_inventory = crate::ProviderSessionInventory::new(
             self.router_identity(),
@@ -221,18 +210,12 @@ impl ApplicationFixture {
             self.claude_code_sessions.clone(),
             self.claude_background_jobs.clone(),
         );
-        let journal_operations = crate::collaboration_application::JournalOperations::new(
-            self.router_identity(),
-            self.directory.clone(),
-            self.journal.clone(),
-        );
         let sessions = crate::collaboration_application::SessionOperations::new(
             self.router_identity(),
             self.directory.clone(),
             native_control,
             codex_inventory,
             provider_inventory,
-            journal_operations,
         );
         let conversations = crate::collaboration_application::ConversationOperations::new(
             self.router_identity(),

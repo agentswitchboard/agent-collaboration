@@ -166,28 +166,6 @@ impl CollaborationRuntime {
         let native_definitions = inputs.native_schema.as_ref().and_then(|export| {
             collaboration_mcp::NativeSchemaDefinitions::from_bundle(export.bundle())
         });
-        let journal = async {
-            let database = lifecycle_observation::ObservationJournal::open(
-                &inputs.directory.join("session-registry.sqlite"),
-                new_service_uuid()?,
-            )
-            .await
-            .map_err(io::Error::other)?;
-            let journal = std::sync::Arc::new(lifecycle_observation::LifecycleStore::new(database));
-            journal
-                .prepare(worker_clock.utc_now().timestamp())
-                .await
-                .map_err(io::Error::other)?;
-            Ok::<_, io::Error>(journal)
-        }
-        .await;
-        let journal = match journal {
-            Ok(journal) => Some(journal),
-            Err(_) => {
-                tracing::warn!("lifecycle storage unavailable; collaboration remains independent");
-                None
-            }
-        };
         let identity = collaboration_contracts::RouterIdentity::new(
             service_id.clone(),
             service_epoch.clone(),
@@ -234,19 +212,6 @@ impl CollaborationRuntime {
         )
         .await?;
         let provider_face_endpoints = startup.endpoints.clone();
-        let claude_endpoint_id =
-            EndpointId::try_from("claude-local".to_owned()).map_err(io::Error::other)?;
-        let managed_claude_endpoint = startup
-            .endpoints
-            .iter()
-            .find(|description| {
-                description.endpoint.endpoint_id == claude_endpoint_id
-                    && matches!(
-                        description.availability,
-                        collaboration_protocol::EndpointAvailability::Available { .. }
-                    )
-            })
-            .map(|description| description.endpoint.clone());
         let provider_retirements = startup.retirements;
         let external_provider_supervisor = startup.supervisor;
         let provider_session_hub = startup.hub;
@@ -331,7 +296,6 @@ impl CollaborationRuntime {
                 identity.clone(),
                 endpoint_directory.clone(),
                 Some(native_backend.clone()),
-                journal.clone(),
             );
             let provider_inventory = collaboration_service::ProviderSessionInventory::new(
                 identity.clone(),
@@ -343,19 +307,12 @@ impl CollaborationRuntime {
                 Some(claude_code_sessions.clone()),
                 Some(claude_background_jobs.clone()),
             );
-            let journal_operations =
-                collaboration_service::collaboration_application::JournalOperations::new(
-                    identity.clone(),
-                    endpoint_directory.clone(),
-                    journal.clone(),
-                );
             let sessions = collaboration_service::collaboration_application::SessionOperations::new(
                 identity.clone(),
                 endpoint_directory.clone(),
                 native_control,
                 codex_inventory,
                 provider_inventory,
-                journal_operations,
             );
             let conversations =
                 collaboration_service::collaboration_application::ConversationOperations::new(
@@ -534,20 +491,14 @@ impl CollaborationRuntime {
                     },
                 ));
                 let events = MessageSystemEvents::new(custody_events);
-                let events = match (
-                    external_provider_supervisor.clone(),
-                    managed_claude_endpoint,
-                ) {
-                    (Some(supervisor), Some(endpoint)) => {
-                        events.with_managed_notice(move |machine| {
-                            Arc::new(crate::ManagedClaudeNoticeAdapter::new(
-                                supervisor.clone(),
-                                machine.clone(),
-                                endpoint.clone(),
-                            ))
-                        })
-                    }
-                    _ => events,
+                let events = match external_provider_supervisor.clone() {
+                    Some(supervisor) => events.with_managed_notice(move |machine| {
+                        Arc::new(crate::ManagedAcpNoticeAdapter::new(
+                            supervisor.clone(),
+                            machine.clone(),
+                        ))
+                    }),
+                    None => events,
                 };
                 let system = MessageSystem::start(
                     roots,
@@ -596,16 +547,6 @@ impl CollaborationRuntime {
                 ),
             );
         }
-        let maintenance = journal.as_ref().map(|journal| {
-            let maintenance_store = std::sync::Arc::clone(journal);
-            let maintenance_stop = shutdown.clone();
-            let clock = std::sync::Arc::clone(&worker_clock);
-            tokio::spawn(async move {
-                maintenance_store
-                    .run_maintenance(clock, maintenance_stop)
-                    .await
-            })
-        });
         let mut runtime = Self {
             clock: worker_clock,
             message_system,
@@ -633,10 +574,6 @@ impl CollaborationRuntime {
             tasks,
             provider_retirement_tasks,
             manifest: Some(manifest),
-            journal,
-            maintenance,
-            current_generation: None,
-            observer_task: None,
             collaboration_api,
             tailscale_exposure: None,
         };
@@ -667,7 +604,3 @@ impl CollaborationRuntime {
         Ok(runtime)
     }
 }
-
-#[cfg(test)]
-#[path = "startup_composition_test.rs"]
-mod tests;

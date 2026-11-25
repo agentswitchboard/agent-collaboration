@@ -249,6 +249,12 @@ impl OwnerTransition {
                 };
                 self.finish_steer(&input, outcome)
             }
+            DispatchResult::SteerNeedsPrompt(authorization) => {
+                let AuthorizedWork::Steer(input) = self.take_wire_result(&authorization)? else {
+                    return Err(OwnerRejection::IgnoredLate);
+                };
+                self.refuse_steer(&input, RevokeReason::ProviderSteerNeedsPrompt)
+            }
             DispatchResult::SteerInvalidReply(authorization) => {
                 let AuthorizedWork::Steer(input) = self.take_wire_result(&authorization)? else {
                     return Err(OwnerRejection::IgnoredLate);

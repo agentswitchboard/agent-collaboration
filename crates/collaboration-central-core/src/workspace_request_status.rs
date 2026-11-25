@@ -1,6 +1,9 @@
 //! Read a retained decision from the ledger that owned the original write.
 use crate::WorkspaceCaller;
-use crate::{WorkspaceRuntime, organization_admin_contract::OrganizationAdminResult};
+use crate::{
+    WorkspaceRuntime, engine_admin_types::EngineAdminResult,
+    organization_admin_contract::OrganizationAdminResult,
+};
 use central_link_protocol::{
     ReplyPayload, RequestRefusal, RequestScope, RequestStatusAnswer, RequestStatusQuery,
 };
@@ -27,6 +30,7 @@ enum OrganizationDecision {
     Workspace(WorkspaceResult),
     Mail(CentralMailResult),
     PrivateAdmin(OrganizationAdminResult),
+    EngineAdmin(EngineAdminResult),
 }
 
 fn retained_organization_decision(
@@ -152,10 +156,12 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         Ok(match decision {
             None
             | Some(OrganizationDecision::PrivateAdmin(
-                OrganizationAdminResult::Applied { .. }
-                | OrganizationAdminResult::EngineRetried {}
-                | OrganizationAdminResult::EngineDiscarded {}
-                | OrganizationAdminResult::Refused { .. },
+                OrganizationAdminResult::Applied { .. } | OrganizationAdminResult::Refused { .. },
+            ))
+            | Some(OrganizationDecision::EngineAdmin(
+                EngineAdminResult::EngineRetried {}
+                | EngineAdminResult::EngineDiscarded {}
+                | EngineAdminResult::Refused { .. },
             )) => RequestStatusAnswer::NotFound,
             Some(OrganizationDecision::Workspace(WorkspaceResult::Refused(reason))) => {
                 RequestStatusAnswer::Refused(RequestRefusal::Workspace(reason))
@@ -190,10 +196,11 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
                     | CentralMailResult::CentralUnavailable,
                 )
                 | OrganizationDecision::PrivateAdmin(
-                    OrganizationAdminResult::Found { .. }
-                    | OrganizationAdminResult::Records { .. }
-                    | OrganizationAdminResult::EngineHealth { .. }
-                    | OrganizationAdminResult::EngineRetired { .. },
+                    OrganizationAdminResult::Found { .. } | OrganizationAdminResult::Records { .. },
+                )
+                | OrganizationDecision::EngineAdmin(
+                    EngineAdminResult::EngineHealth { .. }
+                    | EngineAdminResult::EngineRetired { .. },
                 ),
             ) => {
                 return Err(corrupt("request log answer"));

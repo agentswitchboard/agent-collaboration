@@ -3,17 +3,20 @@ import { encode } from "./exact-json.ts";
 import { crossMachineUnavailable } from "./run-setup.ts";
 import { assessD1Coverage, d1Observations } from "./observations/central/d1-coverage.ts";
 import { d1ReadbackSchema, readD1Stores } from "./observations/central/d1-sqlite-readback.ts";
+import { runStagingMessage } from "./observations/central/staging-message.ts";
 
 function printPreparation(): boolean {
   if (process.argv.length === 3 && process.argv[2] === "--help") {
     process.stdout.write(
       "node verification/run.ts PRIVATE_DECLARATION.json\n" +
         `${crossMachineUnavailable}\n` +
+        "node verification/run.ts --staging-message PRIVATE_DECLARATION.json\n" +
+        "Observe an idle or running Claude notice through staging Central, optionally with a declared sender handoff.\n" +
         "node verification/run.ts --d1-plan\n" +
         "Print D1 O1–O11 requirements and all-open coverage. No launch, network, credentials or writes.\n" +
         "node verification/run.ts --d1-readback PRIVATE_DECLARATION.json\n" +
         "Read exact stopped task stores after consumer checks.\n" +
-        "D1 full outcome credit requires declared controls/target; staging is never executed here.\n",
+        "D1 full outcome credit requires declared controls/target. D1 staging remains unavailable.\n",
     );
     return true;
   }
@@ -43,6 +46,12 @@ async function runD1Action(): Promise<boolean> {
   return false;
 }
 async function main(): Promise<void> {
+  if (process.argv.length === 4 && process.argv[2] === "--staging-message") {
+    const declaration = process.argv[3];
+    if (declaration === undefined) throw new Error("staging message declaration absent");
+    await runStagingMessage(declaration);
+    return;
+  }
   if (await runD1Action()) return;
   if (printPreparation()) return;
   process.stderr.write(`${crossMachineUnavailable}\n`);

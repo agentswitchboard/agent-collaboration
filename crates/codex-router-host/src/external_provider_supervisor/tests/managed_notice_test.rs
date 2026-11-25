@@ -1,33 +1,38 @@
 use super::*;
-use crate::ManagedClaudeNoticeAdapter;
-use crate::external_provider_supervisor::{AdmissionTestPause, PromptBusyPolicy};
-use collaboration_protocol::MessageDelivery as ProviderMessageDelivery;
+
+#[path = "notice_admission_test.rs"]
+mod admission;
+#[path = "notice_started_turn_test.rs"]
+mod started_turn;
+use crate::ManagedAcpNoticeAdapter;
 use router_clock::{ManualClock, RuntimeClock};
-use runtime_primitives::Clock as _;
-use state_machine_core::StateMachine as _;
-use switchboard_machine_core_store::{
-    DirectHandoff, DirectHandoffChange, HandoffCommit, InboxDecision, InboxOfferExpiry, InboxStore,
-    MachineLocalStore,
-};
 use switchboard_message_custody::{
-    flush_marks::next_mark_after,
-    handover::{
-        DirectHandoffMachine, Handoff, HandoffEffect, HandoffEvent, NoticePreTakeRefusal,
-        NoticeWriteOutcome,
-    },
+    handover::NoticeWriteOutcome,
     handover_notice::{
-        ClaimedNotice, MachineId, ManagedClaudeNoticePort, NoticeAttemptId, NoticeAuthority,
+        ClaimedNotice, MachineId, ManagedNoticePort, NoticeAttemptId, NoticeAuthority,
         SessionRef as MailSessionRef,
     },
 };
 
 const NOTICE_TEXT: &str = "You have 1 new message. Read them with message_inbox.";
 const HUMAN_TEXT: &str = "human prompt";
-const NOTICE_MESSAGE_ID: &str = "019f0000-0000-7000-8000-000000000017";
 
-async fn idle_claude_fixture(
+#[derive(Clone, Copy)]
+enum NoticeScript {
+    NoWrite,
+    Direct,
+    DirectWithLoggedOutReport,
+    DirectThenSteer,
+    HumanThenNoticeSteer,
+    DirectThenProviderDeclinesSteer,
+    DirectThenProviderStartsTurn,
+    DirectWithSteeringAvailable,
+}
+
+async fn managed_notice_fixture(
     clock: Arc<ManualClock>,
-    expected_prompt: Option<&str>,
+    notices: NoticeScript,
+    provider: collaboration_protocol::ProviderKind,
 ) -> SteeringSession {
     use crate::provider_test_support::AcpFixtureScript;
     use collaboration_protocol::{ConversationBindingIdentity, ProviderOperationKind};
@@ -38,9 +43,13 @@ async fn idle_claude_fixture(
     let root = tempfile::tempdir().unwrap();
     let receipt = root.path().join("wire.json");
     let mut identity = binding();
-    identity.runtime.provider = collaboration_protocol::ProviderKind::ClaudeCode;
+    identity.runtime.provider = provider;
+    let endpoint_name = match provider {
+        collaboration_protocol::ProviderKind::ClaudeCode => "claude-local",
+        collaboration_protocol::ProviderKind::Cursor => "cursor-local",
+    };
     identity.endpoint.endpoint_id =
-        collaboration_protocol::EndpointId::try_from("claude-local".to_owned()).unwrap();
+        collaboration_protocol::EndpointId::try_from(endpoint_name.to_owned()).unwrap();
     let target = SessionRef {
         endpoint: identity.endpoint.clone(),
         session_id: SessionId::try_from("saved-notice-session".to_owned()).unwrap(),
@@ -75,14 +84,25 @@ async fn idle_claude_fixture(
         .unwrap();
     store.record_target(&operation, &target, 0).await.unwrap();
     store.mark_may_have_dispatched(&operation, 0).await.unwrap();
-    let script = AcpFixtureScript::new()
-        .expect_request("init", "initialize", json!({"protocolVersion": 1}))
+    let script =
+        AcpFixtureScript::new().expect_request("init", "initialize", json!({"protocolVersion": 1}));
+    let script = if matches!(notices, NoticeScript::DirectWithLoggedOutReport) {
+        script.send(json!({
+            "jsonrpc": "2.0",
+            "method": "_auth/status_update",
+            "params": {"authStatus": {"kind": "none", "label": "Signed out"}}
+        }))
+    } else {
+        script
+    };
+    let script = script
         .respond(
             "init",
             json!({
                 "protocolVersion": 1,
                 "agentCapabilities": {"loadSession": true, "mcpCapabilities": {"http": true}},
-                "agentInfo": {"name": "managed-notice-fixture", "version": "1"}
+                "agentInfo": {"name": "managed-notice-fixture", "version": "1"},
+                "_meta": {"steering": {"supported": matches!(notices, NoticeScript::DirectThenSteer | NoticeScript::HumanThenNoticeSteer | NoticeScript::DirectThenProviderDeclinesSteer | NoticeScript::DirectThenProviderStartsTurn | NoticeScript::DirectWithSteeringAvailable)}}
             }),
         )
         .expect_request(
@@ -92,21 +112,84 @@ async fn idle_claude_fixture(
         )
         .respond("load", json!({}))
         .record_diagnostics(receipt.clone());
-    let script = if let Some(expected_prompt) = expected_prompt {
-        script
+    let script = if !matches!(notices, NoticeScript::NoWrite) {
+        let foreground = match notices {
+            NoticeScript::DirectThenProviderStartsTurn => "Hold the foreground turn",
+            NoticeScript::HumanThenNoticeSteer => HUMAN_TEXT,
+            _ => NOTICE_TEXT,
+        };
+        let script = script
             .expect_request(
-                "prompt",
+                "notice",
                 "session/prompt",
                 json!({
                     "sessionId": "saved-notice-session",
-                    "prompt": [{"type": "text", "text": expected_prompt}]
+                    "prompt": [{"type": "text", "text": foreground}]
                 }),
             )
-            .expect_message(json!({
-                "jsonrpc": "2.0", "method": "session/cancel",
-                "params": {"sessionId": "saved-notice-session"}
-            }))
-            .respond("prompt", json!({"stopReason": "cancelled"}))
+            .write_marker(&receipt.with_extension("prompt"));
+        if matches!(notices, NoticeScript::DirectThenProviderDeclinesSteer) {
+            script
+                .expect_request(
+                    "steer",
+                    "_session/steering",
+                    json!({"sessionId": "saved-notice-session"}),
+                )
+                .write_marker(&receipt.with_extension("steer"))
+                .respond("steer", json!({"outcome":"promptRequired"}))
+                .respond("notice", json!({"stopReason": "end_turn"}))
+                // A fallback build also completes this request. The test checks
+                // its marker before advancing the clock and offering the retry.
+                .expect_request(
+                    "retry",
+                    "session/prompt",
+                    json!({
+                        "sessionId": "saved-notice-session",
+                        "prompt": [{"type": "text", "text": NOTICE_TEXT}]
+                    }),
+                )
+                .write_marker(&receipt.with_extension("retry"))
+                .respond("retry", json!({"stopReason": "end_turn"}))
+        } else if matches!(notices, NoticeScript::DirectThenProviderStartsTurn) {
+            script
+                .expect_recorded_request(
+                    "steer",
+                    "_session/steering",
+                    json!({
+                        "sessionId": "saved-notice-session",
+                        "prompt": [{"type": "text", "text": NOTICE_TEXT}]
+                    }),
+                    &receipt.with_extension("traffic"),
+                )
+                .respond("notice", json!({"stopReason": "end_turn"}))
+                .wait_for_socket_signal(&receipt.with_extension("sock"))
+                .respond("steer", json!({"outcome": "startedNewTurn"}))
+        } else {
+            let script = if matches!(
+                notices,
+                NoticeScript::DirectThenSteer | NoticeScript::HumanThenNoticeSteer
+            ) {
+                script
+                    .expect_request(
+                        "steer",
+                        "_session/steering",
+                        json!({
+                            "sessionId": "saved-notice-session",
+                            "prompt": [{"type": "text", "text": NOTICE_TEXT}]
+                        }),
+                    )
+                    .write_marker(&receipt.with_extension("steer"))
+                    .respond("steer", json!({"outcome": "injected"}))
+            } else {
+                script
+            };
+            script
+                .expect_message(json!({
+                    "jsonrpc": "2.0", "method": "session/cancel",
+                    "params": {"sessionId": "saved-notice-session"}
+                }))
+                .respond("notice", json!({"stopReason": "cancelled"}))
+        }
     } else {
         script
     };
@@ -147,11 +230,84 @@ async fn idle_claude_fixture(
     }
 }
 
+#[tokio::test]
+async fn managed_notice_provider_prompt_required_leaves_direct_delivery_for_the_next_offer() {
+    use provider_session_machines::session_turn_machine::SessionTurn;
+
+    let clock = Arc::new(ManualClock::new(chrono::DateTime::UNIX_EPOCH));
+    let rig = managed_notice_fixture(
+        clock.clone(),
+        NoticeScript::DirectThenProviderDeclinesSteer,
+        collaboration_protocol::ProviderKind::ClaudeCode,
+    )
+    .await;
+    let authority = Arc::new(NoticeAuthority::new());
+    let (adapter, recipient, initial) = prepare_notice(&rig, &clock, authority.clone());
+    assert!(matches!(
+        adapter
+            .ready(&recipient)
+            .await
+            .unwrap()
+            .offer(initial)
+            .await,
+        NoticeWriteOutcome::Written { .. }
+    ));
+    let exact = adapter.ready(&recipient).await.unwrap();
+    assert_eq!(
+        exact
+            .offer(second_notice(&recipient, &clock, authority.clone()))
+            .await,
+        NoticeWriteOutcome::SteerNotInjected
+    );
+    let owner = rig.supervisor.session_owner_for(&rig.target).unwrap();
+    let mut snapshots = owner.snapshots();
+    snapshots
+        .wait_for(|snapshot| snapshot.turn == SessionTurn::Idle)
+        .await
+        .unwrap();
+    assert!(rig.receipt.with_extension("steer").is_file());
+    assert!(!rig.receipt.with_extension("retry").exists());
+
+    clock.advance(std::time::Duration::from_secs(60)).unwrap();
+    let retry_attempt = NoticeAttemptId::mint(clock.utc_now());
+    let retry = ClaimedNotice::new(
+        recipient.clone(),
+        retry_attempt,
+        vec!["019f0000-0000-7000-8000-000000000018".parse().unwrap()],
+        clock
+            .monotonic_now()
+            .after(std::time::Duration::from_secs(1)),
+        clock.utc_now() + chrono::TimeDelta::seconds(1),
+        authority,
+    )
+    .unwrap();
+    let writer = adapter.ready(&recipient).await.unwrap();
+    assert_eq!(
+        writer.offer(retry).await,
+        NoticeWriteOutcome::Written {
+            taken_at: clock.utc_now()
+        }
+    );
+    let retry_input = session_event_model::InputId::new(String::from(retry_attempt)).unwrap();
+    snapshots
+        .wait_for(|snapshot| {
+            snapshot
+                .last_live_turn
+                .as_ref()
+                .is_some_and(|turn| turn.input == retry_input)
+        })
+        .await
+        .unwrap();
+    assert!(rig.receipt.with_extension("retry").is_file());
+    rig.supervisor.shutdown().await.unwrap();
+    assert_wire_script_completed(&rig, true);
+}
+
 fn prepare_notice(
     rig: &SteeringSession,
     clock: &ManualClock,
     authority: Arc<NoticeAuthority>,
-) -> (ManagedClaudeNoticeAdapter, MailSessionRef, ClaimedNotice) {
+) -> (ManagedAcpNoticeAdapter, MailSessionRef, ClaimedNotice) {
     let machine: MachineId = "019f0000-0000-7000-8000-000000000011".parse().unwrap();
     let recipient = MailSessionRef {
         machine_id: machine.clone(),
@@ -160,7 +316,7 @@ fn prepare_notice(
     let notice = ClaimedNotice::new(
         recipient.clone(),
         NoticeAttemptId::try_from("019f0000-0000-7000-8000-000000000015".to_owned()).unwrap(),
-        vec![NOTICE_MESSAGE_ID.parse().unwrap()],
+        vec!["019f0000-0000-7000-8000-000000000017".parse().unwrap()],
         clock
             .monotonic_now()
             .after(std::time::Duration::from_secs(1)),
@@ -169,20 +325,42 @@ fn prepare_notice(
     )
     .unwrap();
     (
-        ManagedClaudeNoticeAdapter::new(
-            rig.supervisor.clone(),
-            machine,
-            rig.target.endpoint.clone(),
-        ),
+        ManagedAcpNoticeAdapter::new(rig.supervisor.clone(), machine),
         recipient,
         notice,
     )
 }
 
+fn second_notice(
+    recipient: &MailSessionRef,
+    clock: &ManualClock,
+    authority: Arc<NoticeAuthority>,
+) -> ClaimedNotice {
+    ClaimedNotice::new(
+        recipient.clone(),
+        "019f0000-0000-7000-8000-000000000016"
+            .to_owned()
+            .try_into()
+            .unwrap(),
+        vec!["019f0000-0000-7000-8000-000000000018".parse().unwrap()],
+        clock
+            .monotonic_now()
+            .after(std::time::Duration::from_secs(1)),
+        clock.utc_now() + chrono::TimeDelta::seconds(1),
+        authority,
+    )
+    .unwrap()
+}
+
 #[tokio::test]
 async fn managed_claude_notice_is_written_on_take_before_the_provider_turn_ends() {
     let clock = Arc::new(ManualClock::new(chrono::DateTime::UNIX_EPOCH));
-    let rig = idle_claude_fixture(clock.clone(), Some(NOTICE_TEXT)).await;
+    let rig = managed_notice_fixture(
+        clock.clone(),
+        NoticeScript::Direct,
+        collaboration_protocol::ProviderKind::ClaudeCode,
+    )
+    .await;
     let (adapter, recipient, notice) =
         prepare_notice(&rig, &clock, Arc::new(NoticeAuthority::new()));
 
@@ -197,17 +375,126 @@ async fn managed_claude_notice_is_written_on_take_before_the_provider_turn_ends(
         rig.supervisor.owner_session_activity(&rig.target),
         crate::ProviderSessionActivity::Running
     );
-    assert!(matches!(
-        adapter.ready(&recipient).await,
-        Err(switchboard_message_custody::handover_notice::NoticeDeferred::Busy)
-    ));
+    finish_notice_turn(&rig).await;
     rig.supervisor.shutdown().await.unwrap();
+    assert_wire_script_completed(&rig, false);
+}
+
+#[tokio::test]
+async fn idle_managed_claude_gets_notice_with_logged_out_connection_report() {
+    use session_event_model::{ProviderAuthStatus, SessionState};
+
+    let clock = Arc::new(ManualClock::new(chrono::DateTime::UNIX_EPOCH));
+    let rig = managed_notice_fixture(
+        clock.clone(),
+        NoticeScript::DirectWithLoggedOutReport,
+        collaboration_protocol::ProviderKind::ClaudeCode,
+    )
+    .await;
+    let snapshot = rig.supervisor.owner_session_snapshot(&rig.target).unwrap();
+    assert_eq!(snapshot.projection.state, SessionState::Idle);
+    assert_eq!(
+        snapshot.projection.capabilities.unwrap().auth_status,
+        ProviderAuthStatus::LoggedOut
+    );
+    let (adapter, recipient, notice) =
+        prepare_notice(&rig, &clock, Arc::new(NoticeAuthority::new()));
+
+    let writer = adapter
+        .ready(&recipient)
+        .await
+        .expect("an idle session is ready even when its connection reports LoggedOut");
+    assert_eq!(
+        writer.offer(notice).await,
+        NoticeWriteOutcome::Written {
+            taken_at: clock.utc_now()
+        }
+    );
+    finish_notice_turn(&rig).await;
+    rig.supervisor.shutdown().await.unwrap();
+    assert_wire_script_completed(&rig, false);
+}
+
+#[tokio::test]
+async fn notice_for_running_claude_uses_the_exact_turn_and_preserves_durable_writer_take() {
+    use provider_session_machines::session_turn_machine::SessionTurn;
+    let clock = Arc::new(ManualClock::new(chrono::DateTime::UNIX_EPOCH));
+    let rig = managed_notice_fixture(
+        clock.clone(),
+        NoticeScript::DirectThenSteer,
+        collaboration_protocol::ProviderKind::ClaudeCode,
+    )
+    .await;
+    let authority = Arc::new(NoticeAuthority::new());
+    let (adapter, recipient, notice) = prepare_notice(&rig, &clock, authority.clone());
+    let first = adapter.ready(&recipient).await.unwrap().offer(notice).await;
+    assert!(matches!(first, NoticeWriteOutcome::Written { .. }));
+    let snapshot = rig.supervisor.owner_session_snapshot(&rig.target).unwrap();
+    assert!(matches!(snapshot.turn, SessionTurn::Running { .. }));
+    let next = second_notice(&recipient, &clock, authority);
+    let writer = adapter
+        .ready(&recipient)
+        .await
+        .expect("running Claude must take the notice by steering");
+    assert_eq!(
+        writer.offer(next).await,
+        NoticeWriteOutcome::Written {
+            taken_at: clock.utc_now()
+        }
+    );
+    assert_eq!(
+        rig.supervisor
+            .owner_session_snapshot(&rig.target)
+            .unwrap()
+            .turn,
+        snapshot.turn
+    );
+    finish_notice_turn(&rig).await;
+    rig.supervisor.shutdown().await.unwrap();
+    assert_wire_script_completed(&rig, true);
+}
+
+#[tokio::test]
+async fn managed_notice_running_cursor_without_steering_is_definitely_unsent_and_never_queued() {
+    use switchboard_message_custody::handover::NoticePreTakeRefusal;
+
+    let clock = Arc::new(ManualClock::new(chrono::DateTime::UNIX_EPOCH));
+    let rig = managed_notice_fixture(
+        clock.clone(),
+        NoticeScript::Direct,
+        collaboration_protocol::ProviderKind::Cursor,
+    )
+    .await;
+    let authority = Arc::new(NoticeAuthority::new());
+    let (adapter, recipient, first) = prepare_notice(&rig, &clock, authority.clone());
+    assert!(matches!(
+        adapter.ready(&recipient).await.unwrap().offer(first).await,
+        NoticeWriteOutcome::Written { .. }
+    ));
+
+    let active = rig.supervisor.owner_session_snapshot(&rig.target).unwrap();
+    let second = second_notice(&recipient, &clock, authority);
+    assert_eq!(
+        adapter.ready(&recipient).await.unwrap().offer(second).await,
+        NoticeWriteOutcome::DefinitelyNotWritten(NoticePreTakeRefusal::CannotSteer)
+    );
+    let snapshot = rig.supervisor.owner_session_snapshot(&rig.target).unwrap();
+    assert_eq!(snapshot.turn, active.turn);
+    assert_eq!(snapshot.queue, active.queue);
+    finish_notice_turn(&rig).await;
+    rig.supervisor.shutdown().await.unwrap();
+    assert_wire_script_completed(&rig, false);
 }
 
 #[tokio::test]
 async fn retired_custody_cannot_take_a_managed_claude_notice() {
     let clock = Arc::new(ManualClock::new(chrono::DateTime::UNIX_EPOCH));
-    let rig = idle_claude_fixture(clock.clone(), None).await;
+    let rig = managed_notice_fixture(
+        clock.clone(),
+        NoticeScript::NoWrite,
+        collaboration_protocol::ProviderKind::ClaudeCode,
+    )
+    .await;
     let authority = Arc::new(NoticeAuthority::new());
     let (adapter, recipient, notice) = prepare_notice(&rig, &clock, authority.clone());
     let ready = adapter.ready(&recipient).await.unwrap();
@@ -224,263 +511,103 @@ async fn retired_custody_cannot_take_a_managed_claude_notice() {
     rig.supervisor.shutdown().await.unwrap();
 }
 
-#[tokio::test]
-async fn pre_owner_notice_custody_yields_to_the_human_prompt() {
-    let clock = Arc::new(ManualClock::new(chrono::DateTime::UNIX_EPOCH));
-    let rig = idle_claude_fixture(clock.clone(), Some(HUMAN_TEXT)).await;
-    let (adapter, recipient, notice) =
-        prepare_notice(&rig, &clock, Arc::new(NoticeAuthority::new()));
-    let attempt = notice.attempt();
-    let notice_operation = OperationId::try_from(String::from(attempt)).unwrap();
-    let (notice_held, release_notice) = pause_before_owner(&rig, notice_operation);
-    let ready = adapter.ready(&recipient).await.unwrap();
-    let offer = ready.offer(notice);
-    tokio::pin!(offer);
-    tokio::select! {
-        reached = notice_held => reached.unwrap(),
-        result = &mut offer => panic!("the notice passed its pre-owner pause: {result:?}"),
-    }
+async fn finish_notice_turn(rig: &SteeringSession) {
+    use provider_session_machines::{
+        session_lifecycle_machine::SessionLifecycle, session_turn_machine::SessionTurn,
+    };
+    let owner = rig.supervisor.session_owner_for(&rig.target).unwrap();
+    let mut snapshots = owner.snapshots();
+    let snapshot = snapshots.borrow().clone();
+    let (SessionLifecycle::Live { generation }, SessionTurn::Running { turn }) =
+        (snapshot.lifecycle, snapshot.turn)
+    else {
+        panic!("expected a live foreground turn");
+    };
+    owner.cancel_turn(generation, turn).await.unwrap().unwrap();
+    snapshots
+        .wait_for(|state| state.turn == SessionTurn::Idle)
+        .await
+        .unwrap();
+}
 
-    let operation = OperationId::generate();
-    let started = rig
-        .supervisor
-        .prompt_contents(human_prompt(&rig, operation, PromptBusyPolicy::RefuseBusy))
-        .await;
-    let _ = release_notice.send(());
+fn assert_wire_script_completed(rig: &SteeringSession, expects_steer: bool) {
+    assert!(rig.receipt.with_extension("prompt").is_file());
+    assert_eq!(rig.receipt.with_extension("steer").is_file(), expects_steer);
     assert!(
-        started.is_ok(),
-        "the held notice blocked the human: {started:?}"
+        !rig.receipt.exists(),
+        "unexpected wire traffic: {:?}",
+        std::fs::read_to_string(&rig.receipt)
     );
-    assert_waiting_then_eligible(&rig, &clock, recipient, attempt, offer.await).await;
-    rig.supervisor.shutdown().await.unwrap();
 }
 
 #[tokio::test]
-async fn a_reserved_human_prompt_refuses_notice_even_before_the_owner_command() {
-    for policy in [
-        PromptBusyPolicy::RefuseBusy,
-        PromptBusyPolicy::Send(ProviderMessageDelivery::Auto),
-    ] {
-        let clock = Arc::new(ManualClock::new(chrono::DateTime::UNIX_EPOCH));
-        let rig = idle_claude_fixture(clock.clone(), Some(HUMAN_TEXT)).await;
-        let (adapter, recipient, notice) =
-            prepare_notice(&rig, &clock, Arc::new(NoticeAuthority::new()));
-        let attempt = notice.attempt();
-        let notice_operation = OperationId::try_from(String::from(attempt)).unwrap();
-        let operation = OperationId::generate();
-        let (human_held, release_human) = pause_before_owner(&rig, operation.clone());
-        let human = rig
-            .supervisor
-            .prompt_contents(human_prompt(&rig, operation, policy));
-        tokio::pin!(human);
-        tokio::select! {
-            reached = human_held => reached.unwrap(),
-            result = &mut human => panic!("the human passed its pre-owner pause: {result:?}"),
-        }
-        assert_eq!(
-            rig.supervisor.owner_session_activity(&rig.target),
-            crate::ProviderSessionActivity::Idle
-        );
-
-        let (notice_reached_owner, release_notice) = pause_before_owner(&rig, notice_operation);
-        let offer = adapter.ready(&recipient).await.unwrap().offer(notice);
-        tokio::pin!(offer);
-        let outcome = tokio::select! {
-            result = &mut offer => result,
-            reached = notice_reached_owner => {
-                reached.unwrap();
-                drop(release_notice);
-                panic!("a notice passed admission while a human reservation was held");
-            }
-        };
-        release_human.send(()).unwrap();
-        human.await.expect("the earlier human request runs");
-        assert_waiting_then_eligible(&rig, &clock, recipient, attempt, outcome).await;
-        rig.supervisor.shutdown().await.unwrap();
-    }
-}
-
-#[tokio::test]
-async fn a_taken_notice_turn_gets_the_ordinary_running_refusal_for_a_human_prompt() {
+async fn managed_notice_cannot_replace_a_captured_turn_that_ends_before_take() {
     let clock = Arc::new(ManualClock::new(chrono::DateTime::UNIX_EPOCH));
-    let rig = idle_claude_fixture(clock.clone(), Some(NOTICE_TEXT)).await;
-    let (adapter, recipient, notice) =
-        prepare_notice(&rig, &clock, Arc::new(NoticeAuthority::new()));
+    let rig = managed_notice_fixture(
+        clock.clone(),
+        NoticeScript::DirectWithSteeringAvailable,
+        collaboration_protocol::ProviderKind::ClaudeCode,
+    )
+    .await;
+    let authority = Arc::new(NoticeAuthority::new());
+    let (adapter, recipient, initial) = prepare_notice(&rig, &clock, authority.clone());
     assert!(matches!(
-        adapter.ready(&recipient).await.unwrap().offer(notice).await,
+        adapter
+            .ready(&recipient)
+            .await
+            .unwrap()
+            .offer(initial)
+            .await,
         NoticeWriteOutcome::Written { .. }
+    ));
+    let captured = adapter.ready(&recipient).await.unwrap();
+    finish_notice_turn(&rig).await;
+
+    let outcome = captured
+        .offer(second_notice(&recipient, &clock, authority))
+        .await;
+    assert!(matches!(
+        outcome,
+        NoticeWriteOutcome::DefinitelyNotWritten(_)
     ));
     assert_eq!(
         rig.supervisor.owner_session_activity(&rig.target),
-        crate::ProviderSessionActivity::Running
+        crate::ProviderSessionActivity::Idle
     );
-    let refused = rig
-        .supervisor
-        .prompt_contents(human_prompt(
-            &rig,
-            OperationId::generate(),
-            PromptBusyPolicy::RefuseBusy,
-        ))
-        .await
-        .expect_err("the notice is an actual running turn");
-    assert_eq!(refused.kind, ConversationOperationFailureKind::Busy);
-    assert_eq!(refused.effect, ProviderOperationEffect::None);
     rig.supervisor.shutdown().await.unwrap();
+    assert_wire_script_completed(&rig, false);
 }
 
-fn pause_before_owner(
-    rig: &SteeringSession,
-    operation: OperationId,
-) -> (
-    tokio::sync::oneshot::Receiver<()>,
-    tokio::sync::oneshot::Sender<()>,
-) {
-    let (entered, wait_for_entry) = tokio::sync::oneshot::channel();
-    let (release_owner, release) = tokio::sync::oneshot::channel();
-    *rig.supervisor
-        .inner
-        .before_owner_prompt_test_pause
-        .lock()
-        .unwrap() = Some((operation, AdmissionTestPause { entered, release }));
-    (wait_for_entry, release_owner)
-}
-
-fn human_prompt(
-    rig: &SteeringSession,
-    operation_id: OperationId,
-    busy: PromptBusyPolicy,
-) -> ProviderPromptContentsRequest {
-    ProviderPromptContentsRequest {
-        operation_id,
-        input_id: session_event_model::InputId::generate(),
-        target: rig.target.clone(),
-        requested_by: rig.target.clone().into(),
-        approver: rig.target.clone().into(),
-        input: acp_client_runtime::ProviderTurnInput::Prompt(
-            session_event_model::ProviderSubmission::plain(vec![
-                session_event_model::PromptContent::text(HUMAN_TEXT.to_owned()).unwrap(),
-            ]),
-        ),
-        busy,
-    }
-}
-
-async fn assert_waiting_then_eligible(
-    rig: &SteeringSession,
-    clock: &ManualClock,
-    recipient: MailSessionRef,
-    attempt: NoticeAttemptId,
-    outcome: NoticeWriteOutcome,
-) {
-    use workspace_model::{
-        PostText,
-        central_mail::{MessageBody, MessageDelivery, MessageRecord},
-    };
-
-    assert_eq!(
-        outcome,
-        NoticeWriteOutcome::DefinitelyNotWritten(NoticePreTakeRefusal::Busy)
-    );
-    let now = clock.utc_now();
-    let expiry = now + chrono::TimeDelta::minutes(15);
-    let message = MessageRecord::queued_central(
-        NOTICE_MESSAGE_ID.parse().unwrap(),
-        recipient.clone(),
-        MessageBody::Direct {
-            body: PostText::try_from("inbox fixture".to_owned()).unwrap(),
-            delivery: MessageDelivery::Auto,
-            reply_to: None,
-        },
-        now,
-    );
-    let mut inbox = InboxStore::new(
-        MachineLocalStore::open(&rig._root.path().join("notice-inbox.sqlite"))
-            .await
-            .unwrap(),
-    );
-    inbox
-        .record_delivery(
-            &message,
-            InboxDecision::Accepted,
-            now.timestamp_millis(),
-            InboxOfferExpiry::DirectWithExpiry(expiry),
-        )
-        .await
-        .unwrap();
-    let waiting = Handoff {
-        expires_at: expiry,
-        phase: DirectHandoff::Waiting,
-    };
-    let (writing, effects) =
-        DirectHandoffMachine::transition(&waiting, HandoffEvent::EligibleAtMark { attempt, now })
-            .unwrap();
-    assert_eq!(effects, [HandoffEffect::OfferClaimedNotice]);
-    commit_notice_state(&mut inbox, &recipient, waiting.phase, writing.phase, now).await;
-
-    let (waiting, effects) = DirectHandoffMachine::transition(
-        &writing,
-        HandoffEvent::WriteFinished {
-            attempt,
-            outcome,
-            now,
-        },
+#[tokio::test]
+async fn managed_notice_steer_respects_the_retired_custody_fence() {
+    let clock = Arc::new(ManualClock::new(chrono::DateTime::UNIX_EPOCH));
+    let rig = managed_notice_fixture(
+        clock.clone(),
+        NoticeScript::DirectWithSteeringAvailable,
+        collaboration_protocol::ProviderKind::ClaudeCode,
     )
-    .unwrap();
-    assert!(effects.is_empty());
-    commit_notice_state(&mut inbox, &recipient, writing.phase, waiting.phase, now).await;
-    let row = inbox
-        .scan_direct_handoffs()
-        .await
-        .unwrap()
-        .healthy
-        .remove(0);
-    assert_eq!(row.handoff, DirectHandoff::Waiting);
-
-    clock.advance_to(next_mark_after(clock.now())).unwrap();
-    let now = clock.utc_now();
-    let next_attempt = NoticeAttemptId::mint(now);
-    let (retry, effects) = DirectHandoffMachine::transition(
-        &Handoff::from(&row),
-        HandoffEvent::EligibleAtMark {
-            attempt: next_attempt,
-            now,
-        },
-    )
-    .unwrap();
-    assert_eq!(effects, [HandoffEffect::OfferClaimedNotice]);
-    assert_eq!(
-        retry.phase,
-        DirectHandoff::Writing {
-            attempt: next_attempt
-        }
-    );
-    commit_notice_state(&mut inbox, &recipient, row.handoff, retry.phase, now).await;
-    assert_eq!(
-        inbox.scan_direct_handoffs().await.unwrap().healthy[0].handoff,
-        retry.phase
-    );
-}
-
-async fn commit_notice_state(
-    inbox: &mut InboxStore,
-    recipient: &MailSessionRef,
-    expected: DirectHandoff,
-    next: DirectHandoff,
-    now: workspace_model::Timestamp,
-) {
-    assert_eq!(
-        inbox
-            .compare_and_set_direct_handoffs(
-                recipient,
-                &[DirectHandoffChange {
-                    message_id: NOTICE_MESSAGE_ID.parse().unwrap(),
-                    expected,
-                    next
-                }],
-                now,
-            )
+    .await;
+    let (adapter, recipient, initial) =
+        prepare_notice(&rig, &clock, Arc::new(NoticeAuthority::new()));
+    assert!(matches!(
+        adapter
+            .ready(&recipient)
             .await
-            .unwrap(),
-        HandoffCommit::Committed,
-    );
+            .unwrap()
+            .offer(initial)
+            .await,
+        NoticeWriteOutcome::Written { .. }
+    ));
+    let captured = adapter.ready(&recipient).await.unwrap();
+    let retired = Arc::new(NoticeAuthority::new());
+    let notice = second_notice(&recipient, &clock, retired.clone());
+    retired.close();
+
+    assert!(matches!(
+        captured.offer(notice).await,
+        NoticeWriteOutcome::DefinitelyNotWritten(_)
+    ));
+    finish_notice_turn(&rig).await;
+    rig.supervisor.shutdown().await.unwrap();
+    assert_wire_script_completed(&rig, false);
 }

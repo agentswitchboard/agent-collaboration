@@ -5,9 +5,10 @@ use codex_router_secret_store::{
     model::SecretStoreError,
 };
 use router_clock::RuntimeClock;
+use state_machine_core::StateMachine;
 use switchboard_machine_core_store::{
-    EnrollmentRowChange, EnrollmentRowCorruption, EnrollmentRowStoreError, EnrollmentRowWrite,
-    MachineLocalStore, MachineLocalStoreError, StoredEnrollmentRow,
+    EnrollmentRowCorruption, EnrollmentRowStoreError, EnrollmentRowWrite, MachineLocalStore,
+    MachineLocalStoreError, StoredEnrollmentRow,
 };
 use switchboard_machine_enrollment::{
     BindingGeneration, ConditionalWrite, CredentialStoreError, EnrollmentBinding,
@@ -20,8 +21,12 @@ use tokio::{
 };
 
 use crate::{
-    EnrollmentMutation, EnrollmentRequest, MutationStage, WriteResult,
-    enrollment_row_mapping::{EnrollmentSnapshot, enrollment_metadata, seal_context, stored_end},
+    EnrollmentMutation, EnrollmentRequest, EnrollmentWorkerExit, MutationStage, WriteResult,
+    enrollment_row_machine::{PreparedReplacement, end_locked, replace_locked},
+    enrollment_row_mapping::{EnrollmentSnapshot, enrollment_metadata, seal_context},
+    enrollment_worker_machine::{
+        EnrollmentWorkerMachine, WorkerAdmission, WorkerEvent, WorkerState,
+    },
 };
 
 pub(crate) struct EnrollmentWorker {
@@ -34,15 +39,6 @@ pub(crate) struct EnrollmentWorker {
     keychain: Option<Arc<dyn codex_router_secret_store::keychain_data_key::KeychainAccess>>,
     #[cfg(test)]
     test_dependencies: Option<TestDependencies>,
-}
-
-/// The cause of termination observed by the enrollment store for its worker task.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum EnrollmentWorkerExit {
-    /// The worker stopped its request loop in response to `request_close`.
-    Requested,
-    /// The worker ended without completing a requested stop, including on unwind.
-    Autonomous,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -108,10 +104,10 @@ impl EnrollmentWorker {
     pub(crate) async fn run(
         &mut self,
         mut requests: mpsc::UnboundedReceiver<EnrollmentRequest>,
-        mut shutdown: watch::Receiver<bool>,
+        mut shutdown: watch::Receiver<WorkerAdmission>,
         enrollment_changes: watch::Sender<u64>,
     ) -> EnrollmentWorkerExit {
-        while !*shutdown.borrow_and_update() {
+        while shutdown.borrow_and_update().allows_request() {
             let request = tokio::select! {
                 biased;
                 _ = shutdown.changed() => break,
@@ -120,16 +116,17 @@ impl EnrollmentWorker {
             let Some(request) = request else {
                 break;
             };
-            if *shutdown.borrow() {
+            if EnrollmentWorkerMachine::transition(
+                &WorkerState::Running(*shutdown.borrow()),
+                WorkerEvent::BeginRequest,
+            )
+            .is_err()
+            {
                 break;
             }
             self.handle(request, &enrollment_changes).await;
         }
-        if *shutdown.borrow() {
-            EnrollmentWorkerExit::Requested
-        } else {
-            EnrollmentWorkerExit::Autonomous
-        }
+        shutdown.borrow().loop_exit()
     }
 
     pub(crate) async fn close_resources(mut self) -> Result<(), MachineLocalStoreError> {
@@ -288,31 +285,19 @@ impl EnrollmentWorker {
                 MutationDecision::Replace { context, prepared } => {
                     self.store
                         .write_enrollment_row(machine_id, expected_sql, timestamp, |row| {
-                            let snapshot = match EnrollmentSnapshot::from_row(row, machine_id) {
-                                Ok(snapshot) => snapshot,
-                                Err(corrupt) => return EnrollmentRowChange::Corrupt(corrupt),
-                            };
-                            if !snapshot.matches_scope(&context) {
-                                return EnrollmentRowChange::Abort(
-                                    CredentialStoreError::EnrollmentScopeMismatch,
-                                );
-                            }
-                            match prepared {
-                                Some(replacement) if snapshot == replacement.witness => {
-                                    EnrollmentRowChange::Write(replacement.row)
-                                }
-                                _ => EnrollmentRowChange::Abort(definite_error),
-                            }
+                            replace_locked(
+                                EnrollmentSnapshot::from_row(row, machine_id),
+                                expected,
+                                &context,
+                                prepared,
+                            )
                         })
                         .await
                 }
                 MutationDecision::End(why) => {
                     self.store
                         .write_enrollment_ending(machine_id, expected_sql, timestamp, |row| {
-                            match enrollment_metadata(row, machine_id) {
-                                Ok(metadata) => end_row(metadata, why),
-                                Err(corrupt) => EnrollmentRowChange::Corrupt(corrupt),
-                            }
+                            end_locked(enrollment_metadata(row, machine_id), expected, why)
                         })
                         .await
                 }
@@ -468,44 +453,12 @@ impl EnrollmentWorker {
     }
 }
 
-struct PreparedReplacement {
-    witness: EnrollmentSnapshot,
-    row: StoredEnrollmentRow,
-}
-
 enum MutationDecision {
     Replace {
         context: EnrollmentContext,
         prepared: Option<Box<PreparedReplacement>>,
     },
     End(EnrollmentEnd),
-}
-
-fn end_row(
-    metadata: EnrollmentMetadata,
-    why: EnrollmentEnd,
-) -> EnrollmentRowChange<CredentialStoreError> {
-    let EnrollmentMetadata::Active {
-        key,
-        deployment,
-        generation,
-    } = metadata
-    else {
-        return EnrollmentRowChange::Abort(CredentialStoreError::Remove);
-    };
-    let Some(generation) = generation
-        .successor()
-        .and_then(|next| i64::try_from(next.get()).ok())
-    else {
-        return EnrollmentRowChange::Abort(CredentialStoreError::Remove);
-    };
-    EnrollmentRowChange::Write(StoredEnrollmentRow::Ended {
-        generation,
-        organization_id: key.organization_id.to_string(),
-        deployment: deployment.origin().as_str().to_owned(),
-        enrollment_id: key.enrollment_id.to_string(),
-        why: stored_end(why),
-    })
 }
 
 #[cfg(test)]

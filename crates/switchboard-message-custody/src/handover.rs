@@ -6,7 +6,8 @@ use state_machine_core::{
     EventTag, RefusalTag, StateMachine, StateMachineResult, StateTag, Transition, TransitionError,
 };
 use switchboard_machine_core_store::{
-    DirectHandoff, DirectHandoffChange, DirectHandoffRow, NoticeAttemptId, SeenReceiptState,
+    DirectHandoff, DirectHandoffChange, DirectHandoffRow, NoticeAttemptId, NoticeRefusalReason,
+    SeenReceiptState,
 };
 use workspace_model::Timestamp;
 
@@ -32,6 +33,7 @@ impl StateTag for Handoff {
             DirectHandoff::Writing { .. } => "Writing",
             DirectHandoff::NotKnown => "NotKnown",
             DirectHandoff::NotSeen => "NotSeen",
+            DirectHandoff::NoticeRefused { .. } => "NoticeRefused",
             DirectHandoff::Seen { .. } => "Seen",
         }
     }
@@ -39,21 +41,29 @@ impl StateTag for Handoff {
     fn is_terminal(&self) -> bool {
         matches!(
             self.phase,
-            DirectHandoff::NotSeen | DirectHandoff::Seen { .. }
+            DirectHandoff::NotSeen
+                | DirectHandoff::NoticeRefused { .. }
+                | DirectHandoff::Seen { .. }
         )
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NoticeWriteOutcome {
-    Written { taken_at: Timestamp },
+    Written {
+        taken_at: Timestamp,
+    },
+    /// The provider requires a new prompt and did not accept the steer.
+    SteerNotInjected,
+    /// The provider explicitly refused the steer.
+    SteerRefused,
     DefinitelyNotWritten(NoticePreTakeRefusal),
     NotKnown(NoticeUncertainty),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NoticePreTakeRefusal {
-    Busy,
+    CannotSteer,
     RunChanged,
     Expired,
     Retired,
@@ -144,7 +154,7 @@ impl StateMachine for DirectHandoffMachine {
     type Error = HandoffRefusal;
 
     fn transition(state: &Handoff, event: HandoffEvent) -> StateMachineResult<Self> {
-        use DirectHandoff::{NotKnown, NotSeen, Seen, Waiting, Writing};
+        use DirectHandoff::{NotKnown, NotSeen, NoticeRefused, Seen, Waiting, Writing};
         use HandoffEvent::{
             Cutoff, EligibleAtMark, ReadAcknowledged, RecoverWriting, WriteFinished,
         };
@@ -181,23 +191,39 @@ impl StateMachine for DirectHandoffMachine {
                             HandoffRefusal::TakeOutsideDeliveryWindow,
                         ));
                     }
-                    NoticeWriteOutcome::DefinitelyNotWritten(_) if now < state.expires_at => {
+                    NoticeWriteOutcome::DefinitelyNotWritten(NoticePreTakeRefusal::CannotSteer) => {
+                        (
+                            NoticeRefused {
+                                reason: NoticeRefusalReason::CannotSteer,
+                            },
+                            vec![],
+                        )
+                    }
+                    NoticeWriteOutcome::DefinitelyNotWritten(_)
+                    | NoticeWriteOutcome::SteerNotInjected
+                        if now < state.expires_at =>
+                    {
                         (Waiting, vec![])
                     }
-                    NoticeWriteOutcome::DefinitelyNotWritten(_) => (NotSeen, vec![]),
+                    NoticeWriteOutcome::DefinitelyNotWritten(_)
+                    | NoticeWriteOutcome::SteerNotInjected
+                    | NoticeWriteOutcome::SteerRefused => (NotSeen, vec![]),
                     NoticeWriteOutcome::NotKnown(_) => (NotKnown, vec![]),
                 }
             }
             (Writing { .. }, RecoverWriting) => (NotKnown, vec![]),
             (Waiting | NotKnown, ReadAcknowledged { completed_at }) => seen(completed_at),
-            (Waiting | NotKnown | NotSeen | Seen { .. }, WriteFinished { .. }) => {
+            (
+                Waiting | NotKnown | NotSeen | NoticeRefused { .. } | Seen { .. },
+                WriteFinished { .. },
+            ) => {
                 return Err(TransitionError::Stale);
             }
             (Waiting, RecoverWriting)
             | (Writing { .. }, EligibleAtMark { .. } | ReadAcknowledged { .. })
             | (NotKnown, EligibleAtMark { .. } | Cutoff { .. } | RecoverWriting)
             | (
-                NotSeen | Seen { .. },
+                NotSeen | NoticeRefused { .. } | Seen { .. },
                 EligibleAtMark { .. } | Cutoff { .. } | RecoverWriting | ReadAcknowledged { .. },
             ) => {
                 return Err(TransitionError::NotAllowed {
@@ -217,6 +243,7 @@ impl StateMachine for DirectHandoffMachine {
             edge("Writing", "Cutoff", "Writing", false),
             edge("Writing", "WriteFinished", "Waiting", false),
             edge("Writing", "WriteFinished", "NotSeen", true),
+            edge("Writing", "WriteFinished", "NoticeRefused", true),
             edge("Writing", "WriteFinished", "Seen", true),
             edge("Writing", "WriteFinished", "NotKnown", false),
             edge("Writing", "RecoverWriting", "NotKnown", false),
