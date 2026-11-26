@@ -2,11 +2,16 @@
 
 The person WebSocket serves `listPersonApprovals`, `readPersonApproval` and
 `decidePersonApproval`. List, read and a new decision require a current
-`approval:decide` grant. The person bearer and authorization floors are checked
-on upgrade and again at the applying sample. An invalid upgrade returns empty
-HTTP 401. Expired or superseded authority on an open socket requests a reconnect.
-A current connection without the grant receives `notPermitted` unless it asks
-for its own exact retained Decide result.
+`approval:decide` grant. Central verifies the person bearer only during the
+upgrade. A well-formed upgrade with a refused bearer or authorization standing
+returns an empty HTTP 401. An HTTP/1.1 GET without upgrade headers receives
+HTTP 426 on Cloudflare and HTTP 400 on Tokio.
+
+Each approval transaction checks the admitted session expiry, the authorization
+snapshot expiry, and the current organization and person authorization floors.
+Expired or superseded authority on an open socket requests a reconnect. A current
+connection without the grant receives `notPermitted` unless it asks for its own
+exact retained Decide result.
 
 [Reply vectors](approval-person-reply-vectors.json) pin the closed JSON body
 shapes, including whole-second and fractional timestamps.
