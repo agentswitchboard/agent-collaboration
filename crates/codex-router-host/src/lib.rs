@@ -47,6 +47,8 @@ mod session_owner_notice;
 mod session_owner_preparation_fixture;
 pub mod session_owner_publication;
 pub mod session_owner_registry;
+#[cfg(test)]
+mod session_owner_scripted_harness_test;
 pub mod session_owner_storage;
 pub mod session_store_lane;
 pub use provider_queue_operation_registry::{ProviderQueueCancellationError, ProviderQueuedInput};
