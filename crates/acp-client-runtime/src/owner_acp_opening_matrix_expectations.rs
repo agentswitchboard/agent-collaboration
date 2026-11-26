@@ -265,7 +265,7 @@ pub(super) fn expected(from: P, event: E) -> Option<P> {
             (Phase::OfferingClose, Event::CloseUnsentActive) => Phase::Active,
             (Phase::CloseRefusedLive, Event::AdmitAgain) => Phase::Readmitting,
             (Phase::Readmitting, Event::Readmitted) => Phase::Active,
-            (Phase::Readmitting, Event::ReadmitFailed) => Phase::CloseRefusedLive,
+            (Phase::Readmitting, Event::ReadmitFailed) => Phase::RouteLost,
             (Phase::RetiredAwaitingReply, Event::LateOpenReply) => Phase::Terminal,
             (Phase::RouteLost, Event::ReportRouteLost) => from,
             (Phase::StoppedAwaitingReply, Event::FinishOnStoppedWriter) => Phase::Terminal,
@@ -309,7 +309,7 @@ pub(super) fn expected_actions(phase: P, event: E, next: P) -> Vec<Action> {
         E::AdmitAgain => vec![A::Readmit],
         E::LateOpenReply => vec![A::Discard],
         E::OpenFailed | E::WorkerExited if phase == P::RouteLost => vec![A::Discard],
-        E::RouteRemoved => vec![A::Remove],
+        E::RouteRemoved | E::ReadmitFailed => vec![A::Remove],
         _ if next == P::StoppedAwaitingReply && event != E::WriterAccepted => vec![A::ReleaseAfter],
         _ if matches!(next, P::Terminal | P::RetiredAwaitingReply) => vec![A::Remove],
         E::OpenCreate
@@ -335,7 +335,6 @@ pub(super) fn expected_actions(phase: P, event: E, next: P) -> Vec<Action> {
         | E::CloseRefused
         | E::CloseUnknown
         | E::Readmitted
-        | E::ReadmitFailed
         | E::Retire
         | E::FinishOnStoppedWriter
         | E::WorkerExited

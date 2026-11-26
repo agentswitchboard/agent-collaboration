@@ -37,6 +37,17 @@ struct Barrier {
 }
 
 impl OwnerAcpWire {
+    #[cfg(feature = "test-observation")]
+    pub fn replace_closing_marker_for_test(
+        &self,
+        run: crate::acp_transport::TransportRun,
+        previous: provider_session_machines::session_lifecycle_machine::CloseAttempt,
+        replacement: provider_session_machines::session_lifecycle_machine::CloseAttempt,
+    ) -> bool {
+        self.transport
+            .replace_closing_marker_for_test(run, previous, replacement)
+    }
+
     pub fn pause_opening_for_test(&self, point: OpeningPausePoint) -> OpeningPause {
         let (signal, reached) = oneshot::channel();
         let (release, wait) = mpsc::channel();

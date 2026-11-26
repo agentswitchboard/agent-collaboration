@@ -10,16 +10,36 @@ async fn readmission_commits_before_the_exact_wire_marker_is_cleared() {
 }
 
 pub(super) async fn readmission_schedule(lose_route: bool) {
-    exercise_readmission(lose_route, false).await;
+    exercise_readmission(if lose_route {
+        AfterRefusal::RouteLost
+    } else {
+        AfterRefusal::Unchanged
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
 async fn a_reader_that_ends_after_refused_close_cannot_be_readmitted() {
-    exercise_readmission(false, true).await;
-    exercise_readmission(false, false).await;
+    exercise_readmission(AfterRefusal::ReaderEnds).await;
+    exercise_readmission(AfterRefusal::Unchanged).await;
 }
 
-async fn exercise_readmission(lose_route: bool, reader_stops: bool) {
+#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+async fn stale_readmission_marker_settles_without_repeating_old_advice() {
+    exercise_readmission(AfterRefusal::MarkerAbsent).await;
+    exercise_readmission(AfterRefusal::DifferentMarker).await;
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AfterRefusal {
+    Unchanged,
+    ReaderEnds,
+    RouteLost,
+    MarkerAbsent,
+    DifferentMarker,
+}
+
+async fn exercise_readmission(scenario: AfterRefusal) {
     let fixture = hub_runtime_with_launch(|receipt| {
         crate::external_provider_runtime::acp_scripted_fixture::launch_fixture_agent(
             "permission-mode-agent.ts",
@@ -80,7 +100,7 @@ async fn exercise_readmission(lose_route: bool, reader_stops: bool) {
         generation: run.generation,
     };
     let wire = fixture.runtime.client.owner_wire();
-    if reader_stops {
+    if scenario == AfterRefusal::ReaderEnds {
         let ended = wire.pause_opening_for_test(OpeningPausePoint::ReaderStoppedDelivered);
         retired.cancel();
         ended
@@ -125,11 +145,27 @@ async fn exercise_readmission(lose_route: bool, reader_stops: bool) {
         Some(close.attempt),
         "the real closing marker must survive until the committed re-admission effect"
     );
-    if lose_route {
-        fixture
-            .runtime
-            .retire_provider_route_for_test(owner.incarnation, run.generation);
-    }
+    let remains_live = match scenario {
+        AfterRefusal::RouteLost => {
+            fixture
+                .runtime
+                .retire_provider_route_for_test(owner.incarnation, run.generation);
+            false
+        }
+        AfterRefusal::MarkerAbsent => {
+            wire.reopen_route(route, close.attempt);
+            assert_eq!(wire.closing_marker_for_test(route), None);
+            true
+        }
+        AfterRefusal::DifferentMarker => {
+            let replacement = CloseAttempt(Uuid::now_v7());
+            assert!(wire.replace_closing_marker_for_test(route, close.attempt, replacement));
+            assert_eq!(wire.closing_marker_for_test(route), Some(replacement));
+            false
+        }
+        AfterRefusal::Unchanged => true,
+        AfterRefusal::ReaderEnds => unreachable!("the reader ending has its own barrier"),
+    };
     paused
         .release
         .send(())
@@ -138,14 +174,17 @@ async fn exercise_readmission(lose_route: bool, reader_stops: bool) {
     assert_eq!(wire.closing_marker_for_test(route), None);
     assert_eq!(
         binding.opening_is_held(OpenAttempt::Restore(run)),
-        Held::NotHeld(if lose_route {
-            LifecycleRefusal::BoundRouteUnavailable
-        } else {
+        Held::NotHeld(if remains_live {
             LifecycleRefusal::OpeningActive
-        })
+        } else {
+            LifecycleRefusal::BoundRouteUnavailable
+        }),
+        "stale readmission evidence cannot repeat the old marker advice for {scenario:?}"
     );
 
-    if !lose_route {
+    binding.admit_again(close);
+    assert_eq!(wire.closing_marker_for_test(route), None);
+    if remains_live {
         let next = RunAttempt {
             attempt: CloseAttempt(Uuid::now_v7()),
             ..close

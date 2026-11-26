@@ -14,8 +14,8 @@ use super::{
     StateMachine, StepFault, StoppedReceipt,
 };
 use crate::{
-    acp_transport::ReadmitOutcome, owner_opening_instance::OpeningOffer,
-    owner_session_open::OwnerOpenedSession, owner_session_setting::OwnerSettingWirePlan,
+    owner_opening_instance::OpeningOffer, owner_session_open::OwnerOpenedSession,
+    owner_session_setting::OwnerSettingWirePlan,
 };
 use provider_session_machines::{
     ProviderSettingsCatalog,
@@ -567,19 +567,17 @@ fn apply_edge(
                 Effect::Readmit(route, attempt),
             )
         }
-        (State::Readmitting { run, .. }, Command::ReadmitResult(_, ReadmitOutcome::Reopened)) => {
+        (State::Readmitting { run, .. }, Command::ReadmitResult(..))
+            if edge == Edge::Readmitted =>
+        {
             store(State::Active(run), Effect::None)
         }
-        (
-            State::Readmitting { run, attempt },
-            Command::ReadmitResult(_, ReadmitOutcome::StaleMarker),
-        ) => store(State::CloseRefusedLive { run, attempt }, Effect::None),
         (state, Command::WriterStopped) => stop_writer(state, instance, edge),
         (
             state,
             command @ (Command::RouteRemoved(_)
             | Command::ReaderStopped(_)
-            | Command::ReadmitResult(_, ReadmitOutcome::RouteLost)),
+            | Command::ReadmitResult(..)),
         ) => {
             let report_loss = matches!(
                 command,

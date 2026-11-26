@@ -89,7 +89,8 @@ pub struct OrderedOutput<Frame> {
 pub(crate) enum ReadmitOutcome {
     Reopened,
     RouteLost,
-    StaleMarker,
+    MarkerAbsent,
+    DifferentMarker,
 }
 
 struct ConnectionRoute {
@@ -883,16 +884,38 @@ impl<Frame> AcpTransport<Frame> {
         else {
             return ReadmitOutcome::RouteLost;
         };
-        if entry.closing != Some(attempt) {
-            return ReadmitOutcome::StaleMarker;
+        match entry.closing {
+            Some(current) if current == attempt => {
+                entry.closing = None;
+                ReadmitOutcome::Reopened
+            }
+            Some(_) => ReadmitOutcome::DifferentMarker,
+            None => ReadmitOutcome::MarkerAbsent,
         }
-        entry.closing = None;
-        ReadmitOutcome::Reopened
     }
 
     #[cfg(any(test, feature = "test-observation"))]
     pub(crate) fn closing_marker_for_test(&self, run: TransportRun) -> Option<CloseAttempt> {
         self.state().routes.get(&run)?.closing
+    }
+
+    #[cfg(feature = "test-observation")]
+    pub(crate) fn replace_closing_marker_for_test(
+        &self,
+        run: TransportRun,
+        previous: CloseAttempt,
+        replacement: CloseAttempt,
+    ) -> bool {
+        let mut state = self.state();
+        let Some(route) = state
+            .routes
+            .get_mut(&run)
+            .filter(|route| route.closing == Some(previous))
+        else {
+            return false;
+        };
+        route.closing = Some(replacement);
+        true
     }
 
     fn enqueue_opening_claim(

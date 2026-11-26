@@ -1,9 +1,9 @@
 //! Select the declared edge from a typed command and owned custody.
 
 use super::{
-    CloseFact, Command, Edge, LostReceipt, OpeningState, ReadmitOutcome, RestoreMilestone,
-    StoppedReceipt,
+    CloseFact, Command, Edge, LostReceipt, OpeningState, RestoreMilestone, StoppedReceipt,
 };
+use crate::acp_transport::ReadmitOutcome;
 
 pub(super) fn edge(state: &OpeningState, command: &Command, taken: bool) -> Option<Edge> {
     use OpeningState as State;
@@ -216,13 +216,22 @@ pub(super) fn edge(state: &OpeningState, command: &Command, taken: bool) -> Opti
             Edge::AdmitAgain
         }
         Command::ReadmitResult(attempt, outcome) => {
-            if !matches!(state, State::Readmitting { attempt: owed, .. } if owed == attempt) {
+            let State::Readmitting { run, attempt: owed } = state else {
+                return None;
+            };
+            if owed != attempt {
                 return None;
             }
             match outcome {
-                ReadmitOutcome::Reopened => Edge::Readmitted,
-                ReadmitOutcome::RouteLost => Edge::RouteRemoved,
-                ReadmitOutcome::StaleMarker => Edge::ReadmitFailed,
+                ReadmitOutcome::Reopened | ReadmitOutcome::MarkerAbsent
+                    if !run.route.is_removed() =>
+                {
+                    Edge::Readmitted
+                }
+                ReadmitOutcome::Reopened
+                | ReadmitOutcome::MarkerAbsent
+                | ReadmitOutcome::RouteLost => Edge::RouteRemoved,
+                ReadmitOutcome::DifferentMarker => Edge::ReadmitFailed,
             }
         }
         Command::Retire => Edge::Retire,

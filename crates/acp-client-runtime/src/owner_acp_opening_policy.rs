@@ -249,7 +249,7 @@ impl StateMachine for OpeningPolicy {
         OfferingClose + WaitClose => OfferingClose;
         CloseRefusedLive + AdmitAgain => Readmitting;
         Readmitting + Readmitted => Active;
-        Readmitting + ReadmitFailed => CloseRefusedLive;
+        Readmitting + ReadmitFailed => RouteLost;
         Readmitting + WaitClose => Readmitting;
         Readmitting + Retire => Terminal;
         Readmitting + ConnectionRetired => Terminal;

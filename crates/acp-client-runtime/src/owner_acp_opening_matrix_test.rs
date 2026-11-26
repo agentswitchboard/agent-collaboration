@@ -1,6 +1,7 @@
 //! Independent expectations for the opening declaration and owned effects.
 
 use super::*;
+use crate::acp_transport::ReadmitOutcome;
 use Edge as E;
 use OpeningPhase as P;
 use agent_client_protocol::{Agent, Client, ConnectionTo, schema::v1::SessionId};
@@ -399,7 +400,7 @@ impl Fixture {
             E::AdmitAgain => Command::AdmitAgain(self.close.attempt),
             E::Readmitted => Command::ReadmitResult(self.close.attempt, ReadmitOutcome::Reopened),
             E::ReadmitFailed => {
-                Command::ReadmitResult(self.close.attempt, ReadmitOutcome::StaleMarker)
+                Command::ReadmitResult(self.close.attempt, ReadmitOutcome::DifferentMarker)
             }
             E::Retire => Command::Retire,
             E::RouteRemoved => Command::RouteRemoved(self.run.route.clone()),
@@ -599,6 +600,32 @@ async fn every_applicable_owned_step_matches_the_independent_effect_matrix() {
             }
         }
     }
+}
+
+#[tokio::test]
+async fn successful_reopen_receipt_cannot_revive_an_invalidated_route() {
+    let fixture = Fixture::new().await;
+    let instance = OpeningInstance::default();
+    let row = super::super::OpeningRow {
+        attempt: fixture.attempt,
+        instance: instance.clone(),
+        state: OpeningState::Readmitting {
+            run: fixture.run.clone(),
+            attempt: fixture.close.attempt,
+        },
+    };
+    fixture.run.route.mark_removed();
+    let (next, effect) = row
+        .apply(
+            &instance,
+            Command::ReadmitResult(fixture.close.attempt, ReadmitOutcome::Reopened),
+        )
+        .unwrap_or_else(|_| panic!("settle the successful reopen on the invalidated exact route"));
+    assert_eq!(next.map(|row| row.phase()), Some(P::RouteLost));
+    assert_eq!(
+        actual_actions(&effect, &fixture, &instance),
+        vec![Action::Remove]
+    );
 }
 
 #[tokio::test]
