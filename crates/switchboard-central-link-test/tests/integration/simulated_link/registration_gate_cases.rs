@@ -31,13 +31,13 @@ use workspace_model::{Caller, PostText, WorkspaceOperation, WorkspaceRequest};
 
 use super::super::{
     MACHINE_LINK_FIXTURE_MACHINE, SimulatedLink,
-    central_receive::{CentralReceiveTrace, ReceivedFrame},
+    central_receive::{ObservedSocketFrame, SocketFrameTrace},
     packet_flight::{FrameKind, PacketFlight, decode_segment},
     run_link_case_with_trace,
 };
 use super::{NetworkCustody, cadence_request, request_id};
 
-fn application_frame(entry: &ReceivedFrame) -> Option<LinkFrame> {
+pub(super) fn application_frame(entry: &ObservedSocketFrame) -> Option<LinkFrame> {
     match &entry.message {
         Message::Text(text) => Some(decode_text(text, FrameDirection::ToCentral).unwrap()),
         Message::Binary(_) | Message::Frame(_) => panic!("unexpected carrier data: {entry:?}"),
@@ -86,7 +86,7 @@ enum ReleaseMark {
     Closed,
 }
 
-async fn joined_hold(first: SimulatedLink, trace: CentralReceiveTrace, mark: ReleaseMark) {
+async fn joined_hold(first: SimulatedLink, trace: SocketFrameTrace, mark: ReleaseMark) {
     let central = first.central.clone();
     let clock = first.clock.clone();
     let network = first.network.clone();
@@ -105,13 +105,15 @@ async fn joined_hold(first: SimulatedLink, trace: CentralReceiveTrace, mark: Rel
         now_seconds + 42,
     )
     .unwrap();
-    let link = SimulatedLink::start_enrolled(
+    let sent = SocketFrameTrace::default();
+    let link = SimulatedLink::start_enrolled_with_send_trace(
         clock.clone(),
         network.clone(),
         central,
         MACHINE_LINK_FIXTURE_MACHINE.parse().unwrap(),
         token,
         None,
+        Some(sent.clone()),
     )
     .await;
     let ack = network
@@ -228,15 +230,45 @@ async fn joined_hold(first: SimulatedLink, trace: CentralReceiveTrace, mark: Rel
     );
     let in_mark = wake.max(renewal);
     case.advance_to(in_mark);
+    let expected_send = match mark {
+        ReleaseMark::StillOpen => in_mark,
+        ReleaseMark::Closed => {
+            case.advance_to(ClockInstant::ZERO.after(Duration::from_secs(24)));
+            case.wake_at_next_mark()
+        }
+    };
+    let before_custody_turn = case.custody_clock.checkpoint();
     assert_eq!(
         case.status(direct.id.clone()).await,
         CustodyRequestStatus::InOutbox {
             flush_at: direct.flush_at
         }
     );
+    let before_ack = clock.monotonic_now();
+    case.custody_clock
+        .observe(before_custody_turn, |poll| {
+            poll.sampled_at == before_ack && !poll.elapsed
+        })
+        .await;
     assert!(case.link.lane.watch_registered().borrow().is_none());
-    let held_frames: Vec<_> = trace
-        .snapshot()
+    let at_socket = trace.snapshot();
+    let written = sent.snapshot();
+    assert!(
+        sent.is_at_message_boundary(port) && trace.is_at_message_boundary(port),
+        "an incomplete frame crosses the acknowledgement boundary"
+    );
+    assert!(
+        written
+            .iter()
+            .filter(|entry| entry.port == port)
+            .map(|entry| &entry.message)
+            .eq(at_socket
+                .iter()
+                .filter(|entry| entry.port == port)
+                .map(|entry| &entry.message)),
+        "every frame written before acknowledgement must already be observed at Central"
+    );
+    let held_frames: Vec<_> = at_socket
         .iter()
         .filter(|entry| entry.port == port)
         .filter_map(application_frame)
@@ -251,14 +283,7 @@ async fn joined_hold(first: SimulatedLink, trace: CentralReceiveTrace, mark: Rel
         "{held_frames:?}"
     );
 
-    let expected_send = match mark {
-        ReleaseMark::StillOpen => in_mark,
-        ReleaseMark::Closed => {
-            case.advance_to(ClockInstant::ZERO.after(Duration::from_secs(24)));
-            case.wake_at_next_mark()
-        }
-    };
-    let hold_boundary = trace.snapshot().len();
+    let hold_boundary = at_socket.len();
     case.link.read_probe.replay_read(ack_bytes);
     let registered = case
         .link
@@ -359,6 +384,9 @@ async fn joined_hold(first: SimulatedLink, trace: CentralReceiveTrace, mark: Rel
             matches!(receipt, ReceiptKind::Refused { .. })
         }),
         (seen_id, |receipt| {
+            matches!(receipt, ReceiptKind::Delivered { .. })
+        }),
+        (seen_id, |receipt| {
             matches!(receipt, ReceiptKind::Seen { .. })
         }),
     ] {
@@ -382,7 +410,7 @@ async fn joined_hold(first: SimulatedLink, trace: CentralReceiveTrace, mark: Rel
 
 #[test]
 fn native_central_receives_only_housekeeping_until_registration_opens_the_same_mark() {
-    let trace = CentralReceiveTrace::default();
+    let trace = SocketFrameTrace::default();
     run_link_case_with_trace(PacketFlight::new(), Some(trace.clone()), move |link| {
         joined_hold(link, trace, ReleaseMark::StillOpen)
     });
@@ -390,13 +418,13 @@ fn native_central_receives_only_housekeeping_until_registration_opens_the_same_m
 
 #[test]
 fn registration_after_a_missed_mark_sends_once_in_the_next_window() {
-    let trace = CentralReceiveTrace::default();
+    let trace = SocketFrameTrace::default();
     run_link_case_with_trace(PacketFlight::new(), Some(trace.clone()), move |link| {
         joined_hold(link, trace, ReleaseMark::Closed)
     });
 }
 
-async fn orphan_claims_wait_for_registration(link: SimulatedLink, trace: CentralReceiveTrace) {
+async fn orphan_claims_wait_for_registration(link: SimulatedLink, trace: SocketFrameTrace) {
     let clock = link.clock.clone();
     let network = link.network.clone();
     let ack = network.seen(0, FrameKind::RegisterReply).await;
@@ -477,7 +505,7 @@ async fn orphan_claims_wait_for_registration(link: SimulatedLink, trace: Central
 
 #[test]
 fn registration_wakes_the_live_orphan_probe_on_the_native_connection_without_a_clock_tick() {
-    let trace = CentralReceiveTrace::default();
+    let trace = SocketFrameTrace::default();
     let network = PacketFlight::new();
     network.hold_next(FrameKind::RegisterReply);
     run_link_case_with_trace(network, Some(trace.clone()), move |link| {

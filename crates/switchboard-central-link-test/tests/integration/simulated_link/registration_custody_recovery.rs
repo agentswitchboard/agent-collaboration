@@ -16,10 +16,15 @@ use workspace_ids::RouterRunId;
 
 use super::super::{
     MACHINE_LINK_FIXTURE_MACHINE, SimulatedLink,
-    packet_flight::{FrameKind, InFlightFrame, decode_segment},
-    run_link_case,
+    central_receive::SocketFrameTrace,
+    packet_flight::{FrameKind, InFlightFrame, PacketFlight, decode_segment},
+    run_link_case_with_trace,
 };
-use super::{NetworkCustody, registration_gate_cases::seed_backlog};
+use super::{
+    NetworkCustody,
+    registration_gate_cases::{application_frame, seed_backlog},
+    request_id,
+};
 
 async fn hold_acknowledgement(link: &SimulatedLink, ack: &InFlightFrame) -> Vec<u8> {
     let hold = link.read_probe.discard_next_read();
@@ -74,7 +79,11 @@ fn elapsed(seconds: u64) -> ClockInstant {
     ClockInstant::ZERO.after(Duration::from_secs(seconds))
 }
 
-async fn custody_survives_registration_ending(first: SimulatedLink, ending: RegistrationEnding) {
+async fn custody_survives_registration_ending(
+    first: SimulatedLink,
+    ending: RegistrationEnding,
+    trace: SocketFrameTrace,
+) {
     let central = first.central.clone();
     let clock = first.clock.clone();
     let network = first.network.clone();
@@ -185,11 +194,14 @@ async fn custody_survives_registration_ending(first: SimulatedLink, ending: Regi
         }
     );
     assert!(
-        network
-            .frames()
+        trace
+            .snapshot()
             .iter()
-            .skip(held_after)
-            .all(|frame| !matches!(frame.kind, FrameKind::Batch | FrameKind::Receipt))
+            .filter_map(application_frame)
+            .all(|frame| !matches!(
+                frame,
+                LinkFrame::Data(DataFrame::Batch { .. } | DataFrame::Receipts { .. })
+            ))
     );
     match ending {
         RegistrationEnding::Refused => case.advance_to(elapsed(60)),
@@ -232,33 +244,59 @@ async fn custody_survives_registration_ending(first: SimulatedLink, ending: Regi
         }
     }
     case.wait_for_kept(incoming).await;
+    let send_at = case.wake_at_next_mark();
     case.advance_to_next_mark().await;
     case.finish_write(&outgoing).await;
     case.wait_for_confirmation(&[ReceiptResult::Recorded]).await;
-    let frames = network.frames();
     assert_eq!(
-        frames
-            .iter()
-            .filter(|entry| entry.kind == FrameKind::Batch)
-            .count(),
-        1
+        case.status(request_id(42)).await,
+        CustodyRequestStatus::NotFound
     );
-    assert_eq!(frames.iter().filter(|entry| matches!(&entry.frame,
-        LinkFrame::Data(DataFrame::Receipts { receipts, .. }) if receipts.receipts().iter().any(|receipt| receipt.message_id == *incoming))).count(), 1);
+    let received = trace.snapshot();
+    let batches: Vec<_> = received.iter().filter_map(|entry| {
+        matches!(application_frame(entry), Some(LinkFrame::Data(DataFrame::Batch { requests })) if
+            requests.requests().iter().any(|request| request.payload().write_request_id() == Some(&outgoing.id)))
+            .then_some((entry.at, entry.port))
+    }).collect();
+    let receipts: Vec<_> = received
+        .iter()
+        .filter_map(|entry| {
+            let Some(LinkFrame::Data(DataFrame::Receipts { receipts, .. })) =
+                application_frame(entry)
+            else {
+                return None;
+            };
+            let count = receipts
+                .receipts()
+                .iter()
+                .filter(|receipt| receipt.message_id == *incoming)
+                .count();
+            (count > 0).then_some((entry.at, entry.port, count))
+        })
+        .collect();
+    assert_eq!(batches, [(send_at, success.connection_port)]);
+    assert_eq!(receipts, [(send_at, success.connection_port, 1)]);
     case.close().await;
+}
+
+fn observe_ending(ending: RegistrationEnding) {
+    let trace = SocketFrameTrace::default();
+    run_link_case_with_trace(PacketFlight::new(), Some(trace.clone()), move |link| {
+        custody_survives_registration_ending(link, ending, trace)
+    });
 }
 
 #[test]
 fn a_framed_refusal_keeps_inbox_and_outbox_until_registration_on_the_same_socket() {
-    run_link_case(|link| custody_survives_registration_ending(link, RegistrationEnding::Refused));
+    observe_ending(RegistrationEnding::Refused);
 }
 
 #[test]
 fn a_registration_timeout_keeps_inbox_and_outbox_until_retry_on_the_same_socket() {
-    run_link_case(|link| custody_survives_registration_ending(link, RegistrationEnding::TimedOut));
+    observe_ending(RegistrationEnding::TimedOut);
 }
 
 #[test]
 fn run_not_registered_reconnects_and_keeps_the_reoffered_record_once() {
-    run_link_case(|link| custody_survives_registration_ending(link, RegistrationEnding::Replaced));
+    observe_ending(RegistrationEnding::Replaced);
 }

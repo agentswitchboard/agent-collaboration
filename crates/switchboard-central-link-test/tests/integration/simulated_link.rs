@@ -32,7 +32,7 @@ use turmoil::net::{TcpListener, TcpStream};
 use workspace_ids::{MachineId, RouterRunId};
 
 use self::{
-    central_receive::{CentralReceiveTrace, ObservedCentralStream},
+    central_receive::{ObservedCentralStream, SocketFrameTrace, SocketObserver},
     packet_flight::PacketFlight,
     simulation_clock::ObservedClock,
     write_readiness::{HeldWriter, WriterGate},
@@ -53,7 +53,7 @@ const LINK_PORT: u16 = 7789;
 
 struct SimulatedListener {
     listener: TcpListener,
-    trace: Option<CentralReceiveTrace>,
+    trace: Option<SocketFrameTrace>,
     clock: Arc<ManualClock>,
 }
 
@@ -81,7 +81,7 @@ impl Listener for SimulatedListener {
 
 async fn serve_central(
     clock: Arc<ManualClock>,
-    trace: Option<CentralReceiveTrace>,
+    trace: Option<SocketFrameTrace>,
     ready: watch::Sender<Option<Arc<MachineLinkFixture>>>,
     mut stop: watch::Receiver<bool>,
     closed: watch::Sender<bool>,
@@ -157,6 +157,21 @@ impl SimulatedLink {
         token: String,
         prior_run: Option<RouterRunId>,
     ) -> Self {
+        Self::start_enrolled_with_send_trace(
+            clock, network, central, machine, token, prior_run, None,
+        )
+        .await
+    }
+
+    async fn start_enrolled_with_send_trace(
+        clock: Arc<ManualClock>,
+        network: PacketFlight,
+        central: Arc<MachineLinkFixture>,
+        machine: MachineId,
+        token: String,
+        prior_run: Option<RouterRunId>,
+        sent: Option<SocketFrameTrace>,
+    ) -> Self {
         let address = format!(
             "ws://127.0.0.1:{LINK_PORT}/v1/organizations/{}/link",
             central.organization_id.as_str(),
@@ -192,16 +207,27 @@ impl SimulatedLink {
                 let writer_gate = writer_gate.clone();
                 let read_probe = read_probe.clone();
                 let prior_run = Arc::new(Mutex::new(prior_run));
+                let observed_clock = clock.clone();
                 move || {
                     let breaker = breaker.clone();
                     let dial_finished = dial_finished.clone();
                     let writer_gate = writer_gate.clone();
                     let read_probe = read_probe.clone();
                     let prior_run = prior_run.clone();
+                    let sent = sent.clone();
+                    let observed_clock = observed_clock.clone();
                     async move {
                         let connected = TcpStream::connect((CENTRAL, LINK_PORT)).await;
                         dial_finished.send(connected.is_ok()).unwrap();
-                        let (reader, writer) = connected?.into_split();
+                        let stream = connected?;
+                        let observer = sent.map(|trace| {
+                            SocketObserver::new(
+                                trace,
+                                stream.local_addr().unwrap().port(),
+                                observed_clock,
+                            )
+                        });
+                        let (reader, writer) = stream.into_split();
                         let (cut, reset) = oneshot::channel();
                         breaker.send(cut).unwrap();
                         Ok(tokio::io::join(
@@ -214,6 +240,7 @@ impl SimulatedLink {
                             HeldWriter {
                                 raw: writer,
                                 gate: writer_gate,
+                                observer,
                                 registration_preface: prior_run
                                     .lock()
                                     .unwrap()
@@ -514,7 +541,7 @@ where
 
 fn run_link_case_with_trace<Case, Running>(
     network: PacketFlight,
-    trace: Option<CentralReceiveTrace>,
+    trace: Option<SocketFrameTrace>,
     case: Case,
 ) where
     Case: FnOnce(SimulatedLink) -> Running + 'static,

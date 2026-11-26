@@ -1,8 +1,8 @@
-//! Observe the bytes Central reads, with a WebSocket decoder per accepted socket.
+//! Reassemble WebSocket frames independently at the simulated socket boundaries.
 
 use std::{
-    collections::VecDeque,
-    io::{self, Read, Write},
+    collections::{BTreeSet, VecDeque},
+    io::{self, Cursor, Read, Write},
     pin::Pin,
     task::{Context, Poll},
 };
@@ -12,27 +12,43 @@ use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     sync::watch,
 };
-use tungstenite::{Message, WebSocket, protocol::Role};
+use tungstenite::{
+    Message, WebSocket,
+    protocol::{
+        Role,
+        frame::{FrameHeader, coding::OpCode},
+    },
+};
 
 #[derive(Clone, Debug)]
-pub(super) struct ReceivedFrame {
+pub(super) struct ObservedSocketFrame {
     pub(super) port: u16,
     pub(super) at: ClockInstant,
     pub(super) message: Message,
 }
 
 #[derive(Clone, Default)]
-pub(super) struct CentralReceiveTrace(watch::Sender<Vec<ReceivedFrame>>);
+pub(super) struct SocketFrameTrace(watch::Sender<SocketFrames>);
 
-impl CentralReceiveTrace {
-    pub(super) fn snapshot(&self) -> Vec<ReceivedFrame> {
-        self.0.borrow().clone()
+#[derive(Default)]
+struct SocketFrames {
+    frames: Vec<ObservedSocketFrame>,
+    incomplete: BTreeSet<u16>,
+}
+
+impl SocketFrameTrace {
+    pub(super) fn snapshot(&self) -> Vec<ObservedSocketFrame> {
+        self.0.borrow().frames.clone()
     }
 
-    pub(super) async fn wait_for(&self, matches: impl Fn(&[ReceivedFrame]) -> bool) {
+    pub(super) fn is_at_message_boundary(&self, port: u16) -> bool {
+        !self.0.borrow().incomplete.contains(&port)
+    }
+
+    pub(super) async fn wait_for(&self, matches: impl Fn(&[ObservedSocketFrame]) -> bool) {
         self.0
             .subscribe()
-            .wait_for(|frames| matches(frames))
+            .wait_for(|observed| matches(&observed.frames))
             .await
             .unwrap();
     }
@@ -65,44 +81,48 @@ pub(super) struct ObservedCentralStream<Stream> {
     observer: Option<SocketObserver>,
 }
 
-struct SocketObserver {
-    trace: CentralReceiveTrace,
+pub(super) struct SocketObserver {
+    trace: SocketFrameTrace,
     port: u16,
     clock: std::sync::Arc<router_clock::ManualClock>,
     upgrade_prefix: Option<Vec<u8>>,
+    frame_bytes: Vec<u8>,
+    fragmented: bool,
     socket: WebSocket<ReceiveBuffer>,
 }
 
 impl<Stream> ObservedCentralStream<Stream> {
     pub(super) fn new(
         stream: Stream,
-        trace: Option<CentralReceiveTrace>,
+        trace: Option<SocketFrameTrace>,
         port: u16,
         clock: std::sync::Arc<router_clock::ManualClock>,
     ) -> Self {
         Self {
             stream,
-            observer: trace.map(|trace| SocketObserver {
-                trace,
-                port,
-                clock,
-                upgrade_prefix: Some(Vec::new()),
-                socket: WebSocket::from_raw_socket(
-                    ReceiveBuffer(VecDeque::new()),
-                    Role::Server,
-                    None,
-                ),
-            }),
+            observer: trace.map(|trace| SocketObserver::new(trace, port, clock)),
         }
     }
 }
 
 impl SocketObserver {
-    #[expect(
-        clippy::panic,
-        reason = "A malformed observer stream invalidates the transcript."
-    )]
-    fn observe(&mut self, bytes: &[u8]) {
+    pub(super) fn new(
+        trace: SocketFrameTrace,
+        port: u16,
+        clock: std::sync::Arc<router_clock::ManualClock>,
+    ) -> Self {
+        Self {
+            trace,
+            port,
+            clock,
+            upgrade_prefix: Some(Vec::new()),
+            frame_bytes: Vec::new(),
+            fragmented: false,
+            socket: WebSocket::from_raw_socket(ReceiveBuffer(VecDeque::new()), Role::Server, None),
+        }
+    }
+
+    pub(super) fn observe(&mut self, bytes: &[u8]) {
         let payload = if let Some(prefix) = &mut self.upgrade_prefix {
             prefix.extend_from_slice(bytes);
             let Some(end) = prefix.windows(4).position(|window| window == b"\r\n\r\n") else {
@@ -114,16 +134,50 @@ impl SocketObserver {
         } else {
             bytes.to_vec()
         };
-        self.socket.get_mut().0.extend(payload);
+        self.frame_bytes.extend(payload);
+        let mut messages = Vec::new();
+        loop {
+            let mut cursor = Cursor::new(self.frame_bytes.as_slice());
+            let Some((header, payload_len)) = FrameHeader::parse(&mut cursor).unwrap() else {
+                break;
+            };
+            let frame_len = usize::try_from(cursor.position() + payload_len).unwrap();
+            if self.frame_bytes.len() < frame_len {
+                break;
+            }
+            if matches!(header.opcode, OpCode::Data(_)) {
+                self.fragmented = !header.is_final;
+            }
+            self.socket
+                .get_mut()
+                .0
+                .extend(self.frame_bytes.drain(..frame_len));
+            self.decode_messages(&mut messages);
+        }
+        self.trace.0.send_modify(|observed| {
+            if self.fragmented || !self.frame_bytes.is_empty() {
+                observed.incomplete.insert(self.port);
+            } else {
+                observed.incomplete.remove(&self.port);
+            }
+            observed
+                .frames
+                .extend(messages.into_iter().map(|message| ObservedSocketFrame {
+                    port: self.port,
+                    at: self.clock.monotonic_now(),
+                    message,
+                }));
+        });
+    }
+
+    #[expect(
+        clippy::panic,
+        reason = "A malformed observer stream invalidates the transcript."
+    )]
+    fn decode_messages(&mut self, messages: &mut Vec<Message>) {
         loop {
             match self.socket.read() {
-                Ok(message) => self.trace.0.send_modify(|frames| {
-                    frames.push(ReceivedFrame {
-                        port: self.port,
-                        at: self.clock.monotonic_now(),
-                        message,
-                    })
-                }),
+                Ok(message) => messages.push(message),
                 Err(tungstenite::Error::Io(error)) if error.kind() == io::ErrorKind::WouldBlock => {
                     break;
                 }
