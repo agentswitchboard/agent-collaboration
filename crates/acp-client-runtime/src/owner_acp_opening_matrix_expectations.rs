@@ -11,7 +11,10 @@ pub(super) fn expected(from: P, event: E) -> Option<P> {
         Event::ConnectionRetired
             if !matches!(
                 from,
-                Phase::UnboundIdle | Phase::BoundIdle | Phase::Terminal
+                Phase::UnboundIdle
+                    | Phase::BoundIdle
+                    | Phase::StoppedAwaitingReply
+                    | Phase::Terminal
             ) =>
         {
             Phase::Terminal
@@ -64,6 +67,7 @@ pub(super) fn expected(from: P, event: E) -> Option<P> {
             Phase::AwaitingCreate
             | Phase::AwaitingRestore
             | Phase::ConfiguringCreate
+            | Phase::CapturingReplay
             | Phase::ClosingRestore
             | Phase::ClosingLive
             | Phase::RouteLost => Phase::StoppedAwaitingReply,
@@ -71,7 +75,6 @@ pub(super) fn expected(from: P, event: E) -> Option<P> {
             | Phase::QueuedRestore
             | Phase::HeldCreate
             | Phase::ConfiguredCreate
-            | Phase::CapturingReplay
             | Phase::HeldRestore
             | Phase::PreparedRestore
             | Phase::StartingReader
@@ -169,7 +172,7 @@ pub(super) fn expected(from: P, event: E) -> Option<P> {
         {
             Phase::Terminal
         }
-        Event::OpenFailed | Event::WorkerExited if from == Phase::RouteLost => Phase::RouteLost,
+        Event::OpenFailed if from == Phase::RouteLost => Phase::RouteLost,
         Event::ActivationFailed
             if matches!(
                 from,
@@ -220,11 +223,15 @@ pub(super) fn expected(from: P, event: E) -> Option<P> {
         | Event::ReadmitFailed
         | Event::RouteRemoved
         | Event::FinishOnStoppedWriter
+        | Event::RestoreAfterLocalLoss
         | Event::LateOpenReply
         | Event::WorkerExited
         | Event::WriterStoppedAfterOffer
+        | Event::WriterStoppedWithOlderRestore
+        | Event::WriterStoppedWithDeferredRestore
         | Event::WriterStoppedWithoutReceipt
         | Event::ConnectionRetired
+        | Event::RetainReceiptAfterConnectionLoss
         | Event::WaitOpening
         | Event::WaitClose
         | Event::KeepActive
@@ -267,9 +274,18 @@ pub(super) fn expected(from: P, event: E) -> Option<P> {
             (Phase::Readmitting, Event::Readmitted) => Phase::Active,
             (Phase::Readmitting, Event::ReadmitFailed) => Phase::RouteLost,
             (Phase::RetiredAwaitingReply, Event::LateOpenReply) => Phase::Terminal,
-            (Phase::RouteLost, Event::ReportRouteLost) => from,
+            (
+                Phase::RouteLost,
+                Event::ReportRouteLost | Event::RestoreAfterLocalLoss | Event::WriterAccepted,
+            ) => from,
             (Phase::StoppedAwaitingReply, Event::FinishOnStoppedWriter) => Phase::Terminal,
+            (Phase::StoppedAwaitingReply, Event::RestoreAfterLocalLoss) => Phase::Terminal,
             (Phase::StoppedAwaitingReply, Event::WriterAccepted | Event::StopOnWriterLoss) => from,
+            (Phase::StoppedAwaitingReply, Event::RetainReceiptAfterConnectionLoss) => from,
+            (Phase::OfferingClose, Event::WriterStoppedWithOlderRestore) => {
+                Phase::StoppedAwaitingReply
+            }
+            (Phase::OfferingClose, Event::WriterStoppedWithDeferredRestore) => Phase::Terminal,
             _ => return None,
         },
     };
@@ -308,7 +324,11 @@ pub(super) fn expected_actions(phase: P, event: E, next: P) -> Vec<Action> {
         E::DeferRestore => vec![A::Wait],
         E::AdmitAgain => vec![A::Readmit],
         E::LateOpenReply => vec![A::Discard],
-        E::OpenFailed | E::WorkerExited if phase == P::RouteLost => vec![A::Discard],
+        E::OpenFailed if phase == P::RouteLost => vec![A::Discard, A::Hold],
+        E::RestoreAfterLocalLoss => vec![A::Discard, A::ResolveRestore],
+        E::WriterStoppedWithDeferredRestore => vec![A::ResolveRestore],
+        E::WriterStopped if phase == P::CapturingReplay => vec![A::Remove],
+        E::RetainReceiptAfterConnectionLoss => vec![A::Hold],
         E::RouteRemoved | E::ReadmitFailed => vec![A::Remove],
         _ if next == P::StoppedAwaitingReply && event != E::WriterAccepted => vec![A::ReleaseAfter],
         _ if matches!(next, P::Terminal | P::RetiredAwaitingReply) => vec![A::Remove],
@@ -340,6 +360,7 @@ pub(super) fn expected_actions(phase: P, event: E, next: P) -> Vec<Action> {
         | E::WorkerExited
         | E::WriterStopped
         | E::WriterStoppedAfterOffer
+        | E::WriterStoppedWithOlderRestore
         | E::WriterStoppedWithoutReceipt
         | E::ConnectionRetired
         | E::WaitOpening

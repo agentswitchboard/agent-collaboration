@@ -2,8 +2,13 @@
 
 //! One owned step at the ACP opening boundary.
 
+#[path = "owner_acp_opening_effect.rs"]
+mod effect;
 #[path = "owner_acp_opening_step.rs"]
 mod reducer;
+#[cfg(test)]
+#[path = "owner_acp_opening_row_test.rs"]
+mod tests;
 
 use super::policy::{OpeningEvent as Edge, OpeningPhase, OpeningPolicy};
 use super::{OpenSetup, RestoreOpening};
@@ -21,7 +26,7 @@ use provider_session_machines::{
         AcceptedRunSettings, CloseFact, LifecycleRefusal, LifecycleReply, OpenAttempt,
         SettingAttempt, SettingFact, SetupReport,
     },
-    session_lifecycle_machine::{CloseAttempt, LoadAttempt},
+    session_lifecycle_machine::{CloseAttempt, LoadAttempt, RestoreVia},
     session_owner::{OwnerAddress, OwnerSetting, RunAttempt},
 };
 use session_event_model::{CapabilityReport, SessionSettings, SkillView};
@@ -139,13 +144,13 @@ pub(super) struct DeferredRestore {
 }
 
 pub(super) struct RestoreSignal {
-    sender: oneshot::Sender<bool>,
+    sender: oneshot::Sender<RestoreDecision>,
     #[cfg(any(test, feature = "test-observation"))]
     pub(super) _disposal: Option<Box<crate::owner_opening_disposal::OpeningDisposalToken>>,
 }
 
 impl RestoreSignal {
-    pub(super) fn new(sender: oneshot::Sender<bool>) -> Self {
+    pub(super) fn new(sender: oneshot::Sender<RestoreDecision>) -> Self {
         Self {
             sender,
             #[cfg(any(test, feature = "test-observation"))]
@@ -153,9 +158,17 @@ impl RestoreSignal {
         }
     }
 
-    fn send(self, accepted: bool) -> Result<(), bool> {
-        self.sender.send(accepted)
+    fn send(self, decision: RestoreDecision) {
+        let _worker_gone = self.sender.send(decision);
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum RestoreDecision {
+    Continue,
+    Superseded,
+    LocallyUnavailable(RestoreVia),
+    ReceiptMissing,
 }
 
 pub(super) enum RestoreMilestone {
@@ -197,12 +210,32 @@ impl RestoreMilestone {
             Self::WorkerExited => Edge::WorkerExited,
         }
     }
+
+    fn after_local_loss(&self, stage: RestoreReceiptStage) -> RestoreDecision {
+        match self {
+            Self::Loaded(_) => RestoreDecision::LocallyUnavailable(RestoreVia::Load),
+            Self::Resumed(_) => RestoreDecision::LocallyUnavailable(RestoreVia::Resume),
+            Self::Failed => RestoreDecision::Continue,
+            Self::ReplayAdmitted | Self::ReplayRejected | Self::WorkerExited => match stage {
+                RestoreReceiptStage::AwaitingPeer => RestoreDecision::ReceiptMissing,
+                RestoreReceiptStage::PublishingLoad => {
+                    RestoreDecision::LocallyUnavailable(RestoreVia::Load)
+                }
+            },
+        }
+    }
 }
 #[derive(Clone, Copy)]
 enum LostReceipt {
     None,
-    Open,
+    Open(RestoreReceiptStage),
     Close(CloseAttempt),
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum RestoreReceiptStage {
+    AwaitingPeer,
+    PublishingLoad,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -216,12 +249,44 @@ pub(super) enum ReaderEnd {
 
 pub(super) enum StoppedReceipt {
     OpenCreate(CancellationToken),
-    OpenRestore(RunResources),
+    OpenRestore(RunResources, RestoreReceiptStage),
     Configure(CancellationToken),
     Close(RunResources, CloseAttempt),
 }
 
 impl OpeningState {
+    fn pending_restore(&self, taken: bool) -> Option<RestoreReceiptStage> {
+        match self {
+            Self::OfferingRestore { .. } if taken => Some(RestoreReceiptStage::AwaitingPeer),
+            Self::AwaitingRestore(_) => Some(RestoreReceiptStage::AwaitingPeer),
+            Self::PublishingReplay(_) => Some(RestoreReceiptStage::PublishingLoad),
+            Self::OfferingClose { origin, .. } if !taken => origin.pending_restore(false),
+            Self::RouteLost {
+                receipt: LostReceipt::Open(stage),
+                ..
+            }
+            | Self::StoppedAwaitingReply(StoppedReceipt::OpenRestore(_, stage)) => Some(*stage),
+            Self::Vacant { .. }
+            | Self::OfferingCreate { .. }
+            | Self::AwaitingCreate(_)
+            | Self::HeldCreate(_)
+            | Self::ConfiguringCreate(_)
+            | Self::ConfiguredCreate(_)
+            | Self::OfferingRestore { .. }
+            | Self::HeldRestore(_)
+            | Self::PreparedRestore(_)
+            | Self::StartingReader(_)
+            | Self::Active(_)
+            | Self::OfferingClose { .. }
+            | Self::ClosingRestore { .. }
+            | Self::ClosingLive { .. }
+            | Self::CloseRefusedLive { .. }
+            | Self::Readmitting { .. }
+            | Self::RouteLost { .. }
+            | Self::StoppedAwaitingReply(_) => None,
+        }
+    }
+
     fn live_reader(&self) -> Option<&RunResources> {
         match self {
             Self::Active(run)
@@ -298,7 +363,7 @@ impl OpeningState {
                 StoppedReceipt::OpenCreate(_) | StoppedReceipt::Configure(_),
             ) => None,
             Self::StoppedAwaitingReply(
-                StoppedReceipt::OpenRestore(run) | StoppedReceipt::Close(run, _),
+                StoppedReceipt::OpenRestore(run, _) | StoppedReceipt::Close(run, _),
             ) => Some(run),
         }
     }
@@ -461,9 +526,14 @@ pub(super) enum Effect {
     CloseOffer(LifecycleRoute, OpeningOffer),
     CloseConfirmed(Release, Option<DeferredRestore>),
     Deferred,
+    ResolveDeferredRestore {
+        deferred: DeferredRestore,
+        decision: RestoreDecision,
+        release: Release,
+    },
     ResolveRestore {
         outcome: RestoreSignal,
-        accepted: bool,
+        decision: RestoreDecision,
         release: Option<Release>,
     },
     Release(Release),
@@ -566,7 +636,7 @@ impl Release {
             ..
         } = *self.state
         {
-            let _worker_gone = deferred.outcome.send(false);
+            deferred.outcome.send(RestoreDecision::Superseded);
         }
     }
 }
@@ -665,7 +735,7 @@ impl OpeningRow {
             state,
         } = self;
         let seal_offer = match &command {
-            Command::WriterStopped => true,
+            Command::WriterStopped | Command::ConnectionRetired => true,
             Command::ReaderStopped(_) => state.live_reader().is_some(),
             Command::RouteRemoved(route) => {
                 state.run().is_some_and(|run| run.route.is_same_as(route))
@@ -693,8 +763,7 @@ impl OpeningRow {
             | Command::CloseSettled(_)
             | Command::AdmitAgain(_)
             | Command::ReadmitResult(..)
-            | Command::Retire
-            | Command::ConnectionRetired => false,
+            | Command::Retire => false,
         };
         let taken = seal_offer
             && state
@@ -723,139 +792,3 @@ impl OpeningRow {
         }
     }
 }
-
-impl Effect {
-    pub(super) fn faulted(&self) -> bool {
-        match self {
-            Self::Fault(_) => true,
-            Self::DropSignal(_, next) | Self::DiscardAfter(_, next) => next.faulted(),
-            Self::OfferCreate(_)
-            | Self::OfferRestore(_)
-            | Self::Discarded(_)
-            | Self::ReleaseBefore(..)
-            | Self::Readmit(..)
-            | Self::Rollback(_)
-            | Self::None
-            | Self::Configure { .. }
-            | Self::Settings(_)
-            | Self::RefuseSetter(_)
-            | Self::ReserveSetter(_)
-            | Self::WriteSetter(_)
-            | Self::WithdrawSetters(..)
-            | Self::StartReader(_)
-            | Self::CloseOffer(..)
-            | Self::CloseConfirmed(..)
-            | Self::Deferred
-            | Self::ResolveRestore { .. }
-            | Self::Release(_)
-            | Self::ReaderEnded { .. } => false,
-        }
-    }
-
-    pub(super) fn fence(&self) {
-        match self {
-            Self::WithdrawSetters(setters, next) => {
-                for setter in setters {
-                    let _taken = setter.claim.was_taken_or_withdraw();
-                }
-                next.fence();
-            }
-            Self::Fault(fault) => fault.fence(),
-            Self::ReaderEnded { release, .. }
-            | Self::Release(release)
-            | Self::ResolveRestore {
-                release: Some(release),
-                ..
-            } if release.retire => release.state.mark_retired(),
-            Self::DropSignal(_, next)
-            | Self::DiscardAfter(_, next)
-            | Self::ReleaseBefore(_, next) => next.fence(),
-            Self::OfferCreate(_)
-            | Self::OfferRestore(_)
-            | Self::Discarded(_)
-            | Self::Readmit(..)
-            | Self::Rollback(_)
-            | Self::None
-            | Self::Configure { .. }
-            | Self::Settings(_)
-            | Self::RefuseSetter(_)
-            | Self::ReserveSetter(_)
-            | Self::WriteSetter(_)
-            | Self::StartReader(_)
-            | Self::CloseOffer(..)
-            | Self::CloseConfirmed(..)
-            | Self::Deferred
-            | Self::ResolveRestore { .. }
-            | Self::Release(_)
-            | Self::ReaderEnded { .. } => {}
-        }
-    }
-
-    pub(super) fn finish(self, wire: &OwnerAcpWire) -> bool {
-        match self {
-            Self::WithdrawSetters(setters, next) => {
-                drop(setters);
-                next.finish(wire)
-            }
-            Self::Fault(fault) => {
-                fault.release(wire);
-                false
-            }
-            Self::None | Self::Rollback(None) => true,
-            Self::ReaderEnded { release, .. } | Self::Release(release) => {
-                release.run(wire);
-                true
-            }
-            Self::CloseConfirmed(release, deferred) => {
-                release.run(wire);
-                if let Some(deferred) = deferred {
-                    let _worker_gone = deferred.outcome.send(false);
-                }
-                true
-            }
-            Self::ResolveRestore {
-                outcome,
-                accepted,
-                release,
-            } => {
-                if let Some(release) = release {
-                    release.run(wire);
-                }
-                let _worker_gone = outcome.send(accepted);
-                true
-            }
-            Self::DropSignal(signal, next) => {
-                drop(signal);
-                next.finish(wire)
-            }
-            Self::Discarded(command) => {
-                drop(command);
-                false
-            }
-            Self::DiscardAfter(command, next) => {
-                drop(command);
-                next.finish(wire)
-            }
-            Self::ReleaseBefore(previous, next) => {
-                drop(previous);
-                next.finish(wire)
-            }
-            Self::Readmit(_, _) => false,
-            Self::Deferred
-            | Self::Rollback(Some(_))
-            | Self::Configure { .. }
-            | Self::Settings(_)
-            | Self::RefuseSetter(_)
-            | Self::ReserveSetter(_)
-            | Self::WriteSetter(_)
-            | Self::StartReader(_)
-            | Self::CloseOffer(_, _)
-            | Self::OfferCreate(_)
-            | Self::OfferRestore(_) => false,
-        }
-    }
-}
-
-#[cfg(test)]
-#[path = "owner_acp_opening_row_test.rs"]
-mod tests;

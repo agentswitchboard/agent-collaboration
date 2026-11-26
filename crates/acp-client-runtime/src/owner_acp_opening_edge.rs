@@ -11,6 +11,14 @@ pub(super) fn edge(state: &OpeningState, command: &Command, taken: bool) -> Opti
     let event = match command {
         Command::OpenCreate(_) => Edge::OpenCreate,
         Command::OpenRestore(_) => Edge::OpenRestore,
+        Command::WriterAccepted
+            if let State::RouteLost {
+                receipt: LostReceipt::None | LostReceipt::Close(_),
+                ..
+            } = state =>
+        {
+            return None;
+        }
         Command::WriterAccepted => Edge::WriterAccepted,
         Command::WriterRefused => Edge::WriterRefused,
         Command::Created(_)
@@ -79,7 +87,22 @@ pub(super) fn edge(state: &OpeningState, command: &Command, taken: bool) -> Opti
                 receipt: LostReceipt::None | LostReceipt::Close(_),
                 ..
             } => return None,
-            State::OfferingClose { deferred: None, .. } => Edge::DeferRestore,
+            State::RouteLost {
+                receipt: LostReceipt::Open(_),
+                ..
+            } => match milestone {
+                RestoreMilestone::Failed => Edge::OpenFailed,
+                RestoreMilestone::Loaded(_)
+                | RestoreMilestone::Resumed(_)
+                | RestoreMilestone::ReplayAdmitted
+                | RestoreMilestone::ReplayRejected
+                | RestoreMilestone::WorkerExited => Edge::RestoreAfterLocalLoss,
+            },
+            State::OfferingClose {
+                origin,
+                deferred: None,
+                ..
+            } if origin.pending_restore(false).is_some() => Edge::DeferRestore,
             State::ClosingRestore { .. }
                 if matches!(
                     milestone,
@@ -90,14 +113,14 @@ pub(super) fn edge(state: &OpeningState, command: &Command, taken: bool) -> Opti
             {
                 Edge::LateOpenReply
             }
-            State::StoppedAwaitingReply(StoppedReceipt::OpenRestore(_))
-                if matches!(
-                    milestone,
-                    RestoreMilestone::Failed | RestoreMilestone::WorkerExited
-                ) =>
-            {
-                Edge::FinishOnStoppedWriter
-            }
+            State::StoppedAwaitingReply(StoppedReceipt::OpenRestore(..)) => match milestone {
+                RestoreMilestone::Failed => Edge::FinishOnStoppedWriter,
+                RestoreMilestone::Loaded(_)
+                | RestoreMilestone::Resumed(_)
+                | RestoreMilestone::ReplayAdmitted
+                | RestoreMilestone::ReplayRejected
+                | RestoreMilestone::WorkerExited => Edge::RestoreAfterLocalLoss,
+            },
             State::Vacant { .. }
             | State::OfferingCreate { .. }
             | State::AwaitingCreate(_)
@@ -116,7 +139,6 @@ pub(super) fn edge(state: &OpeningState, command: &Command, taken: bool) -> Opti
             | State::ClosingLive { .. }
             | State::CloseRefusedLive { .. }
             | State::Readmitting { .. }
-            | State::RouteLost { .. }
             | State::StoppedAwaitingReply(_) => milestone.event(),
         },
         Command::CloseAsked(_) => Edge::CloseAsked,
@@ -237,6 +259,17 @@ pub(super) fn edge(state: &OpeningState, command: &Command, taken: bool) -> Opti
         Command::Retire => Edge::Retire,
         Command::WriterStopped if taken => Edge::WriterStoppedAfterOffer,
         Command::WriterStopped
+            if let State::OfferingClose {
+                origin, deferred, ..
+            } = state
+                && origin.pending_restore(false).is_some() =>
+        {
+            match deferred {
+                Some(_) => Edge::WriterStoppedWithDeferredRestore,
+                None => Edge::WriterStoppedWithOlderRestore,
+            }
+        }
+        Command::WriterStopped
             if matches!(
                 state,
                 State::RouteLost {
@@ -248,7 +281,7 @@ pub(super) fn edge(state: &OpeningState, command: &Command, taken: bool) -> Opti
             Edge::WriterStoppedWithoutReceipt
         }
         Command::WriterStopped => Edge::WriterStopped,
-        Command::ConnectionRetired => Edge::ConnectionRetired,
+        Command::ConnectionRetired => connection_loss_edge(state, taken),
         Command::RouteRemoved(route) => {
             if state.run().is_none_or(|run| !run.route.is_same_as(route)) {
                 return None;
@@ -257,4 +290,50 @@ pub(super) fn edge(state: &OpeningState, command: &Command, taken: bool) -> Opti
         }
     };
     Some(event)
+}
+
+fn connection_loss_edge(state: &OpeningState, taken: bool) -> Edge {
+    use OpeningState as State;
+    match state {
+        State::StoppedAwaitingReply(_) => Edge::RetainReceiptAfterConnectionLoss,
+        State::OfferingCreate { .. }
+        | State::OfferingRestore { .. }
+        | State::OfferingClose { .. }
+            if taken =>
+        {
+            Edge::WriterStoppedAfterOffer
+        }
+        State::OfferingClose {
+            origin, deferred, ..
+        } if origin.pending_restore(false).is_some() => match deferred {
+            Some(_) => Edge::WriterStoppedWithDeferredRestore,
+            None => Edge::WriterStoppedWithOlderRestore,
+        },
+        State::AwaitingCreate(_)
+        | State::AwaitingRestore(_)
+        | State::PublishingReplay(_)
+        | State::ConfiguringCreate(_)
+        | State::ClosingLive { .. }
+        | State::ClosingRestore { .. }
+        | State::RouteLost {
+            receipt: LostReceipt::Open(_) | LostReceipt::Close(_),
+            ..
+        } => Edge::WriterStopped,
+        State::Vacant { .. }
+        | State::OfferingCreate { .. }
+        | State::HeldCreate(_)
+        | State::ConfiguredCreate(_)
+        | State::OfferingRestore { .. }
+        | State::HeldRestore(_)
+        | State::PreparedRestore(_)
+        | State::StartingReader(_)
+        | State::Active(_)
+        | State::OfferingClose { .. }
+        | State::CloseRefusedLive { .. }
+        | State::Readmitting { .. }
+        | State::RouteLost {
+            receipt: LostReceipt::None,
+            ..
+        } => Edge::ConnectionRetired,
+    }
 }

@@ -15,6 +15,7 @@ pub enum OpeningPausePoint {
     BeforeCloseOffer,
     BeforeCloseCommit,
     RestoreDeferred,
+    RestoreReceiptBuffered,
     ResumeReaderBeforeCommit,
     CloseReceiptPublished,
     ReaderHandoffAccepted,
@@ -44,6 +45,15 @@ struct Barrier {
 }
 
 impl OwnerAcpWire {
+    #[cfg(feature = "test-observation")]
+    pub fn stop_ordered_writer_for_test(
+        &self,
+        run: crate::acp_transport::TransportRun,
+    ) -> Result<(), crate::acp_transport::TransportRefusal> {
+        self.transport
+            .enqueue_control(run, super::AcpFrame::FixtureStopWriter)
+    }
+
     pub fn watch_opening_disposal_for_test(
         &self,
         kind: OpeningDisposalKind,

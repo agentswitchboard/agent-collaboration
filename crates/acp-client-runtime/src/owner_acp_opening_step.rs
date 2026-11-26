@@ -5,11 +5,14 @@
 #[path = "owner_acp_opening_edge.rs"]
 mod selector;
 use selector::edge;
+#[path = "owner_acp_opening_receipt.rs"]
+mod receipt;
+use receipt::{lose_route, lost_receipt, resolve_after_loss, stop_writer};
 
 use super::{
     Command, CreateStart, DeferredRestore, Edge, Effect, HeldCreate, HeldRestore, LostReceipt,
     OpenCreateRequest, OpenRestoreRequest, OpeningInstance, OpeningPhase, OpeningPolicy,
-    OpeningState, PendingCreate, PendingSetter, ReaderEnd, ReaderHandoff, Release,
+    OpeningState, PendingCreate, PendingSetter, ReaderEnd, ReaderHandoff, Release, RestoreDecision,
     RestoreMilestone, RestoreStart, RoutedRestore, RunResources, SetterPlan, SetterWrite,
     StateMachine, StepFault, StoppedReceipt,
 };
@@ -41,7 +44,9 @@ pub(super) fn step(
         return Err((state, command));
     };
     let (command, signal) = match command {
-        Command::RestoreProgress(payload, signal) if edge != Edge::DeferRestore => {
+        Command::RestoreProgress(payload, signal)
+            if edge != Edge::DeferRestore && edge != Edge::RestoreAfterLocalLoss =>
+        {
             (Command::RestoreProgress(payload, None), signal)
         }
         other @ Command::OpenCreate(_)
@@ -108,7 +113,7 @@ pub(super) fn step(
                     next,
                     Effect::ResolveRestore {
                         outcome,
-                        accepted: true,
+                        decision: RestoreDecision::Continue,
                         release: Some(release),
                     },
                 )),
@@ -116,7 +121,7 @@ pub(super) fn step(
                     next,
                     Effect::ResolveRestore {
                         outcome,
-                        accepted: true,
+                        decision: RestoreDecision::Continue,
                         release: None,
                     },
                 )),
@@ -129,7 +134,7 @@ pub(super) fn step(
                         Box::new(other),
                         Box::new(Effect::ResolveRestore {
                             outcome,
-                            accepted: false,
+                            decision: RestoreDecision::Superseded,
                             release: None,
                         }),
                     ),
@@ -140,7 +145,7 @@ pub(super) fn step(
                         Box::new(command),
                         Box::new(Effect::ResolveRestore {
                             outcome,
-                            accepted: false,
+                            decision: RestoreDecision::Superseded,
                             release: None,
                         }),
                     ),
@@ -265,9 +270,14 @@ fn apply_edge(
         (State::OfferingRestore { run, .. }, Command::WriterAccepted) => {
             store(State::AwaitingRestore(run), Effect::None)
         }
-        (state @ State::StoppedAwaitingReply(_), Command::WriterAccepted) => {
-            store(state, Effect::None)
-        }
+        (
+            state @ (State::StoppedAwaitingReply(_)
+            | State::RouteLost {
+                receipt: LostReceipt::Open(_),
+                ..
+            }),
+            Command::WriterAccepted,
+        ) => store(state, Effect::None),
         (State::AwaitingCreate(pending), Command::Created(session)) => store(
             State::HeldCreate(HeldCreate {
                 session,
@@ -455,21 +465,23 @@ fn apply_edge(
         {
             store(state, Effect::Discarded(Box::new(command)))
         }
+        (state, Command::RestoreProgress(milestone, signal))
+            if edge == Edge::RestoreAfterLocalLoss =>
+        {
+            resolve_after_loss(state, instance, milestone, signal)
+        }
         (
             State::RouteLost {
                 run,
-                receipt: LostReceipt::Open,
+                receipt: LostReceipt::Open(_),
             },
-            command @ Command::RestoreProgress(
-                RestoreMilestone::Failed | RestoreMilestone::WorkerExited,
-                _,
-            ),
+            command @ Command::RestoreProgress(RestoreMilestone::Failed, _),
         ) => store(
             State::RouteLost {
                 run,
                 receipt: LostReceipt::None,
             },
-            Effect::Discarded(Box::new(command)),
+            Effect::DiscardAfter(Box::new(command), Box::new(Effect::None)),
         ),
         (
             state,
@@ -570,16 +582,15 @@ fn apply_edge(
             store(State::Active(run), Effect::None)
         }
         (state, Command::WriterStopped) => stop_writer(state, instance, edge),
+        (state, Command::ConnectionRetired) if edge == Edge::RetainReceiptAfterConnectionLoss => {
+            store(state, Effect::None)
+        }
+        (state, Command::ConnectionRetired) if edge != Edge::ConnectionRetired => {
+            stop_writer(state, instance, edge)
+        }
         (state, Command::ReaderStopped(reason)) => end_reader(state, instance, reason, taken),
         (state, command @ (Command::RouteRemoved(_) | Command::ReadmitResult(..))) => {
-            let Some(run) = state.run().cloned() else {
-                return Err((state, command));
-            };
-            let receipt = lost_receipt(&state, taken);
-            store(
-                State::RouteLost { run, receipt },
-                Effect::Release(Release::new(instance, state, true)),
-            )
+            lose_route(state, instance, command, taken)
         }
         (state, command @ (Command::Configured(_) | Command::Created(_)))
             if edge == Edge::FinishOnStoppedWriter =>
@@ -659,58 +670,6 @@ fn end_reader(
     )
 }
 
-fn stop_writer(state: OpeningState, instance: &OpeningInstance, edge: Edge) -> Step {
-    use OpeningState as State;
-    let receipt = match &state {
-        State::OfferingCreate { pending, .. } if edge == Edge::WriterStoppedAfterOffer => {
-            StoppedReceipt::OpenCreate(pending.stopped.clone())
-        }
-        State::AwaitingCreate(pending) => StoppedReceipt::OpenCreate(pending.stopped.clone()),
-        State::OfferingRestore { run, .. } if edge == Edge::WriterStoppedAfterOffer => {
-            StoppedReceipt::OpenRestore(run.clone())
-        }
-        State::AwaitingRestore(run) => StoppedReceipt::OpenRestore(run.clone()),
-        State::ConfiguringCreate(stopped) => StoppedReceipt::Configure(stopped.clone()),
-        State::ClosingRestore { run, attempt }
-        | State::ClosingLive { run, attempt }
-        | State::RouteLost {
-            run,
-            receipt: LostReceipt::Close(attempt),
-        } => StoppedReceipt::Close(run.clone(), *attempt),
-        State::OfferingClose {
-            origin, attempt, ..
-        } if edge == Edge::WriterStoppedAfterOffer => {
-            let Some(run) = origin.run() else {
-                return Err((state, Command::WriterStopped));
-            };
-            StoppedReceipt::Close(run.clone(), *attempt)
-        }
-        State::RouteLost {
-            run,
-            receipt: LostReceipt::Open,
-        } => StoppedReceipt::OpenRestore(run.clone()),
-        State::Vacant { .. }
-        | State::OfferingCreate { .. }
-        | State::HeldCreate(_)
-        | State::ConfiguredCreate(_)
-        | State::OfferingRestore { .. }
-        | State::PublishingReplay(_)
-        | State::HeldRestore(_)
-        | State::PreparedRestore(_)
-        | State::StartingReader(_)
-        | State::Active(_)
-        | State::OfferingClose { .. }
-        | State::CloseRefusedLive { .. }
-        | State::Readmitting { .. }
-        | State::RouteLost { .. }
-        | State::StoppedAwaitingReply(_) => return finish(state, instance),
-    };
-    store(
-        State::StoppedAwaitingReply(receipt),
-        Effect::Release(Release::new(instance, state, false)),
-    )
-}
-
 fn apply_catalogue(
     session: &mut OwnerOpenedSession,
     accepted: AcceptedRunSettings,
@@ -734,42 +693,6 @@ fn withdraw_setters(setters: Vec<PendingSetter>, effect: Effect) -> Effect {
         effect
     } else {
         Effect::WithdrawSetters(setters, Box::new(effect))
-    }
-}
-
-fn lost_receipt(state: &OpeningState, taken: bool) -> LostReceipt {
-    use OpeningState as State;
-    match state {
-        State::OfferingRestore { .. } if taken => LostReceipt::Open,
-        State::AwaitingRestore(_) => LostReceipt::Open,
-        State::ClosingRestore { attempt, .. } | State::ClosingLive { attempt, .. } => {
-            LostReceipt::Close(*attempt)
-        }
-        State::OfferingClose { attempt, .. } if taken => LostReceipt::Close(*attempt),
-        State::OfferingClose {
-            origin,
-            deferred: None,
-            ..
-        } => lost_receipt(origin, false),
-        State::Vacant { .. }
-        | State::OfferingCreate { .. }
-        | State::AwaitingCreate(_)
-        | State::HeldCreate(_)
-        | State::ConfiguringCreate(_)
-        | State::ConfiguredCreate(_)
-        | State::OfferingRestore { .. }
-        | State::PublishingReplay(_)
-        | State::HeldRestore(_)
-        | State::PreparedRestore(_)
-        | State::StartingReader(_)
-        | State::Active(_)
-        | State::OfferingClose {
-            deferred: Some(_), ..
-        }
-        | State::CloseRefusedLive { .. }
-        | State::Readmitting { .. }
-        | State::RouteLost { .. }
-        | State::StoppedAwaitingReply(_) => LostReceipt::None,
     }
 }
 

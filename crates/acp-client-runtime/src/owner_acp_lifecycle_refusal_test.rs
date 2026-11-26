@@ -17,6 +17,9 @@ use switchboard_harness_contracts::{
 };
 use tokio::sync::oneshot;
 
+#[path = "owner_acp_opening_reply_stop_test.rs"]
+mod reply_stop;
+
 struct IgnoreObservations;
 
 impl HarnessOwnerEvents<ProviderAuthStatus> for IgnoreObservations {
@@ -427,7 +430,10 @@ async fn physical_route_loss_and_connection_retirement_reach_the_row_without_a_c
     wait_for_actual_row(&openings, run.generation, Some(OpeningPhase::RouteLost)).await;
     retirement.cancel();
     wait_for_actual_row(&openings, run.generation, None).await;
-    assert!(answer.await.is_err());
+    assert!(matches!(
+        answer.await.expect("physical route loss must settle the admitted restore"),
+        OpeningFact::RestoreFailed { run: exact, failure: OpeningFailure::OutcomeUnknown } if exact == run
+    ));
     assert_eq!(
         lock(&openings.attempts).port_refusal,
         Some(LifecycleRefusal::ConnectionRetired)

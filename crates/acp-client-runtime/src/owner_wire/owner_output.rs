@@ -96,6 +96,15 @@ impl OwnerAcpOutput {
         &mut self,
         behavior: &dyn crate::ProviderBehavior,
     ) {
+        self.buffer_close_outcome_for_test(Ok(serde_json::json!({})), behavior);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn buffer_close_outcome_for_test(
+        &mut self,
+        reply: Result<serde_json::Value, Error>,
+        behavior: &dyn crate::ProviderBehavior,
+    ) {
         let next = self
             .output
             .try_recv()
@@ -107,7 +116,7 @@ impl OwnerAcpOutput {
         else {
             panic!("expected an exact close request");
         };
-        correlation.complete(Some(Ok(serde_json::json!({}))), false, behavior);
+        correlation.complete(Some(reply), false, behavior);
     }
 
     #[cfg(test)]
@@ -148,6 +157,11 @@ impl OwnerAcpOutput {
                     if connection.send_notification(notification).is_err() {
                         tracing::debug!("ACP cancel could not leave the ordered writer");
                     }
+                }
+                #[cfg(feature = "test-observation")]
+                AcpFrame::FixtureStopWriter => {
+                    self.output.close();
+                    break;
                 }
                 #[cfg(feature = "test-observation")]
                 AcpFrame::FixtureDispatchFence(point, complete) => {

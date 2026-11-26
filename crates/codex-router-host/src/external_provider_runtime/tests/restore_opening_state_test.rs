@@ -8,6 +8,8 @@ mod model;
 mod reader_retirement;
 #[path = "opening_readmission_test.rs"]
 mod readmission;
+#[path = "opening_reply_custody_test.rs"]
+mod reply_custody;
 #[path = "restore_setter_claim_test.rs"]
 mod setter_claim;
 

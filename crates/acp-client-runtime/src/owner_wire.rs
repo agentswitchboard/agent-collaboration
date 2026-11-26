@@ -58,6 +58,8 @@ enum AcpFrame {
     Open(OpenFrame),
     #[cfg(feature = "test-observation")]
     FixtureDispatchFence(FixtureDispatchPoint, oneshot::Sender<Result<(), Error>>),
+    #[cfg(feature = "test-observation")]
+    FixtureStopWriter,
 }
 
 #[cfg(feature = "test-observation")]

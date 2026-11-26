@@ -1,6 +1,6 @@
 //! Restore receipts, replay publication, and exact held settings.
 
-use super::row::{RestoreMilestone, RestoreSignal, RestoreStart};
+use super::row::{RestoreDecision, RestoreMilestone, RestoreSignal, RestoreStart};
 use super::{
     Arc, Command, Effect, LifecycleRefusal, LifecycleReply, Mutex, OpeningAttempts, OpeningFact,
     OpeningFailure, OpeningInstance, OpeningSlot, OwnerAcpWire, OwnerOpenings, RestoreOpening,
@@ -113,6 +113,10 @@ impl OwnerOpenings {
                     }
                 };
                 #[cfg(any(test, feature = "test-observation"))]
+                restored.wire.at_opening_effect_for_test(
+                    crate::owner_wire::OpeningPausePoint::RestoreReceiptBuffered,
+                );
+                #[cfg(any(test, feature = "test-observation"))]
                 {
                     session.opening_disposal = restored.wire.take_opening_disposal_for_test(
                         crate::owner_wire::OpeningDisposalKind::SdkSession,
@@ -185,40 +189,31 @@ impl OwnerOpenings {
             };
             let answer = tokio::select! {
                 biased;
+                answer = open => Some(answer),
                 () = resources.stopped.cancelled() => None,
                 () = retired => None,
-                answer = open => Some(answer),
             };
-            match answer {
-                Some(Ok(Some(opening))) => reply.send(OpeningFact::Restored { run, opening }),
+            let failure = match answer {
+                Some(Ok(Some(opening))) => {
+                    reply.send(OpeningFact::Restored { run, opening });
+                    return;
+                }
                 Some(Err(RestoreWorkerFailure::Provider(failure))) => {
-                    if restored
-                        .advance(RestoreMilestone::Failed)
-                        .await
-                        .unwrap_or(true)
-                    {
-                        reply.send(OpeningFact::RestoreFailed { run, failure });
+                    match restored.advance(RestoreMilestone::Failed).await {
+                        Ok(true) => failure,
+                        Ok(false) => return,
+                        Err(failure) => failure.into_opening_failure(),
                     }
                 }
-                Some(Err(RestoreWorkerFailure::Internal)) => {
-                    reply.send(OpeningFact::RestoreFailed {
-                        run,
-                        failure: OpeningFailure::OutcomeUnknown,
-                    });
-                }
+                Some(Err(failure)) => failure.into_opening_failure(),
                 Some(Ok(None)) | None => {
-                    if restored
-                        .advance(RestoreMilestone::WorkerExited)
-                        .await
-                        .is_err()
-                    {
-                        reply.send(OpeningFact::RestoreFailed {
-                            run,
-                            failure: OpeningFailure::OutcomeUnknown,
-                        });
+                    match restored.advance(RestoreMilestone::WorkerExited).await {
+                        Err(failure) => failure.into_opening_failure(),
+                        Ok(_) => return,
                     }
                 }
-            }
+            };
+            reply.send(OpeningFact::RestoreFailed { run, failure });
         });
         Ok(())
     }
@@ -233,12 +228,43 @@ struct RestoreWorker {
 
 enum RestoreWorkerFailure {
     Provider(OpeningFailure),
+    Local(OpeningFailure),
     Internal,
+}
+
+impl RestoreWorkerFailure {
+    fn into_opening_failure(self) -> OpeningFailure {
+        match self {
+            Self::Provider(failure) | Self::Local(failure) => failure,
+            Self::Internal => OpeningFailure::OutcomeUnknown,
+        }
+    }
+}
+
+fn continue_restore(decision: RestoreDecision) -> Result<bool, RestoreWorkerFailure> {
+    match decision {
+        RestoreDecision::Continue => Ok(true),
+        RestoreDecision::Superseded => Ok(false),
+        RestoreDecision::ReceiptMissing => {
+            Err(RestoreWorkerFailure::Local(OpeningFailure::OutcomeUnknown))
+        }
+        RestoreDecision::LocallyUnavailable(via) => {
+            let method = match via {
+                RestoreVia::Load => "session/load",
+                RestoreVia::Resume => "session/resume",
+            };
+            Err(RestoreWorkerFailure::Local(OpeningFailure::Unavailable {
+                diagnostic: format!(
+                    "provider confirmed {method}; the local ACP route could not admit the restored opening"
+                ),
+            }))
+        }
+    }
 }
 
 impl RestoreWorker {
     async fn advance(&self, milestone: RestoreMilestone) -> Result<bool, RestoreWorkerFailure> {
-        let (outcome, deferred) = oneshot::channel();
+        let (outcome, mut deferred) = oneshot::channel();
         let outcome = RestoreSignal::new(outcome);
         #[cfg(any(test, feature = "test-observation"))]
         let outcome = {
@@ -263,13 +289,19 @@ impl RestoreWorker {
                 self.wire.at_opening_effect_for_test(
                     crate::owner_wire::OpeningPausePoint::RestoreDeferred,
                 );
-                Ok(deferred.await.unwrap_or(false))
+                continue_restore(deferred.await.unwrap_or(RestoreDecision::Superseded))
             }
             Ok(effect) if effect.faulted() => {
                 effect.finish(&self.wire);
                 Err(RestoreWorkerFailure::Internal)
             }
-            Ok(effect) => Ok(effect.finish(&self.wire)),
+            Ok(effect) => {
+                let accepted = effect.finish(&self.wire);
+                match deferred.try_recv() {
+                    Ok(decision) => continue_restore(decision),
+                    Err(_) => Ok(accepted),
+                }
+            }
             Err(_) => Ok(false),
         }
     }

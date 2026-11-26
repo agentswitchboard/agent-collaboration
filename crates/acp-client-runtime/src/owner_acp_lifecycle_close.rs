@@ -99,20 +99,19 @@ impl OwnerOpenings {
         let attempts = Arc::clone(&self.attempts);
         let wire = Arc::clone(&self.wire);
         self.tasks.spawn(async move {
-            if let Ok(fact) = received.await {
-                let settled = lock(&attempts).apply(slot, &instance, Command::CloseSettled(fact));
-                if let Ok(effect) = settled {
-                    let faulted = effect.faulted();
-                    effect.finish(&wire);
-                    reply.send(if faulted {
-                        CloseFact::Unknown {
-                            run: close,
-                            cause: CloseUncertainty::EffectUnconfirmed,
-                        }
-                    } else {
-                        fact
-                    });
-                }
+            let unconfirmed = CloseFact::Unknown {
+                run: close,
+                cause: CloseUncertainty::EffectUnconfirmed,
+            };
+            let fact = received.await.unwrap_or(CloseFact::Unknown {
+                run: close,
+                cause: CloseUncertainty::ReplyLost,
+            });
+            let settled = lock(&attempts).apply(slot, &instance, Command::CloseSettled(fact));
+            if let Ok(effect) = settled {
+                let faulted = effect.faulted();
+                effect.finish(&wire);
+                reply.send(if faulted { unconfirmed } else { fact });
             }
         });
         Ok(())

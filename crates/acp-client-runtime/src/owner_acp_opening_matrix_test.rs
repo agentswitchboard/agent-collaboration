@@ -1,6 +1,7 @@
 //! Independent expectations for the opening declaration and owned effects.
 
 use super::super::super::{OpeningAttempts, lock};
+use super::super::RestoreReceiptStage;
 use super::*;
 use crate::acp_transport::ReadmitOutcome;
 use crate::owner_opening_disposal::OpeningDisposalProbe;
@@ -114,7 +115,7 @@ impl Fixture {
 
     fn restore_signal(
         &self,
-        sender: tokio::sync::oneshot::Sender<bool>,
+        sender: tokio::sync::oneshot::Sender<RestoreDecision>,
     ) -> super::super::RestoreSignal {
         let mut signal = super::super::RestoreSignal::new(sender);
         signal._disposal = Some(Box::new(self.disposal_token()));
@@ -261,23 +262,31 @@ impl Fixture {
                     | E::Retire
                     | E::RouteRemoved
                     | E::FinishOnStoppedWriter
+                    | E::RestoreAfterLocalLoss
                     | E::LateOpenReply
                     | E::WorkerExited
-                    | E::WriterStopped
                     | E::WriterStoppedAfterOffer
+                    | E::WriterStoppedWithOlderRestore
+                    | E::WriterStoppedWithDeferredRestore
                     | E::WriterStoppedWithoutReceipt
-                    | E::ConnectionRetired
+                    | E::RetainReceiptAfterConnectionLoss
                     | E::WaitOpening
                     | E::WaitClose
                     | E::KeepActive
                     | E::ReportRouteLost
                     | E::StopOnWriterLoss => S::AwaitingRestore(run),
+                    E::WriterStopped | E::ConnectionRetired => S::Active(run),
                 };
+                let deferred =
+                    (event == E::WriterStoppedWithDeferredRestore).then(|| DeferredRestore {
+                        milestone: RestoreMilestone::held(*self.session(), None, None, true),
+                        outcome: self.restore_signal(tokio::sync::oneshot::channel().0),
+                    });
                 S::OfferingClose {
                     origin: Box::new(origin),
                     attempt: self.close.attempt,
                     offer: offer(),
-                    deferred: None,
+                    deferred,
                 }
             }
             P::ClosingRestore => S::ClosingRestore {
@@ -301,7 +310,9 @@ impl Fixture {
                     E::CloseConfirmed | E::CloseRefused | E::CloseUnknown => {
                         LostReceipt::Close(self.close.attempt)
                     }
-                    E::WriterStoppedWithoutReceipt | E::ReportRouteLost => LostReceipt::None,
+                    E::WriterStoppedWithoutReceipt | E::ReportRouteLost | E::ConnectionRetired => {
+                        LostReceipt::None
+                    }
                     E::OpenCreate
                     | E::OpenRestore
                     | E::WriterAccepted
@@ -339,22 +350,28 @@ impl Fixture {
                     | E::Retire
                     | E::RouteRemoved
                     | E::FinishOnStoppedWriter
+                    | E::RestoreAfterLocalLoss
                     | E::LateOpenReply
                     | E::WorkerExited
                     | E::WriterStopped
                     | E::WriterStoppedAfterOffer
-                    | E::ConnectionRetired
+                    | E::WriterStoppedWithOlderRestore
+                    | E::WriterStoppedWithDeferredRestore
+                    | E::RetainReceiptAfterConnectionLoss
                     | E::WaitOpening
                     | E::WaitClose
                     | E::KeepActive
-                    | E::StopOnWriterLoss => LostReceipt::Open,
+                    | E::StopOnWriterLoss => LostReceipt::Open(RestoreReceiptStage::AwaitingPeer),
                 };
                 S::RouteLost { run, receipt }
             }
             P::StoppedAwaitingReply if event == E::FinishOnStoppedWriter => {
                 S::StoppedAwaitingReply(StoppedReceipt::OpenCreate(self.stopped.clone()))
             }
-            P::StoppedAwaitingReply => S::StoppedAwaitingReply(StoppedReceipt::OpenRestore(run)),
+            P::StoppedAwaitingReply => S::StoppedAwaitingReply(StoppedReceipt::OpenRestore(
+                run,
+                RestoreReceiptStage::AwaitingPeer,
+            )),
             P::UnboundIdle | P::BoundIdle | P::RetiredAwaitingReply | P::Terminal => return None,
         };
         Some(state)
@@ -364,6 +381,10 @@ impl Fixture {
         let command = match event {
             E::WriterAccepted => Command::WriterAccepted,
             E::WriterRefused => Command::WriterRefused,
+            E::RestoreAfterLocalLoss => Command::RestoreProgress(
+                RestoreMilestone::held(*self.session(), None, None, true),
+                Some(self.restore_signal(tokio::sync::oneshot::channel().0)),
+            ),
             E::ProviderCreated => Command::Created(self.session()),
             E::Configure => Command::Configure(self.stopped.clone()),
             E::Configured => Command::Configured(self.session()),
@@ -449,10 +470,29 @@ impl Fixture {
                 Command::RestoreProgress(RestoreMilestone::WorkerExited, None)
             }
             E::WorkerExited => Command::WorkerExited,
-            E::WriterStopped | E::WriterStoppedAfterOffer | E::WriterStoppedWithoutReceipt => {
-                Command::WriterStopped
+            E::WriterStopped
+            | E::WriterStoppedAfterOffer
+            | E::WriterStoppedWithoutReceipt
+            | E::WriterStoppedWithOlderRestore
+            | E::WriterStoppedWithDeferredRestore => Command::WriterStopped,
+            E::ConnectionRetired
+                if matches!(
+                    phase,
+                    P::AwaitingCreate
+                        | P::AwaitingRestore
+                        | P::CapturingReplay
+                        | P::ConfiguringCreate
+                        | P::ClosingLive
+                        | P::ClosingRestore
+                        | P::StoppedAwaitingReply
+                ) =>
+            {
+                return None;
             }
-            E::ConnectionRetired => Command::ConnectionRetired,
+            E::RetainReceiptAfterConnectionLoss if phase != P::StoppedAwaitingReply => return None,
+            E::ConnectionRetired | E::RetainReceiptAfterConnectionLoss => {
+                Command::ConnectionRetired
+            }
             // These are admission at the vacant table or read-only guidance
             // labels. The declaration test covers all their pairs as well.
             E::OpenCreate
@@ -484,6 +524,7 @@ enum Action {
     Readmit,
     Wait,
     Discard,
+    ResolveRestore,
 }
 
 fn actual_actions(effect: &Effect, fixture: &Fixture, instance: &OpeningInstance) -> Vec<Action> {
@@ -547,12 +588,24 @@ fn actual_actions(effect: &Effect, fixture: &Fixture, instance: &OpeningInstance
         }
         Effect::Deferred => vec![A::Wait],
         Effect::Discarded(_) => vec![A::Discard],
+        Effect::DiscardAfter(_, next) => {
+            let mut actions = vec![A::Discard];
+            actions.extend(actual_actions(next, fixture, instance));
+            actions
+        }
+        Effect::ResolveDeferredRestore { release, .. }
+        | Effect::ResolveRestore {
+            release: Some(release),
+            ..
+        } => {
+            assert!(release.instance.is_same_as(instance));
+            vec![A::ResolveRestore]
+        }
         Effect::DropSignal(_, next) => actual_actions(next, fixture, instance),
         Effect::OfferCreate(_)
         | Effect::OfferRestore(_)
         | Effect::Fault(_)
         | Effect::ReleaseBefore(..)
-        | Effect::DiscardAfter(..)
         | Effect::Rollback(_)
         | Effect::RefuseSetter(_)
         | Effect::ResolveRestore { .. } => panic!("unstated effect in owned matrix"),
@@ -679,7 +732,7 @@ async fn stopped_writer_only_releases_the_matching_owed_receipt() {
             let run = fixture.run.clone();
             let receipt = match owed {
                 0 => StoppedReceipt::OpenCreate(fixture.stopped.clone()),
-                1 => StoppedReceipt::OpenRestore(run),
+                1 => StoppedReceipt::OpenRestore(run, RestoreReceiptStage::AwaitingPeer),
                 2 => StoppedReceipt::Configure(fixture.stopped.clone()),
                 _ => StoppedReceipt::Close(run, fixture.close.attempt),
             };
@@ -749,7 +802,13 @@ async fn a_deferred_load_is_applied_only_when_close_was_unoffered() {
         } else {
             assert_eq!(row.phase(), P::CapturingReplay);
             assert!(
-                matches!(effect, Effect::ResolveRestore { accepted: true, .. }),
+                matches!(
+                    effect,
+                    Effect::ResolveRestore {
+                        decision: RestoreDecision::Continue,
+                        ..
+                    }
+                ),
                 "unoffered close applies the original reply before publication"
             );
         }
