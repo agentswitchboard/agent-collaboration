@@ -35,12 +35,17 @@ use crate::owner_session_open::{
     OpenFrame, OpenReply, OpenRequest, OwnerSessionOpenReceipt, OwnerSessionOpenSetup,
 };
 use crate::owner_session_setting::{CorrelatedSetting, OwnerSettingWirePlan, SettingCorrelation};
+#[cfg(feature = "test-support")]
 use crate::session_owner_task::OwnerCompletion;
-use agent_client_protocol::schema::v1::{CancelNotification, CloseSessionRequest};
-use agent_client_protocol::{Error, JsonRpcMessage as _, UntypedMessage};
+use agent_client_protocol::schema::v1::CancelNotification;
+use agent_client_protocol::{Error, UntypedMessage};
+#[cfg(any(test, feature = "test-support"))]
+use agent_client_protocol::{JsonRpcMessage as _, schema::v1::CloseSessionRequest};
 use provider_session_machines::SessionGeneration;
+use provider_session_machines::harness_lifecycle::{CloseFact, LifecycleReply, SettingFact};
+#[cfg(feature = "test-support")]
 use provider_session_machines::harness_lifecycle::{
-    CloseFact, LifecycleReply, SettingFact, owner_event_for_close, owner_event_for_restore_setting,
+    owner_event_for_close, owner_event_for_restore_setting,
 };
 use provider_session_machines::session_lifecycle_machine::{CloseAttempt, LoadAttempt, RestoreVia};
 use provider_session_machines::session_owner::{
@@ -544,6 +549,7 @@ impl OwnerAcpWire {
         self.transport.allows_explicit_tool_request(session, tool)
     }
 
+    #[cfg(feature = "test-support")]
     pub fn reapply_setting(
         &self,
         owner: OwnerIncarnation,
@@ -561,6 +567,7 @@ impl OwnerAcpWire {
         )
     }
 
+    #[cfg(feature = "test-support")]
     pub(crate) fn reapply_lifecycle_setting(
         &self,
         owner: OwnerIncarnation,
@@ -678,6 +685,7 @@ impl OwnerAcpWire {
         evidence
     }
 
+    #[cfg(feature = "test-support")]
     pub fn enqueue_close(
         &self,
         owner: OwnerIncarnation,
@@ -688,6 +696,7 @@ impl OwnerAcpWire {
         self.enqueue_lifecycle_close(owner, run, session, completion.map(owner_event_for_close))
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn enqueue_lifecycle_close(
         &self,
         owner: OwnerIncarnation,

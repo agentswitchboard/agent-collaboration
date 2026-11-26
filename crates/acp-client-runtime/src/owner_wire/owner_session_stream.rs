@@ -1,5 +1,7 @@
 //! Decode SDK session updates into stamped owner facts.
 
+#[cfg(feature = "test-support")]
+use crate::session_owner_task::OwnerCompletionPort;
 use crate::{
     EventSinkClosed, ExternalProviderRuntimeError, HistoryReplayFuture, ProviderBehavior,
     ProviderCapabilityReport, SessionEventSink,
@@ -12,7 +14,6 @@ use crate::{
     provider_item_projection::ProviderItemProjection,
     provider_settings_catalog_codec::decode_settings_update,
     provider_update_kind::{is_known_update_kind, safe_update_kind},
-    session_owner_task::OwnerCompletionPort,
 };
 use agent_client_protocol::{
     ActiveSession, Agent, Dispatch, SessionMessage,
@@ -20,11 +21,13 @@ use agent_client_protocol::{
 };
 use futures_util::{FutureExt as _, future::Either};
 use provider_session_machines::ProviderSettingsCatalog;
+#[cfg(feature = "test-support")]
+use provider_session_machines::harness_lifecycle::{EventPort, EventRefusal, EventSendFuture};
 use provider_session_machines::harness_lifecycle::{
-    EventPort, EventRefusal, EventSendFuture, SessionLifecycleFact, SessionLifecyclePort,
-    StreamTurn,
+    SessionLifecycleFact, SessionLifecyclePort, StreamTurn,
 };
 use provider_session_machines::provider_settings_catalog::ProviderSettingsUpdate;
+#[cfg(feature = "test-support")]
 use provider_session_machines::session_owner::{OwnerAddress, OwnerEvent};
 use provider_session_machines::session_turn_machine::TurnId;
 use session_event_model::session_profile_codec::{ProfileState, STATE_METHOD, StateNotification};
@@ -89,6 +92,7 @@ pub struct OwnerStreamTarget {
 }
 
 impl OwnerStreamTarget {
+    #[cfg(feature = "test-support")]
     pub fn new(
         owner: OwnerAddress,
         run: TransportRun,
@@ -104,6 +108,7 @@ impl OwnerStreamTarget {
         Self::for_lifecycle(run, wire, retired, events)
     }
 
+    #[cfg(feature = "test-support")]
     pub(crate) fn for_lifecycle(
         run: TransportRun,
         wire: Arc<OwnerAcpWire>,
@@ -169,12 +174,14 @@ impl OwnerStreamTarget {
     }
 }
 
+#[cfg(feature = "test-support")]
 struct OwnerStreamCompletions {
     owner: OwnerAddress,
     completions: OwnerCompletionPort,
     retired: CancellationToken,
 }
 
+#[cfg(feature = "test-support")]
 impl EventPort<SessionLifecycleFact> for OwnerStreamCompletions {
     fn send<'port>(&'port self, fact: SessionLifecycleFact) -> EventSendFuture<'port>
     where
