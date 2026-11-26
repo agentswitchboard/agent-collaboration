@@ -1,7 +1,7 @@
 //! Pending policy request and three real completion ports for a scripted loss.
 
 use super::{ScriptedHarness, lock};
-use crate::{ExternalProviderApprovalContext, acp_interaction_port::HostRequestPayloads};
+use crate::{ExternalProviderApprovalContext, host_request_policy::HostRequestPayloads};
 use provider_session_machines::{
     SessionGeneration,
     harness_lifecycle::{EventRefusal, SessionLifecycleFact, WorkReply},

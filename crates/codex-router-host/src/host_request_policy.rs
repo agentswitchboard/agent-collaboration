@@ -22,7 +22,7 @@ pub(crate) trait RefusedTurnCancellation: Send + Sync {
     ) -> RequestFuture<'_, ()>;
 }
 
-pub(crate) struct HostInteractionPort(pub(crate) Arc<dyn RefusedTurnCancellation>);
+pub(crate) struct HostRequestPolicy(pub(crate) Arc<dyn RefusedTurnCancellation>);
 
 struct BindingRetirement(CancellationToken);
 
@@ -45,7 +45,7 @@ pub(crate) type HostRequestPayloads = (
     ManagedInteractionRefusal,
 );
 
-impl RequestPolicy<HostRequestPayloads> for HostInteractionPort {
+impl RequestPolicy<HostRequestPayloads> for HostRequestPolicy {
     fn decide_approval(
         &self,
         _context: ApprovalContext<ExternalProviderApprovalContext>,

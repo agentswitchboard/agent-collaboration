@@ -21,7 +21,7 @@ use tokio_util::sync::CancellationToken;
 #[cfg(test)]
 use crate::{ProviderSessionActivity, ProviderSteeringOutcome};
 use crate::{
-    acp_interaction_port::{HostInteractionPort, HostRequestPayloads},
+    host_request_policy::{HostRequestPayloads, HostRequestPolicy},
     session_owner_ingress::SessionOwnerIngress,
 };
 #[cfg(test)]
@@ -259,7 +259,7 @@ impl ExternalProviderRuntime {
         clock: Arc<dyn router_clock::RuntimeClock>,
     ) -> Result<Self, ExternalProviderRuntimeError> {
         let owner_ingress = Arc::new(SessionOwnerIngress::default());
-        let request_policy = Arc::new(HostInteractionPort(owner_ingress.clone()));
+        let request_policy = Arc::new(HostRequestPolicy(owner_ingress.clone()));
         let client = AgentSessionClient::initialize_with_clock(
             launch,
             request_policy,
@@ -294,7 +294,7 @@ impl ExternalProviderRuntime {
         clock: Arc<dyn router_clock::RuntimeClock>,
     ) -> Result<Self, ExternalProviderRuntimeError> {
         let owner_ingress = Arc::new(SessionOwnerIngress::default());
-        let request_policy = Arc::new(HostInteractionPort(owner_ingress.clone()));
+        let request_policy = Arc::new(HostRequestPolicy(owner_ingress.clone()));
         let client = AgentSessionClient::initialize_with_mcp_http(
             launch,
             model_picker,
@@ -337,7 +337,7 @@ impl ExternalProviderRuntime {
         clock: Arc<dyn router_clock::RuntimeClock>,
     ) -> Result<Self, ExternalProviderRuntimeError> {
         let owner_ingress = Arc::new(SessionOwnerIngress::default());
-        let request_policy = Arc::new(HostInteractionPort(owner_ingress.clone()));
+        let request_policy = Arc::new(HostRequestPolicy(owner_ingress.clone()));
         let client = AgentSessionClient::initialize_with_mcp_http(
             launch,
             model_picker,
@@ -394,7 +394,7 @@ impl ExternalProviderRuntime {
         clock: Arc<dyn router_clock::RuntimeClock>,
     ) -> Result<Self, ExternalProviderRuntimeError> {
         let owner_ingress = Arc::new(SessionOwnerIngress::default());
-        let request_policy = Arc::new(HostInteractionPort(owner_ingress.clone()));
+        let request_policy = Arc::new(HostRequestPolicy(owner_ingress.clone()));
         let client = AgentSessionClient::initialize_with_timeout(
             launch,
             initialize_timeout,

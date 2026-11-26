@@ -2,8 +2,8 @@
 
 use super::*;
 use crate::{
-    acp_interaction_port::HostRequestPayloads,
     external_provider_approval_context::OwnerApprovalScope,
+    host_request_policy::HostRequestPayloads,
 };
 use provider_session_machines::session_owner::{
     ApprovalContext, ApprovalPortOutcome, Decision, ExactScope, RequestCancellation,

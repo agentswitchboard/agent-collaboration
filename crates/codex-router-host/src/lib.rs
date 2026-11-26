@@ -1,10 +1,10 @@
 //! Foreground lifecycle control for one shared Codex app-server.
 
-mod acp_interaction_port;
 mod app_server_endpoint_guard;
 mod binding_dispatch_permit;
 #[cfg(any(test, feature = "test-support"))]
 mod binding_store_fixture;
+mod host_request_policy;
 mod live_session_ownership_check;
 mod operation_machines;
 mod provider_operation_custody;

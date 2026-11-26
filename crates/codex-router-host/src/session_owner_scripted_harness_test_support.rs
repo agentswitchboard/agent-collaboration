@@ -7,8 +7,8 @@ mod work;
 pub(super) use loss::PolicySignal;
 
 use crate::{
-    acp_interaction_port::HostRequestPayloads,
     external_provider_approval_context::ExternalProviderApprovalContext,
+    host_request_policy::HostRequestPayloads,
     session_owner_lifecycle_reports::{OwnerHarnessPayloads, SessionHarnessBinding},
 };
 use provider_session_machines::{

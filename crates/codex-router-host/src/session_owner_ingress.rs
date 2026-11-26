@@ -1,8 +1,8 @@
 //! Pass Host and provider interaction facts through the session owner mailbox.
 
 use crate::{
-    acp_interaction_port::RefusedTurnCancellation,
     external_provider_approval_context::{ExternalProviderApprovalContext, OwnerApprovalScope},
+    host_request_policy::RefusedTurnCancellation,
     session_owner_door::SessionOwnerDoor,
     session_owner_lifecycle_reports::inline_admission,
 };
