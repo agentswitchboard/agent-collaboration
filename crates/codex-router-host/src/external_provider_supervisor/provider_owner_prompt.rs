@@ -106,7 +106,6 @@ impl ExternalProviderSupervisor {
                     Some(&target),
                     AdmissionMode::deferred(class),
                 )
-<<<<<<< 1e0ad9eadc7d17aa4229f6fed574abefde21aaa4
                 .await
                 .inspect_err(|_failure| {
                     #[cfg(feature = "runtime-test-support")]
@@ -126,8 +125,6 @@ impl ExternalProviderSupervisor {
                         });
                     }
                 })?;
-=======
-                .await?;
             #[cfg(test)]
             if let AdmissionClass::RefuseWhileRunning { foreground } = class {
                 backend
@@ -142,7 +139,6 @@ impl ExternalProviderSupervisor {
                     ),
                 );
             }
->>>>>>> c3f542b567cc506e260cc9a4e7bc3931b369ac8f
             match prepared {
                 PreparedOperation::Existing(operation) => Ok(existing_submission(operation)),
                 PreparedOperation::Admitted { mut snapshot, live } => {
