@@ -1,4 +1,4 @@
-//! The person approval transaction checks proof freshness and applies lifecycle changes.
+//! The person approval transaction rechecks socket authority and applies lifecycle changes.
 
 use central_engine_model::IdSource as EngineIdSource;
 use central_person_link::PersonSocketAttachment;
@@ -12,8 +12,8 @@ use fleet_approvals::{
 use fleet_identity_protocol::OrganizationId;
 use fleet_runtime_ports::IdSource;
 use fleet_signin::{
-    VerifiedApprovalPersonRequest, admit_person_link_approval,
-    approval_person_wire::{
+    admit_person_link_approval,
+    approval_person_commands::{
         ApprovalDecideReply, ApprovalListReply, ApprovalPersonOperation, ApprovalReadReply,
     },
     person_proof::AdmissionRefusal,
@@ -23,7 +23,6 @@ use futures_util::future::BoxFuture;
 use workspace_ids::RequestId;
 
 pub enum PersonApprovalAnswer {
-    Unauthenticated,
     Refused(AdmissionRefusal),
     List(ApprovalListReply),
     Read(ApprovalReadReply),
@@ -46,39 +45,18 @@ pub trait PersonApprovalTransactions: Send + Sync + 'static {
 
 /// Verified input for the current organization turn. Only Core builds this.
 pub struct PersonApprovalApplication {
-    input: ApprovalInput,
-    organization: OrganizationId,
-}
-
-enum ApprovalInput {
-    Signed(VerifiedApprovalPersonRequest),
-    PersonLink {
-        connection: PersonSocketAttachment,
-        operation: ApprovalPersonOperation,
-    },
+    connection: PersonSocketAttachment,
+    operation: ApprovalPersonOperation,
 }
 
 impl PersonApprovalApplication {
-    pub(super) fn from_signed_request(
-        organization: &OrganizationId,
-        verified: VerifiedApprovalPersonRequest,
-    ) -> Self {
-        Self {
-            input: ApprovalInput::Signed(verified),
-            organization: organization.clone(),
-        }
-    }
-
     pub(super) fn from_person_link(
         connection: &PersonSocketAttachment,
         operation: ApprovalPersonOperation,
     ) -> Self {
         Self {
-            input: ApprovalInput::PersonLink {
-                connection: connection.clone(),
-                operation,
-            },
-            organization: connection.organization().clone(),
+            connection: connection.clone(),
+            operation,
         }
     }
 
@@ -94,7 +72,7 @@ impl PersonApprovalApplication {
     }
 
     pub fn organization(&self) -> &OrganizationId {
-        &self.organization
+        self.connection.organization()
     }
 
     pub async fn apply(
@@ -103,13 +81,8 @@ impl PersonApprovalApplication {
         commit: &ApprovalCommitScope,
         ids: &dyn IdSource,
     ) -> Result<AppliedPersonApproval, StoreFailure> {
-        let admission = match self.input {
-            ApprovalInput::Signed(verified) => verified.admit(transaction).await?,
-            ApprovalInput::PersonLink {
-                connection,
-                operation,
-            } => admit_person_link_approval(&connection, operation, transaction).await?,
-        };
+        let admission =
+            admit_person_link_approval(&self.connection, self.operation, transaction).await?;
         let command = match admission {
             Ok(command) => command,
             Err(refusal) => return Ok(AppliedPersonApproval::refused(refusal)),
@@ -128,11 +101,7 @@ impl PersonApprovalApplication {
 
     #[cfg(feature = "test-support")]
     pub(super) fn decide_operation_id(&self) -> Option<&RequestId> {
-        let operation = match &self.input {
-            ApprovalInput::Signed(verified) => verified.operation(),
-            ApprovalInput::PersonLink { operation, .. } => operation,
-        };
-        match operation {
+        match &self.operation {
             ApprovalPersonOperation::Decide(request) => Some(&request.operation_id),
             ApprovalPersonOperation::List(_) | ApprovalPersonOperation::Read(_) => None,
         }

@@ -2,39 +2,30 @@ use central_storage::{SqlValue, Statement};
 use collaboration_central_conformance::{
     ConformanceResult, person_approval_cases,
     signin_fixtures::{
-        approval_routes::{
-            AdmissionCase, AuthenticationCase, Case, PersonApprovalHarness, ReplayCase, check,
-        },
+        approval_routes::{AdmissionCase, Case, PersonApprovalHarness, ReplayCase, check},
         approval_socket::PersonApprovalEndpoint,
     },
 };
 use serde_json::Value;
 
-use super::support::Fixture;
+use super::support::{Fixture, REVISIONS};
 
 struct ApprovalFixture<'fixture> {
     fixture: &'fixture Fixture,
-    socket_client: Option<reqwest::Client>,
+    socket_client: reqwest::Client,
 }
 
 impl PersonApprovalHarness for ApprovalFixture<'_> {
-    fn person_socket(&self) -> Option<PersonApprovalEndpoint<'_>> {
-        self.socket_client
-            .as_ref()
-            .map(|client| PersonApprovalEndpoint {
-                client,
-                origin: self.fixture.host.public_origin(),
-                now_seconds: self.fixture.host.now_seconds(),
-            })
+    fn person_socket(&self) -> PersonApprovalEndpoint<'_> {
+        PersonApprovalEndpoint {
+            client: &self.socket_client,
+            origin: self.fixture.host.public_origin(),
+            now_seconds: self.fixture.host.now_seconds(),
+        }
     }
 
-    async fn post(
-        &self,
-        path: &str,
-        body: &Value,
-        headers: Vec<(&'static str, String)>,
-    ) -> ConformanceResult<(u16, Vec<u8>)> {
-        Ok(self.fixture.post_bytes(path, body, &headers).await)
+    async fn post_revision(&self, body: &Value) -> ConformanceResult<(u16, Vec<u8>)> {
+        Ok(self.fixture.post_bytes(REVISIONS, body, &[]).await)
     }
 
     async fn advance_at_approval_sample<Reply>(
@@ -47,7 +38,7 @@ impl PersonApprovalHarness for ApprovalFixture<'_> {
         let runtime = self.fixture.runtime().await;
         let point = "beforeSignInSample";
         if !runtime.control::<bool>("hold-central", &point).await? {
-            return Err("could not arm the C3 post-verification hold".into());
+            return Err("could not arm the approval applying sample hold".into());
         }
         tokio::pin!(send);
         let reached = tokio::select! {
@@ -108,7 +99,7 @@ impl PersonApprovalHarness for ApprovalFixture<'_> {
     }
 }
 
-async fn run(case: Case, socket_client: Option<reqwest::Client>) -> ConformanceResult<()> {
+async fn run(case: Case) -> ConformanceResult<()> {
     let fixture = Fixture::new().await;
     if fixture.provision().await.0 != 200 {
         return Err("fixture provisioning refused".into());
@@ -117,7 +108,7 @@ async fn run(case: Case, socket_client: Option<reqwest::Client>) -> ConformanceR
     let observed = check(
         &ApprovalFixture {
             fixture: &fixture,
-            socket_client,
+            socket_client: reqwest::Client::builder().no_proxy().build()?,
         },
         case,
     )
@@ -126,44 +117,40 @@ async fn run(case: Case, socket_client: Option<reqwest::Client>) -> ConformanceR
     observed
 }
 
-macro_rules! approval_case {
-    ($name:ident, $case:expr) => {
-        #[tokio::test]
-        async fn $name() -> ConformanceResult<()> {
-            run($case, None).await
-        }
-    };
-}
-
 macro_rules! socket_approval_case {
     ($name:ident, $case:expr) => {
         #[tokio::test]
         async fn $name() -> ConformanceResult<()> {
-            run($case, Some(reqwest::Client::builder().no_proxy().build()?)).await
+            run($case).await
         }
     };
 }
 
-person_approval_cases!(approval_case, socket_approval_case);
+person_approval_cases!(socket_approval_case);
 socket_approval_case!(
     socket_page_uses_the_ending_when_stored_cutoff_is_corrupt,
     Case::ListWithCorruptStoredCutoff
 );
-approval_case!(
-    ended_person_approval_is_hidden_at_the_retention_cutoff,
+socket_approval_case!(
+    socket_hides_ended_approval_at_the_retention_cutoff,
     Case::ErasureCutoff
 );
 
 #[tokio::test]
-async fn approval_preflight_refuses_method_then_headers_then_address() -> ConformanceResult<()> {
+async fn private_entry_returns_404_for_removed_approval_routes() -> ConformanceResult<()> {
     let fixture = Fixture::new().await;
+    if fixture.provision().await.0 != 200 {
+        return Err("fixture provisioning refused".into());
+    }
+    fixture.floors().await;
     let client = reqwest::Client::builder().no_proxy().build()?;
-    let observed = collaboration_central_conformance::signin_fixtures::check_approval_preflight(
-        &client,
-        &fixture.host.signin_origin(),
-        Some("collaboration-central-link-entry"),
-    )
-    .await;
+    let observed =
+        collaboration_central_conformance::signin_fixtures::check_removed_approval_routes(
+            &client,
+            &fixture.host.signin_origin(),
+            Some("collaboration-central-link-entry"),
+        )
+        .await;
     fixture.close().await;
     observed
 }

@@ -1,10 +1,8 @@
 /// Register each contract row as its own isolated integration test.
 #[macro_export]
 macro_rules! person_approval_cases {
-    ($case:ident, $socket:ident) => {
-        use $crate::signin_fixtures::approval_routes::{
-            ClockBoundary, ExpandedCase, RetainedCase, SignedMutation,
-        };
+    ($socket:ident) => {
+        use $crate::signin_fixtures::approval_routes::{ExpandedCase, RetainedCase};
         $socket!(socket_list_pages_at_the_requested_cursor, Case::ListPage);
         $socket!(
             socket_can_list_read_and_decide_on_the_same_person_connection,
@@ -15,8 +13,8 @@ macro_rules! person_approval_cases {
             Case::SocketAuthority
         );
         $socket!(
-            socket_replays_the_exact_signed_answer_after_permission_loss,
-            Case::SocketRetainedSignedAnswer
+            socket_replays_the_exact_answer_after_permission_loss,
+            Case::SocketRetainedAnswer
         );
         $socket!(
             socket_decide_refuses_authority_that_expires_before_the_transaction_sample,
@@ -27,41 +25,9 @@ macro_rules! person_approval_cases {
             Case::ListDeadlinePrecedence
         );
         $socket!(socket_read_returns_the_addressed_offer, Case::ReadRequest);
-        $case!(
-            signed_option_tamper,
-            Case::Expanded(ExpandedCase::Binding(SignedMutation::Option))
-        );
-        $case!(
-            signed_request_id_tamper,
-            Case::Expanded(ExpandedCase::Binding(SignedMutation::RequestId))
-        );
-        $case!(
-            signed_organization_tamper,
-            Case::Expanded(ExpandedCase::Binding(SignedMutation::Organization))
-        );
-        $case!(
-            signed_operation_id_tamper,
-            Case::Expanded(ExpandedCase::Binding(SignedMutation::OperationId))
-        );
-        $case!(
-            signed_route_tamper,
-            Case::Expanded(ExpandedCase::Binding(SignedMutation::Route))
-        );
-        $case!(
-            signed_filter_tamper,
-            Case::Expanded(ExpandedCase::Binding(SignedMutation::Filter))
-        );
-        $case!(
-            signed_cursor_tamper,
-            Case::Expanded(ExpandedCase::Binding(SignedMutation::Cursor))
-        );
-        $case!(
-            applying_token_expiry_after_verification,
-            Case::Expanded(ExpandedCase::Applying(ClockBoundary::TokenExpiry))
-        );
-        $case!(
-            applying_deadline_crossed_after_verification,
-            Case::Expanded(ExpandedCase::Applying(ClockBoundary::DeadlineCutoff))
+        $socket!(
+            socket_decide_settles_deadline_crossed_inside_apply,
+            Case::Expanded(ExpandedCase::ApplyingDeadline)
         );
         $socket!(
             socket_list_excludes_foreign_and_hidden_rows_across_sparse_pages,
@@ -119,8 +85,8 @@ macro_rules! person_approval_cases {
             socket_decide_with_fresh_id_returns_the_actual_earlier_winner,
             Case::AlreadyDecided
         );
-        $case!(
-            stored_milliseconds_round_trip_on_all_routes,
+        $socket!(
+            socket_preserves_stored_milliseconds_on_list_read_and_decide,
             Case::Expanded(ExpandedCase::StoredMilliseconds)
         );
         $socket!(
@@ -139,37 +105,25 @@ macro_rules! person_approval_cases {
             socket_decide_after_permission_loss_only_replays_the_committed_answer,
             Case::Replay(ReplayCase::AfterPermissionLoss)
         );
-        $case!(
-            missing_proof,
-            Case::Authentication(AuthenticationCase::MissingProof)
-        );
-        $case!(
-            bad_proof,
-            Case::Authentication(AuthenticationCase::BadProof)
-        );
-        $case!(replayed_proof, Case::ReplayedProof);
-        $case!(bad_address, Case::BadAddress);
-        $case!(
-            expired_token,
-            Case::Authentication(AuthenticationCase::ExpiredToken)
-        );
-        $case!(
-            foreign_organization,
-            Case::Authentication(AuthenticationCase::ForeignOrganization)
-        );
-        $case!(
-            missing_permission,
-            Case::Admission(AdmissionCase::MissingPermission)
-        );
-        $case!(
-            outdated_floor,
+        $socket!(
+            socket_refuses_outdated_person_floor,
             Case::Admission(AdmissionCase::OutdatedFloor)
         );
-        $case!(missing_floor, Case::Admission(AdmissionCase::MissingFloor));
-        $case!(watermark, Case::Admission(AdmissionCase::Watermark));
-        $case!(
-            inactive_person,
+        $socket!(
+            socket_refuses_missing_person_floor,
+            Case::Admission(AdmissionCase::MissingFloor)
+        );
+        $socket!(
+            socket_reconnects_on_inactive_person,
             Case::Admission(AdmissionCase::InactivePerson)
+        );
+        $socket!(
+            socket_protects_rows_written_by_signed_decision,
+            Case::BaseRetainedDecision
+        );
+        $socket!(
+            socket_fresh_decision_preserves_raw_storage,
+            Case::FreshDecisionMatchesBase
         );
     };
 }

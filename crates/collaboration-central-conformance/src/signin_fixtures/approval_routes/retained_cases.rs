@@ -7,10 +7,10 @@ use crate::ConformanceResult;
 use crate::signin_fixtures::approval_rows::{AnswerClass, InitialApproval, id, seed, text, time};
 use crate::signin_fixtures::{NOW_SECONDS, ORGANIZATION, OWNER, Person};
 
-use super::request::{SignedRequest, decide, read};
+use super::request::{ApprovalCall, decide, read};
 use super::{
-    PersonApprovalHarness, assert_count, assert_proof_count, expect, expect_status,
-    publish_person_floor, require, saved,
+    PersonApprovalHarness, assert_count, assert_no_proof_rows, expect, publish_person_floor,
+    require, saved,
 };
 
 #[derive(Clone, Copy)]
@@ -61,14 +61,10 @@ async fn saved_decision_missing_ending(
     let answer = json!({"kind":"approval","optionId":15});
     let call = decide(&request, &operation, &answer);
 
-    expect(
-        call.send(host, owner).await?,
-        200,
-        json!({"kind":"notVisible"}),
-    )?;
+    expect(call.send(host, owner).await?, json!({"kind":"notVisible"}))?;
     assert_count(host, "SELECT COUNT(*) FROM runtime_request_log", 0).await?;
     seed(host, 10, AnswerClass::Once, InitialApproval::Waiting).await?;
-    let refused = expect_status(call.send(host, owner).await?, 200)?;
+    let refused = call.send(host, owner).await?.answer()?;
     let refused: serde_json::Value = serde_json::from_slice(&refused)?;
     assert_eq!(
         refused.get("kind").and_then(serde_json::Value::as_str),
@@ -81,7 +77,7 @@ async fn saved_decision_missing_ending(
     )
     .await?;
 
-    // The forged reply agrees with the signed intent and actor. The request itself
+    // The forged reply agrees with the decision intent and actor. The request itself
     // has never committed a decision, which makes this replay invalid.
     host.write(
         "UPDATE runtime_request_log SET answer = ?1 WHERE request_id = ?2",
@@ -89,7 +85,7 @@ async fn saved_decision_missing_ending(
     )
     .await?;
     expect_corrupt_replay(&call, host, owner).await?;
-    assert_proof_count(host, 2).await?;
+    assert_no_proof_rows(host).await?;
     assert_count(
         host,
         "SELECT COUNT(*) FROM approval_requests WHERE record_state = 'waiting'",
@@ -110,14 +106,12 @@ async fn corrupted_winner(
         decide(&request, &id(100), &answer)
             .send(host, owner)
             .await?,
-        200,
         saved(&answer),
     )?;
     let operation = id(101);
     let losing_call = decide(&request, &operation, &answer);
     expect(
         losing_call.send(host, owner).await?,
-        200,
         json!({"kind":"alreadyDecided","by":{"kind":"person","personId":OWNER},"at":time(0)?}),
     )?;
 
@@ -139,7 +133,7 @@ async fn corrupted_winner(
         .retain(|permission| permission != "approval:decide");
     expect_corrupt_replay(&losing_call, host, &after_permission_loss).await?;
 
-    assert_proof_count(host, 2).await?;
+    assert_no_proof_rows(host).await?;
     assert_count(
         host,
         "SELECT COUNT(*) FROM approval_requests WHERE record_state = 'ended'",
@@ -149,15 +143,11 @@ async fn corrupted_winner(
 }
 
 async fn expect_corrupt_replay(
-    call: &SignedRequest,
+    call: &ApprovalCall,
     host: &impl PersonApprovalHarness,
     owner: &Person,
 ) -> ConformanceResult<()> {
-    let body = expect_status(call.send(host, owner).await?, 503)?;
-    require(
-        body.is_empty(),
-        &json!({"expected":"empty corrupt-log refusal"}),
-    )
+    super::assert_lost_reply(call.send(host, owner).await?)
 }
 
 // The shared host harness asks each owning SQLite store to plan the exact C3 SQL.
@@ -205,5 +195,5 @@ async fn visibility_shape(
         hidden_reply == missing_reply,
         &json!({"expected":"identical absent-destination reply"}),
     )?;
-    expect(hidden_reply, 200, json!({"kind":"notVisible"}))
+    expect(hidden_reply, json!({"kind":"notVisible"}))
 }

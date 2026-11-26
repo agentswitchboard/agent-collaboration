@@ -134,9 +134,10 @@ digest reads outside both time bounds.
 
 `workspace_requests::organization_signin::person_approval_routes` drives list,
 read and decide on the Workerd person websocket and checks visibility, deadlines,
-authority and retained replies in the owning store. The signed-route cases still
-check proof binding, replay and admission. `machine_link::approval_calls` checks
-that a socket decision reaches the registered machine holder and settles once.
+authority and retained replies in the owning store. It also observes the retired
+approval paths at the private Sign-in entry. `machine_link::approval_calls`
+checks that a socket decision reaches the registered machine holder and settles
+once.
 
 `workspace_requests::organization_signin::machine_login` drives the actual private
 Worker decision binding with exact approval snapshots, BA1 grant ordering and

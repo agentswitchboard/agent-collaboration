@@ -79,7 +79,7 @@ use central_link_protocol::{
     },
 };
 use fleet_rpc::Envelope;
-use fleet_signin::approval_person_wire::{
+use fleet_signin::approval_person_commands::{
     ApprovalDecideRequest, ApprovalListRequest, ApprovalPersonOperation, ApprovalReadRequest,
 };
 

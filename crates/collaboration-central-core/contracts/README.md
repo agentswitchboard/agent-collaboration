@@ -63,5 +63,6 @@ UPDATE_CENTRAL_SIGNIN_TYPES=1 cargo test --locked -p collaboration-central-core 
 UPDATE_CENTRAL_SIGNIN_TYPES=1 cargo test --locked -p collaboration-central-core --features wire-export --lib signin_wire_export_test::canonical_signin_intent_hash_matches_shared_vector -- --exact
 ```
 
-The [person approval result matrix](approval-person-results.md) records the C3
-HTTP statuses and writes alongside the generated types and vectors.
+The [person approval result matrix](approval-person-results.md) describes the
+WebSocket replies and their owning-store effects. The reply vectors pin their
+JSON shapes. The Decide digest vector lives with its Rust command in Fleet Sign-in.

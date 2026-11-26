@@ -10,7 +10,6 @@ pub use link_token::{CheckedPersonLink, PersonLinkFacts, PersonLinkSecondFactor}
 mod signed_claims;
 mod verifier;
 
-pub(crate) use admission::decide_retained_approval_admission;
 pub use admission::{
     AdmissionRefusal, AdmittedRequest, FloorRevision, OrganizationFloor, OrganizationFloorState,
     PersonAdmissionFacts, PersonFloor, PersonFloorState, SECOND_FACTOR_WINDOW_SECONDS,

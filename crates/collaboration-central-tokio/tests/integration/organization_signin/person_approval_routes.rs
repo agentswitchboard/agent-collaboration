@@ -2,9 +2,7 @@ use central_storage::SqlValue;
 use collaboration_central_conformance::{
     person_approval_cases,
     signin_fixtures::{
-        approval_routes::{
-            AdmissionCase, AuthenticationCase, Case, PersonApprovalHarness, ReplayCase, check,
-        },
+        approval_routes::{AdmissionCase, Case, PersonApprovalHarness, ReplayCase, check},
         approval_socket::PersonApprovalEndpoint,
     },
 };
@@ -14,33 +12,29 @@ use serde_json::Value;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
-use super::support::{A, Fixture, Result, post};
+use super::support::{A, Fixture, REVISIONS, Result, post};
 
 struct ApprovalFixture<'fixture> {
     fixture: &'fixture Fixture,
-    public: Option<(&'fixture reqwest::Client, &'fixture str)>,
+    public: (&'fixture reqwest::Client, &'fixture str),
 }
 
 impl PersonApprovalHarness for ApprovalFixture<'_> {
-    fn person_socket(&self) -> Option<PersonApprovalEndpoint<'_>> {
-        self.public.map(|(client, origin)| PersonApprovalEndpoint {
+    fn person_socket(&self) -> PersonApprovalEndpoint<'_> {
+        let (client, origin) = self.public;
+        PersonApprovalEndpoint {
             client,
             origin,
             now_seconds: self.fixture.clock_time(),
-        })
+        }
     }
 
-    async fn post(
-        &self,
-        path: &str,
-        body: &Value,
-        headers: Vec<(&'static str, String)>,
-    ) -> Result<(u16, Vec<u8>)> {
+    async fn post_revision(&self, body: &Value) -> Result<(u16, Vec<u8>)> {
         let reply = post(
             &self.fixture.client(),
-            path,
+            REVISIONS,
             serde_json::to_string(body)?,
-            headers,
+            Vec::new(),
         )
         .await?;
         Ok((reply.status, reply.body))
@@ -94,21 +88,6 @@ impl PersonApprovalHarness for ApprovalFixture<'_> {
     }
 }
 
-async fn run_signed(case: Case) -> Result {
-    let fixture = Fixture::new().await?;
-    fixture.ready().await?;
-    let observed = check(
-        &ApprovalFixture {
-            fixture: &fixture,
-            public: None,
-        },
-        case,
-    )
-    .await;
-    fixture.close().await?;
-    observed
-}
-
 async fn run_socket(case: Case) -> Result {
     let fixture = Fixture::new().await?;
     fixture.ready().await?;
@@ -127,7 +106,7 @@ async fn run_socket(case: Case) -> Result {
     let observed = check(
         &ApprovalFixture {
             fixture: &fixture,
-            public: Some((&client, &origin)),
+            public: (&client, &origin),
         },
         case,
     )
@@ -140,15 +119,6 @@ async fn run_socket(case: Case) -> Result {
     observed
 }
 
-macro_rules! approval_case {
-    ($name:ident, $case:expr) => {
-        #[tokio::test]
-        async fn $name() -> Result {
-            run_signed($case).await
-        }
-    };
-}
-
 macro_rules! socket_approval_case {
     ($name:ident, $case:expr) => {
         #[tokio::test]
@@ -158,25 +128,27 @@ macro_rules! socket_approval_case {
     };
 }
 
-person_approval_cases!(approval_case, socket_approval_case);
+person_approval_cases!(socket_approval_case);
 socket_approval_case!(
     socket_page_uses_the_ending_when_stored_cutoff_is_corrupt,
     Case::ListWithCorruptStoredCutoff
 );
-approval_case!(
-    ended_person_approval_is_hidden_at_the_retention_cutoff,
+socket_approval_case!(
+    socket_hides_ended_approval_at_the_retention_cutoff,
     Case::ErasureCutoff
 );
 
 #[tokio::test]
-async fn approval_preflight_refuses_method_then_headers_then_address() -> Result {
+async fn private_entry_returns_404_for_removed_approval_routes() -> Result {
     let fixture = Fixture::new().await?;
-    let observed = collaboration_central_conformance::signin_fixtures::check_approval_preflight(
-        &fixture.client(),
-        "http://central.local",
-        None,
-    )
-    .await;
+    fixture.ready().await?;
+    let observed =
+        collaboration_central_conformance::signin_fixtures::check_removed_approval_routes(
+            &fixture.client(),
+            "http://central.local",
+            None,
+        )
+        .await;
     fixture.close().await?;
     observed
 }

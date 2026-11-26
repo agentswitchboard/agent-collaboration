@@ -1,4 +1,4 @@
-//! Replay the conflicting cutoff case over the signed person list and point read.
+//! Replay the conflicting cutoff case over the person socket list and point read.
 
 use central_storage::SqlValue;
 use serde_json::{Value, json};
@@ -10,7 +10,7 @@ use crate::signin_fixtures::{
 };
 
 use super::request::{list, read};
-use super::{PersonApprovalHarness, expect, expect_status};
+use super::{PersonApprovalHarness, expect};
 
 pub(super) async fn check(
     host: &impl PersonApprovalHarness,
@@ -40,7 +40,7 @@ pub(super) async fn check(
     )
     .await?;
 
-    let page = expect_status(list("all", None).send(host, owner).await?, 200)?;
+    let page = list("all", None).send(host, owner).await?.answer()?;
     let page: Value = serde_json::from_slice(&page)?;
     let items = page
         .get("items")
@@ -58,10 +58,9 @@ pub(super) async fn check(
     );
     expect(
         read(&already_hidden).send(host, owner).await?,
-        200,
         json!({"kind":"notVisible"}),
     )?;
-    let point = expect_status(read(&still_visible).send(host, owner).await?, 200)?;
+    let point = read(&still_visible).send(host, owner).await?.answer()?;
     let point: Value = serde_json::from_slice(&point)?;
     assert_eq!(
         point.pointer("/view/requestId").and_then(Value::as_str),

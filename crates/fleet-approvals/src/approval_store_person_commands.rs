@@ -4,7 +4,7 @@ use approval_request_protocol::{ApprovalSummaryState, RequestSummary};
 use fleet_runtime_ports::workspace_decode_error::corrupt;
 use fleet_signin::{
     ApprovalPersonAdmission,
-    approval_person_wire::{ApprovalListFilter, ApprovalListReply, ApprovalReadReply},
+    approval_person_commands::{ApprovalListFilter, ApprovalListReply, ApprovalReadReply},
 };
 use workspace_ids::ApprovalRequestId;
 

@@ -1,28 +1,22 @@
 //! Person approval authority is minted and consumed in one owning transaction.
 
 use crate::FleetPermission;
-use central_storage::{GuardedStatement, ReadOutcome, Statement, StoreFailure};
+use central_storage::{ReadOutcome, Statement, StoreFailure};
 use fleet_identity_protocol::OrganizationId;
 use fleet_lent_transaction::OrganizationTransaction;
-use fleet_runtime_ports::{Ed25519Verification, Es256Verification, IssuerKeySource, SyncTime};
+use fleet_runtime_ports::SyncTime;
 use std::marker::PhantomData;
 use workspace_ids::PersonId;
 
 use crate::{
-    approval_person_wire::{
-        ApprovalDecideRequest, ApprovalListRequest, ApprovalPersonOperation, ApprovalPersonRoute,
-        ApprovalReadRequest,
+    approval_person_commands::{
+        ApprovalDecideRequest, ApprovalListRequest, ApprovalPersonOperation, ApprovalReadRequest,
     },
     authorization_floor_store::{
         decode_organization_floor, decode_person_floor, organization_floor_statement,
         person_floor_statement,
     },
-    person_proof::{
-        AdmissionRefusal, PersonProofFacts, PersonProofVerifier, PersonRequestRefusal,
-        PersonSocketAttachment, admission_before_person, decide_admission,
-        decide_retained_approval_admission, request_time_refusal,
-    },
-    person_proof_store::{proof_was_used, reserve_approval_proof, used_proof_statement},
+    person_proof::{AdmissionRefusal, PersonSocketAttachment},
 };
 
 /// The stamped organization transaction can run the Sign-in owner's checked reads.
@@ -69,120 +63,8 @@ impl ApprovalPersonAdmission {
     }
 }
 
-/// The checked proof, paired with precisely the signed approval operation.
-#[derive(Debug)]
-pub struct VerifiedApprovalPersonRequest {
-    proof: PersonProofFacts,
-    operation: ApprovalPersonOperation,
-    person: PersonId,
-}
-
-impl VerifiedApprovalPersonRequest {
-    #[must_use]
-    pub const fn organization(&self) -> &OrganizationId {
-        &self.proof.organization_id
-    }
-
-    #[must_use]
-    pub const fn operation(&self) -> &ApprovalPersonOperation {
-        &self.operation
-    }
-
-    pub async fn admit<'loan, Transaction: ApprovalPersonTransaction>(
-        self,
-        transaction: &'loan mut Transaction,
-    ) -> Result<
-        Result<AdmittedApprovalPersonOperation<'loan, Transaction>, AdmissionRefusal>,
-        StoreFailure,
-    > {
-        let sampled = transaction.sample_person_authorization_time()?;
-        let now_ms = sampled.unix_millis();
-        let proof = &self.proof;
-        let organization = &proof.organization_id;
-        if transaction.organization_id() != organization {
-            return Ok(Err(AdmissionRefusal::NotPermitted));
-        }
-
-        let claims = proof.into();
-        if let Some(refusal) = request_time_refusal(&claims, now_ms) {
-            return Ok(Err(refusal));
-        }
-        let organization_rows = transaction
-            .read_person_authorization(organization_floor_statement(organization.as_str()))
-            .await?;
-        let organization_floor =
-            decode_organization_floor(&organization_rows, organization.as_str())?;
-        if let Err(refusal) = admission_before_person(&claims, now_ms, organization_floor.as_ref())?
-        {
-            return Ok(Err(refusal));
-        }
-        let person_rows = transaction
-            .read_person_authorization(person_floor_statement(
-                organization.as_str(),
-                &proof.person_id,
-            ))
-            .await?;
-        let person_floor =
-            decode_person_floor(&person_rows, organization.as_str(), &proof.person_id)?;
-        let proof_id = proof.request_id.to_string();
-        let proof_rows = transaction
-            .read_person_authorization(used_proof_statement(&proof_id))
-            .await?;
-        let proof_used = proof_was_used(&proof_rows, &proof_id)?;
-        // The owner's grant decision is enforced by the Sign-in issuer.
-        // Every C3 route checks this typed permission in the signed claims.
-        let permission = FleetPermission::DecideApproval.as_str();
-        let admission = decide_admission(
-            &claims,
-            now_ms,
-            organization_floor.as_ref(),
-            person_floor.as_ref(),
-            permission,
-            false,
-            proof_used,
-        )?;
-        let access = match admission {
-            Ok(_) => ApprovalPersonAccess::Granted,
-            Err(AdmissionRefusal::NotPermitted)
-                if matches!(&self.operation, ApprovalPersonOperation::Decide(_))
-                    && !proof.permissions.iter().any(|grant| grant == permission)
-                    && decide_retained_approval_admission(
-                        &claims,
-                        now_ms,
-                        organization_floor.as_ref(),
-                        person_floor.as_ref(),
-                        proof_used,
-                    )?
-                    .is_ok() =>
-            {
-                ApprovalPersonAccess::RetainedOnly {
-                    intent_digest: proof.intent_digest.clone(),
-                }
-            }
-            Err(refusal) => return Ok(Err(refusal)),
-        };
-        let operation_id = match &self.operation {
-            ApprovalPersonOperation::Decide(request) => Some(&request.operation_id),
-            ApprovalPersonOperation::List(_) | ApprovalPersonOperation::Read(_) => None,
-        };
-        let reservation = reserve_approval_proof(proof, operation_id, now_ms)?;
-        let identity = ApprovalPersonAdmission {
-            person: self.person,
-            organization: organization.clone(),
-        };
-        Ok(bind_approval_command(
-            transaction,
-            identity,
-            self.operation,
-            access,
-            Some(reservation),
-            sampled,
-        ))
-    }
-}
-
 /// Recheck the socket's applying authority inside the transaction. The authenticated
-/// connection owns the person and target, and carries no per-operation proof to reserve.
+/// connection owns the person and target.
 pub async fn admit_person_link_approval<'loan, Transaction: ApprovalPersonTransaction>(
     attachment: &PersonSocketAttachment,
     operation: ApprovalPersonOperation,
@@ -220,10 +102,9 @@ pub async fn admit_person_link_approval<'loan, Transaction: ApprovalPersonTransa
 
     let access = if attachment.permits(FleetPermission::DecideApproval) {
         ApprovalPersonAccess::Granted
-    } else if matches!(&operation, ApprovalPersonOperation::Decide(_)) {
-        let intent_digest = operation
-            .intent()
-            .digest()
+    } else if let ApprovalPersonOperation::Decide(request) = &operation {
+        let intent_digest = request
+            .intent_digest()
             .map_err(|_| StoreFailure::Unavailable)?;
         ApprovalPersonAccess::RetainedOnly { intent_digest }
     } else {
@@ -238,7 +119,6 @@ pub async fn admit_person_link_approval<'loan, Transaction: ApprovalPersonTransa
         identity,
         operation,
         access,
-        None,
         sampled,
     ))
 }
@@ -253,7 +133,6 @@ fn bind_approval_command<'loan, Transaction>(
     identity: ApprovalPersonAdmission,
     operation: ApprovalPersonOperation,
     access: ApprovalPersonAccess,
-    reservation: Option<GuardedStatement>,
     sampled: SyncTime,
 ) -> Result<AdmittedApprovalPersonOperation<'loan, Transaction>, AdmissionRefusal> {
     let command = match (access, operation) {
@@ -261,7 +140,6 @@ fn bind_approval_command<'loan, Transaction>(
             AdmittedApprovalPersonOperation::List(AdmittedApprovalCommand::new(
                 transaction,
                 identity,
-                reservation,
                 sampled,
                 request,
             ))
@@ -270,7 +148,6 @@ fn bind_approval_command<'loan, Transaction>(
             AdmittedApprovalPersonOperation::Read(AdmittedApprovalCommand::new(
                 transaction,
                 identity,
-                reservation,
                 sampled,
                 request,
             ))
@@ -279,7 +156,6 @@ fn bind_approval_command<'loan, Transaction>(
             AdmittedApprovalPersonOperation::Decide(AdmittedApprovalCommand::new(
                 transaction,
                 identity,
-                reservation,
                 sampled,
                 request,
             ))
@@ -290,7 +166,6 @@ fn bind_approval_command<'loan, Transaction>(
         ) => AdmittedApprovalPersonOperation::Retry(AdmittedApprovalCommand::new(
             transaction,
             identity,
-            reservation,
             sampled,
             RetainedDecisionRequest {
                 request,
@@ -337,7 +212,7 @@ pub struct RetainedDecisionRequest {
 /// ```
 ///
 /// ```compile_fail
-/// use fleet_signin::{AdmittedApprovalCommand, approval_person_wire::{ApprovalReadRequest, ApprovalDecideRequest}};
+/// use fleet_signin::{AdmittedApprovalCommand, approval_person_commands::{ApprovalReadRequest, ApprovalDecideRequest}};
 /// fn substitute<T>(command: AdmittedApprovalCommand<'_, T, ApprovalReadRequest>)
 ///     -> AdmittedApprovalCommand<'_, T, ApprovalDecideRequest> { command }
 /// ```
@@ -350,7 +225,6 @@ impl<'loan, Transaction, Request> AdmittedApprovalCommand<'loan, Transaction, Re
     fn new(
         transaction: &'loan mut Transaction,
         identity: ApprovalPersonAdmission,
-        reservation: Option<GuardedStatement>,
         sampled: SyncTime,
         request: Request,
     ) -> Self {
@@ -358,7 +232,6 @@ impl<'loan, Transaction, Request> AdmittedApprovalCommand<'loan, Transaction, Re
             transaction,
             admitted: AdmittedApprovalFacts {
                 identity,
-                reservation,
                 sampled,
                 request,
                 loan: PhantomData,
@@ -381,7 +254,6 @@ impl<'loan, Transaction, Request> AdmittedApprovalCommand<'loan, Transaction, Re
 
 pub struct AdmittedApprovalFacts<'loan, Request> {
     identity: ApprovalPersonAdmission,
-    reservation: Option<GuardedStatement>,
     sampled: SyncTime,
     request: Request,
     loan: PhantomData<&'loan mut ()>,
@@ -401,10 +273,6 @@ impl<Request> AdmittedApprovalFacts<'_, Request> {
     #[must_use]
     pub const fn sampled(&self) -> SyncTime {
         self.sampled
-    }
-
-    pub fn into_reservation(self) -> Option<GuardedStatement> {
-        self.reservation
     }
 }
 
@@ -437,45 +305,5 @@ impl<'request> VerifiedApprovalDecideRetry<'request> {
     #[must_use]
     pub const fn intent_digest(&self) -> &'request str {
         self.intent_digest
-    }
-}
-
-/// The raw request never chooses its own route.
-pub struct ApprovalPersonVerificationInput<'wire> {
-    pub route: ApprovalPersonRoute,
-    pub method: &'wire str,
-    pub authorization: &'wire str,
-    pub proof: &'wire str,
-    pub body: &'wire [u8],
-}
-
-impl ApprovalPersonVerificationInput<'_> {
-    pub async fn verify_with<
-        Ed: Ed25519Verification,
-        Es: Es256Verification,
-        Keys: IssuerKeySource,
-    >(
-        self,
-        verifier: &PersonProofVerifier<Ed, Es, Keys>,
-    ) -> Result<VerifiedApprovalPersonRequest, PersonRequestRefusal> {
-        let checked = verifier
-            .verify(
-                self.route.path(),
-                self.method,
-                self.authorization,
-                self.proof,
-            )
-            .await?;
-        let operation = self.route.read(self.body)?;
-        let proof = checked.bind_intent(operation.organization(), &operation.intent().digest()?)?;
-        let person = proof
-            .person_id
-            .parse()
-            .map_err(|_| PersonRequestRefusal::PersonClaims)?;
-        Ok(VerifiedApprovalPersonRequest {
-            proof,
-            operation,
-            person,
-        })
     }
 }
