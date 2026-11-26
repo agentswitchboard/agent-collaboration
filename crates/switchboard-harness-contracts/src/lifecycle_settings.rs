@@ -9,8 +9,8 @@ use crate::{
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AcceptedRunSettings {
-    pub catalogue: Arc<ProviderSettingsCatalogRecord>,
+pub struct AcceptedRunSettings<Catalogue = ProviderSettingsCatalogRecord> {
+    pub catalogue: Arc<Catalogue>,
     pub router_auto_requested: bool,
 }
 
@@ -51,10 +51,9 @@ pub enum CreatedSetupFact<Capabilities, Settings, SettingFailureReason> {
 pub enum CreatedSettingsFailure<Reason> {
     Invalid(InvalidRequestedSetting),
     Partial {
-        applied: Box<[ConfiguredSetting]>,
-        failed: ConfiguredSetting,
-        reason: Reason,
-        not_applied: Box<[ConfiguredSetting]>,
+        applied: Box<[AppliedProviderSetting]>,
+        failed: FailedProviderSetting<Reason>,
+        not_applied: Box<[NotAppliedProviderSetting]>,
     },
 }
 
@@ -70,7 +69,8 @@ impl<Reason> CreatedSettingsFailure<Reason> {
 
 pub struct InvalidRequestedSetting {
     pub session: HarnessSessionId,
-    pub setting: ConfiguredSetting,
+    pub kind: ProviderSettingKind,
+    pub value: String,
     pub advertised: Vec<String>,
 }
 
@@ -81,11 +81,26 @@ impl InvalidRequestedSetting {
     }
 }
 
-pub struct ConfiguredSetting {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AppliedProviderSetting {
     pub kind: ProviderSettingKind,
     pub value: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FailedProviderSetting<Reason> {
+    pub kind: ProviderSettingKind,
+    pub value: String,
+    pub reason: Reason,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NotAppliedProviderSetting {
+    pub kind: ProviderSettingKind,
+    pub value: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InitialSettingFailure {
     pub kind: ProviderSettingKind,
     pub attempted: SettingValueId,
@@ -93,6 +108,7 @@ pub struct InitialSettingFailure {
     pub observation: InitialSettingObservation,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InitialSettingObservation {
     Known { confirmed_current: bool },
     Unknown,
@@ -106,14 +122,17 @@ pub struct EffectiveProviderSettings {
     pub fast: Option<FastObserved>,
 }
 
+/// What the agent last reported for its fast option.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FastObserved {
     Off,
     On,
+    /// The agent offers no fast option.
     NoOption,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// The requested and actual mode of a session and why they differ.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PermissionModeReport {
     pub requested: Option<String>,
     pub actual: Option<String>,
@@ -143,6 +162,7 @@ pub enum SettingFact {
     },
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RestoreModeOutcome {
     Confirmed(SettingValueId),
     Refused { current: Option<SettingValueId> },
