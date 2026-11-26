@@ -1,38 +1,28 @@
 use std::{io::Write, path::Path};
 
+use super::CentralCommandError;
 #[cfg(not(target_os = "macos"))]
 use central_person_link_client::FleetCredentialError;
-#[cfg(target_os = "macos")]
-use central_person_link_client::{FleetTarget, LoginKeychainCredential, PersonWorkspaceClient};
-
-use super::CentralCommandError;
 
 #[cfg(target_os = "macos")]
-async fn person_client(target: &Path) -> Result<PersonWorkspaceClient, CentralCommandError> {
-    use std::sync::Arc;
-
-    let path = target.to_owned();
-    let target = tokio::task::spawn_blocking(move || FleetTarget::read(&path))
-        .await
-        .map_err(|_| CentralCommandError::LocalTask)??;
-    let store = Arc::new(LoginKeychainCredential::for_target(&target));
-    let clock = Arc::new(router_clock::SystemRuntimeClock::new());
-    Ok(PersonWorkspaceClient::new(target, store, clock)?)
-}
+use super::person_connection::build_person_client;
 
 #[cfg(target_os = "macos")]
 pub(super) async fn login(
     target: &Path,
     stdout: &mut (impl Write + Send),
 ) -> Result<(), CentralCommandError> {
-    person_client(target)
-        .await?
-        .login(|address| {
-            writeln!(stdout, "Open this address in your browser to sign in:")?;
-            writeln!(stdout, "{address}")?;
-            stdout.flush()
-        })
-        .await?;
+    build_person_client(
+        target,
+        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+    )
+    .await?
+    .login(|address| {
+        writeln!(stdout, "Open this address in your browser to sign in:")?;
+        writeln!(stdout, "{address}")?;
+        stdout.flush()
+    })
+    .await?;
     writeln!(stdout, "Central login saved.")?;
     stdout.flush()?;
     Ok(())
@@ -44,7 +34,11 @@ pub(super) async fn run(
     interactive: bool,
     stdout: &mut (impl Write + Send),
 ) -> Result<(), CentralCommandError> {
-    let mut client = person_client(target).await?;
+    let mut client = build_person_client(
+        target,
+        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+    )
+    .await?;
     loop {
         for workspace in client.list_workspaces().await? {
             writeln!(stdout, "{}", workspace.name.as_str())?;

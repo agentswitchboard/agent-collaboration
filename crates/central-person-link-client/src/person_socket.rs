@@ -1,6 +1,6 @@
 use central_link_protocol::{
-    CentralLinkRpc, DataFrame, FrameDirection, LINK_MAX_TEXT_BYTES, LinkFrame, PersonLinkCloseCode,
-    decode_text, encode_text, person_link_rpc::ListOrganizationWorkspacesRpc,
+    DataFrame, FrameDirection, LINK_MAX_TEXT_BYTES, LinkFrame, PersonLinkCloseCode, decode_text,
+    encode_text,
 };
 use futures_util::{SinkExt, StreamExt};
 use reqwest::{Client, StatusCode, header};
@@ -8,7 +8,7 @@ use reqwest_websocket::{Message, RequestBuilderExt, WebSocket};
 
 use crate::{
     FleetTarget, PersonLinkError,
-    connection_machine::{ConnectionEvent, ReadAttempt},
+    connection_machine::{CallAttempt, ConnectionEvent},
     fleet_credential::UpgradeCredential,
 };
 
@@ -38,14 +38,14 @@ pub(crate) async fn upgrade(
         .map_err(|_| PersonLinkError::Upgrade)
 }
 
-pub(crate) async fn send_read(
+pub(crate) async fn send_call(
     socket: &mut WebSocket,
-    attempt: ReadAttempt,
+    attempt: CallAttempt,
 ) -> Result<(), PersonLinkError> {
     let text = encode_text(
         &LinkFrame::Data(DataFrame::CallCentral {
             correlation_id: attempt.correlation,
-            request: Box::new(ListOrganizationWorkspacesRpc::request(attempt.read)),
+            request: Box::new(attempt.call.body.into_request(attempt.call.target)),
         }),
         FrameDirection::ToCentral,
     )

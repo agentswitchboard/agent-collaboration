@@ -95,17 +95,19 @@ pub enum PersonLinkError {
     Upgrade,
     #[error("Sign-in or Central refused the person WebSocket with HTTP {0}")]
     UpgradeRefused(StatusCode),
-    #[error("the person WebSocket closed or failed during the workspace read")]
+    #[error("the person WebSocket closed or failed during the Central call")]
     Socket,
     #[error("the person WebSocket closed with code {0}")]
     Closed(u16),
     #[error("the person WebSocket returned an unexpected protocol frame")]
     Protocol,
-    #[error("Central refused the workspace read ({0:?})")]
-    WorkspaceRefused(LinkCallRefusal),
+    #[error("Central refused the person call ({0:?})")]
+    CallRefused(LinkCallRefusal),
     #[error("Central returned an invalid workspace page cursor")]
     WorkspaceCursor,
-    #[error("the workspace read reached its deadline")]
+    #[error("Central returned a person approval cursor that did not advance")]
+    ApprovalCursor,
+    #[error("the person call reached its deadline")]
     Deadline,
     #[error("could not allocate a workspace request ID")]
     RequestId,

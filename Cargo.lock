@@ -973,9 +973,12 @@ dependencies = [
 name = "central-person-link-client"
 version = "0.1.160"
 dependencies = [
+ "approval-request-protocol",
  "axum",
  "base64 0.22.1",
  "central-link-protocol",
+ "central-person-link-client",
+ "central-storage",
  "chrono",
  "collaboration-central-conformance",
  "collaboration-central-core",
@@ -984,6 +987,7 @@ dependencies = [
  "fleet-contracts",
  "fleet-identity-protocol",
  "fleet-rpc",
+ "fleet-runtime",
  "futures-util",
  "hegeltest",
  "rcgen",
@@ -1223,8 +1227,11 @@ version = "0.1.160"
 dependencies = [
  "agent-collaboration-tui",
  "agent-router-quota-tui",
+ "approval-request-protocol",
  "base64 0.22.1",
+ "central-link-protocol",
  "central-person-link-client",
+ "chrono",
  "clap",
  "codex-native-integration",
  "codex-router-auth",
@@ -1236,6 +1243,7 @@ dependencies = [
  "codex-router-secret-store",
  "codex-router-selection",
  "codex-router-state",
+ "collaboration-central-conformance",
  "collaboration-central-core",
  "collaboration-central-tokio",
  "collaboration-client",
@@ -1243,6 +1251,7 @@ dependencies = [
  "collaboration-service",
  "comfy-table",
  "crossterm",
+ "fleet-runtime",
  "fs2",
  "futures-util",
  "indicatif",
@@ -1276,6 +1285,8 @@ dependencies = [
  "tungstenite 0.28.0",
  "ui-preference-store",
  "unicode-width 0.2.2",
+ "uuid",
+ "workspace-ids",
 ]
 
 [[package]]

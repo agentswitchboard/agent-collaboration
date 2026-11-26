@@ -1,4 +1,4 @@
-//! A person's reusable, authenticated connection to Central's workspace directory.
+//! A person's reusable, authenticated connection to Central.
 
 mod connection_machine;
 mod error;
@@ -29,6 +29,9 @@ fn clock_uuid(millis: i64) -> uuid::Uuid {
     ))
 }
 
+mod person_link_client;
 mod person_socket;
-mod workspace_client;
-pub use workspace_client::PersonWorkspaceClient;
+pub use person_link_client::{ApprovalDecisionOutcome, PersonLinkClient};
+
+#[cfg(feature = "test-support")]
+pub mod test_support;

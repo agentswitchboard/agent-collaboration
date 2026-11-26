@@ -1,8 +1,11 @@
+mod approvals;
 mod arguments;
+mod person_connection;
 mod root_lock;
 mod serve_configuration;
 mod workspace_directory;
 
+pub use approvals::ApprovalExit;
 pub(crate) use arguments::CentralCommand;
 use collaboration_central_tokio::TokioWorkspaceServer;
 use std::{io::Write, sync::Arc};
@@ -29,12 +32,19 @@ pub enum CentralCommandError {
     PersonLogin(#[from] central_person_link_client::FleetLoginError),
     #[error("central commands require async dispatch")]
     AsyncDispatchRequired,
+    #[error("could not allocate a decide operation ID")]
+    OperationId,
+    #[error("could not render a Central approval reply")]
+    ApprovalJson(#[from] serde_json::Error),
+    #[error("{0}")]
+    ApprovalOutcome(ApprovalExit),
 }
 
 pub(crate) async fn run_central_command(
     command: CentralCommand,
     interactive: bool,
     stdout: &mut (impl Write + Send),
+    stderr: &mut impl Write,
 ) -> Result<(), CentralCommandError> {
     match command {
         CentralCommand::Help(help) => stdout.write_all(help.as_bytes())?,
@@ -43,6 +53,16 @@ pub(crate) async fn run_central_command(
         }
         CentralCommand::Workspaces(arguments) => {
             workspace_directory::run(&arguments.target, interactive, stdout).await?;
+        }
+        CentralCommand::Approvals(command) => {
+            let clock = Arc::new(router_clock::SystemRuntimeClock::new());
+            let mut client =
+                person_connection::build_person_client(command.target(), clock.clone()).await?;
+            let status =
+                approvals::run(command, &mut client, clock.as_ref(), stdout, stderr).await?;
+            if status != ApprovalExit::Success {
+                return Err(CentralCommandError::ApprovalOutcome(status));
+            }
         }
         CentralCommand::Serve(arguments) => {
             let (config, _root_lock) = tokio::task::spawn_blocking(move || {

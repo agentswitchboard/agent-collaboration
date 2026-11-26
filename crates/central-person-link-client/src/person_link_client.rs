@@ -1,10 +1,15 @@
 use std::{io, sync::Arc, time::Duration};
 
+use approval_request_protocol::{
+    Answer, ApprovalDecideReply, ApprovalListFilter, ApprovalListReply, ApprovalReadReply,
+    ApprovalRequestId,
+};
 use central_link_protocol::{
     CorrelationId,
     person_link_rpc::{
-        ListOrganizationWorkspaces, OrganizationWorkspace, OrganizationWorkspacePage,
-        PERSON_WORKSPACE_PAGE_LIMIT, PersonWorkspacePageLimit,
+        DecidePersonApproval, ListOrganizationWorkspaces, ListPersonApprovals,
+        OrganizationWorkspace, PERSON_WORKSPACE_PAGE_LIMIT, PersonWorkspacePageLimit,
+        ReadPersonApproval,
     },
 };
 use fleet_rpc::Envelope;
@@ -17,18 +22,27 @@ use workspace_ids::{RequestId, WorkspaceId};
 use crate::{
     FleetCredentialStore, FleetLoginError, FleetTarget, PersonLinkError, clock_uuid,
     connection_machine::{
-        ConnectionEffect, ConnectionEvent, ConnectionMachine, ConnectionRefusal, ConnectionState,
-        ReadAttempt,
+        CallAttempt, ConnectionEffect, ConnectionEvent, ConnectionMachine, ConnectionRefusal,
+        ConnectionState, PersonCall, PersonReply,
     },
     fleet_credential::refresh_for_upgrade,
     fleet_login,
-    person_socket::{receive_event, send_read, upgrade},
+    person_socket::{receive_event, send_call, upgrade},
 };
 
-const READ_BUDGET: Duration = Duration::from_secs(30);
+const CALL_BUDGET: Duration = Duration::from_secs(30);
 
-/// One sequential person connection. Each listing may span several correlated reads.
-pub struct PersonWorkspaceClient {
+#[derive(Debug, Eq, PartialEq)]
+pub enum ApprovalDecisionOutcome {
+    Reply(ApprovalDecideReply),
+    /// A submission may have reached Central. Retry with the same request, answer and operation ID.
+    Unknown {
+        operation_id: RequestId,
+    },
+}
+
+/// One sequential person connection shared by directory and approval calls.
+pub struct PersonLinkClient {
     target: FleetTarget,
     store: Arc<dyn FleetCredentialStore>,
     clock: Arc<dyn RuntimeClock>,
@@ -37,7 +51,7 @@ pub struct PersonWorkspaceClient {
     socket: Option<WebSocket>,
 }
 
-impl PersonWorkspaceClient {
+impl PersonLinkClient {
     pub fn new(
         target: FleetTarget,
         store: Arc<dyn FleetCredentialStore>,
@@ -108,13 +122,17 @@ impl PersonWorkspaceClient {
         let mut after = None;
         let mut rows = Vec::new();
         loop {
-            let page = self
-                .read_page(ListOrganizationWorkspaces {
+            let reply = self
+                .call(PersonCall::ListWorkspaces(ListOrganizationWorkspaces {
                     operation_id: operation.clone(),
                     after: after.clone(),
                     limit,
-                })
-                .await?;
+                }))
+                .await
+                .map_err(|failure| failure.error)?;
+            let PersonReply::Workspaces(page) = reply else {
+                return Err(PersonLinkError::Protocol);
+            };
             rows.extend(page.workspaces);
             match page.next {
                 Some(next)
@@ -130,28 +148,102 @@ impl PersonWorkspaceClient {
         }
     }
 
-    async fn read_page(
+    pub async fn list_approvals(
         &mut self,
-        body: ListOrganizationWorkspaces,
-    ) -> Result<OrganizationWorkspacePage, PersonLinkError> {
-        let deadline = self.clock.monotonic_now().after(READ_BUDGET);
-        let read = Envelope {
+        filter: ApprovalListFilter,
+    ) -> Result<ApprovalListReply, PersonLinkError> {
+        let mut cursor = None;
+        let mut approvals = Vec::new();
+        loop {
+            let reply = self
+                .call(PersonCall::ListApprovals(ListPersonApprovals {
+                    filter,
+                    cursor: cursor.clone(),
+                }))
+                .await
+                .map_err(|failure| failure.error)?;
+            let PersonReply::Approvals(ApprovalListReply::Page { items, next }) = reply else {
+                return Err(PersonLinkError::Protocol);
+            };
+            approvals.extend(items);
+            match next {
+                Some(next) if cursor.as_ref().is_none_or(|previous| &next < previous) => {
+                    cursor = Some(next);
+                }
+                Some(_) => return Err(PersonLinkError::ApprovalCursor),
+                None => {
+                    return Ok(ApprovalListReply::Page {
+                        items: approvals,
+                        next: None,
+                    });
+                }
+            }
+        }
+    }
+
+    pub async fn read_approval(
+        &mut self,
+        request_id: ApprovalRequestId,
+    ) -> Result<ApprovalReadReply, PersonLinkError> {
+        let reply = self
+            .call(PersonCall::ReadApproval(ReadPersonApproval { request_id }))
+            .await
+            .map_err(|failure| failure.error)?;
+        let PersonReply::Approval(reply) = reply else {
+            return Err(PersonLinkError::Protocol);
+        };
+        Ok(*reply)
+    }
+
+    pub async fn decide_approval(
+        &mut self,
+        request_id: ApprovalRequestId,
+        operation_id: RequestId,
+        answer: Answer,
+    ) -> Result<ApprovalDecisionOutcome, PersonLinkError> {
+        match self
+            .call(PersonCall::DecideApproval(DecidePersonApproval {
+                request_id,
+                operation_id: operation_id.clone(),
+                answer,
+            }))
+            .await
+        {
+            Ok(PersonReply::Decision(reply)) => Ok(ApprovalDecisionOutcome::Reply(reply)),
+            Ok(_) => Err(PersonLinkError::Protocol),
+            Err(failure)
+                if failure.send_attempted
+                    && !matches!(
+                        failure.error,
+                        PersonLinkError::Protocol | PersonLinkError::CallRefused(_)
+                    ) =>
+            {
+                Ok(ApprovalDecisionOutcome::Unknown { operation_id })
+            }
+            Err(failure) => Err(failure.error),
+        }
+    }
+
+    async fn call(&mut self, body: PersonCall) -> Result<PersonReply, CallFailure> {
+        let deadline = self.clock.monotonic_now().after(CALL_BUDGET);
+        let call = Envelope {
             target: self.target.organization().clone(),
             body,
         };
         let (mut state, mut effect) = match &self.state {
-            None => ConnectionMachine::begin(read),
+            None => ConnectionMachine::begin(call),
             Some(state) => step(
                 state,
-                ConnectionEvent::Read(ReadAttempt {
-                    read,
+                ConnectionEvent::Call(CallAttempt {
+                    call,
                     correlation: self.mint_correlation(),
                 }),
             )?,
         };
-        // The in-flight future owns its socket. Cancellation drops the socket and its pending read.
+        // The in-flight future owns the socket so cancellation also drops the pending call.
         self.state = None;
         let mut socket = self.socket.take();
+        let mut send_attempted = false;
         loop {
             let event = match effect {
                 ConnectionEffect::Upgrade => match self.open_socket(deadline).await {
@@ -163,13 +255,14 @@ impl PersonWorkspaceClient {
                 },
                 ConnectionEffect::Send(attempt) => {
                     let active = socket.as_mut().ok_or(PersonLinkError::ConnectionState)?;
+                    send_attempted = true;
                     let sent =
-                        timeout_at(self.clock.as_ref(), deadline, send_read(active, attempt)).await;
+                        timeout_at(self.clock.as_ref(), deadline, send_call(active, attempt)).await;
                     match sent {
-                        Ok(Ok(())) => self.wait_for_read_event(active, deadline).await,
+                        Ok(Ok(())) => self.wait_for_call_event(active, deadline).await,
                         Ok(Err(PersonLinkError::Socket)) => {
                             // A revocation close can cross the write. Replay only if its typed close arrives.
-                            match self.wait_for_read_event(active, deadline).await {
+                            match self.wait_for_call_event(active, deadline).await {
                                 ConnectionEvent::LifetimeClosed => ConnectionEvent::LifetimeClosed,
                                 _ => ConnectionEvent::Failed(PersonLinkError::Socket),
                             }
@@ -180,7 +273,7 @@ impl PersonWorkspaceClient {
                 }
                 ConnectionEffect::Receive => {
                     let active = socket.as_mut().ok_or(PersonLinkError::ConnectionState)?;
-                    self.wait_for_read_event(active, deadline).await
+                    self.wait_for_call_event(active, deadline).await
                 }
                 ConnectionEffect::RetireSocket => {
                     drop(socket.take());
@@ -191,13 +284,21 @@ impl PersonWorkspaceClient {
                         self.socket = socket;
                     }
                     self.state = Some(state);
-                    return answer;
+                    return answer.map_err(|error| CallFailure {
+                        error,
+                        send_attempted,
+                    });
                 }
             };
             match ConnectionMachine::transition(&state, event) {
                 Ok(transition) => (state, effect) = take_effect(transition)?,
                 Err(TransitionError::Stale) => effect = ConnectionEffect::Receive,
-                Err(error) => return Err(transition_error(error)),
+                Err(error) => {
+                    return Err(CallFailure {
+                        error: transition_error(error),
+                        send_attempted,
+                    });
+                }
             }
         }
     }
@@ -223,7 +324,7 @@ impl PersonWorkspaceClient {
         .map_err(|_| PersonLinkError::Deadline)?
     }
 
-    async fn wait_for_read_event(
+    async fn wait_for_call_event(
         &self,
         socket: &mut WebSocket,
         deadline: ClockInstant,
@@ -242,6 +343,20 @@ impl PersonWorkspaceClient {
         central_link_protocol::FreshCorrelationId::mint_at(self.clock.now().unix_millis())
             .wire_id()
             .clone()
+    }
+}
+
+struct CallFailure {
+    error: PersonLinkError,
+    send_attempted: bool,
+}
+
+impl From<PersonLinkError> for CallFailure {
+    fn from(error: PersonLinkError) -> Self {
+        Self {
+            error,
+            send_attempted: false,
+        }
     }
 }
 
