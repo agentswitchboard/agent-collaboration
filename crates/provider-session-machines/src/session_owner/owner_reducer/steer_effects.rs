@@ -22,19 +22,6 @@ impl OwnerTransition {
         self.unmark_steer(input);
     }
 
-    pub(super) fn admit_steer(
-        &mut self,
-        input: OwnerInput,
-        supported: bool,
-        origin: SteerOrigin,
-    ) -> OwnerResult {
-        if self.next.turn() == SessionTurn::Idle {
-            self.require_live(input.generation)?;
-            return Err(SessionOwnerRefusal::NoActiveTurn.into());
-        }
-        self.admit_existing_steer(input, supported, origin)
-    }
-
     pub(super) fn admit_existing_steer(
         &mut self,
         input: OwnerInput,
@@ -42,8 +29,15 @@ impl OwnerTransition {
         origin: SteerOrigin,
     ) -> OwnerResult {
         self.require_live(input.generation)?;
-        if self.next.turn() != (SessionTurn::Running { turn: input.turn }) {
-            return Err(SessionOwnerRefusal::GenerationChanged.into());
+        match (origin, self.next.turn()) {
+            (_, SessionTurn::Running { turn }) if turn == input.turn => {}
+            (SteerOrigin::Named, SessionTurn::Idle) => {
+                return Err(SessionOwnerRefusal::NoActiveTurn.into());
+            }
+            (SteerOrigin::Named, SessionTurn::Running { turn }) => {
+                return Err(SessionOwnerRefusal::NamedSteerTurnChanged { actual: turn }.into());
+            }
+            _ => return Err(SessionOwnerRefusal::GenerationChanged.into()),
         }
         self.require_new_input(&input.input)?;
         if self.next.cell.settings_held() {

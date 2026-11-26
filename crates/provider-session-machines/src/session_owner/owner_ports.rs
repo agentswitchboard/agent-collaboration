@@ -113,6 +113,7 @@ pub enum RevokeReason {
     EnqueueExpired,
     ConnectionLost,
     TurnEnded,
+    NamedSteerTurnChanged { actual: TurnId },
     NoActiveTurn,
     ProviderSteerRefused,
     ProviderSteerNeedsPrompt,
@@ -156,7 +157,9 @@ impl RevokeReason {
             Self::Closed => "the session closed first; send again",
             Self::EnqueueExpired => "the Router couldn't send in time; send again",
             Self::ConnectionLost => "the provider connection ended; reconnect and send again",
-            Self::TurnEnded => "the turn you steered had already ended; send again",
+            Self::TurnEnded | Self::NamedSteerTurnChanged { .. } => {
+                "the turn you steered had already ended; send again"
+            }
             Self::NoActiveTurn => "no running turn; send a prompt, or use auto",
             Self::ProviderSteerRefused => "steerFailed",
             Self::ProviderSteerNeedsPrompt => "the provider requires a new prompt",

@@ -196,8 +196,8 @@ impl ProviderAcpDeliveryRoute {
         target: SessionRef,
         actor: ProviderIdentity,
         input_id: session_event_model::InputId,
-        expected_turn: provider_session_machines::session_turn_machine::TurnId,
-        origin: provider_session_machines::session_owner::SteerOrigin,
+        operation_id: OperationId,
+        placement: crate::external_provider_supervisor::ExactTurnSteer,
         contents: session_event_model::ProviderSubmission,
     ) -> Result<InputAcceptance, ProviderSteerContentsError> {
         if contents.content.is_empty() {
@@ -243,7 +243,7 @@ impl ProviderAcpDeliveryRoute {
         }
         let mode = collaboration_protocol::MessageDelivery::Steer;
         let request = ProviderPromptContentsRequest {
-            operation_id: OperationId::generate(),
+            operation_id,
             input_id,
             target,
             requested_by: actor,
@@ -253,7 +253,7 @@ impl ProviderAcpDeliveryRoute {
         };
         let result = self
             .supervisor
-            .submit_existing_turn_steer(request, expected_turn, origin)
+            .submit_existing_turn_steer(request, placement)
             .await;
         result.map_err(|failure| ProviderSteerContentsError::Operation(Box::new(failure)))
     }

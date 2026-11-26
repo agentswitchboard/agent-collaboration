@@ -570,6 +570,7 @@ pub enum SessionOwnerRefusal {
     QueueFull,
     CannotSteer,
     NoActiveTurn,
+    NamedSteerTurnChanged { actual: TurnId },
     SkillSelectionChanged,
 }
 

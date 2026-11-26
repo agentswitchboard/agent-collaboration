@@ -22,26 +22,57 @@ use tokio::{
 use tokio_tungstenite::{WebSocketStream, client_async, tungstenite::Message};
 use tokio_util::sync::CancellationToken;
 
+#[path = "provider_session_command_port_steer_admission_test.rs"]
+mod admission;
+
+#[derive(Clone, Copy, Debug)]
+pub(super) enum AdmissionTurnChange {
+    Idle,
+    Successor,
+    ReplacedRun,
+}
+
 #[derive(Clone, Copy)]
 pub(super) enum PeerSteerBehavior {
     TurnEndsBeforeTake,
     StartedNewTurn,
     Unsupported,
+    AdmissionFence(AdmissionTurnChange),
+    AutoAdmissionFallback,
 }
 
 pub(super) fn launch_peer(receipt: &Path, behavior: PeerSteerBehavior) -> ExternalProviderLaunch {
     let script = AcpFixtureScript::new()
         .expect_request("init", "initialize", json!({}))
         .respond("init", json!({
-            "protocolVersion": 1, "agentCapabilities": {},
+            "protocolVersion": 1, "agentCapabilities": {"loadSession": true},
             "agentInfo": {"name":"literal-steer-fixture", "version":"1"},
             "_meta": {"steering": {"supported": !matches!(behavior, PeerSteerBehavior::Unsupported)}}
         }))
         .expect_request("new", "session/new", json!({}))
-        .respond("new", json!({"sessionId":"fixture-session"}))
-        .expect_recorded_request("foreground", "session/prompt", json!({}), &receipt.with_extension("prompt"));
+        .respond("new", json!({"sessionId":"fixture-session"}));
+    let script = if matches!(behavior, PeerSteerBehavior::AutoAdmissionFallback) {
+        script
+            .expect_request(
+                "attach",
+                "session/load",
+                json!({"sessionId":"fixture-session"}),
+            )
+            .respond("attach", json!({}))
+    } else {
+        script
+    };
+    let script = script.expect_recorded_request(
+        "foreground",
+        "session/prompt",
+        json!({}),
+        &receipt.with_extension("prompt"),
+    );
     let script = match behavior {
-        PeerSteerBehavior::TurnEndsBeforeTake | PeerSteerBehavior::Unsupported => {
+        PeerSteerBehavior::TurnEndsBeforeTake
+        | PeerSteerBehavior::Unsupported
+        | PeerSteerBehavior::AdmissionFence(_)
+        | PeerSteerBehavior::AutoAdmissionFallback => {
             script.wait_for_socket_signal(&receipt.with_extension("foreground.sock"))
         }
         PeerSteerBehavior::StartedNewTurn => script
@@ -53,8 +84,35 @@ pub(super) fn launch_peer(receipt: &Path, behavior: PeerSteerBehavior) -> Extern
             )
             .respond("steer", json!({"outcome":"startedNewTurn"})),
     };
+    let script = script.respond("foreground", json!({"stopReason":"end_turn"}));
+    let script = match behavior {
+        PeerSteerBehavior::AdmissionFence(AdmissionTurnChange::ReplacedRun) => script
+            .expect_request(
+                "reload",
+                "session/load",
+                json!({"sessionId":"fixture-session"}),
+            )
+            .respond("reload", json!({})),
+        PeerSteerBehavior::AdmissionFence(AdmissionTurnChange::Successor) => script
+            .expect_recorded_request(
+                "successor",
+                "session/prompt",
+                json!({}),
+                &receipt.with_extension("successor"),
+            )
+            .wait_for_socket_signal(&receipt.with_extension("successor.sock"))
+            .respond("successor", json!({"stopReason":"end_turn"})),
+        PeerSteerBehavior::AutoAdmissionFallback => script
+            .expect_recorded_request(
+                "fallback",
+                "session/prompt",
+                json!({}),
+                &receipt.with_extension("successor"),
+            )
+            .respond("fallback", json!({"stopReason":"end_turn"})),
+        _ => script,
+    };
     script
-        .respond("foreground", json!({"stopReason":"end_turn"}))
         .record_diagnostics(receipt.with_extension("unexpected.jsonl"))
         .launch()
 }

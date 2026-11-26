@@ -163,17 +163,12 @@ impl OwnerTransition {
                 input,
                 supported,
                 origin,
-            } => self.admit_steer(input, supported, origin),
-            SessionOwnerCommand::SteerExisting {
+            }
+            | SessionOwnerCommand::SteerExisting {
                 input,
                 supported,
                 origin,
-            } => match origin {
-                super::SteerOrigin::Named => self.admit_steer(input, supported, origin),
-                super::SteerOrigin::Auto | super::SteerOrigin::Notice => {
-                    self.admit_existing_steer(input, supported, origin)
-                }
-            },
+            } => self.admit_existing_steer(input, supported, origin),
             SessionOwnerCommand::PlaceDelivery { input, delivery } => {
                 self.place_delivery(input, delivery)
             }

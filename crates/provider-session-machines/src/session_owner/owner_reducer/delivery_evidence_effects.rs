@@ -50,7 +50,7 @@ impl OwnerTransition {
                 selected,
             } => self.admit_selected_prompt(input, admission, selected),
             DeliveryInput::Steer { supported, origin } => {
-                self.admit_steer(input, supported, origin)
+                self.admit_existing_steer(input, supported, origin)
             }
         }
     }

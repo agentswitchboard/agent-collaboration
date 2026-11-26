@@ -8,6 +8,45 @@ enum TurnEndWindow {
     AfterTake,
 }
 
+#[test]
+fn auto_and_notice_keep_their_stale_exact_turn_admission_refusal() {
+    let mut state = fresh();
+    let run = restore_live(&mut state, 1);
+    let foreground = input(run.generation, 2);
+    let foreground_key = send_prompt(&mut state, &foreground);
+    let stale = OwnerInput {
+        turn: foreground.turn,
+        ..input(run.generation, 3)
+    };
+    end_turn(&mut state, foreground_key);
+
+    let expect_refusal = |state: &SessionOwnerState, origin| {
+        let before = state.snapshot();
+        assert!(matches!(
+            decide(
+                state,
+                OwnerEvent::Command(SessionOwnerCommand::SteerExisting {
+                    input: stale.clone(),
+                    supported: true,
+                    origin,
+                })
+            ),
+            Err(SessionOwnerRejection::Refused(
+                SessionOwnerRefusal::GenerationChanged
+            ))
+        ));
+        assert_eq!(state.snapshot(), before);
+        assert!(state.steer.is_none());
+    };
+    expect_refusal(&state, SteerOrigin::Auto);
+    expect_refusal(&state, SteerOrigin::Notice);
+
+    let successor = input(run.generation, 4);
+    send_prompt(&mut state, &successor);
+    expect_refusal(&state, SteerOrigin::Auto);
+    expect_refusal(&state, SteerOrigin::Notice);
+}
+
 #[hegel::test]
 fn steer_origin_and_input_survive_generated_turn_end_orders(case: hegel::TestCase) {
     let window = match case.draw(gs::integers::<u8>().max_value(2)) {

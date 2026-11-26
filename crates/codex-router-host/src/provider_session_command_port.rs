@@ -1,5 +1,6 @@
 //! Host implementation of the provider Session command boundary used by both faces.
 
+use crate::external_provider_supervisor::ExactTurnSteer;
 use crate::session_owner_calls::InputAcceptance;
 use crate::{
     ExternalProviderRuntimeError, ExternalProviderSupervisor, ProviderAcpDeliveryRoute,
@@ -55,6 +56,48 @@ pub struct HostSessionCommandPort {
 }
 
 impl HostSessionCommandPort {
+    fn sample_steer_target(
+        &self,
+        command: &SteerSessionCommand,
+        target: &SessionRef,
+        attachment: &SessionEventAttachment,
+    ) -> Result<ExactTurnSteer, CommandFailure> {
+        use provider_session_machines::{
+            session_lifecycle_machine::SessionLifecycle,
+            session_turn_machine::{SessionTurn, TurnId},
+        };
+
+        let expected = command.expected_turn_id.as_str();
+        if command.intent == SessionSteerIntent::Named {
+            let snapshot = self
+                .supervisor
+                .owner_session_snapshot(target)
+                .ok_or(CommandFailure::NoActiveTurn)?;
+            let (SessionLifecycle::Live { generation }, SessionTurn::Running { turn }) =
+                (snapshot.lifecycle, snapshot.turn)
+            else {
+                return Err(CommandFailure::NoActiveTurn);
+            };
+            let actual = turn.0.to_string();
+            if expected != actual {
+                return Err(steer_target_failure(
+                    command.intent,
+                    expected,
+                    Some(&actual),
+                ));
+            }
+            return Ok(ExactTurnSteer::Named { generation, turn });
+        }
+
+        if active_turn_id(attachment) != Some(expected) {
+            return Err(CommandFailure::Busy);
+        }
+        let turn = uuid::Uuid::parse_str(expected)
+            .map(TurnId)
+            .map_err(|_| CommandFailure::Busy)?;
+        Ok(ExactTurnSteer::Auto { turn })
+    }
+
     #[must_use]
     pub fn new(
         supervisor: Arc<ExternalProviderSupervisor>,
@@ -331,35 +374,30 @@ impl SessionCommandPort for HostSessionCommandPort {
                 .attach(command.target.clone())
                 .await
                 .map_err(|_| CommandFailure::SessionNotFound)?;
-            let active = active_turn_id(&attachment);
-            if active != Some(command.expected_turn_id.as_str()) {
-                return Err(steer_target_failure(
-                    command.intent,
-                    &command.expected_turn_id,
-                    active,
-                ));
-            }
-            let expected_turn = uuid::Uuid::parse_str(&command.expected_turn_id)
-                .map(provider_session_machines::session_turn_machine::TurnId)
-                .map_err(|_| CommandFailure::Busy)?;
             let target = protocol_session(&command.target)?;
+            let placement = self.sample_steer_target(&command, &target, &attachment)?;
             let actor = provider_actor(&command.actor)?;
-            let origin = match command.intent {
-                SessionSteerIntent::Named => {
-                    provider_session_machines::session_owner::SteerOrigin::Named
-                }
-                SessionSteerIntent::Auto => {
-                    provider_session_machines::session_owner::SteerOrigin::Auto
-                }
-            };
+            let operation = OperationId::generate();
+            #[cfg(test)]
+            if let Some(release) =
+                self.supervisor
+                    .runtime_for(&target.endpoint)
+                    .and_then(|runtime| {
+                        runtime
+                            .preparation_fixture
+                            .hold_exact_steer_admission(operation.clone(), placement)
+                    })
+            {
+                let _test_released = release.await;
+            }
             let outcome = self
                 .delivery
                 .place_steer(
                     target.clone(),
                     actor,
                     command.input_id.clone(),
-                    expected_turn,
-                    origin,
+                    operation,
+                    placement,
                     command.submission,
                 )
                 .await
@@ -425,6 +463,9 @@ impl SessionCommandPort for HostSessionCommandPort {
                     reason:
                         Some(provider_session_machines::session_owner::RevokeReason::NoActiveTurn),
                 } => Ok(SessionSteerOutcome::PromptRequired),
+                InputAcceptance::Unsent {
+                    reason: Some(provider_session_machines::session_owner::RevokeReason::NamedSteerTurnChanged { actual }),
+                } => Err(CommandFailure::SteerTurnMismatch { expected: command.expected_turn_id, actual: actual.0.to_string() }),
                 InputAcceptance::Unsent { reason } => Ok(SessionSteerOutcome::Failed {
                     reason: reason
                         .map_or_else(

@@ -735,6 +735,17 @@ async fn serve_provider_requests(
                                 {
                                     response(id, json!({"outcome":"promptRequired"}))
                                 }
+                                Err(error)
+                                    if matches!(
+                                        error.classification().as_ref(),
+                                        CommandFailure::SteerTurnMismatch { .. }
+                                    ) =>
+                                {
+                                    response(
+                                        id,
+                                        json!({"outcome":"failed","reason":"the turn you steered had already ended; send again"}),
+                                    )
+                                }
                                 Err(error) => command_failure(id, error),
                             },
                         }

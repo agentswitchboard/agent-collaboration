@@ -17,12 +17,26 @@ pub(crate) struct PreparationFixture {
     #[cfg(test)]
     named_steer_take: Mutex<Option<PreparationPause>>,
     #[cfg(test)]
+    exact_steer_admission: Mutex<Option<ExactSteerAdmissionPause>>,
+    #[cfg(test)]
     refuse_replacement: AtomicBool,
     restore_fault: AtomicBool,
 }
 
 struct PreparationPause {
     entered: oneshot::Sender<()>,
+    release: oneshot::Receiver<()>,
+}
+
+#[cfg(test)]
+pub(crate) type SampledExactSteer = (
+    collaboration_protocol::OperationId,
+    crate::external_provider_supervisor::ExactTurnSteer,
+);
+
+#[cfg(test)]
+struct ExactSteerAdmissionPause {
+    reached: oneshot::Sender<SampledExactSteer>,
     release: oneshot::Receiver<()>,
 }
 
@@ -160,6 +174,42 @@ impl PreparationFixture {
     #[cfg(test)]
     pub(crate) fn hold_named_steer_take(&self) -> Option<oneshot::Receiver<()>> {
         Self::enter(&self.named_steer_take)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pause_exact_steer_admission(
+        &self,
+    ) -> (oneshot::Receiver<SampledExactSteer>, oneshot::Sender<()>) {
+        let (reached, sample) = oneshot::channel();
+        let (release, released) = oneshot::channel();
+        let previous = self
+            .exact_steer_admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .replace(ExactSteerAdmissionPause {
+                reached,
+                release: released,
+            });
+        assert!(
+            previous.is_none(),
+            "the previous steer admission pause was never reached"
+        );
+        (sample, release)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hold_exact_steer_admission(
+        &self,
+        operation: collaboration_protocol::OperationId,
+        steer: crate::external_provider_supervisor::ExactTurnSteer,
+    ) -> Option<oneshot::Receiver<()>> {
+        let pause = self
+            .exact_steer_admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()?;
+        let _test_withdrew = pause.reached.send((operation, steer));
+        Some(pause.release)
     }
 
     fn arm(slot: &Mutex<Option<PreparationPause>>) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {

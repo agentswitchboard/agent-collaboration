@@ -21,8 +21,9 @@ use crate::{
 use collaboration_contracts::AttemptEvidenceSink;
 use collaboration_protocol::MessageDelivery;
 use provider_session_machines::{
+    SessionGeneration,
     session_lifecycle_machine::SessionLifecycle,
-    session_owner::{OwnerInput, PromptAdmission, SessionOwnerReply},
+    session_owner::{OwnerInput, PromptAdmission, RevokeReason, SessionOwnerReply, SteerOrigin},
     session_turn_machine::{SessionTurn, TurnId},
 };
 use uuid::Uuid;
@@ -32,13 +33,21 @@ enum DeliveryAdmission {
     #[cfg(test)]
     Direct,
     Requested(MessageDelivery),
-    SteerExisting {
-        turn: TurnId,
-        origin: provider_session_machines::session_owner::SteerOrigin,
-    },
+    SteerExisting(ExactTurnSteer),
     QueueOnRun(SessionQueuePlan),
     Warm(WarmRun),
     Notice(NoticeRun),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ExactTurnSteer {
+    Named {
+        generation: SessionGeneration,
+        turn: TurnId,
+    },
+    Auto {
+        turn: TurnId,
+    },
 }
 
 impl ExternalProviderSupervisor {
@@ -81,16 +90,11 @@ impl ExternalProviderSupervisor {
     pub(crate) async fn submit_existing_turn_steer(
         &self,
         request: ProviderPromptContentsRequest,
-        turn: TurnId,
-        origin: provider_session_machines::session_owner::SteerOrigin,
+        target: ExactTurnSteer,
     ) -> Result<crate::session_owner_calls::InputAcceptance, super::ConversationOperationFailure>
     {
-        self.submit_owner_delivery_request(
-            request,
-            DeliveryAdmission::SteerExisting { turn, origin },
-            None,
-        )
-        .await
+        self.submit_owner_delivery_request(request, DeliveryAdmission::SteerExisting(target), None)
+            .await
     }
 
     #[expect(
@@ -181,7 +185,7 @@ impl ExternalProviderSupervisor {
     ) -> Result<crate::session_owner_calls::InputAcceptance, super::ConversationOperationFailure>
     {
         use crate::session_owner_calls::InputAcceptance;
-        use provider_session_machines::session_owner::{SessionOwnerCommand, SteerOrigin};
+        use provider_session_machines::session_owner::SessionOwnerCommand;
 
         let deadline = self.admission_deadline();
         let target = request.target.clone();
@@ -204,6 +208,9 @@ impl ExternalProviderSupervisor {
         };
         let snapshot = owner.snapshots().borrow().clone();
         let (generation, cold_restore) = match (admission, snapshot.lifecycle) {
+            (DeliveryAdmission::SteerExisting(ExactTurnSteer::Named { generation, .. }), _) => {
+                (generation, None)
+            }
             (_, SessionLifecycle::Live { generation })
             | (DeliveryAdmission::QueueOnRun(_), SessionLifecycle::Loading { generation, .. }) => {
                 (generation, None)
@@ -283,7 +290,7 @@ impl ExternalProviderSupervisor {
         let class = match admission {
             DeliveryAdmission::Requested(_)
             | DeliveryAdmission::QueueOnRun(_)
-            | DeliveryAdmission::SteerExisting { .. } => AdmissionClass::OwnerPlaced,
+            | DeliveryAdmission::SteerExisting(_) => AdmissionClass::OwnerPlaced,
             DeliveryAdmission::Warm(_) => AdmissionClass::Independent,
             DeliveryAdmission::Notice(run) => AdmissionClass::Notice {
                 placement: match run.placement {
@@ -326,7 +333,9 @@ impl ExternalProviderSupervisor {
             .is_some_and(|report| report.steer);
         let turn = match (admission, snapshot.turn) {
             (
-                DeliveryAdmission::SteerExisting { turn, .. }
+                DeliveryAdmission::SteerExisting(
+                    ExactTurnSteer::Named { turn, .. } | ExactTurnSteer::Auto { turn },
+                )
                 | DeliveryAdmission::Notice(NoticeRun {
                     placement: NoticePlacement::Steer(turn),
                     ..
@@ -361,10 +370,13 @@ impl ExternalProviderSupervisor {
                 supported: steering_supported,
                 origin: SteerOrigin::Named,
             },
-            DeliveryAdmission::SteerExisting { origin, .. } => SessionOwnerCommand::SteerExisting {
+            DeliveryAdmission::SteerExisting(target) => SessionOwnerCommand::SteerExisting {
                 input: input.clone(),
                 supported: steering_supported,
-                origin,
+                origin: match target {
+                    ExactTurnSteer::Named { .. } => SteerOrigin::Named,
+                    ExactTurnSteer::Auto { .. } => SteerOrigin::Auto,
+                },
             },
             #[cfg(test)]
             DeliveryAdmission::Direct => SessionOwnerCommand::Prompt {
@@ -503,11 +515,17 @@ impl ExternalProviderSupervisor {
                         backend.drop_reservation(&operation, &live, false);
                         return Ok(InputAcceptance::QueuePlanChanged);
                     }
+                    let named_mismatch = match (&error, admission) {
+                        (crate::session_owner_door::OwnerDoorError::Refused {
+                            rejection: SessionOwnerRejection::Refused(SessionOwnerRefusal::NamedSteerTurnChanged { actual }), ..
+                        }, DeliveryAdmission::SteerExisting(ExactTurnSteer::Named { .. })) => Some(*actual),
+                        _ => None,
+                    };
                     let refusal = owner_failure(operation.clone(), target.clone(), error);
                     let refusal = if refusal.kind == ConversationOperationFailureKind::CannotSteer
                         && matches!(
                             admission,
-                            DeliveryAdmission::SteerExisting { .. }
+                            DeliveryAdmission::SteerExisting(_)
                                 | DeliveryAdmission::Requested(MessageDelivery::Steer)
                                 | DeliveryAdmission::Notice(NoticeRun { placement: NoticePlacement::Steer(_), .. })
                         ) {
@@ -531,7 +549,10 @@ impl ExternalProviderSupervisor {
                             ProviderOperationCompletion::Failure(final_failure)
                         }
                     });
-                    Err(refusal)
+                    match named_mismatch {
+                        Some(actual) => Ok(InputAcceptance::Unsent { reason: Some(RevokeReason::NamedSteerTurnChanged { actual }) }),
+                        None => Err(refusal),
+                    }
                 }
             }
         });
