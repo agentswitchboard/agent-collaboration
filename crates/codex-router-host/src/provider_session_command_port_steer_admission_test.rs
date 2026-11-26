@@ -2,13 +2,18 @@
 
 use super::*;
 use crate::external_provider_supervisor::ExactTurnSteer;
+use crate::session_owner_door::OwnerDoorError;
+use crate::session_owner_preparation_fixture::{DeliveryAckControl, DeliveryAcknowledgement};
+use acp_client_runtime::acp_transport::TransportRun;
 use collaboration_protocol::ConversationOperationFailureKind;
 use provider_session_machines::{
-    SessionGeneration, session_lifecycle_machine::SessionLifecycle, session_turn_machine::TurnId,
+    session_lifecycle_machine::SessionLifecycle,
+    session_owner::{OwnerInput, PromptAdmission, SessionOwnerCommand},
+    session_turn_machine::TurnId,
 };
 use std::future::Future;
 
-fn live_generation(rig: &CommandPortRig) -> SessionGeneration {
+fn live_run(rig: &CommandPortRig) -> TransportRun {
     let snapshot = rig
         .supervisor
         .owner_session_snapshot(&protocol_target("fixture-session"))
@@ -16,26 +21,86 @@ fn live_generation(rig: &CommandPortRig) -> SessionGeneration {
     let SessionLifecycle::Live { generation } = snapshot.lifecycle else {
         panic!("expected a live provider run: {:?}", snapshot.lifecycle);
     };
-    generation
+    TransportRun {
+        incarnation: snapshot.owner.incarnation,
+        generation,
+    }
+}
+
+async fn replace_failed_owner(rig: &CommandPortRig, original: TransportRun) {
+    let target = protocol_target("fixture-session");
+    let old = rig
+        .supervisor
+        .session_owner_for(&target)
+        .expect("sampled owner");
+    old.wait_for_recovery_replies().await;
+    let (recovered, release_recovery) = provider_runtime(rig).preparation_fixture.pause_recovery();
+    let capacity = old.hold_completion_capacity();
+    let error = old
+        .admit(SessionOwnerCommand::Prompt {
+            input: OwnerInput {
+                generation: original.generation,
+                operation: uuid::Uuid::now_v7(),
+                input: InputId::generate(),
+                turn: TurnId(uuid::Uuid::now_v7()),
+            },
+            admission: PromptAdmission::Direct,
+        })
+        .await
+        .expect_err("the real owner's dispatch-mark receipt cannot be reserved");
+    assert!(matches!(error, OwnerDoorError::OwnerStopped));
+    drop(capacity);
+    recovered
+        .await
+        .expect("registry and door installed the failed owner's successor");
+    let replacement = rig
+        .supervisor
+        .session_owner_for(&target)
+        .expect("replacement owner");
+    assert_ne!(
+        replacement.snapshots().borrow().owner.incarnation,
+        original.incarnation
+    );
+    release_recovery.send(()).expect("finish recovery");
+    replacement
+        .restore_for_delivery(uuid::Uuid::now_v7())
+        .await
+        .expect("real ACP load on replacement owner");
+    let reloaded = live_run(rig);
+    assert_ne!(reloaded.incarnation, original.incarnation);
+    assert_eq!(
+        reloaded.generation, original.generation,
+        "the generation counter must repeat across owner incarnations"
+    );
+}
+
+fn replaces_owner(change: AdmissionTurnChange) -> bool {
+    matches!(
+        change,
+        AdmissionTurnChange::ReplacedOwnerIdle | AdmissionTurnChange::ReplacedOwnerRunning
+    )
 }
 
 async fn change_turn_after_sample(
     rig: &CommandPortRig,
     gate: &UnixListener,
     change: AdmissionTurnChange,
-    original: SessionGeneration,
+    original: TransportRun,
 ) -> Option<(String, UnixListener)> {
     release_foreground(rig, gate).await;
+    if replaces_owner(change) {
+        replace_failed_owner(rig, original).await;
+    }
     match change {
-        AdmissionTurnChange::Idle => {
-            assert_eq!(live_generation(rig), original);
+        AdmissionTurnChange::Idle | AdmissionTurnChange::ReplacedOwnerIdle => {
+            assert_eq!(live_run(rig).generation, original.generation);
             None
         }
-        AdmissionTurnChange::Successor => {
+        AdmissionTurnChange::Successor | AdmissionTurnChange::ReplacedOwnerRunning => {
             let successor_end = UnixListener::bind(rig.receipt.with_extension("successor.sock"))
                 .expect("successor gate");
             let successor = start_foreground(rig).await.turn_id;
-            assert_eq!(live_generation(rig), original);
+            assert_eq!(live_run(rig).generation, original.generation);
             Some((successor, successor_end))
         }
         AdmissionTurnChange::ReplacedRun => {
@@ -54,9 +119,30 @@ async fn change_turn_after_sample(
                 .restore_for_delivery(uuid::Uuid::now_v7())
                 .await
                 .expect("real recovery establishes live G2");
-            assert_ne!(live_generation(rig), original);
+            assert_ne!(live_run(rig).generation, original.generation);
             None
         }
+    }
+}
+
+async fn observe_admission_mailbox(
+    reply: impl Future<Output = Value>,
+    mailbox: Option<DeliveryAckControl>,
+) -> (Value, Option<DeliveryAcknowledgement>) {
+    let Some(mailbox) = mailbox else {
+        return (reply.await, None);
+    };
+    tokio::pin!(reply);
+    tokio::select! {
+        biased;
+        observed = mailbox.reached => {
+            let observed = observed.expect("observe new owner mailbox acknowledgement");
+            mailbox.release.send(()).expect("release actual owner acknowledgement");
+            let response = reply.await;
+            mailbox.finished.await.expect("join owner acknowledgement");
+            (response, Some(observed))
+        }
+        response = &mut reply => (response, None),
     }
 }
 
@@ -65,7 +151,12 @@ async fn fenced_reply(
     operation: OperationId,
     release: tokio::sync::oneshot::Sender<()>,
     reply: impl Future<Output = Value>,
-) -> (Value, ConversationOperationFailureKind) {
+    watch_mailbox: bool,
+) -> (
+    Value,
+    ConversationOperationFailureKind,
+    Option<DeliveryAcknowledgement>,
+) {
     let target = protocol_target("fixture-session");
     let (marked, _release_mark) = rig
         .supervisor
@@ -73,14 +164,19 @@ async fn fenced_reply(
     let (authorized, _release_take) = provider_runtime(rig)
         .preparation_fixture
         .pause_named_steer_take();
+    let mailbox = watch_mailbox.then(|| {
+        provider_runtime(rig)
+            .preparation_fixture
+            .pause_delivery_ack(false)
+    });
     release
         .send(())
         .expect("let the original sampled input reach owner admission");
-    let reply = tokio::select! {
+    let (reply, mailbox) = tokio::select! {
         biased;
         mark = marked => panic!("a refused exact steer reached the durable mark: {mark:?}"),
         offer = authorized => panic!("a refused exact steer reached the ACP offer: {offer:?}"),
-        answer = reply => answer,
+        answer = observe_admission_mailbox(reply, mailbox) => answer,
     };
     let failure = rig
         .supervisor
@@ -101,19 +197,33 @@ async fn fenced_reply(
         .expect("read operation")
         .expect("the sampled input reached owner admission");
     assert_eq!(operation.dispatched_at_ms, None);
-    (reply, failure.kind)
+    (reply, failure.kind, mailbox)
 }
 
 fn failure_for(change: AdmissionTurnChange) -> ConversationOperationFailureKind {
     match change {
         AdmissionTurnChange::Idle => ConversationOperationFailureKind::NoActiveTurn,
         AdmissionTurnChange::Successor => ConversationOperationFailureKind::Unavailable,
-        AdmissionTurnChange::ReplacedRun => ConversationOperationFailureKind::StaleGeneration,
+        AdmissionTurnChange::ReplacedRun
+        | AdmissionTurnChange::ReplacedOwnerIdle
+        | AdmissionTurnChange::ReplacedOwnerRunning => {
+            ConversationOperationFailureKind::StaleGeneration
+        }
     }
 }
 
 async fn check_peer_receipt(rig: &CommandPortRig, successor: Option<(String, UnixListener)>) {
-    if let Some((_, gate)) = successor {
+    if let Some((turn_id, gate)) = successor {
+        let snapshot = rig
+            .supervisor
+            .owner_session_snapshot(&protocol_target("fixture-session"))
+            .expect("owner after refusal");
+        assert_eq!(
+            snapshot.turn,
+            SessionTurn::Running {
+                turn: TurnId(uuid::Uuid::parse_str(&turn_id).expect("successor turn UUID"))
+            }
+        );
         release_foreground(rig, &gate).await;
         let capture = std::fs::read_to_string(rig.receipt.with_extension("successor"))
             .expect("successor wire receipt");
@@ -171,6 +281,8 @@ async fn literal_native_steer_admission_uses_the_sampled_run_and_the_deciding_tu
         AdmissionTurnChange::Idle,
         AdmissionTurnChange::Successor,
         AdmissionTurnChange::ReplacedRun,
+        AdmissionTurnChange::ReplacedOwnerIdle,
+        AdmissionTurnChange::ReplacedOwnerRunning,
     ] {
         let rig = command_port_rig(AgentFixture::LiteralSteering(
             PeerSteerBehavior::AdmissionFence(change),
@@ -179,7 +291,7 @@ async fn literal_native_steer_admission_uses_the_sampled_run_and_the_deciding_tu
         let gate = UnixListener::bind(rig.receipt.with_extension("foreground.sock"))
             .expect("foreground gate");
         let foreground = start_foreground(&rig).await;
-        let generation = live_generation(&rig);
+        let run = live_run(&rig);
         let (mut client, server, thread) = connect_native(&rig).await;
         let (sampled, release) = provider_runtime(&rig)
             .preparation_fixture
@@ -196,16 +308,20 @@ async fn literal_native_steer_admission_uses_the_sampled_run_and_the_deciding_tu
         assert_eq!(
             placement,
             ExactTurnSteer::Named {
-                generation,
+                run,
                 turn: TurnId(
                     uuid::Uuid::parse_str(&foreground.turn_id).expect("sampled turn UUID")
                 ),
             }
         );
-        let successor = change_turn_after_sample(&rig, &gate, change, generation).await;
-        let (reply, failure_kind) = fenced_reply(&rig, operation, release, async {
-            native_reply(&mut client, 2).await.0
-        })
+        let successor = change_turn_after_sample(&rig, &gate, change, run).await;
+        let (reply, failure_kind, mailbox) = fenced_reply(
+            &rig,
+            operation,
+            release,
+            async { native_reply(&mut client, 2).await.0 },
+            replaces_owner(change),
+        )
         .await;
         let message = match change {
             AdmissionTurnChange::Idle => "no active turn to steer".into(),
@@ -214,7 +330,9 @@ async fn literal_native_steer_admission_uses_the_sampled_run_and_the_deciding_tu
                 foreground.turn_id,
                 successor.as_ref().expect("active B").0
             ),
-            AdmissionTurnChange::ReplacedRun => "provider session is busy".into(),
+            AdmissionTurnChange::ReplacedRun
+            | AdmissionTurnChange::ReplacedOwnerIdle
+            | AdmissionTurnChange::ReplacedOwnerRunning => "provider session is busy".into(),
         };
         client.close(None).await.expect("close native client");
         server.await.expect("join native connection");
@@ -222,9 +340,13 @@ async fn literal_native_steer_admission_uses_the_sampled_run_and_the_deciding_tu
         assert_eq!(
             reply.get("error"),
             Some(&json!({"code":-32600,"message":message})),
-            "{change:?}"
+            "{change:?}, replacement mailbox: {mailbox:?}"
         );
         assert_eq!(failure_kind, failure_for(change));
+        assert!(
+            mailbox.is_none(),
+            "the replacement owner's mailbox saw the stale steer: {mailbox:?}"
+        );
     }
 }
 
@@ -234,6 +356,8 @@ async fn literal_acp_steer_admission_uses_the_sampled_run_and_the_deciding_turn(
         AdmissionTurnChange::Idle,
         AdmissionTurnChange::Successor,
         AdmissionTurnChange::ReplacedRun,
+        AdmissionTurnChange::ReplacedOwnerIdle,
+        AdmissionTurnChange::ReplacedOwnerRunning,
     ] {
         let rig = command_port_rig(AgentFixture::LiteralSteering(
             PeerSteerBehavior::AdmissionFence(change),
@@ -242,7 +366,7 @@ async fn literal_acp_steer_admission_uses_the_sampled_run_and_the_deciding_turn(
         let gate = UnixListener::bind(rig.receipt.with_extension("foreground.sock"))
             .expect("foreground gate");
         let foreground = start_foreground(&rig).await;
-        let generation = live_generation(&rig);
+        let run = live_run(&rig);
         let mut caller = AcpCaller::start(&rig);
         let (sampled, release) = provider_runtime(&rig)
             .preparation_fixture
@@ -252,14 +376,21 @@ async fn literal_acp_steer_admission_uses_the_sampled_run_and_the_deciding_turn(
         assert_eq!(
             placement,
             ExactTurnSteer::Named {
-                generation,
+                run,
                 turn: TurnId(
                     uuid::Uuid::parse_str(&foreground.turn_id).expect("sampled turn UUID")
                 ),
             }
         );
-        let successor = change_turn_after_sample(&rig, &gate, change, generation).await;
-        let (reply, failure_kind) = fenced_reply(&rig, operation, release, caller.reply(1)).await;
+        let successor = change_turn_after_sample(&rig, &gate, change, run).await;
+        let (reply, failure_kind, mailbox) = fenced_reply(
+            &rig,
+            operation,
+            release,
+            caller.reply(1),
+            replaces_owner(change),
+        )
+        .await;
         caller.close().await;
         check_peer_receipt(&rig, successor).await;
         match change {
@@ -273,7 +404,9 @@ async fn literal_acp_steer_admission_uses_the_sampled_run_and_the_deciding_turn(
                     &json!({"outcome":"failed","reason":"the turn you steered had already ended; send again"})
                 )
             ),
-            AdmissionTurnChange::ReplacedRun => assert_eq!(
+            AdmissionTurnChange::ReplacedRun
+            | AdmissionTurnChange::ReplacedOwnerIdle
+            | AdmissionTurnChange::ReplacedOwnerRunning => assert_eq!(
                 reply.get("error"),
                 Some(&json!({
                     "code":-32000, "message":"the session was restored again; send again if still needed", "data":{"kind":"staleGeneration"},
@@ -281,6 +414,10 @@ async fn literal_acp_steer_admission_uses_the_sampled_run_and_the_deciding_turn(
             ),
         }
         assert_eq!(failure_kind, failure_for(change));
+        assert!(
+            mailbox.is_none(),
+            "the replacement owner's mailbox saw the stale steer: {mailbox:?}"
+        );
     }
 }
 

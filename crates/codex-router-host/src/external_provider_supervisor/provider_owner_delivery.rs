@@ -18,10 +18,10 @@ use crate::{
         NoticePlacement, NoticeRun, NoticeWriterTake, notice_waits_for_session,
     },
 };
+use acp_client_runtime::acp_transport::TransportRun;
 use collaboration_contracts::AttemptEvidenceSink;
 use collaboration_protocol::MessageDelivery;
 use provider_session_machines::{
-    SessionGeneration,
     session_lifecycle_machine::SessionLifecycle,
     session_owner::{OwnerInput, PromptAdmission, RevokeReason, SessionOwnerReply, SteerOrigin},
     session_turn_machine::{SessionTurn, TurnId},
@@ -41,13 +41,8 @@ enum DeliveryAdmission {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ExactTurnSteer {
-    Named {
-        generation: SessionGeneration,
-        turn: TurnId,
-    },
-    Auto {
-        turn: TurnId,
-    },
+    Named { run: TransportRun, turn: TurnId },
+    Auto { turn: TurnId },
 }
 
 impl ExternalProviderSupervisor {
@@ -207,9 +202,14 @@ impl ExternalProviderSupervisor {
                 .map_err(|error| owner_failure(operation.clone(), target.clone(), error))?
         };
         let snapshot = owner.snapshots().borrow().clone();
+        let stale_named_run = matches!(admission,
+            DeliveryAdmission::SteerExisting(ExactTurnSteer::Named { run, .. })
+                if run.incarnation != snapshot.owner.incarnation
+                    || snapshot.lifecycle != (SessionLifecycle::Live { generation: run.generation })
+        );
         let (generation, cold_restore) = match (admission, snapshot.lifecycle) {
-            (DeliveryAdmission::SteerExisting(ExactTurnSteer::Named { generation, .. }), _) => {
-                (generation, None)
+            (DeliveryAdmission::SteerExisting(ExactTurnSteer::Named { run, .. }), _) => {
+                (run.generation, None)
             }
             (_, SessionLifecycle::Live { generation })
             | (DeliveryAdmission::QueueOnRun(_), SessionLifecycle::Loading { generation, .. }) => {
@@ -415,7 +415,16 @@ impl ExternalProviderSupervisor {
         let acceptance = self.retain_operation(operation.clone(), Some(target.clone()), async move {
             #[cfg(test)]
             backend.pause_before_owner_prompt_for_test(&operation).await;
-            let receipt = if can_queue
+            let receipt = if stale_named_run {
+                // Keep the operation's terminal refusal and use only the owner
+                // handle whose address was checked above for any submission.
+                Err(crate::session_owner_door::OwnerDoorError::Refused {
+                    rejection: provider_session_machines::session_owner::SessionOwnerRejection::Refused(
+                        provider_session_machines::session_owner::SessionOwnerRefusal::GenerationChanged,
+                    ),
+                    snapshot: None,
+                })
+            } else if can_queue
                 && owner
                     .defer_queued_admission(switchboard_session_store::ProviderOperationAdmission {
                         operation_id: operation.clone(),

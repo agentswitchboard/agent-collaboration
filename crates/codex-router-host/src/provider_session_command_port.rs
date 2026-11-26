@@ -86,7 +86,13 @@ impl HostSessionCommandPort {
                     Some(&actual),
                 ));
             }
-            return Ok(ExactTurnSteer::Named { generation, turn });
+            return Ok(ExactTurnSteer::Named {
+                run: acp_client_runtime::acp_transport::TransportRun {
+                    incarnation: snapshot.owner.incarnation,
+                    generation,
+                },
+                turn,
+            });
         }
 
         if active_turn_id(attachment) != Some(expected) {

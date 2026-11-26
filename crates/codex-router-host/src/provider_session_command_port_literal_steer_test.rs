@@ -30,6 +30,8 @@ pub(super) enum AdmissionTurnChange {
     Idle,
     Successor,
     ReplacedRun,
+    ReplacedOwnerIdle,
+    ReplacedOwnerRunning,
 }
 
 #[derive(Clone, Copy)]
@@ -86,14 +88,23 @@ pub(super) fn launch_peer(receipt: &Path, behavior: PeerSteerBehavior) -> Extern
     };
     let script = script.respond("foreground", json!({"stopReason":"end_turn"}));
     let script = match behavior {
-        PeerSteerBehavior::AdmissionFence(AdmissionTurnChange::ReplacedRun) => script
+        PeerSteerBehavior::AdmissionFence(
+            AdmissionTurnChange::ReplacedRun
+            | AdmissionTurnChange::ReplacedOwnerIdle
+            | AdmissionTurnChange::ReplacedOwnerRunning,
+        ) => script
             .expect_request(
                 "reload",
                 "session/load",
                 json!({"sessionId":"fixture-session"}),
             )
             .respond("reload", json!({})),
-        PeerSteerBehavior::AdmissionFence(AdmissionTurnChange::Successor) => script
+        _ => script,
+    };
+    let script = match behavior {
+        PeerSteerBehavior::AdmissionFence(
+            AdmissionTurnChange::Successor | AdmissionTurnChange::ReplacedOwnerRunning,
+        ) => script
             .expect_recorded_request(
                 "successor",
                 "session/prompt",
