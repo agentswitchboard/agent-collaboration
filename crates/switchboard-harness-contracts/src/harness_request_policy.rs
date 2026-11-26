@@ -37,11 +37,6 @@ pub struct RequestCancellation {
     pub request: Arc<dyn RequestCancellationSignal>,
 }
 
-/// These wrappers keep the two decision types distinct even if a controller
-/// supplies the same Rust type for both request payloads.
-pub struct ApprovalRequestPayload<Payload>(pub Payload);
-pub struct QuestionRequestPayload<Payload>(pub Payload);
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ApprovalPortOutcome {
     Selected {
@@ -94,64 +89,89 @@ impl RequestDecisionRefusal {
     }
 }
 
-/// One typed specialization of row 18. The harness owns the pending responder
-/// and must return at most one answer, in the scope in which it admitted the request.
-/// Refuse a request with no open scope before invoking policy. Observe
-/// cancellation while awaiting the same decision.
-/// Preserve the canonical payload's request ID if the harness resumes a connection.
-pub trait DecideRequest<Context, Request, Answer>: Send + Sync {
-    fn decide(
-        &self,
-        context: ApprovalContext<Context>,
-        request: Request,
-        cancellation: RequestCancellation,
-    ) -> RequestFuture<'_, Decision<Answer>>;
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StopRequestsCause {
     TurnCancelled,
 }
 
-pub trait RequestPolicy:
-    DecideRequest<Self::Context, ApprovalRequestPayload<Self::ApprovalRequest>, ApprovalPortOutcome>
-    + DecideRequest<
-        Self::Context,
-        QuestionRequestPayload<Self::QuestionRequest>,
-        Self::QuestionResponse,
-    > + Send
-    + Sync
-    + 'static
-{
+/// The controller selects these canonical payloads for every harness.
+pub trait RequestPolicyPayloads {
     type Context: Clone + Send + Sync + 'static;
     type OperationId: Clone + Eq + Hash + Send + Sync + 'static;
     type ApprovalRequest: Send + 'static;
     type QuestionRequest: Send + 'static;
     type QuestionResponse: Send + 'static;
     type ManagedRefusal: Send + 'static;
+}
 
-    fn operation_id(&self, context: &Self::Context) -> Self::OperationId;
+impl<Context, OperationId, ApprovalRequest, QuestionRequest, QuestionResponse, ManagedRefusal>
+    RequestPolicyPayloads
+    for (
+        Context,
+        OperationId,
+        ApprovalRequest,
+        QuestionRequest,
+        QuestionResponse,
+        ManagedRefusal,
+    )
+where
+    Context: Clone + Send + Sync + 'static,
+    OperationId: Clone + Eq + Hash + Send + Sync + 'static,
+    ApprovalRequest: Send + 'static,
+    QuestionRequest: Send + 'static,
+    QuestionResponse: Send + 'static,
+    ManagedRefusal: Send + 'static,
+{
+    type Context = Context;
+    type OperationId = OperationId;
+    type ApprovalRequest = ApprovalRequest;
+    type QuestionRequest = QuestionRequest;
+    type QuestionResponse = QuestionResponse;
+    type ManagedRefusal = ManagedRefusal;
+}
 
-    fn binding_retirement(&self, context: &Self::Context) -> Arc<dyn RequestCancellationSignal>;
+/// The harness owns the pending responder and must return at most one answer
+/// in the scope in which it admitted the request. Refuse a request with no
+/// open scope before invoking policy. Observe cancellation while awaiting
+/// the same decision, and preserve the request ID across a harness resume.
+pub trait RequestPolicy<Payloads: RequestPolicyPayloads>: Send + Sync + 'static {
+    fn decide_approval(
+        &self,
+        context: ApprovalContext<Payloads::Context>,
+        request: Payloads::ApprovalRequest,
+        cancellation: RequestCancellation,
+    ) -> RequestFuture<'_, Decision<ApprovalPortOutcome>>;
 
-    fn bind_owner_scope(&self, context: &mut Self::Context, turn: ExactTurn);
+    fn decide_question(
+        &self,
+        context: ApprovalContext<Payloads::Context>,
+        request: Payloads::QuestionRequest,
+        cancellation: RequestCancellation,
+    ) -> RequestFuture<'_, Decision<Payloads::QuestionResponse>>;
+
+    fn operation_id(&self, context: &Payloads::Context) -> Payloads::OperationId;
+
+    fn binding_retirement(&self, context: &Payloads::Context)
+    -> Arc<dyn RequestCancellationSignal>;
+
+    fn bind_owner_scope(&self, context: &mut Payloads::Context, turn: ExactTurn);
 
     /// Ask before normalizing a managed offer so the harness can select the
     /// response appropriate for the original method.
-    fn managed_refusal(&self) -> Option<Self::ManagedRefusal>;
+    fn managed_refusal(&self) -> Option<Payloads::ManagedRefusal>;
 
     /// Invoke after the harness has enqueued the refusal and released the
     /// request's response guard.
     fn cancel_after_managed_refusal(
         &self,
-        context: ApprovalContext<Self::Context>,
+        context: ApprovalContext<Payloads::Context>,
     ) -> RequestFuture<'_, ()>;
 
     /// Run the policy's stop for the exact turn. The harness signals cancellation
     /// before this call and awaits responder drainage separately.
     fn stop_all(
         &self,
-        context: Self::Context,
+        context: Payloads::Context,
         turn: ExactTurn,
         cause: StopRequestsCause,
     ) -> RequestFuture<'_, ()>;
@@ -233,3 +253,7 @@ pub trait ApprovalLeaseBinding<Context>: Send + Sync {
         context: Context,
     ) -> Result<Box<dyn ApprovalLease>, ObservedTurnApprovalLeaseRefusal>;
 }
+
+#[cfg(test)]
+#[path = "harness_request_policy_test.rs"]
+mod tests;
