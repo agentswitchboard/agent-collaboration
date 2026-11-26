@@ -46,6 +46,8 @@ mod message_unit_journey;
 mod native_central_calls;
 #[cfg(debug_assertions)]
 mod native_work_carrier;
+#[cfg(debug_assertions)]
+mod native_work_fixture;
 mod simulated_link;
 
 struct RealLeases {

@@ -54,6 +54,8 @@ type ManagedNoticeForMachine = dyn Fn(&MachineId) -> Arc<dyn ManagedNoticePort> 
 pub struct MessageSystemEvents {
     custody: Arc<dyn CustodyEventSink>,
     notice_for_machine: Option<Box<ManagedNoticeForMachine>>,
+    #[cfg(all(feature = "test-support", debug_assertions))]
+    pub(crate) status_publication_hold: Option<crate::status::StatusPublicationHold>,
 }
 
 impl MessageSystemEvents {
@@ -62,6 +64,8 @@ impl MessageSystemEvents {
         Self {
             custody,
             notice_for_machine: None,
+            #[cfg(all(feature = "test-support", debug_assertions))]
+            status_publication_hold: None,
         }
     }
 
@@ -351,6 +355,16 @@ impl Interpreter {
             &self.link_status.borrow(),
             self.stored_ending.as_ref().map(|(_, cause)| *cause),
         );
+        #[cfg(all(feature = "test-support", debug_assertions))]
+        if self
+            .inputs
+            .events
+            .status_publication_hold
+            .as_ref()
+            .is_some_and(|hold| hold.withhold(status))
+        {
+            return;
+        }
         self.status.send_if_modified(|published| {
             if *published == status {
                 return false;

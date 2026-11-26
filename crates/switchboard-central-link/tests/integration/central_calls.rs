@@ -310,6 +310,106 @@ async fn an_invalid_create_with_a_secret_leaves_the_call_waiting_and_logs_no_sec
 }
 
 #[tokio::test]
+async fn operator_no_secret_and_operation_id_new_ended_replies_settle_nothing() {
+    let _diagnostics = super::credential_diagnostics::capture_trace();
+    let fixture = Fixture::new().await;
+    let lane = &fixture.inbox_events.lane;
+    let work = lane.central_calls();
+    let mut socket = fixture.accept().await;
+    super::welcome(&mut socket).await;
+    lane.watch_registered()
+        .wait_for(Option::is_some)
+        .await
+        .unwrap();
+
+    let operator_create = || {
+        CreateFleetSessionRpc::work_request(
+            serde_json::from_value(json!(ORGANIZATION)).unwrap(),
+            serde_json::from_value(json!({
+                "operationId":OTHER,"attempt":1,"agentProgram":"codex",
+                "sessionKind":{"kind":"ordinary"},"creator":{"kind":"routerOperator"},
+            }))
+            .unwrap(),
+        )
+    };
+    let end_by_operation = || {
+        EndFleetSessionRpc::work_request(
+            serde_json::from_value(json!(ORGANIZATION)).unwrap(),
+            serde_json::from_value(json!({
+                "target":{"kind":"operationId","operationId":OTHER,
+                    "contentsDigest":"SZwBM9eK4U9QL0d9-wgv_SVQcRUyZXc3HzhJojc6a7c"},
+                "cause":{"kind":"givenUp"},
+            }))
+            .unwrap(),
+        )
+    };
+    let settlement =
+        json!({"state":"ended","cause":{"kind":"givenUp"},"time":"2030-01-01T00:00:00.000Z"});
+    let cases: [(fn() -> MacWorkCall, _, _, _); 2] = [
+        (
+            operator_create,
+            "createFleetSession",
+            json!({"result":"noSecret"}),
+            json!({"result":"superseded"}),
+        ),
+        (
+            end_by_operation,
+            "endFleetSession",
+            json!({"result":"settled","settlement":settlement}),
+            json!({"result":"alreadySettled","settlement":settlement}),
+        ),
+    ];
+    let mut original_deadlines = Vec::new();
+    let mut invalid_count = 0;
+    for (request, marker, invalid, fitting) in cases {
+        for later_positive in [true, false] {
+            let receipt = accepted(work.submit(request(), tick(2)));
+            let result = receipt.resolve();
+            let mut result = Box::pin(result);
+            let LinkFrame::Data(DataFrame::CallCentral {
+                correlation_id,
+                request,
+            }) = decode_text(&text(&mut socket).await, FrameDirection::ToCentral).unwrap()
+            else {
+                panic!("there must be exactly one work call for this receipt");
+            };
+            assert_eq!(serde_json::to_value(request).unwrap()["call"], marker);
+            let reply = |body| TypedCallResult::Answered {
+                reply: serde_json::from_value(json!({
+                    "call":marker,"envelope":{"target":ORGANIZATION,"body":body}
+                }))
+                .unwrap(),
+            };
+            sent_reply(&mut socket, correlation_id.clone(), reply(invalid.clone())).await;
+            observed_reads(&mut socket).await;
+            invalid_count += 1;
+            assert_eq!(
+                super::credential_diagnostics::work_invalid_replies(),
+                invalid_count
+            );
+            assert!(result.as_mut().now_or_never().is_none());
+            if later_positive {
+                // End's historical settlement is valid even though the same new settlement is invalid.
+                sent_reply(&mut socket, correlation_id, reply(fitting.clone())).await;
+                assert!(matches!(result.await, CallSettlement::Answered(_)));
+            } else {
+                original_deadlines.push(result);
+            }
+        }
+    }
+    observed_reads(&mut socket).await;
+    assert!(socket.next().now_or_never().is_none());
+    fixture.clock.advance(Duration::from_secs(2)).unwrap();
+    for call in original_deadlines {
+        assert!(matches!(
+            call.await,
+            CallSettlement::AnswerLost(CallEnding::Deadline)
+        ));
+    }
+    fixture.stop().await;
+}
+
+#[tokio::test]
 async fn closing_the_socket_preserves_an_already_selected_central_refusal() {
     let fixture = Fixture::new().await;
     let lane = &fixture.inbox_events.lane;

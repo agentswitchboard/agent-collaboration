@@ -1,14 +1,13 @@
 use std::{
     future::{Future, poll_fn},
-    net::SocketAddr,
-    os::unix::fs::DirBuilderExt as _,
     sync::Arc,
     task::Poll,
     time::Duration,
 };
 
 use central_link_protocol::{
-    CentralCall, DataFrame, FrameDirection, LinkCallRefusal, LinkFrame, TypedCallResult,
+    CentralCall, DataFrame, FrameDirection, LinkCallRefusal, LinkFrame, MachineLinkCloseCode,
+    TypedCallResult,
     approval_rpc::{ApprovalServiceTarget, ListApprovalsForSessionRpc},
     session_lifecycle_rpc::{BindFleetSessionRpc, CreateFleetSessionRpc, EndFleetSessionRpc},
 };
@@ -16,29 +15,15 @@ use collaboration_central_conformance::session_link_scenarios::session_records;
 use collaboration_central_tokio::test_support::{MachineLinkFixture, start_session_link_fixture};
 use router_clock::{ManualClock, RuntimeClock};
 use serde_json::{Value, json};
-use switchboard_central_link::{
-    DialAddress,
-    link_driver::{DriverSettings, LinkDriver},
-    link_policy::LinkStatus,
-};
-use switchboard_machine_core_store::load_or_create_machine_id;
-use switchboard_machine_enrollment::{
-    ConditionalWrite, CredentialStore as _, EnrollmentEnd, EnrollmentMetadata,
-};
-use switchboard_machine_enrollment_store::MachineEnrollmentStore;
+use switchboard_central_link::link_policy::LinkStatus;
 use switchboard_message_system::{
     CallEnding, CallNotReached, CentralWorkNextMove, CentralWorkOutcome, CentralWorkRefusal,
-    CentralWorkRefusalStatus, CloseReport, MessageRoots, MessageSystem, MessageSystemEvents,
-    MessageSystemReason, MessageSystemStatus,
-    test_support::{LinkFixture, metadata_reread, start_with_link_fixture},
+    CentralWorkRefusalStatus, CloseReport, MessageSystemReason, MessageSystemStatus,
 };
-use tokio::sync::{mpsc, watch};
 
-use super::message_unit_fixture::{
-    EPOCH, FixtureDiscovery, FixtureRefresh, KnownRecipient, RecordCustody, enroll,
-    grant_at_central, open_store,
-};
+use super::message_unit_fixture::EPOCH;
 use super::native_work_carrier::{NativeWorkCarrier, application};
+use super::native_work_fixture::start_mac;
 
 fn create_request(operation: u8) -> Value {
     json!({
@@ -56,132 +41,13 @@ async fn native_fixture() -> MachineLinkFixture {
         .unwrap()
 }
 
-struct DriverStatusControl {
-    actual: watch::Receiver<LinkStatus>,
-    publish: watch::Sender<bool>,
-}
-
-async fn forward_link_status(
-    mut actual: watch::Receiver<LinkStatus>,
-    published: watch::Sender<LinkStatus>,
-    mut publish: watch::Receiver<bool>,
-) {
-    let mut controls_open = true;
-    loop {
-        let latest = actual.borrow_and_update().clone();
-        if *publish.borrow_and_update() {
-            published.send_if_modified(|status| {
-                if *status == latest {
-                    return false;
-                }
-                *status = latest;
-                true
-            });
-        }
-        tokio::select! {
-            update = actual.changed() => {
-                if update.is_err() {
-                    return;
-                }
-            }
-            update = publish.changed(), if controls_open => controls_open = update.is_ok(),
-        }
-    }
-}
-
-async fn start_mac(
-    central: &MachineLinkFixture,
-    carrier: NativeWorkCarrier,
-) -> (MessageSystem, MachineEnrollmentStore, DriverStatusControl) {
-    let clock = central.clock.clone();
-    let root = central.root_path().join("typed-work");
-    std::fs::DirBuilder::new()
-        .mode(0o700)
-        .create(&root)
-        .unwrap();
-    let machine = load_or_create_machine_id(&root, clock.utc_now().timestamp_millis())
-        .await
-        .unwrap();
-    let store = open_store(&root, machine.clone(), clock.clone()).await;
-    let (enrollment_id, bearer) = grant_at_central(
-        central,
-        &machine,
-        "019f0000-0000-7000-8000-00000000cd15".parse().unwrap(),
-    )
-    .await;
-    let organization = central.organization_id.as_str().parse().unwrap();
-    enroll(&store, machine.clone(), organization, enrollment_id).await;
-    let (events, _observed_events) = mpsc::unbounded_channel();
-    let (discovery, _observed_discovery) = mpsc::unbounded_channel();
-    let address = central
-        .url(central.organization_id.as_str())
-        .replacen("http://", "ws://", 1);
-    let physical_address: SocketAddr = central
-        .origin()
-        .strip_prefix("http://")
-        .unwrap()
-        .parse()
-        .unwrap();
-    let driver_clock = clock.clone();
-    let (driver_status, actual) = watch::channel(LinkStatus::NotEnrolled);
-    let (publish, relay) = watch::channel(true);
-    let system = start_with_link_fixture(
-        MessageRoots::new(root.clone(), root.join("secrets")),
-        machine,
-        store.clone(),
-        clock.clone(),
-        Arc::new(KnownRecipient("typed-work".parse().unwrap())),
-        MessageSystemEvents::new(Arc::new(RecordCustody(events))),
-        LinkFixture {
-            discovery: FixtureDiscovery(discovery),
-            refresh: FixtureRefresh {
-                enrollment_id,
-                bearer,
-            },
-            run_driver: move |mut driver: LinkDriver<_, _>| {
-                let address = address.clone();
-                let carrier = carrier.clone();
-                let clock = driver_clock.clone();
-                let relay = relay.clone();
-                let published = std::mem::replace(&mut driver.status, driver_status.clone());
-                let actual = driver.status.subscribe();
-                async move {
-                    let settings = {
-                        let discovered = driver
-                            .settings
-                            .wait_for(|found| found.address.is_ok())
-                            .await
-                            .unwrap();
-                        DriverSettings {
-                            binding: discovered.binding.clone(),
-                            address: DialAddress::test_loopback(&address),
-                        }
-                    };
-                    let (_settings, updates) = watch::channel(settings);
-                    driver.settings = updates;
-                    let run = driver.run_with_test_transport(move || {
-                        let carrier = carrier.clone();
-                        let clock = clock.clone();
-                        async move { carrier.connect(physical_address, clock).await }
-                    });
-                    tokio::select! {
-                        () = Box::pin(run) => {},
-                        () = forward_link_status(actual, published, relay) => {},
-                    }
-                }
-            },
-        },
-    );
-    (system, store, DriverStatusControl { actual, publish })
-}
-
 #[tokio::test]
 async fn typed_port_answers_session_and_approval_calls_then_refuses_an_ended_enrollment() {
     let central = native_fixture().await;
     let clock = central.clock.clone();
     let carrier = NativeWorkCarrier::default();
     carrier.hold_first_registration();
-    let (system, store, _driver_status) = start_mac(&central, carrier.clone()).await;
+    let (system, mut driver_status) = start_mac(&central, carrier.clone()).await;
     let mut status = system.status();
     let calls = system.central_calls();
     let deadline = clock.monotonic_now().after(Duration::from_secs(10));
@@ -307,30 +173,63 @@ async fn typed_port_answers_session_and_approval_calls_then_refuses_an_ended_enr
         json!({"kind":"page","items":[],"next":null})
     );
 
-    let EnrollmentMetadata::Active { generation, .. } = store.read_metadata().await.unwrap() else {
-        panic!("there must be an active enrollment to end")
+    driver_status.publish.send_replace(false);
+    driver_status.operator_status_hold.freeze();
+    let mut held_observations = driver_status.operator_status_hold.held_observations();
+    carrier.terminal_close(MachineLinkCloseCode::Revoked);
+    let ending = driver_status.ending_reports.recv().await.unwrap();
+    assert_eq!(ending.cause, central_link_client::EnrollmentEnd::Revoked);
+    let published_before_refusal = *status.borrow_and_update();
+    assert_eq!(
+        published_before_refusal.status,
+        MessageSystemStatus::Connected
+    );
+    let mut pending_call = std::pin::pin!(calls.call::<CreateFleetSessionRpc>(
+        central.organization_id.clone(),
+        serde_json::from_value(create_request(13)).unwrap(),
+        deadline,
+    ));
+    let Poll::Ready(CentralWorkOutcome::RefusedByLink(pending)) =
+        poll_fn(|context| Poll::Ready(pending_call.as_mut().poll(context))).await
+    else {
+        panic!("the terminal gate must refuse while its ending report is held");
     };
     assert_eq!(
-        store
-            .remove(generation, EnrollmentEnd::Revoked)
-            .await
-            .unwrap(),
-        ConditionalWrite::Applied
+        pending,
+        CentralWorkRefusal {
+            status: CentralWorkRefusalStatus::EnrollmentEnded,
+            reason: MessageSystemReason::EnrollmentEndingPending,
+        }
     );
-    assert!(metadata_reread(&system)());
-    status
-        .wait_for(|found| found.status == MessageSystemStatus::EnrollmentEnded)
+    assert_eq!(
+        pending.valid_move(),
+        CentralWorkNextMove::EnrollThisMacAgain
+    );
+    assert_eq!(*status.borrow(), published_before_refusal);
+    assert!(!status.has_changed().unwrap());
+    ending.persist();
+    held_observations
+        .wait_for(|found| {
+            found.is_some_and(|observed| {
+                observed.status == MessageSystemStatus::EnrollmentEnded
+                    && observed.reason == MessageSystemReason::EnrollmentRevoked
+            })
+        })
         .await
         .unwrap();
-    let refused = calls
-        .call::<CreateFleetSessionRpc>(
-            central.organization_id.clone(),
-            serde_json::from_value(create_request(4)).unwrap(),
-            deadline,
-        )
-        .await;
-    let CentralWorkOutcome::RefusedByLink(refused) = refused else {
-        panic!("the ended enrollment must refuse in the typed port")
+    assert_eq!(*status.borrow(), published_before_refusal);
+    assert!(!status.has_changed().unwrap());
+    let mut stored_call = std::pin::pin!(calls.call::<CreateFleetSessionRpc>(
+        central.organization_id.clone(),
+        serde_json::from_value(create_request(4)).unwrap(),
+        deadline,
+    ));
+    let Poll::Ready(CentralWorkOutcome::RefusedByLink(refused)) =
+        poll_fn(|context| Poll::Ready(stored_call.as_mut().poll(context))).await
+    else {
+        panic!(
+            "the typed port must refuse against the recorded ending while Connected is still published"
+        );
     };
     assert_eq!(
         refused,
@@ -343,6 +242,11 @@ async fn typed_port_answers_session_and_approval_calls_then_refuses_an_ended_enr
         refused.valid_move(),
         CentralWorkNextMove::EnrollThisMacAgain
     );
+    assert_eq!(pending.reason, MessageSystemReason::EnrollmentEndingPending);
+    assert_eq!(*status.borrow(), published_before_refusal);
+    assert!(!status.has_changed().unwrap());
+    driver_status.operator_status_hold.release();
+    driver_status.publish.send_replace(true);
     assert_eq!(
         statement_host
             .read(session_records())
@@ -362,7 +266,7 @@ async fn native_answers_held_at_the_reader_exhaust_slots_expire_and_do_not_repla
     let central = native_fixture().await;
     let clock = central.clock.clone();
     let carrier = NativeWorkCarrier::default();
-    let (system, _, mut driver_status) = start_mac(&central, carrier.clone()).await;
+    let (system, mut driver_status) = start_mac(&central, carrier.clone()).await;
     let mut status = system.status();
     status
         .wait_for(|found| found.status == MessageSystemStatus::Connected)

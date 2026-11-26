@@ -9,13 +9,18 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use central_link_protocol::{CentralCall, DataFrame, FrameDirection, LinkFrame, decode_text};
+use central_link_protocol::{
+    CentralCall, DataFrame, FrameDirection, LinkFrame, MachineLinkCloseCode, decode_text,
+};
 use router_clock::ManualClock;
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     net::TcpStream,
 };
-use tungstenite::{Message, protocol::Role};
+use tungstenite::{
+    Message,
+    protocol::{CloseFrame, Role, frame::Frame},
+};
 
 use super::simulated_link::central_receive::{
     ObservedSocketFrame, SocketFrameTrace, SocketObserver,
@@ -33,6 +38,7 @@ enum ReaderMode {
 struct ReaderControl {
     mode: ReaderMode,
     hold_registration: bool,
+    terminal_close: VecDeque<u8>,
     waker: Option<Waker>,
 }
 
@@ -58,6 +64,25 @@ impl NativeWorkCarrier {
 
     pub(super) fn cut(&self) {
         self.set_mode(ReaderMode::Cut);
+    }
+
+    pub(super) fn terminal_close(&self, code: MachineLinkCloseCode) {
+        let mut bytes = Vec::new();
+        Frame::close(Some(CloseFrame {
+            code: code.code().into(),
+            reason: "".into(),
+        }))
+        .format(&mut bytes)
+        .unwrap();
+        let waker = {
+            let mut control = self.control.lock().unwrap();
+            assert!(control.terminal_close.is_empty());
+            control.terminal_close.extend(bytes);
+            control.waker.take()
+        };
+        if let Some(waker) = waker {
+            waker.wake();
+        }
     }
 
     fn set_mode(&self, mode: ReaderMode) {
@@ -120,6 +145,13 @@ impl AsyncRead for NativeWorkSocket {
         let mode = {
             let mut control = self.carrier.control.lock().unwrap();
             control.waker = Some(context.waker().clone());
+            if !control.terminal_close.is_empty() {
+                let bytes = control.terminal_close.make_contiguous();
+                let count = out.remaining().min(bytes.len());
+                out.put_slice(bytes.get(..count).unwrap());
+                control.terminal_close.drain(..count);
+                return Poll::Ready(Ok(()));
+            }
             control.mode
         };
         match mode {
