@@ -174,13 +174,53 @@ fn edge(state: &OpeningState, command: &Command, taken: bool) -> Option<Edge> {
     let event = match command {
         Command::WriterAccepted => Edge::WriterAccepted,
         Command::WriterRefused => Edge::WriterRefused,
+        Command::Created(_)
+            if matches!(
+                state,
+                State::StoppedAwaitingReply(StoppedReceipt::OpenCreate(_))
+            ) =>
+        {
+            Edge::FinishOnStoppedWriter
+        }
         Command::Created(_) => Edge::ProviderCreated,
-        Command::OpenFailed if stopped => Edge::FinishOnStoppedWriter,
-        Command::OpenFailed => Edge::OpenFailed,
-        Command::WorkerExited if stopped => Edge::FinishOnStoppedWriter,
-        Command::WorkerExited => Edge::WorkerExited,
+        Command::OpenFailed
+            if matches!(
+                state,
+                State::StoppedAwaitingReply(StoppedReceipt::OpenCreate(_))
+            ) =>
+        {
+            Edge::FinishOnStoppedWriter
+        }
+        Command::OpenFailed if matches!(state, State::AwaitingCreate(_)) => Edge::OpenFailed,
+        Command::OpenFailed => return None,
+        Command::WorkerExited
+            if matches!(
+                state,
+                State::StoppedAwaitingReply(
+                    StoppedReceipt::OpenCreate(_) | StoppedReceipt::Configure(_)
+                )
+            ) =>
+        {
+            Edge::FinishOnStoppedWriter
+        }
+        Command::WorkerExited
+            if matches!(
+                state,
+                State::AwaitingCreate(_) | State::ConfiguringCreate(_)
+            ) =>
+        {
+            Edge::WorkerExited
+        }
+        Command::WorkerExited => return None,
         Command::Configure(_) => Edge::Configure,
-        Command::Configured(_) | Command::ConfigureClosed if stopped => Edge::FinishOnStoppedWriter,
+        Command::Configured(_) | Command::ConfigureClosed
+            if matches!(
+                state,
+                State::StoppedAwaitingReply(StoppedReceipt::Configure(_))
+            ) =>
+        {
+            Edge::FinishOnStoppedWriter
+        }
         Command::Configured(_) => Edge::Configured,
         Command::ConfigureClosed => Edge::ClosedDuringConfigure,
         Command::AcceptSettings(_) if matches!(state, State::ConfiguredCreate(_)) => {
@@ -211,7 +251,7 @@ fn edge(state: &OpeningState, command: &Command, taken: bool) -> Option<Edge> {
             {
                 Edge::LateOpenReply
             }
-            State::StoppedAwaitingReply(_)
+            State::StoppedAwaitingReply(StoppedReceipt::OpenRestore(_))
                 if matches!(
                     milestone,
                     RestoreMilestone::Failed | RestoreMilestone::WorkerExited
@@ -657,7 +697,9 @@ fn apply_edge(
             };
             store(State::RouteLost { run, receipt }, effect)
         }
-        (state, command @ Command::Configured(_)) if edge == Edge::FinishOnStoppedWriter => {
+        (state, command @ (Command::Configured(_) | Command::Created(_)))
+            if edge == Edge::FinishOnStoppedWriter =>
+        {
             let (next, effect) = finish(state, instance)?;
             Ok((
                 next,
@@ -763,3 +805,7 @@ fn lost_receipt(state: &OpeningState, taken: bool) -> LostReceipt {
         _ => LostReceipt::None,
     }
 }
+
+#[cfg(test)]
+#[path = "owner_acp_opening_matrix_test.rs"]
+mod matrix;

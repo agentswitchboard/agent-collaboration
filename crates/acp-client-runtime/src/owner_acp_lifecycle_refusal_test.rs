@@ -473,3 +473,77 @@ async fn delayed_retirement_cleanup_cannot_take_a_replacement_route_at_the_same_
     tasks.close();
     tasks.wait().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+async fn a_buffered_close_reply_survives_the_real_writer_stop() {
+    use crate::owner_wire::OpeningPausePoint;
+    use provider_session_machines::{
+        harness_lifecycle::CloseFact, session_lifecycle_machine::CloseAttempt,
+    };
+
+    let (openings, mut output, tasks, _retirement) = tracked_test_opening(NonZeroUsize::MIN);
+    let run = RunAttempt {
+        generation: SessionGeneration::from_number(1),
+        attempt: LoadAttempt(Uuid::now_v7()),
+    };
+    let opening_reply = pending_load(&openings, run);
+    let unreturned_open = output.hold_next_frame_for_test();
+    let close = RunAttempt {
+        generation: run.generation,
+        attempt: CloseAttempt(Uuid::now_v7()),
+    };
+    let (reply, mut closed) = oneshot::channel();
+    let before_commit = openings
+        .wire
+        .pause_opening_for_test(OpeningPausePoint::BeforeCloseCommit);
+    let writer_stopped = openings
+        .wire
+        .pause_opening_for_test(OpeningPausePoint::WriterStopDelivered);
+    let openings = Arc::new(openings);
+    let caller = tokio::task::spawn_blocking({
+        let openings = Arc::clone(&openings);
+        move || openings.close(close, Box::new(Reply(reply)))
+    });
+
+    before_commit
+        .reached
+        .await
+        .expect("the close reached the real writer before its row result");
+    output.buffer_next_close_reply_for_test(&ConnectionCatalogueBehavior);
+    assert!(matches!(
+        closed.try_recv(),
+        Err(oneshot::error::TryRecvError::Empty)
+    ));
+    drop(output);
+    writer_stopped
+        .reached
+        .await
+        .expect("the real writer receiver is stopped");
+    assert_eq!(
+        lock(&openings.attempts)
+            .runs
+            .get(&run.generation)
+            .map(OpeningRow::phase),
+        Some(OpeningPhase::StoppedAwaitingReply),
+        "writer stop lost a buffered close receipt"
+    );
+    writer_stopped
+        .release
+        .send(())
+        .expect("release stopped observer");
+    before_commit
+        .release
+        .send(())
+        .expect("continue the accepted close path");
+    assert_eq!(caller.await.expect("close caller"), Ok(()));
+    assert_eq!(
+        closed.await.expect("the buffered result remains owed"),
+        CloseFact::Closed { run: close }
+    );
+    drop(unreturned_open);
+    assert!(opening_reply.await.is_err());
+    assert!(lock(&openings.attempts).runs.is_empty());
+    drop(openings);
+    tasks.close();
+    tasks.wait().await;
+}

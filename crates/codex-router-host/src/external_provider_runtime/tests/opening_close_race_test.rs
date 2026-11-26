@@ -30,7 +30,7 @@ impl EventPort<SessionLifecycleFact> for HoldReplayUntil {
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
-enum CloseRace {
+pub(super) enum CloseRace {
     WriterFull,
     Accepted,
     RetiredFirst,
@@ -51,7 +51,7 @@ async fn retirement_blanks_a_deferred_fact_and_withdraws_the_untaken_close() {
     run_close_race(CloseRace::RetiredFirst).await;
 }
 
-async fn run_close_race(outcome: CloseRace) {
+pub(super) async fn run_close_race(outcome: CloseRace) {
     let fixture = hub_runtime_with(&["advertise-close"]).await;
     let tasks = TaskTracker::new();
     let (owner, mut binding) = bind_fixture(&fixture.runtime, &tasks);

@@ -18,7 +18,7 @@ async fn the_declared_held_setter_accepts_one_real_reply_and_frame() {
     exercise_setter(false).await;
 }
 
-async fn exercise_setter(reenter: bool) {
+pub(super) async fn exercise_setter(reenter: bool) {
     let fixture = hub_runtime_with(&["advertise-close"]).await;
     let tasks = TaskTracker::new();
     let (owner, mut binding) = bind_fixture(&fixture.runtime, &tasks);

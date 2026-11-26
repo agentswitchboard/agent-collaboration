@@ -62,11 +62,18 @@ fn production_binding_tracks_opening_routes_payloads_and_admissible_calls(case: 
     let steps: Vec<_> = (0..case.draw(gs::integers::<u8>().min_value(6).max_value(20)))
         .map(|_| case.draw(gs::integers::<u8>().max_value(9)))
         .collect();
+    let schedule = case.draw(gs::integers::<u8>().max_value(8));
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("test runtime")
         .block_on(run_sequence(steps));
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .enable_all()
+        .build()
+        .expect("causal test runtime")
+        .block_on(run_transient_schedule(schedule));
 }
 
 async fn run_sequence(steps: Vec<u8>) {
@@ -259,4 +266,19 @@ async fn run_sequence(steps: Vec<u8>) {
     fixture.runtime.shutdown().await;
     tasks.close();
     tasks.wait().await;
+}
+
+async fn run_transient_schedule(schedule: u8) {
+    use super::close_race::{CloseRace, run_close_race};
+    match schedule {
+        0 => run_close_race(CloseRace::WriterFull).await,
+        1 => run_close_race(CloseRace::Accepted).await,
+        2 => run_close_race(CloseRace::RetiredFirst).await,
+        3 => super::setter_claim::setter_take_schedule(false).await,
+        4 => super::setter_claim::setter_take_schedule(true).await,
+        5 => super::reader_retirement::reader_retirement_schedule().await,
+        6 => super::readmission::readmission_schedule(false).await,
+        7 => super::readmission::readmission_schedule(true).await,
+        _ => super::setter_claim::exercise_setter(true).await,
+    }
 }

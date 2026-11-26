@@ -92,6 +92,25 @@ pub(crate) struct OwnerAcpOutput {
 
 impl OwnerAcpOutput {
     #[cfg(test)]
+    pub(crate) fn buffer_next_close_reply_for_test(
+        &mut self,
+        behavior: &dyn crate::ProviderBehavior,
+    ) {
+        let next = self
+            .output
+            .try_recv()
+            .expect("the real writer accepted a close frame");
+        let AcpFrame::Request {
+            correlation: correlation @ ResponseKind::Close { .. },
+            ..
+        } = next.frame
+        else {
+            panic!("expected an exact close request");
+        };
+        correlation.complete(Some(Ok(serde_json::json!({}))), false, behavior);
+    }
+
+    #[cfg(test)]
     pub(crate) fn hold_next_frame_for_test(&mut self) -> impl Send + use<> {
         self.output
             .try_recv()

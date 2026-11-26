@@ -13,7 +13,7 @@ macro_rules! tagged_enum {
 
         impl $name {
             #[cfg(test)]
-            const ALL: &'static [Self] = &[$(Self::$variant),+];
+            pub(super) const ALL: &'static [Self] = &[$(Self::$variant),+];
 
             const fn tag(self) -> &'static str {
                 match self { $(Self::$variant => $tag),+ }
