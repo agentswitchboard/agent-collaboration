@@ -32,7 +32,9 @@ mod sealed {
 /// mac_work::<ListPersonApprovalsRpc>();
 /// ```
 pub trait MacWorkRpc: CentralLinkRpc + sealed::Work {
-    fn work_request(target: Self::Target, body: Self::Request) -> MacWorkCall;
+    fn work_request(target: Self::Target, body: Self::Request) -> MacWorkCall {
+        MacWorkCall(Self::request(Envelope { target, body }))
+    }
 
     fn take_work_reply(reply: MacWorkReply) -> Option<Self::Reply> {
         Self::take_reply(reply.0).map(|envelope| envelope.body)
@@ -100,11 +102,7 @@ macro_rules! mac_work_calls {
         $(
             impl sealed::Work for $marker {}
 
-            impl MacWorkRpc for $marker {
-                fn work_request(target: Self::Target, body: Self::Request) -> MacWorkCall {
-                    MacWorkCall(CentralCall::$variant(Envelope { target, body }))
-                }
-            }
+            impl MacWorkRpc for $marker {}
         )+
     };
 }
