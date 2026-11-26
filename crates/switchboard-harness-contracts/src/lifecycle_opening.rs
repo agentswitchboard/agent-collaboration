@@ -172,7 +172,7 @@ impl OpeningFailure {
             Self::ProviderError(_) | Self::ReplayNotKnown | Self::Closed => {
                 &[LifecycleMove::Reopen]
             }
-            Self::Disconnected => &[LifecycleMove::Reconnect, LifecycleMove::KeepOutcomeUnknown],
+            Self::Disconnected => &[LifecycleMove::Reopen, LifecycleMove::KeepOutcomeUnknown],
             Self::NoAnswer | Self::Unavailable { .. } => &[LifecycleMove::KeepOutcomeUnknown],
         }
     }

@@ -125,7 +125,7 @@ impl CloseFact {
 pub enum LifecycleMove {
     CorrectRequest,
     WaitForWriter,
-    Reconnect,
+    /// Start a new opening attempt through the owner binding.
     Reopen,
     CreateFromSavedSetup,
     WaitForClose,
@@ -155,8 +155,9 @@ impl LifecycleRefusal {
         match self {
             Self::Encoding | Self::AttemptMismatch => &[LifecycleMove::CorrectRequest],
             Self::Writer(WriterState::Full) => &[LifecycleMove::WaitForWriter],
-            Self::Writer(WriterState::Stopped) => &[LifecycleMove::Reconnect],
-            Self::RouteUnavailable | Self::OpeningNotHeld => &[LifecycleMove::Reopen],
+            Self::Writer(WriterState::Stopped) | Self::RouteUnavailable | Self::OpeningNotHeld => {
+                &[LifecycleMove::Reopen]
+            }
             Self::RouteClosing => &[LifecycleMove::WaitForClose],
             Self::CatalogueUnavailable | Self::InvalidCatalogueReply => &[
                 LifecycleMove::UseSavedCatalogue,

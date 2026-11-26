@@ -1,11 +1,9 @@
-//! Provider discovery and the lifecycle of one held harness connection.
-
-use std::sync::Arc;
+//! Provider discovery and the lifecycle of an owner's harness connections.
 
 use crate::{
     AcceptedRunSettings, ActivationSetup, CatalogueFact, CatalogueRequest, CloseAttempt, CloseFact,
     CreateAttempt, CreatedSetupFact, HarnessBinding, Held, LifecycleEventPort, LifecycleRefusal,
-    LifecycleReply, OpenAttempt, OpenRequest, OpeningFact, RunAttempt, RunRetirement,
+    LifecycleReply, OpenAttempt, OpenRequest, OpeningFact, OwnerAddress, RunAttempt, RunRetirement,
     SessionGeneration, SettingAttempt, SettingFact, SetupReport, TurnMembership,
 };
 
@@ -21,22 +19,8 @@ pub trait HarnessLifecyclePayloads: Send + Sync + 'static {
 }
 
 pub trait HarnessProvider<Payloads: HarnessLifecyclePayloads>: Send + Sync + 'static {
-    /// Start one opening and keep its connection under the exact attempt. An immediate refusal
-    /// means nothing was sent. Otherwise the opening settles through the reserved reply.
-    /// Before finishing a load, publish its complete replay through `events` and wait for ingress
-    /// acceptance. `retired` can stop the opening or a backpressured replay. A resume skips replay.
-    fn open(
-        &self,
-        request: OpenRequest,
-        reply: LifecycleReply<OpeningFact>,
-        events: LifecycleEventPort<
-            Payloads::Event,
-            Payloads::SkillView,
-            Payloads::TurnOutcome,
-            Payloads::AuthStatus,
-        >,
-        retired: RunRetirement,
-    ) -> Result<Arc<dyn HarnessLifecycleBinding<Payloads>>, LifecycleRefusal>;
+    /// Create the owner's binding locally before any opening is offered.
+    fn bind(&self, owner: OwnerAddress) -> Box<dyn OwnerHarnessBinding<Payloads>>;
 
     /// Return the offered catalogue for the named scope, without inventing choices.
     fn model_catalogue(
@@ -46,10 +30,28 @@ pub trait HarnessProvider<Payloads: HarnessLifecyclePayloads>: Send + Sync + 'st
     ) -> Result<(), LifecycleRefusal>;
 }
 
-/// The lifecycle and work surfaces refer to the same harness-owned connection.
-pub trait HarnessLifecycleBinding<Payloads: HarnessLifecyclePayloads>:
+/// The owner holds one binding for lifecycle and work across all of its generations.
+pub trait OwnerHarnessBinding<Payloads: HarnessLifecyclePayloads>:
     HarnessBinding + 'static
 {
+    /// Start one opening and keep its connection under the exact attempt. An immediate refusal
+    /// means nothing was sent. Otherwise the opening settles through the reserved reply.
+    /// The request must name the owner for which the binding was created.
+    /// Before finishing a load, publish its complete replay through `events` and wait for ingress
+    /// acceptance. `retired` can stop the opening or a backpressured replay. A resume skips replay.
+    fn open(
+        &mut self,
+        request: OpenRequest,
+        reply: LifecycleReply<OpeningFact>,
+        events: LifecycleEventPort<
+            Payloads::Event,
+            Payloads::SkillView,
+            Payloads::TurnOutcome,
+            Payloads::AuthStatus,
+        >,
+        retired: RunRetirement,
+    ) -> Result<(), LifecycleRefusal>;
+
     /// Finish applying the held request after the controller has accepted the created session's
     /// ID. The harness reuses the settings it received at open, including any applied there.
     fn configure_created(
