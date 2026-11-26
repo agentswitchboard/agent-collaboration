@@ -13,6 +13,9 @@ use provider_session_machines::{
 };
 use std::future::Future;
 
+#[path = "provider_session_command_port_prompt_admission_test.rs"]
+mod prompt_admission;
+
 fn live_run(rig: &CommandPortRig) -> TransportRun {
     let snapshot = rig
         .supervisor

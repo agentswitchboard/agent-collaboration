@@ -147,6 +147,8 @@ pub use switchboard_harness_contracts::{PromptCompletion, WireOutcome};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LastLiveTurn {
+    pub operation: uuid::Uuid,
+    pub generation: SessionGeneration,
     pub turn: TurnId,
     pub input: InputId,
     pub outcome: TurnOutcome,
@@ -348,13 +350,19 @@ pub enum SessionWireRequest {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TurnDispatchMark {
+    pub input: OwnerInput,
+    pub budget: std::time::Duration,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SessionStoreRequest {
     RecordTerminal {
         write: TerminalWriteId,
         reply: Box<SessionOwnerReply>,
     },
     ReadRestoreSetup(RunAttempt<LoadAttempt>),
-    MarkDispatch(OwnerInput),
+    MarkDispatch(TurnDispatchMark),
     MarkQueuedDispatch(OwnerInput),
     UndoDispatch(OwnerInput),
     MarkSteerDispatch(OwnerInput),

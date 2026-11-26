@@ -107,6 +107,20 @@ impl ExternalProviderSupervisor {
                     AdmissionMode::deferred(class),
                 )
                 .await?;
+            #[cfg(test)]
+            if let AdmissionClass::RefuseWhileRunning { foreground } = class {
+                backend
+                    .inner
+                    .uncertainty
+                    .slot(&target.endpoint)
+                    .fixture
+                    .waiting(
+                    &target,
+                    crate::binding_store_fixture::BindingFixtureWait::RefuseWhileRunningAdmission(
+                        foreground,
+                    ),
+                );
+            }
             match prepared {
                 PreparedOperation::Existing(operation) => Ok(existing_submission(operation)),
                 PreparedOperation::Admitted { mut snapshot, live } => {

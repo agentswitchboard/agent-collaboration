@@ -28,7 +28,13 @@ pub(crate) struct BindingUncertainty {
     pub(crate) fixture: crate::binding_store_fixture::BindingStoreFixture,
 }
 
-type LiveDispatchBlocker = dyn Fn(&OperationId, &SessionRef) -> Option<OperationId> + Send + Sync;
+pub(crate) struct LiveDispatchConflict {
+    pub(crate) operation: OperationId,
+    pub(crate) wait_for_eligibility: bool,
+}
+
+type LiveDispatchBlocker =
+    dyn Fn(&OperationId, &SessionRef, Option<Uuid>) -> Option<LiveDispatchConflict> + Send + Sync;
 
 impl Default for BindingUncertainty {
     fn default() -> Self {

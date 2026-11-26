@@ -69,7 +69,10 @@ fn direct_when_idle_rejects_loading_and_uses_the_prompt_take_of_an_exact_idle_ru
     );
     assert!(
         admitted.contains(&OwnerEffect::Store(SessionStoreRequest::MarkDispatch(
-            notice.clone()
+            TurnDispatchMark {
+                input: notice.clone(),
+                budget: std::time::Duration::from_secs(10)
+            }
         )))
     );
     assert!(!admitted.iter().any(|effect| matches!(

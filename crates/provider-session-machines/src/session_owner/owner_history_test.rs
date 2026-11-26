@@ -701,7 +701,10 @@ fn a_direct_prompt_names_the_input_waiting_for_its_dispatch_mark() {
     let effects = enqueue_prompt(&mut state, &first);
     assert!(
         effects.contains(&OwnerEffect::Store(SessionStoreRequest::MarkDispatch(
-            first
+            TurnDispatchMark {
+                input: first,
+                budget: std::time::Duration::from_secs(10)
+            }
         )))
     );
     assert_eq!(state.snapshot().turn, SessionTurn::Idle);
@@ -732,7 +735,10 @@ fn setting_cannot_overtake_an_input_waiting_for_its_dispatch_mark() {
     let effects = enqueue_prompt(&mut state, &prompt);
     assert!(
         effects.contains(&OwnerEffect::Store(SessionStoreRequest::MarkDispatch(
-            prompt.clone()
+            TurnDispatchMark {
+                input: prompt.clone(),
+                budget: std::time::Duration::from_secs(10)
+            }
         )))
     );
     let setting = OwnerSetting {

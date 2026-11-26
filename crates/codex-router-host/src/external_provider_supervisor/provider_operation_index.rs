@@ -15,7 +15,7 @@ use super::{
     },
     provider_operation_finish::Retention,
 };
-use crate::binding_dispatch_permit::BindingUncertainty;
+use crate::binding_dispatch_permit::{BindingUncertainty, LiveDispatchConflict};
 use crate::operation_machines::operation_record_machine::{
     AttemptEnding, DispatchAttempt, OperationRecord, OperationRecordEvent, OperationRecordMachine,
 };
@@ -107,7 +107,7 @@ impl LiveOperation {
         )
     }
 
-    pub(super) fn is_prompt_for(&self, target: &SessionRef) -> bool {
+    pub(super) fn is_turn_start_for(&self, target: &SessionRef) -> bool {
         self.kind == Some(ProviderOperationKind::ConversationPrompt)
             && self.target().as_ref() == Some(target)
     }
@@ -453,14 +453,40 @@ impl LiveOperations {
             .collect()
     }
 
+    pub(super) fn lane_mark_conflict(
+        &self,
+        binding: &ProviderBindingIdentity,
+        request: AdmissionRequest<'_>,
+        ended_turn: Option<uuid::Uuid>,
+    ) -> Option<LiveDispatchConflict> {
+        let mut blockers = self
+            .overlapping_holders(binding, request, LiveOperation::holds_dispatch)
+            .filter(|(_, holder)| !request.is_own_cancel_holder(holder.kind, holder.cancel_target));
+        let (operation, holder) = blockers.next()?;
+        let wait_for_eligibility = ended_turn.is_some_and(|ended_turn| {
+            self.operations
+                .get(request.operation)
+                .is_some_and(|live| !live.is_notice())
+                && uuid::Uuid::parse_str(operation.as_str()).ok() == Some(ended_turn)
+                && request
+                    .target
+                    .is_some_and(|target| holder.is_turn_start_for(target))
+                && blockers.next().is_none()
+        });
+        Some(LiveDispatchConflict {
+            operation: operation.clone(),
+            wait_for_eligibility,
+        })
+    }
+
+    #[cfg(test)]
     pub(super) fn lane_mark_blocker(
         &self,
         binding: &ProviderBindingIdentity,
         request: AdmissionRequest<'_>,
     ) -> Option<OperationId> {
-        self.overlapping_holders(binding, request, LiveOperation::holds_dispatch)
-            .find(|(_, holder)| !request.is_own_cancel_holder(holder.kind, holder.cancel_target))
-            .map(|(operation, _)| operation.clone())
+        self.lane_mark_conflict(binding, request, None)
+            .map(|conflict| conflict.operation)
     }
 
     fn overlapping_holders<'a>(

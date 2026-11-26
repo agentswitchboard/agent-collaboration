@@ -428,7 +428,7 @@ impl ExternalProviderSupervisor {
             let dispatch_binding = binding.identity.clone();
             permit.live_dispatch_blocker.get_or_init(|| {
                 use provider_admission_policy::{AdmissionClass, AdmissionMode, AdmissionRequest};
-                Arc::new(move |operation, target| {
+                Arc::new(move |operation, target, ended_turn| {
                     let index = dispatch_operations.upgrade()?;
                     let index = index
                         .lock()
@@ -439,7 +439,7 @@ impl ExternalProviderSupervisor {
                         target: Some(target),
                         mode: AdmissionMode::deferred(AdmissionClass::Independent),
                     };
-                    index.lane_mark_blocker(&dispatch_binding, request)
+                    index.lane_mark_conflict(&dispatch_binding, request, ended_turn)
                 })
             });
             owners.install_binding_permit(permit);
