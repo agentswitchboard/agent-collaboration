@@ -25,6 +25,8 @@ use uuid::Uuid;
 
 #[path = "owner_acp_opening_matrix_expectations.rs"]
 mod expectations;
+#[path = "owner_acp_opening_late_receipts_test.rs"]
+mod late_receipts;
 #[path = "owner_acp_opening_payloads_test.rs"]
 mod payloads;
 #[path = "owner_acp_opening_reply_envelopes_test.rs"]

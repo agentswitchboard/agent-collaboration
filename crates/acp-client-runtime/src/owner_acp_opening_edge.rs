@@ -10,14 +10,10 @@ pub(super) fn edge(state: &OpeningState, command: &Command, taken: bool) -> Opti
     let event = match command {
         Command::OpenCreate(_) => Edge::OpenCreate,
         Command::OpenRestore(_) => Edge::OpenRestore,
-        Command::WriterAccepted
-            if let State::RouteLost {
-                receipt: LostReceipt::None | LostReceipt::Close(_),
-                ..
-            } = state =>
-        {
-            return None;
-        }
+        Command::WriterAccepted if let State::RouteLost { receipt, .. } = state => match receipt {
+            LostReceipt::Open(_) => Edge::WriterAccepted,
+            LostReceipt::None | LostReceipt::Close(_) => return None,
+        },
         Command::WriterAccepted => Edge::WriterAccepted,
         Command::WriterRefused => Edge::WriterRefused,
         Command::Created(_) => worker_edge(state, CreateWorkerFact::Created)?,
@@ -59,16 +55,14 @@ pub(super) fn edge(state: &OpeningState, command: &Command, taken: bool) -> Opti
                 deferred: None,
                 ..
             } if signal.is_some() && origin.pending_restore(false).is_some() => Edge::DeferRestore,
-            State::ClosingRestore { .. }
-                if matches!(
-                    milestone,
-                    RestoreMilestone::Loaded(_)
-                        | RestoreMilestone::Resumed(_)
-                        | RestoreMilestone::Failed
-                ) =>
-            {
-                Edge::LateOpenReply
-            }
+            State::ClosingRestore { .. } => match milestone {
+                RestoreMilestone::Loaded(_)
+                | RestoreMilestone::Resumed(_)
+                | RestoreMilestone::Failed => Edge::LateOpenReply,
+                RestoreMilestone::ReplayAdmitted
+                | RestoreMilestone::ReplayRejected
+                | RestoreMilestone::WorkerExited => return None,
+            },
             State::StoppedAwaitingReply(StoppedReceipt::OpenRestore(..)) => match milestone {
                 RestoreMilestone::Failed => Edge::FinishOnStoppedWriter,
                 RestoreMilestone::Loaded(_)
@@ -91,7 +85,6 @@ pub(super) fn edge(state: &OpeningState, command: &Command, taken: bool) -> Opti
             | State::StartingReader(_)
             | State::Active(_)
             | State::OfferingClose { .. }
-            | State::ClosingRestore { .. }
             | State::ClosingLive { .. }
             | State::CloseRefusedLive { .. }
             | State::Readmitting { .. }
@@ -223,17 +216,10 @@ pub(super) fn edge(state: &OpeningState, command: &Command, taken: bool) -> Opti
                 None => Edge::WriterStoppedWithOlderRestore,
             }
         }
-        Command::WriterStopped
-            if matches!(
-                state,
-                State::RouteLost {
-                    receipt: LostReceipt::None,
-                    ..
-                }
-            ) =>
-        {
-            Edge::WriterStoppedWithoutReceipt
-        }
+        Command::WriterStopped if let State::RouteLost { receipt, .. } = state => match receipt {
+            LostReceipt::None => Edge::WriterStoppedWithoutReceipt,
+            LostReceipt::Open(_) | LostReceipt::Close(_) => Edge::WriterStopped,
+        },
         Command::WriterStopped => Edge::WriterStopped,
         Command::ConnectionRetired => connection_loss_edge(state, taken),
         Command::RouteRemoved(route) => {
