@@ -20,7 +20,7 @@ use crate::acp_transport::{
     AcpTransport, CallbackKind, CallbackResolution, SlotEvidence, TransportRefusal, TransportRun,
 };
 use crate::owner_session_open::{
-    OpenFrame, OpenRequest, OwnerSessionOpenReceipt, OwnerSessionOpenSetup,
+    OpenFrame, OpenReply, OpenRequest, OwnerSessionOpenReceipt, OwnerSessionOpenSetup,
 };
 use crate::owner_session_setting::{CorrelatedSetting, OwnerSettingWirePlan, SettingCorrelation};
 use crate::session_owner_task::OwnerCompletion;
@@ -304,12 +304,16 @@ impl OwnerAcpWire {
         run: TransportRun,
         request: OpenRequest,
     ) -> Result<OwnerSessionOpenReceipt, TransportRefusal> {
-        let (frame, result) = self.prepare_open(request);
+        let (frame, result) = self.prepare_open(request, OpenReply::Direct);
         self.transport.enqueue_control(run, frame)?;
         Ok(result)
     }
 
-    fn prepare_open(&self, request: OpenRequest) -> (AcpFrame, OwnerSessionOpenReceipt) {
+    fn prepare_open<Outcome>(
+        &self,
+        request: OpenRequest,
+        reply: impl FnOnce(oneshot::Sender<Outcome>) -> OpenReply,
+    ) -> (AcpFrame, oneshot::Receiver<Outcome>) {
         let (respond, result) = oneshot::channel();
         #[cfg(feature = "test-observation")]
         let created_handoff_fault = if matches!(&request, OpenRequest::New(_)) {
@@ -323,7 +327,7 @@ impl OwnerAcpWire {
         (
             AcpFrame::Open(OpenFrame {
                 request,
-                respond,
+                respond: reply(respond),
                 #[cfg(feature = "test-observation")]
                 created_handoff_fault,
             }),
@@ -686,6 +690,9 @@ impl OwnerAcpWire {
     }
 }
 
+#[cfg(test)]
+#[path = "owner_wire/owner_output_stop_test.rs"]
+mod output_stop_tests;
 #[cfg(test)]
 #[path = "owner_wire_test.rs"]
 mod tests;

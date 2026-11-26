@@ -10,6 +10,7 @@ use session_event_model::{
 };
 use std::marker::PhantomData;
 use std::sync::Arc;
+use switchboard_harness_contracts::{LoadAttempt, OwnerSetting, RunAttempt};
 
 pub use switchboard_harness_contracts::{
     AUTO_PERMISSION_MODE, AcceptedRunSettings, ActivationRefusal, ActivationSetup, ApprovalLease,
@@ -64,6 +65,9 @@ pub fn owner_event_for_close(fact: CloseFact) -> OwnerEvent {
 pub fn owner_event_for_restore_setting(fact: SettingFact) -> OwnerEvent {
     let catalogue = |record| Arc::new(ProviderSettingsCatalog::from_record(record));
     match fact {
+        SettingFact::NotSent { restore, setting } => {
+            owner_event_for_unsent_restore_setting(restore, setting)
+        }
         SettingFact::Mode {
             restore: run,
             setting,
@@ -88,3 +92,35 @@ pub fn owner_event_for_restore_setting(fact: SettingFact) -> OwnerEvent {
         }),
     }
 }
+
+#[must_use]
+pub fn owner_event_for_unsent_restore_setting(
+    run: RunAttempt<LoadAttempt>,
+    setting: OwnerSetting,
+) -> OwnerEvent {
+    use switchboard_harness_contracts::{
+        ObservationCause, ObservedSetting, ProviderSettingKind, RestoreModeOutcome, SettingEvidence,
+    };
+    if setting.kind == ProviderSettingKind::Fast {
+        OwnerEvent::Prepare(RestorePreparation::FastOff {
+            run,
+            setting,
+            catalogue: None,
+            observation: SettingEvidence {
+                value: ObservedSetting::Unknown,
+                cause: Some(ObservationCause::Unconfirmed),
+            },
+        })
+    } else {
+        OwnerEvent::Wire(SessionWireResult::RestoreMode {
+            run,
+            setting,
+            outcome: RestoreModeOutcome::Unconfirmed,
+            catalogue: None,
+        })
+    }
+}
+
+#[cfg(test)]
+#[path = "harness_lifecycle_test.rs"]
+mod tests;

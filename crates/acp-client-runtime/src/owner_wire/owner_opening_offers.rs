@@ -1,10 +1,10 @@
 //! Take exact lifecycle offers at the transport's ordered writing boundary.
 
-use super::{AcpFrame, OpenRequest, OwnerAcpWire, OwnerWireRefusal, ResponseKind};
+use super::{AcpFrame, OpenReply, OpenRequest, OwnerAcpWire, OwnerWireRefusal, ResponseKind};
 use crate::{
     acp_transport::{LifecycleRoute, ReadmitOutcome, TransportRefusal, TransportRun},
     owner_opening_instance::{OpeningInstance, OpeningOffer},
-    owner_session_open::{OwnerSessionOpenReceipt, OwnerSessionOpenSetup},
+    owner_session_open::{LifecycleOpenReceipt, OwnerSessionOpenSetup},
 };
 use agent_client_protocol::{JsonRpcMessage as _, schema::v1::CloseSessionRequest};
 use provider_session_machines::{
@@ -106,8 +106,8 @@ impl OwnerAcpWire {
         owner: OwnerIncarnation,
         setup: OwnerSessionOpenSetup,
         claim: &OpeningOffer,
-    ) -> Result<OwnerSessionOpenReceipt, TransportRefusal> {
-        let (frame, result) = self.prepare_open(OpenRequest::New(setup));
+    ) -> Result<LifecycleOpenReceipt, TransportRefusal> {
+        let (frame, result) = self.prepare_open(OpenRequest::New(setup), OpenReply::Lifecycle);
         self.transport.offer_lifecycle_open(
             TransportRun {
                 incarnation: owner,
@@ -127,7 +127,7 @@ impl OwnerAcpWire {
         session: String,
         via: RestoreVia,
         setup: OwnerSessionOpenSetup,
-    ) -> Result<OwnerSessionOpenReceipt, TransportRefusal> {
+    ) -> Result<LifecycleOpenReceipt, TransportRefusal> {
         let RestoreOffer {
             route,
             instance,
@@ -148,14 +148,17 @@ impl OwnerAcpWire {
         let updates = self
             .restore_updates
             .open_instance(route.run, session.clone(), instance);
-        let (frame, result) = self.prepare_open(OpenRequest::Restore {
-            provider_id: session,
-            attempt,
-            tap: instance.clone(),
-            updates,
-            via,
-            setup,
-        });
+        let (frame, result) = self.prepare_open(
+            OpenRequest::Restore {
+                provider_id: session,
+                attempt,
+                tap: instance.clone(),
+                updates,
+                via,
+                setup,
+            },
+            OpenReply::Lifecycle,
+        );
         if let Err(refusal) =
             self.transport
                 .offer_lifecycle_open(route.run, Some(route), claim, frame)

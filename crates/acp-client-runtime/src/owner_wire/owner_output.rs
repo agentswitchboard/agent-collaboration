@@ -219,13 +219,53 @@ impl OwnerAcpOutput {
                 }
             }
         }
+        self.output.close();
         shutdown.cancel();
+        while let Some(OrderedOutput { run, frame }) = self.output.recv().await {
+            match frame {
+                AcpFrame::Open(open) => {
+                    if let super::OpenRequest::Restore { tap, .. } = &open.request {
+                        self.restore_updates.reply_settled(run, tap);
+                    }
+                    open.respond.unsent();
+                }
+                AcpFrame::Request { correlation, .. } => correlation.complete_unsent(),
+                AcpFrame::Cancel(_) => {}
+                #[cfg(feature = "test-observation")]
+                AcpFrame::FixtureDispatchFence(_, receipt) => {
+                    let _fixture_gone = receipt.send(Err(Error::internal_error()));
+                }
+                #[cfg(feature = "test-observation")]
+                AcpFrame::FixtureStopWriter => {}
+            }
+        }
         replies.close();
         replies.wait().await;
     }
 }
 
 impl ResponseKind {
+    fn complete_unsent(self) {
+        match self {
+            Self::Prompt {
+                authorization,
+                completion,
+                ..
+            }
+            | Self::Steer {
+                authorization,
+                completion,
+                ..
+            } => {
+                completion.send(WorkReply::Dispatch(DispatchResult::DefinitelyUnsent(
+                    authorization,
+                )));
+            }
+            Self::Close { run, completion } => completion.send(CloseFact::NotOffered { run }),
+            Self::Setting(setting) => setting.settle_unsent(),
+        }
+    }
+
     pub(super) async fn read_reply(
         prompt_pending: bool,
         request: impl std::future::Future<Output = Result<serde_json::Value, Error>>,

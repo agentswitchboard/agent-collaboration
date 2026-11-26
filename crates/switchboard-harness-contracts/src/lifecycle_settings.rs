@@ -154,6 +154,11 @@ pub struct SettingAttempt {
 }
 
 pub enum SettingFact {
+    /// The harness writer accepted the exact setting, then stopped before sending it.
+    NotSent {
+        restore: RunAttempt<LoadAttempt>,
+        setting: OwnerSetting,
+    },
     Mode {
         restore: RunAttempt<LoadAttempt>,
         setting: OwnerSetting,

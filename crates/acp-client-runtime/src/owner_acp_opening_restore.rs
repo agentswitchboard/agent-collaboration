@@ -7,6 +7,7 @@ use super::{
     RestoreVia, RunRetirement, SessionLifecycleFact, SessionLifecyclePort,
     lifecycle_transport_refusal, lock, opening_failure,
 };
+use crate::owner_session_open::OpenReceiptFailure;
 use crate::owner_session_setting::RestoreSettingPlan;
 use crate::owner_wire::RestoreOffer;
 use provider_session_machines::{
@@ -103,10 +104,10 @@ impl OwnerOpenings {
             let open = async {
                 let mut session = match receipt.await {
                     Ok(Ok(session)) => session,
-                    Ok(Err(error)) => {
+                    Ok(Err(OpenReceiptFailure::Provider(error))) => {
                         return Err(RestoreWorkerFailure::Provider(opening_failure(error)));
                     }
-                    Err(_) => {
+                    Ok(Err(OpenReceiptFailure::OpenNotSent)) | Err(_) => {
                         return Err(RestoreWorkerFailure::Provider(
                             OpeningFailure::OutcomeUnknown,
                         ));

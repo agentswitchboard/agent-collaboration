@@ -21,6 +21,42 @@ pub use switchboard_harness_contracts::OpenSetup as OwnerSessionOpenSetup;
 pub type OwnerSessionOpenReceipt =
     oneshot::Receiver<Result<OwnerOpenedSession, ExternalProviderRuntimeError>>;
 
+pub(crate) type LifecycleOpenReceipt =
+    oneshot::Receiver<Result<OwnerOpenedSession, OpenReceiptFailure>>;
+
+pub(crate) enum OpenReceiptFailure {
+    Provider(ExternalProviderRuntimeError),
+    OpenNotSent,
+}
+
+pub(crate) enum OpenReply {
+    Lifecycle(oneshot::Sender<Result<OwnerOpenedSession, OpenReceiptFailure>>),
+    Direct(oneshot::Sender<Result<OwnerOpenedSession, ExternalProviderRuntimeError>>),
+}
+
+impl OpenReply {
+    fn deliver(self, outcome: Result<OwnerOpenedSession, ExternalProviderRuntimeError>) -> bool {
+        match self {
+            Self::Lifecycle(reply) => reply
+                .send(outcome.map_err(OpenReceiptFailure::Provider))
+                .is_ok(),
+            Self::Direct(reply) => reply.send(outcome).is_ok(),
+        }
+    }
+
+    pub(super) fn unsent(self) {
+        match self {
+            Self::Lifecycle(reply) => {
+                let _owner_retired = reply.send(Err(OpenReceiptFailure::OpenNotSent));
+            }
+            Self::Direct(reply) => {
+                let _owner_retired =
+                    reply.send(Err(ExternalProviderRuntimeError::TransportFailure));
+            }
+        }
+    }
+}
+
 pub struct OwnerOpenedSession {
     pub(crate) provider_id: SessionId,
     pub(crate) connection: ConnectionTo<Agent>,
@@ -137,7 +173,7 @@ pub(crate) enum OpenRequest {
 
 pub(crate) struct OpenFrame {
     pub(crate) request: OpenRequest,
-    pub(crate) respond: oneshot::Sender<Result<OwnerOpenedSession, ExternalProviderRuntimeError>>,
+    pub(crate) respond: OpenReply,
     #[cfg(feature = "test-observation")]
     pub(crate) created_handoff_fault: Option<CreatedHandoffFault>,
 }
@@ -194,7 +230,7 @@ impl OpenFrame {
                             );
                             if !respond
                                 .take()
-                                .is_some_and(|reply| reply.send(Ok(opened)).is_ok())
+                                .is_some_and(|reply| reply.deliver(Ok(opened)))
                             {
                                 return Ok(());
                             }
@@ -218,7 +254,7 @@ impl OpenFrame {
                         })
                         .await;
                     if let (Some(respond), Err(error)) = (respond, result) {
-                        let _owner_retired = respond.send(Err(acp_operation_error(error)));
+                        respond.deliver(Err(acp_operation_error(error)));
                     }
                 };
                 let mut start = Box::pin(start);
@@ -305,7 +341,7 @@ impl OpenFrame {
                 // The first poll registers the provisional SDK route and
                 // enqueues load/resume before the next writer entry.
                 if let Some(ready) = start.as_mut().now_or_never() {
-                    let _owner_retired = self.respond.send(ready);
+                    self.respond.deliver(ready);
                     restore_updates.reply_settled(run, &tap);
                 } else {
                     tasks.spawn(async move {
@@ -315,7 +351,7 @@ impl OpenFrame {
                             result = start => result,
                             () = shutdown.cancelled() => Err(ExternalProviderRuntimeError::RestoreDisconnected),
                         };
-                        if self.respond.send(result).is_err() {
+                        if !self.respond.deliver(result) {
                             tracing::debug!(?run, ?attempt, "settled retired ACP restore");
                         }
                         restore_updates.reply_settled(run, &tap);

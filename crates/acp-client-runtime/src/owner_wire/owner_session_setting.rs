@@ -219,6 +219,34 @@ impl OwnerSettingWirePlan {
 }
 
 impl CorrelatedSetting {
+    pub(super) fn settle_unsent(self) {
+        match self.correlation {
+            SettingCorrelation::Explicit {
+                authorization,
+                completion,
+            } => {
+                completion.send(WorkReply::Dispatch(DispatchResult::DefinitelyUnsent(
+                    authorization,
+                )));
+            }
+            SettingCorrelation::RestoreMode {
+                run,
+                setting,
+                completion,
+            }
+            | SettingCorrelation::RestoreFastOff {
+                run,
+                setting,
+                completion,
+            } => {
+                completion.send(SettingFact::NotSent {
+                    restore: run,
+                    setting,
+                });
+            }
+        }
+    }
+
     pub(crate) fn settle(
         self,
         reply: Option<Result<serde_json::Value, Error>>,

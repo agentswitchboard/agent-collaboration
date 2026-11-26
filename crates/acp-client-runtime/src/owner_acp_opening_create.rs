@@ -7,6 +7,7 @@ use super::{
     OpeningSlot, OwnerAcpWire, OwnerOpenings, RequestedProviderSettings, RunRetirement,
     lifecycle_transport_refusal, lock, opening_failure,
 };
+use crate::owner_session_open::OpenReceiptFailure;
 use provider_session_machines::harness_lifecycle::{
     AcceptedRunSettings, CreatedSetupFact, CreationEffect, SessionCreatedSetupFact, SetupReport,
 };
@@ -119,7 +120,7 @@ impl OwnerOpenings {
                         _ => return,
                     }
                 }
-                Some(Ok(Err(error))) => {
+                Some(Ok(Err(OpenReceiptFailure::Provider(error)))) => {
                     let remote = if error
                         .coded_wire_failure()
                         .is_some_and(|failure| failure.definitely_no_effect())
@@ -137,7 +138,7 @@ impl OwnerOpenings {
                         failure: opening_failure(error),
                     }
                 }
-                Some(Err(_)) => {
+                Some(Ok(Err(OpenReceiptFailure::OpenNotSent)) | Err(_)) => {
                     if !finish_create(&attempts, &wire, slot, &instance, Command::OpenFailed) {
                         return;
                     }

@@ -4,18 +4,18 @@ use super::{OwnerRun, SessionOwnerExecution};
 use crate::session_owner_lifecycle_reports::LifecycleObservationScope;
 use acp_client_runtime::session_owner_task::{OwnerCompletionPort, OwnerTaskError};
 use provider_session_machines::{
-    ProviderSettingKind, ProviderSettingsCatalog,
+    ProviderSettingsCatalog,
     harness_lifecycle::{
         AUTO_PERMISSION_MODE, AcceptedRunSettings, ActivationRefusal, ActivationSetup,
         CreateAttempt, HarnessSessionId, LifecycleRefusal, LifecycleReply, OpenAttempt,
         OpenRequest, OpeningFact, OpeningFailure, RestoreSettingRefusal, RestoredOpening,
         RunRetirement, SessionCreatedSetupFact, SettingAttempt, owner_event_for_restore_setting,
+        owner_event_for_unsent_restore_setting,
     },
     session_lifecycle_machine::{LoadAttempt, RestoreVia},
     session_owner::{
-        ObservationCause, ObservedSetting, OwnerAddress, OwnerEvent, OwnerSetting,
-        PreparationStage, ReplyAdmission, RestoreFailure, RestoreModeOutcome, RestorePreparation,
-        RunAttempt, SessionWireResult, SettingEvidence, WireOutcome, WriterState,
+        OwnerAddress, OwnerEvent, OwnerSetting, PreparationStage, ReplyAdmission, RestoreFailure,
+        RestorePreparation, RunAttempt, SessionWireResult, WireOutcome, WriterState,
     },
     session_setting_machine::SettingValueId,
 };
@@ -110,7 +110,9 @@ impl SessionOwnerExecution {
                 Err(_) => ReplyAdmission::Refused(WriterState::Stopped),
             }) {
             Ok(()) => Ok(None),
-            Err(RestoreSettingRefusal::Harness(_)) => Ok(Some(setting_unsent(run, setting))),
+            Err(RestoreSettingRefusal::Harness(_)) => {
+                Ok(Some(owner_event_for_unsent_restore_setting(run, setting)))
+            }
             Err(RestoreSettingRefusal::ReplyReservation(WriterState::Full)) => {
                 Err(OwnerTaskError::CompletionCapacity)
             }
@@ -294,25 +296,4 @@ fn restore_reply(
 
 fn restore_failed(run: RunAttempt<LoadAttempt>, failure: RestoreFailure) -> OwnerEvent {
     OwnerEvent::Wire(SessionWireResult::RestoreFailed { run, failure })
-}
-
-fn setting_unsent(run: RunAttempt<LoadAttempt>, setting: OwnerSetting) -> OwnerEvent {
-    if setting.kind == ProviderSettingKind::Fast {
-        OwnerEvent::Prepare(RestorePreparation::FastOff {
-            run,
-            setting,
-            catalogue: None,
-            observation: SettingEvidence {
-                value: ObservedSetting::Unknown,
-                cause: Some(ObservationCause::Unconfirmed),
-            },
-        })
-    } else {
-        OwnerEvent::Wire(SessionWireResult::RestoreMode {
-            run,
-            setting,
-            outcome: RestoreModeOutcome::Unconfirmed,
-            catalogue: None,
-        })
-    }
 }
