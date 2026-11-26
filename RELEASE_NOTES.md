@@ -1,5 +1,9 @@
 # Release Notes
 
+## 0.1.163
+
+- A signed-in person can list, read, and answer approval requests with `codex-router central approvals list`, `read`, and `decide` over their own WebSocket connection to Central. If the decision outcome is unknown, the CLI prints the operation ID and the command to retry. Retrying with the same operation ID returns the saved decision if Central already applied it.
+
 ## 0.1.162
 
 - Central serves a person's approval list, read, and decide calls over their own WebSocket connection. The signed HTTP approval routes have been removed.
