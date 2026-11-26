@@ -214,11 +214,13 @@ impl SessionOwnerDoor {
     }
 
     fn bind(&self, owner: &RegisteredOwner, stopped: CancellationToken) -> BoundSessionHarness {
-        let observations = Arc::new(SessionOwnerLifecycleReports::new(
-            owner.address,
-            &owner.handle,
-            stopped,
-        ));
+        let observations = SessionOwnerLifecycleReports::new(owner.address, &owner.handle, stopped);
+        #[cfg(test)]
+        let observations = {
+            let fixture = self.preparation_fixture.clone();
+            observations.with_harness_loss_hold(Box::new(move || fixture.hold_harness_loss()))
+        };
+        let observations = Arc::new(observations);
         let binding = self.provider.bind(owner.address, observations.clone());
         BoundSessionHarness {
             binding,

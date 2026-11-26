@@ -12,6 +12,8 @@ pub(crate) struct PreparationFixture {
     #[cfg(test)]
     restore_completion_queued: Mutex<Option<oneshot::Sender<()>>>,
     #[cfg(test)]
+    harness_loss_pause: Mutex<Option<PreparationPause>>,
+    #[cfg(test)]
     create_pause: Mutex<Option<PreparationPause>>,
     delivery_ack: Mutex<Option<DeliveryAckPause>>,
     #[cfg(test)]
@@ -140,6 +142,16 @@ impl PreparationFixture {
 
     pub(crate) fn pause_restore(&self) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
         Self::arm(&self.restore_pause)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pause_harness_loss(&self) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+        Self::arm(&self.harness_loss_pause)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hold_harness_loss(&self) -> Option<oneshot::Receiver<()>> {
+        Self::enter(&self.harness_loss_pause)
     }
 
     #[cfg(test)]

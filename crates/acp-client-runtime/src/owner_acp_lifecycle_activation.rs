@@ -114,6 +114,13 @@ impl OwnerOpenings {
             stopped.clone(),
             Arc::clone(&events),
         );
+        let reader = match session.start_stream(stream) {
+            Ok(reader) => reader,
+            Err(_) => {
+                self.retire(generation);
+                return Err(ActivationRefusal::ReaderUnavailable);
+            }
+        };
         self.tasks.spawn(async move {
             let read = async {
                 if let Some(view) = skills {
@@ -123,7 +130,7 @@ impl OwnerOpenings {
                         _result = events.send(SessionLifecycleFact::SkillView { run: generation, view }) => {}
                     }
                 }
-                if session.read_stream(stream).await.is_err() {
+                if reader.await.is_err() {
                     tokio::select! {
                         biased;
                         () = stopped.cancelled() => {}

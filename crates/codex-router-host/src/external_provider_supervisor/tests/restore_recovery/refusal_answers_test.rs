@@ -86,6 +86,122 @@ async fn connection_loss_during_a_held_opening_refuses_queued_work_and_late_acti
 }
 
 #[tokio::test]
+async fn retired_acp_connection_refuses_host_ready_before_the_owner_consumes_loss() {
+    use provider_session_machines::session_owner::{
+        PreparationStage, RemoteEffect, RestoreDisposition, RestoreFailure,
+    };
+    use session_event_model::{SessionEvent, SessionState};
+    use std::num::NonZeroUsize;
+
+    let rig = RestoreRig::new();
+    rig.seed_session().await;
+    let (host, hub) = rig
+        .open_host_with_fixture_arguments(
+            &["plain-prompts"],
+            Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        )
+        .await;
+    let runtime = host
+        .runtime_for(&rig.target.endpoint)
+        .expect("provider runtime");
+    let owner = host
+        .session_owner_for(&rig.target)
+        .expect("registered owner");
+    let board = collaboration_protocol::ProviderIdentity::session_to_board(&rig.target)
+        .expect("board session");
+    let mut publication = hub
+        .owner_inbox(board.clone(), NonZeroUsize::MIN)
+        .0
+        .capacity_returned();
+    let (prepared, release_prepared) = runtime.preparation_fixture.pause_restore();
+    let (loss_reached, release_loss) = runtime.preparation_fixture.pause_harness_loss();
+    let restoring = OperationId::generate();
+    host.load(rig.load_request(restoring.clone()))
+        .await
+        .expect("restore admitted");
+    prepared
+        .await
+        .expect("real ACP opening and successful HostReady are held");
+    publication
+        .changed()
+        .await
+        .expect("initial rebase applied before attaching");
+    let mut history = hub.attach(board).await.expect("pre-activation history");
+    assert!(!history.snapshot.iter().any(|event| matches!(
+        event.event,
+        SessionEvent::StateChanged {
+            state: SessionState::Idle
+        }
+    )));
+    let SessionLifecycle::Loading {
+        generation,
+        attempt,
+        ..
+    } = owner.snapshots().borrow().lifecycle
+    else {
+        panic!("the exact held opening must still be loading");
+    };
+    let run = RunAttempt {
+        generation,
+        attempt,
+    };
+    assert!(matches!(
+        owner
+            .admit(SessionOwnerCommand::AcceptSettings { generation })
+            .await,
+        Err(crate::session_owner_door::OwnerDoorError::Refused { .. })
+    ));
+    let token = runtime.retirement();
+    token.cancel();
+    loss_reached
+        .await
+        .expect("the real connection-loss report is held before its mailbox send");
+    assert!(token.is_cancelled());
+    assert!(matches!(owner.snapshots().borrow().lifecycle,
+        SessionLifecycle::Loading { generation: loading, attempt: pending, .. }
+            if loading == generation && pending == attempt));
+    let queued = runtime
+        .preparation_fixture
+        .observe_restore_completion_queued();
+    release_prepared
+        .send(())
+        .expect("offer the held HostReady before loss");
+    queued.await.expect("actual reserved HostReady queued");
+
+    let failure = host.wait(wait_request(restoring)).await.expect_err(
+        "known-retired ACP connection must not settle restore successfully before loss",
+    );
+    assert_eq!(failure.effect, ProviderOperationEffect::Applied);
+    let snapshot = owner.snapshots().borrow().clone();
+    let result = snapshot
+        .last_restore
+        .expect("the owner consumed activation and recorded its result");
+    assert_eq!(result.attempt, run);
+    assert_eq!(
+        result.disposition,
+        RestoreDisposition::Retired {
+            failure: RestoreFailure::LocalPrerequisite {
+                stage: PreparationStage::Route
+            },
+            remote: RemoteEffect::Applied,
+        }
+    );
+    assert!(
+        matches!(
+            history.receiver.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ),
+        "known-retired activation must publish no transient Live or replay batch"
+    );
+    assert_lost_session_is_retained(&rig, &hub, &owner).await;
+
+    release_loss
+        .send(())
+        .expect("now let the ordinary owner-wide loss proceed");
+    host.shutdown().await.expect("stop Host");
+}
+
+#[tokio::test]
 async fn connection_loss_after_close_is_offered_keeps_the_outcome_unknown() {
     let rig = RestoreRig::new();
     rig.seed_session().await;

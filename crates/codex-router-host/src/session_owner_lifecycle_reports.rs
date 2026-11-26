@@ -25,6 +25,9 @@ pub(crate) type OwnerHarnessPayloads = SessionHarnessPayloads<
 pub(crate) type SessionHarnessBinding = Box<dyn OwnerHarnessBinding<OwnerHarnessPayloads>>;
 pub(crate) type SessionHarnessProvider = dyn HarnessProvider<OwnerHarnessPayloads>;
 
+#[cfg(test)]
+type HarnessLossHold = Box<dyn Fn() -> Option<tokio::sync::oneshot::Receiver<()>> + Send + Sync>;
+
 pub(crate) struct BoundSessionHarness {
     pub(crate) binding: SessionHarnessBinding,
     pub(crate) observations: Arc<SessionOwnerLifecycleReports>,
@@ -35,6 +38,8 @@ pub(crate) struct SessionOwnerLifecycleReports {
     completions: OwnerCompletionPort,
     snapshots: watch::Receiver<SessionSnapshot>,
     stopped: CancellationToken,
+    #[cfg(test)]
+    harness_loss_hold: Option<HarnessLossHold>,
 }
 
 #[derive(Clone, Copy)]
@@ -55,7 +60,15 @@ impl SessionOwnerLifecycleReports {
             completions: handle.completion_port(),
             snapshots: handle.snapshots(),
             stopped,
+            #[cfg(test)]
+            harness_loss_hold: None,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_harness_loss_hold(mut self, hold: HarnessLossHold) -> Self {
+        self.harness_loss_hold = Some(hold);
+        self
     }
 
     pub(crate) fn observed_at(
@@ -74,6 +87,10 @@ impl SessionOwnerLifecycleReports {
 impl HarnessOwnerEvents<ProviderAuthStatus> for SessionOwnerLifecycleReports {
     fn report_harness_gone(&self) -> EventSendFuture<'_> {
         Box::pin(async move {
+            #[cfg(test)]
+            if let Some(hold) = self.harness_loss_hold.as_ref().and_then(|hold| hold()) {
+                let _test_released = hold.await;
+            }
             self.completions
                 .send_lifecycle_observation(self.address, OwnerEvent::ConnectionLost, &self.stopped)
                 .await

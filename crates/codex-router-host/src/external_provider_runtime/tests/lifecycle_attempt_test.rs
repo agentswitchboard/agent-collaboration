@@ -1,5 +1,10 @@
 //! Observe the ACP binding's exact opening and activation answers.
 
+#[path = "activation_handoff_test.rs"]
+mod activation_handoff;
+#[path = "opening_wait_test.rs"]
+mod opening_wait;
+
 use super::*;
 use crate::session_owner_lifecycle_reports::SessionHarnessBinding;
 

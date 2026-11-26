@@ -20,6 +20,7 @@ fn immediate_refusals_name_only_the_moves_available_from_their_state() {
         RouteUnavailable,
         RouteClosing,
         AttemptMismatch,
+        OpeningInProgress,
         OpeningNotHeld,
         SettingValueNotOffered,
         SettingSetterUnavailable,
@@ -34,6 +35,7 @@ fn immediate_refusals_name_only_the_moves_available_from_their_state() {
             RouteUnavailable => &[Reopen],
             RouteClosing => &[WaitForClose],
             AttemptMismatch => &[CorrectRequest],
+            OpeningInProgress => &[WaitForOpening],
             OpeningNotHeld => &[Reopen],
             SettingValueNotOffered => &[CorrectRequest],
             SettingSetterUnavailable => &[ReportUnavailable],
@@ -105,16 +107,21 @@ fn opening_and_activation_refusals_name_only_reachable_moves() {
         assert_eq!(failure.valid_moves(), moves, "opening refusal {failure:?}");
     }
     for refusal in [
+        ActivationRefusal::ConnectionRetired,
         ActivationRefusal::AttemptMismatch,
         ActivationRefusal::OpeningNotHeld,
         ActivationRefusal::AlreadyActive,
         ActivationRefusal::RouteUnavailable,
+        ActivationRefusal::ReaderUnavailable,
     ] {
         let moves: &[LifecycleMove] = match refusal {
+            ActivationRefusal::ConnectionRetired => &[StopOwner],
             ActivationRefusal::AttemptMismatch => &[CorrectRequest],
             ActivationRefusal::OpeningNotHeld => &[ReportUnavailable],
             ActivationRefusal::AlreadyActive => &[KeepActiveRun, Retire],
-            ActivationRefusal::RouteUnavailable => &[ReportUnavailable],
+            ActivationRefusal::RouteUnavailable | ActivationRefusal::ReaderUnavailable => {
+                &[ReportUnavailable]
+            }
         };
         assert_eq!(
             refusal.valid_moves(),

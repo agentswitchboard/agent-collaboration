@@ -122,6 +122,14 @@ pub(crate) enum OpenRequest {
 pub(crate) struct OpenFrame {
     pub(crate) request: OpenRequest,
     pub(crate) respond: oneshot::Sender<Result<OwnerOpenedSession, ExternalProviderRuntimeError>>,
+    #[cfg(feature = "test-observation")]
+    pub(crate) created_handoff_fault: Option<CreatedHandoffFault>,
+}
+
+#[cfg(feature = "test-observation")]
+pub(crate) struct CreatedHandoffFault {
+    pub(crate) close_requested: oneshot::Receiver<()>,
+    pub(crate) closed: oneshot::Sender<()>,
 }
 
 impl OpenFrame {
@@ -138,6 +146,8 @@ impl OpenFrame {
 
         match self.request {
             OpenRequest::New(setup) => {
+                #[cfg(feature = "test-observation")]
+                let created_handoff_fault = self.created_handoff_fault;
                 let folders = crate::session_start_folders::session_start_folders(
                     &setup.cwd,
                     setup.scratch_folder.as_deref(),
@@ -166,14 +176,22 @@ impl OpenFrame {
                                 folders.in_folder,
                                 auth_status,
                             );
-                            if respond
+                            if !respond
                                 .take()
                                 .is_some_and(|reply| reply.send(Ok(opened)).is_ok())
-                                && let Ok(CreatedStream {
-                                    opened,
-                                    target,
-                                    finished,
-                                }) = activation.await
+                            {
+                                return Ok(());
+                            }
+                            if let Some(CreatedStream {
+                                opened,
+                                target,
+                                finished,
+                            }) = receive_created_handoff(
+                                activation,
+                                #[cfg(feature = "test-observation")]
+                                created_handoff_fault,
+                            )
+                            .await
                             {
                                 let _owner_retired =
                                     finished.send(opened.read_sdk_stream(&mut sdk, target).await);
@@ -287,4 +305,23 @@ impl OpenFrame {
             }
         }
     }
+}
+
+async fn receive_created_handoff(
+    activation: oneshot::Receiver<CreatedStream>,
+    #[cfg(feature = "test-observation")] fault: Option<CreatedHandoffFault>,
+) -> Option<CreatedStream> {
+    #[cfg(feature = "test-observation")]
+    if let Some(fault) = fault {
+        let mut activation = activation;
+        return tokio::select! {
+            result = &mut activation => result.ok(),
+            Ok(()) = fault.close_requested => {
+                drop(activation);
+                let _fixture_gone = fault.closed.send(());
+                None
+            }
+        };
+    }
+    activation.await.ok()
 }

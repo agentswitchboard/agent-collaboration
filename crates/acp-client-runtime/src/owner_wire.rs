@@ -104,6 +104,8 @@ pub struct OwnerAcpWire {
     owner_events: Mutex<BTreeMap<OwnerIncarnation, Weak<AcpOwnerEvents>>>,
     #[cfg(feature = "test-observation")]
     fixture_dispatch: Mutex<FixtureDispatchObservation>,
+    #[cfg(feature = "test-observation")]
+    fixture_created_handoff: Mutex<Option<crate::owner_session_open::CreatedHandoffFault>>,
 }
 
 pub(crate) struct PromptTerminal {
@@ -207,12 +209,34 @@ impl OwnerAcpWire {
                 owner_events: Mutex::default(),
                 #[cfg(feature = "test-observation")]
                 fixture_dispatch: Mutex::default(),
+                #[cfg(feature = "test-observation")]
+                fixture_created_handoff: Mutex::default(),
             },
             OwnerAcpOutput {
                 output,
                 restore_updates,
             },
         )
+    }
+
+    /// Close the next created SDK reader's exact activation channel on demand.
+    #[cfg(feature = "test-observation")]
+    pub fn close_created_handoff_for_test(&self) -> (oneshot::Sender<()>, oneshot::Receiver<()>) {
+        let (close, close_requested) = oneshot::channel();
+        let (closed, closure_observed) = oneshot::channel();
+        let previous = self
+            .fixture_created_handoff
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .replace(crate::owner_session_open::CreatedHandoffFault {
+                close_requested,
+                closed,
+            });
+        assert!(
+            previous.is_none(),
+            "the earlier create handoff fault has not been used"
+        );
+        (close, closure_observed)
     }
 
     /// Arms a one-shot wire fence for an actual owner dispatch attempt.
@@ -301,8 +325,24 @@ impl OwnerAcpWire {
         request: OpenRequest,
     ) -> Result<OwnerSessionOpenReceipt, TransportRefusal> {
         let (respond, result) = oneshot::channel();
-        self.transport
-            .enqueue_control(run, AcpFrame::Open(OpenFrame { request, respond }))?;
+        #[cfg(feature = "test-observation")]
+        let created_handoff_fault = if matches!(&request, OpenRequest::New(_)) {
+            self.fixture_created_handoff
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+        } else {
+            None
+        };
+        self.transport.enqueue_control(
+            run,
+            AcpFrame::Open(OpenFrame {
+                request,
+                respond,
+                #[cfg(feature = "test-observation")]
+                created_handoff_fault,
+            }),
+        )?;
         Ok(result)
     }
 

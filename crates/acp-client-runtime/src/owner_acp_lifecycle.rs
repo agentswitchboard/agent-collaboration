@@ -115,6 +115,7 @@ impl<Port: AcpRequestPayloads> HarnessProvider<SessionHarnessPayloads<Port::Cont
             openings,
             owner_events: events,
             owner_stopped,
+            connection_retired: self.connection_retired.clone(),
         })
     }
 
@@ -141,6 +142,7 @@ struct AcpOwnerLifecycleBinding<Port: AcpRequestPayloads> {
     openings: OwnerOpenings,
     owner_events: Arc<dyn HarnessOwnerEvents<ProviderAuthStatus>>,
     owner_stopped: CancellationToken,
+    connection_retired: CancellationToken,
 }
 
 impl<Port: AcpRequestPayloads> Drop for AcpOwnerLifecycleBinding<Port> {
@@ -221,6 +223,9 @@ impl<Port: AcpRequestPayloads> OwnerHarnessBinding<SessionHarnessPayloads<Port::
         events: SessionLifecyclePort,
         retired: RunRetirement,
     ) -> Result<(), ActivationRefusal> {
+        if self.connection_retired.is_cancelled() {
+            return Err(ActivationRefusal::ConnectionRetired);
+        }
         self.openings.activate(setup, events, retired)
     }
 

@@ -119,6 +119,7 @@ impl CloseFact {
 pub enum LifecycleMove {
     CorrectRequest,
     WaitForWriter,
+    WaitForOpening,
     /// Start a new opening attempt through the owner binding.
     Reopen,
     CreateFromSavedSetup,
@@ -135,18 +136,23 @@ pub enum LifecycleMove {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ActivationRefusal {
+    ConnectionRetired,
     AttemptMismatch,
     OpeningNotHeld,
     AlreadyActive,
     RouteUnavailable,
+    ReaderUnavailable,
 }
 
 impl ActivationRefusal {
     #[must_use]
     pub const fn valid_moves(self) -> &'static [LifecycleMove] {
         match self {
+            Self::ConnectionRetired => &[LifecycleMove::StopOwner],
             Self::AttemptMismatch => &[LifecycleMove::CorrectRequest],
-            Self::OpeningNotHeld | Self::RouteUnavailable => &[LifecycleMove::ReportUnavailable],
+            Self::OpeningNotHeld | Self::RouteUnavailable | Self::ReaderUnavailable => {
+                &[LifecycleMove::ReportUnavailable]
+            }
             Self::AlreadyActive => &[LifecycleMove::KeepActiveRun, LifecycleMove::Retire],
         }
     }
@@ -159,6 +165,8 @@ pub enum LifecycleRefusal {
     RouteUnavailable,
     RouteClosing,
     AttemptMismatch,
+    /// An existing opening still owns this attempt.
+    OpeningInProgress,
     OpeningNotHeld,
     SettingValueNotOffered,
     SettingSetterUnavailable,
@@ -176,6 +184,7 @@ impl LifecycleRefusal {
             }
             Self::Writer(WriterState::Full) => &[LifecycleMove::WaitForWriter],
             Self::Writer(WriterState::Stopped) => &[LifecycleMove::StopOwner],
+            Self::OpeningInProgress => &[LifecycleMove::WaitForOpening],
             Self::RouteUnavailable | Self::OpeningNotHeld => &[LifecycleMove::Reopen],
             Self::RouteClosing => &[LifecycleMove::WaitForClose],
             Self::CatalogueUnavailable | Self::InvalidCatalogueReply => &[

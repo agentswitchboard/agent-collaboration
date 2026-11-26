@@ -18,7 +18,7 @@ use agent_client_protocol::{
     ActiveSession, Agent, Dispatch, SessionMessage,
     schema::v1::{ContentBlock, SessionNotification, SessionUpdate},
 };
-use futures_util::FutureExt as _;
+use futures_util::{FutureExt as _, future::Either};
 use provider_session_machines::ProviderSettingsCatalog;
 use provider_session_machines::harness_lifecycle::{
     EventPort, EventRefusal, EventSendFuture, SessionLifecycleFact, SessionLifecyclePort,
@@ -346,17 +346,28 @@ impl OwnerOpenedSession {
     /// Consume the SDK route as a stream executor. Scope and presentation
     /// changes are admitted by the owner against the captured run and turn.
     pub async fn read_stream(
-        mut self,
+        self,
         target: OwnerStreamTarget,
     ) -> Result<(), ExternalProviderRuntimeError> {
+        self.start_stream(target)?.await
+    }
+
+    /// Take a stream locally, including the actual SDK handoff for creates.
+    pub(crate) fn start_stream(
+        mut self,
+        target: OwnerStreamTarget,
+    ) -> Result<
+        impl Future<Output = Result<(), ExternalProviderRuntimeError>> + Send,
+        ExternalProviderRuntimeError,
+    > {
         match self.route.take() {
-            Some(OpenedSessionRoute::Restored { sdk, updates }) => {
+            Some(OpenedSessionRoute::Restored { sdk, updates }) => Ok(Either::Left(async move {
                 let result = self
                     .read_updates(SessionUpdates::Restored(updates), target)
                     .await;
                 drop(sdk);
                 result
-            }
+            })),
             Some(OpenedSessionRoute::Created(activate)) => {
                 let (finished, result) = tokio::sync::oneshot::channel();
                 activate
@@ -366,9 +377,11 @@ impl OwnerOpenedSession {
                         finished,
                     })
                     .map_err(|_| ExternalProviderRuntimeError::TransportFailure)?;
-                result
-                    .await
-                    .map_err(|_| ExternalProviderRuntimeError::TransportFailure)?
+                Ok(Either::Right(async move {
+                    result
+                        .await
+                        .map_err(|_| ExternalProviderRuntimeError::TransportFailure)?
+                }))
             }
             None => Err(ExternalProviderRuntimeError::TransportFailure),
         }
