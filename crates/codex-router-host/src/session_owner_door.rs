@@ -258,7 +258,11 @@ impl SessionOwnerDoor {
         }
         let calls = Arc::new(SessionOwnerCalls::default());
         let registered_owner = registered.owner;
-        let storage = SessionOwnerStorage::new(registered.lane, self.tasks.clone());
+        let storage = SessionOwnerStorage::new(
+            registered.lane,
+            self.tasks.clone(),
+            registered_owner.handle.snapshots(),
+        );
         let ports = SessionOwnerExecution::new(
             target.clone(),
             bound.binding,

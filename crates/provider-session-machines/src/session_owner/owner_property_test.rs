@@ -277,7 +277,7 @@ impl Mailbox {
                 SessionStoreRequest::ReadRestoreSetup(run) => {
                     SessionStoreResult::RestoreSetup { run: *run, outcome }
                 }
-                SessionStoreRequest::MarkDispatch(input)
+                SessionStoreRequest::MarkDispatch(TurnDispatchMark { input, .. })
                 | SessionStoreRequest::MarkQueuedDispatch(input) => SessionStoreResult::Dispatch {
                     input: input.clone(),
                     outcome,
@@ -578,7 +578,10 @@ fn a_live_holder_refuses_only_the_exact_unacknowledged_start(case: hegel::TestCa
     let first = input(run.generation, 71);
     assert!(
         enqueue_prompt(&mut state, &first).contains(&OwnerEffect::Store(
-            SessionStoreRequest::MarkDispatch(first.clone())
+            SessionStoreRequest::MarkDispatch(TurnDispatchMark {
+                input: first.clone(),
+                budget: std::time::Duration::from_secs(10)
+            })
         ))
     );
     for ordinal in 0..case.draw(gs::integers::<u8>().min_value(1).max_value(6)) {

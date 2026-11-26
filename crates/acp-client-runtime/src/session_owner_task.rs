@@ -3,6 +3,7 @@
 use provider_session_machines::session_owner::{
     OwnerAddress, OwnerDeadline, OwnerEffect, OwnerEvent, OwnerMailboxEvent, OwnerOutbox,
     SessionOwnerCommand, SessionOwnerMachine, SessionOwnerRejection, SessionSnapshot,
+    SessionStoreRequest, TurnDispatchMark,
 };
 use router_clock::{ClockInstant, RuntimeClock};
 use std::{
@@ -201,6 +202,22 @@ pub trait SessionOwnerPorts {
         completions: &OwnerCompletionPort,
         caller_wakes: &mut OwnerCallerWakes,
     ) -> Result<Option<OwnerEvent>, OwnerTaskError>;
+
+    fn execute_dispatch_mark(
+        &mut self,
+        address: OwnerAddress,
+        mark: TurnDispatchMark,
+        _deadline: ClockInstant,
+        completions: &OwnerCompletionPort,
+        caller_wakes: &mut OwnerCallerWakes,
+    ) -> Result<Option<OwnerEvent>, OwnerTaskError> {
+        self.execute(
+            address,
+            OwnerEffect::Store(SessionStoreRequest::MarkDispatch(mark)),
+            completions,
+            caller_wakes,
+        )
+    }
 }
 
 /// Prepared caller deliveries for one reduction, in effect order.
@@ -383,14 +400,27 @@ impl SessionOwnerTask {
         let address = outbox.owner;
         let mut caller_wakes = OwnerCallerWakes::new();
         for effect in outbox.effects {
-            if let OwnerEffect::Arm { deadline, budget } = effect {
-                self.deadlines
-                    .entry(committed_at.after(budget))
-                    .or_default()
-                    .push_back(ArmedDeadline { address, deadline });
-            } else if let Some(event) =
-                ports.execute(address, effect, &self.completion_port, &mut caller_wakes)?
-            {
+            let event = match effect {
+                OwnerEffect::Arm { deadline, budget } => {
+                    self.deadlines
+                        .entry(committed_at.after(budget))
+                        .or_default()
+                        .push_back(ArmedDeadline { address, deadline });
+                    None
+                }
+                OwnerEffect::Store(SessionStoreRequest::MarkDispatch(mark)) => {
+                    let deadline = committed_at.after(mark.budget);
+                    ports.execute_dispatch_mark(
+                        address,
+                        mark,
+                        deadline,
+                        &self.completion_port,
+                        &mut caller_wakes,
+                    )?
+                }
+                other => ports.execute(address, other, &self.completion_port, &mut caller_wakes)?,
+            };
+            if let Some(event) = event {
                 enqueue(OwnerMailboxEvent {
                     owner: address,
                     event,

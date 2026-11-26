@@ -9,7 +9,7 @@ use crate::binding_dispatch_permit::{BindingUncertainty, lock};
 use crate::provider_operation_custody::LaneWriteCustody;
 use collaboration_protocol::{OperationId, ProviderOperationStage};
 use provider_session_machines::session_owner::{OwnerIncarnation, OwnerInput};
-use router_clock::RuntimeClock;
+use router_clock::{ClockInstant, RuntimeClock};
 use std::sync::Arc;
 use switchboard_session_store::ProviderOperationStoreError;
 use tokio::sync::watch;
@@ -27,6 +27,8 @@ pub(super) struct LaneDispatchOffer {
     pub(super) input: OwnerInput,
     operation: OperationId,
     kind: LaneDispatchKind,
+    ended_turn: Option<Uuid>,
+    deadline: Option<ClockInstant>,
 }
 
 pub(super) struct LaneDispatchWrite {
@@ -48,6 +50,8 @@ impl SessionStoreLane {
         operation: OperationId,
         input: OwnerInput,
         kind: LaneDispatchKind,
+        ended_turn: Option<Uuid>,
+        deadline: Option<ClockInstant>,
     ) -> Result<SessionStoreTicket, SessionStoreOfferError> {
         let marked = MarkedInput {
             operation: operation.clone(),
@@ -65,6 +69,8 @@ impl SessionStoreLane {
                 input,
                 operation,
                 kind,
+                ended_turn,
+                deadline,
             }),
         )
     }
@@ -92,7 +98,7 @@ impl SessionStoreLane {
             return false;
         };
         matches!(
-            self.dispatch_blocker(operation, kind, &lock(outcomes), binding),
+            self.dispatch_blocker(operation, kind, None, &lock(outcomes), binding),
             Err(SessionStoreOfferError::DispatchBusy { .. })
         )
     }
@@ -101,6 +107,7 @@ impl SessionStoreLane {
         &self,
         operation: &OperationId,
         kind: LaneDispatchKind,
+        ended_turn: Option<Uuid>,
         outcomes: &BindingOutcomes,
         binding: &BindingUncertainty,
     ) -> Result<(), SessionStoreOfferError> {
@@ -125,17 +132,17 @@ impl SessionStoreLane {
             {
                 return Err(SessionStoreOfferError::DispatchBusy {
                     operation: key(blocker)?,
-                    pending: true,
+                    wait_for_eligibility: true,
                 });
             }
             if let Some(blocker) = binding
                 .live_dispatch_blocker
                 .get()
-                .and_then(|gate| gate(operation, &self.inner.target))
+                .and_then(|gate| gate(operation, &self.inner.target, ended_turn))
             {
                 return Err(SessionStoreOfferError::DispatchBusy {
-                    operation: key(&blocker)?,
-                    pending: false,
+                    operation: key(&blocker.operation)?,
+                    wait_for_eligibility: blocker.wait_for_eligibility,
                 });
             }
         }
@@ -152,7 +159,19 @@ impl SessionStoreLane {
     ) -> Result<LaneDispatchWrite, SessionStoreOfferError> {
         // Lane state -> binding outcomes -> live index. Mark permission and
         // the pending writer are registered in one binding decision section.
-        self.dispatch_blocker(&offer.operation, offer.kind, outcomes, binding)?;
+        self.dispatch_blocker(
+            &offer.operation,
+            offer.kind,
+            offer.ended_turn,
+            outcomes,
+            binding,
+        )?;
+        if offer
+            .deadline
+            .is_some_and(|deadline| self.inner.clock.monotonic_now() >= deadline)
+        {
+            return Err(SessionStoreOfferError::Stopped);
+        }
         let undo_mark = if offer.kind == LaneDispatchKind::Undo {
             Some(
                 state

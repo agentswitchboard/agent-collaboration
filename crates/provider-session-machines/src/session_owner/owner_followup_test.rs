@@ -414,7 +414,10 @@ fn t8_late_dispatch_mark_has_a_known_unsent_terminal_offer_already_behind_it() {
             let offered = enqueue_prompt(&mut state, &request);
             assert!(
                 offered.contains(&OwnerEffect::Store(SessionStoreRequest::MarkDispatch(
-                    request.clone()
+                    TurnDispatchMark {
+                        input: request.clone(),
+                        budget: std::time::Duration::from_secs(10)
+                    }
                 )))
             );
             request
@@ -677,7 +680,10 @@ fn t2_explicit_steer_on_idle_refuses_and_allows_the_same_input_as_a_prompt() {
     );
     assert!(
         effects.contains(&OwnerEffect::Store(SessionStoreRequest::MarkDispatch(
-            request.clone()
+            TurnDispatchMark {
+                input: request.clone(),
+                budget: std::time::Duration::from_secs(10)
+            }
         )))
     );
     assert!(!effects.iter().any(|effect| matches!(

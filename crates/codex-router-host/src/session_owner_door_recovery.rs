@@ -99,6 +99,8 @@ impl SessionOwnerDoor {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(target.clone(), successor.clone());
+        #[cfg(test)]
+        self.preparation_fixture.observe_installed_replacement();
 
         let callers = previous.calls.clone();
         #[cfg(test)]

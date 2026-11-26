@@ -159,7 +159,9 @@ impl SessionOwnerPorts for ScenarioPorts {
                 });
                 None
             }
-            OwnerEffect::Store(SessionStoreRequest::MarkDispatch(input)) => {
+            OwnerEffect::Store(SessionStoreRequest::MarkDispatch(
+                provider_session_machines::session_owner::TurnDispatchMark { input, .. },
+            )) => {
                 self.start_mark(address, input, false, completions)?;
                 None
             }

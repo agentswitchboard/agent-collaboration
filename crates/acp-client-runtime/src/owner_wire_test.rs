@@ -51,7 +51,9 @@ impl SessionOwnerPorts for PromptPorts {
                 PublicationBatch::Commit { id, .. } | PublicationBatch::Rebase { id, .. },
             ) => Some(OwnerEvent::Publication(PublicationResult::Applied(id))),
             OwnerEffect::Store(
-                SessionStoreRequest::MarkDispatch(input)
+                SessionStoreRequest::MarkDispatch(
+                    provider_session_machines::session_owner::TurnDispatchMark { input, .. },
+                )
                 | SessionStoreRequest::MarkQueuedDispatch(input),
             ) => Some(OwnerEvent::Store(SessionStoreResult::Dispatch {
                 input,

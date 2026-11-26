@@ -370,7 +370,7 @@ impl ScriptedRestore {
             target.clone(),
             binding,
             observations,
-            SessionOwnerStorage::new(lane, tasks.clone()),
+            SessionOwnerStorage::new(lane, tasks.clone(), handle.snapshots()),
             SessionOwnerPublisher::new(inbox, fixture.clock.clone(), tasks.clone()),
             calls.clone(),
             Default::default(),

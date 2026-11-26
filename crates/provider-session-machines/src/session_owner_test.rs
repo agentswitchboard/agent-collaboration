@@ -255,6 +255,35 @@ fn end_turn(
 }
 
 #[test]
+fn ordinary_turn_mark_carries_the_budget_of_its_exact_owner_arm() {
+    let mut state = fresh();
+    let run = restore_live(&mut state, 1);
+    let input = input(run.generation, 2);
+    let effects = enqueue_prompt(&mut state, &input);
+    let mark_budgets: Vec<_> = effects
+        .iter()
+        .filter_map(|effect| match effect {
+            OwnerEffect::Store(SessionStoreRequest::MarkDispatch(mark)) if mark.input == input => {
+                Some(mark.budget)
+            }
+            _ => None,
+        })
+        .collect();
+    let arm_budgets: Vec<_> = effects
+        .iter()
+        .filter_map(|effect| match effect {
+            OwnerEffect::Arm {
+                deadline: OwnerDeadline::DispatchMark { input: armed },
+                budget,
+            } if armed == &input => Some(*budget),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(mark_budgets, [std::time::Duration::from_secs(10)]);
+    assert_eq!(mark_budgets, arm_budgets);
+}
+
+#[test]
 fn auto_queued_during_restore_steers_when_the_first_prompt_takes_wire() {
     let mut state = fresh();
     let restoring = open_wire(&mut state, 1);
@@ -407,7 +436,10 @@ fn selected_skill_disappearing_while_queued_or_marking_is_never_sent() {
         );
         assert_eq!(
             admitted.contains(&OwnerEffect::Store(SessionStoreRequest::MarkDispatch(
-                queued.clone()
+                TurnDispatchMark {
+                    input: queued.clone(),
+                    budget: std::time::Duration::from_secs(10)
+                }
             ))),
             marking
         );

@@ -40,6 +40,7 @@ enum NoticeScript {
     DirectWithLoggedOutReport,
     DirectThenSteer,
     HumanThenNoticeSteer,
+    HumanEndBeforeDirectNotice,
     HumanWithQueuedPrompt,
     DirectThenProviderDeclinesSteer,
     DirectThenProviderStartsTurn,
@@ -172,7 +173,9 @@ async fn managed_notice_fixture(
     } else if !matches!(notices, NoticeScript::NoWrite) {
         let foreground = match notices {
             NoticeScript::DirectThenProviderStartsTurn => "Hold the foreground turn",
-            NoticeScript::HumanThenNoticeSteer | NoticeScript::HumanWithQueuedPrompt => HUMAN_TEXT,
+            NoticeScript::HumanThenNoticeSteer
+            | NoticeScript::HumanEndBeforeDirectNotice
+            | NoticeScript::HumanWithQueuedPrompt => HUMAN_TEXT,
             _ => NOTICE_TEXT,
         };
         let script = script
@@ -185,7 +188,21 @@ async fn managed_notice_fixture(
                 }),
             )
             .write_marker(&receipt.with_extension("prompt"));
-        if matches!(notices, NoticeScript::DirectThenProviderDeclinesSteer) {
+        if matches!(notices, NoticeScript::HumanEndBeforeDirectNotice) {
+            script
+                .wait_for_socket_signal(&receipt.with_extension("end.sock"))
+                .respond("notice", json!({"stopReason": "end_turn"}))
+                .expect_terminal_request(
+                    "late-notice",
+                    "session/prompt",
+                    json!({
+                        "sessionId": "saved-notice-session",
+                        "prompt": [{"type": "text", "text": NOTICE_TEXT}]
+                    }),
+                )
+                .write_marker(&receipt.with_extension("late-notice"))
+                .respond("late-notice", json!({"stopReason": "end_turn"}))
+        } else if matches!(notices, NoticeScript::DirectThenProviderDeclinesSteer) {
             script
                 .expect_request(
                     "steer",

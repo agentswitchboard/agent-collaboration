@@ -11,7 +11,7 @@ use super::{
     ProviderOperationEffect, ProviderOperationKind, ProviderOperationRecord,
     ProviderReconciliationState, SessionRef, admission_failure, failure,
     provider_admission_policy::{
-        AdmissionBlockers, AdmissionMode, AdmissionRequest, EarlierOperation,
+        AdmissionBlockers, AdmissionClass, AdmissionMode, AdmissionRequest, EarlierOperation,
     },
     provider_operation_index::Reservation,
     snapshot_failure, snapshot_from_record, unavailable_failure,
@@ -160,6 +160,21 @@ impl ExternalProviderSupervisor {
         })
     }
 
+    fn last_ended_turn_operation(&self, request: AdmissionRequest<'_>) -> Option<uuid::Uuid> {
+        if request.kind != ProviderOperationKind::ConversationPrompt
+            || request.mode.class != AdmissionClass::Independent
+        {
+            return None;
+        }
+        let target = request.target?;
+        let snapshots = self
+            .owner_door(&target.endpoint)?
+            .existing(target)?
+            .snapshots();
+        let snapshot = snapshots.borrow();
+        snapshot.live_idle_ended_turn().map(|turn| turn.operation)
+    }
+
     #[expect(
         clippy::result_large_err,
         reason = "The admission preserves its typed refusal."
@@ -180,6 +195,7 @@ impl ExternalProviderSupervisor {
             if let Some(changes) = &mut changes {
                 changes.borrow_and_update();
             }
+            let last_ended_turn = self.last_ended_turn_operation(request);
             let decision = {
                 // Take binding outcomes before the live index, as the store lane does.
                 // All store reads finish before these guards. Reconcile may take the
@@ -238,13 +254,36 @@ impl ExternalProviderSupervisor {
                         None
                     }
                 } else {
-                    Some(operations.reserve(
+                    let reservation = operations.reserve(
                         binding,
                         request,
                         live,
                         unknown,
                         context.unconfirmed_cancel.as_deref(),
-                    ))
+                    );
+                    if let (Some(ended), Some(target), Err(blockers)) =
+                        (last_ended_turn, request.target, &reservation)
+                        && blockers.unknown.is_empty()
+                        && let [holder] = blockers.in_flight.as_slice()
+                        && uuid::Uuid::parse_str(holder.as_str()).ok() == Some(ended)
+                        && operations
+                            .operations
+                            .get(holder)
+                            .is_some_and(|live| live.is_turn_start_for(target))
+                    {
+                        // The turn has ended, but its terminal writer still holds
+                        // the operation. Wait for custody release on this binding.
+                        #[cfg(test)]
+                        if let Some(cell) = &context.cell {
+                            cell.fixture.waiting(
+                                target,
+                                crate::binding_store_fixture::BindingFixtureWait::EndedTurnAdmission(holder.clone()),
+                            );
+                        }
+                        None
+                    } else {
+                        Some(reservation)
+                    }
                 }
             };
             if let Some(reservation) = decision {
@@ -325,7 +364,7 @@ impl ExternalProviderSupervisor {
             .await?
         {
             Reservation::Acquired => Ok(Some(live)),
-            Reservation::Occupied(prior) if prior.is_prompt_for(target) => Ok(None),
+            Reservation::Occupied(prior) if prior.is_turn_start_for(target) => Ok(None),
             Reservation::Occupied(_) => Err(reused_id_failure(
                 operation_id.clone(),
                 Some(target.clone()),

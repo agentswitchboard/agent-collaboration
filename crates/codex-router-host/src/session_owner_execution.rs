@@ -24,8 +24,8 @@ use provider_session_machines::{
         DispatchAuthorization, DispatchResult, OwnerAddress, OwnerEffect, OwnerEvent,
         PreparationStage, PublicationBatch, PublicationFact, RefusedWorkMove, ReplyAdmission,
         ReservedWorkReply, RestorePreparation, SessionOwnerReply, SessionWireRequest,
-        SessionWireResult, SettingOffer, SteerIdlePolicy, SteerOrigin, TurnMembership,
-        WorkOfferRefusal, WriterState,
+        SessionWireResult, SettingOffer, SteerIdlePolicy, SteerOrigin, TurnDispatchMark,
+        TurnMembership, WorkOfferRefusal, WriterState,
     },
     session_setting_machine::SettingValueId,
 };
@@ -319,6 +319,20 @@ impl SessionOwnerExecution {
 }
 
 impl SessionOwnerPorts for SessionOwnerExecution {
+    fn execute_dispatch_mark(
+        &mut self,
+        owner: OwnerAddress,
+        mark: TurnDispatchMark,
+        deadline: router_clock::ClockInstant,
+        completions: &OwnerCompletionPort,
+        _caller_wakes: &mut OwnerCallerWakes,
+    ) -> Result<Option<OwnerEvent>, OwnerTaskError> {
+        #[cfg(test)]
+        self.preparation_fixture.hold_dispatch_mark(deadline);
+        self.storage
+            .execute_dispatch_mark(owner, mark.input, deadline, completions)
+    }
+
     fn execute(
         &mut self,
         owner: OwnerAddress,
@@ -335,7 +349,11 @@ impl SessionOwnerPorts for SessionOwnerExecution {
                 );
                 Ok(None)
             }
-            OwnerEffect::Store(request) => self.storage.execute(owner, request, completions),
+            OwnerEffect::Store(request) => {
+                #[cfg(test)]
+                self.preparation_fixture.before_store_offer(&request);
+                self.storage.execute(owner, request, completions)
+            }
             OwnerEffect::Wire(SessionWireRequest::Restore { run, via }) => {
                 self.restore(owner, run, via, completions)
             }
@@ -465,7 +483,15 @@ impl SessionOwnerPorts for SessionOwnerExecution {
                         }
                     }
                 }
-                self.publisher.publish(owner, batch, completions)
+                #[cfg(test)]
+                let ends_turn =
+                    crate::session_owner_preparation_fixture::publishes_turn_ending(&batch);
+                let published = self.publisher.publish(owner, batch, completions)?;
+                #[cfg(test)]
+                if ends_turn {
+                    self.preparation_fixture.hold_terminal_publication();
+                }
+                Ok(published)
             }
             OwnerEffect::Reply(reply) => {
                 self.storage.release_dispatch_wait(&reply);

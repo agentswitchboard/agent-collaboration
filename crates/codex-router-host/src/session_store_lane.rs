@@ -79,7 +79,7 @@ pub enum SessionStoreOfferError {
     #[error("an earlier send is still in flight")]
     DispatchBusy {
         operation: uuid::Uuid,
-        pending: bool,
+        wait_for_eligibility: bool,
     },
 }
 
