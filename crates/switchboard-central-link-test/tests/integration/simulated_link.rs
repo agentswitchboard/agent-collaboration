@@ -1,10 +1,11 @@
 use std::{
+    collections::VecDeque,
     future::Future,
     io,
     net::SocketAddr,
     pin::Pin,
     sync::{Arc, Mutex},
-    task::{Context, Poll},
+    task::{Context, Poll, Waker},
     time::Duration,
 };
 
@@ -31,11 +32,13 @@ use turmoil::net::{TcpListener, TcpStream};
 use workspace_ids::{MachineId, RouterRunId};
 
 use self::{
+    central_receive::{CentralReceiveTrace, ObservedCentralStream},
     packet_flight::PacketFlight,
     simulation_clock::ObservedClock,
     write_readiness::{HeldWriter, WriterGate},
 };
 
+mod central_receive;
 mod custody_cases;
 mod mac_capabilities;
 mod packet_flight;
@@ -48,31 +51,49 @@ const CENTRAL: &str = "central";
 const MAC: &str = "mac";
 const LINK_PORT: u16 = 7789;
 
-struct SimulatedListener(TcpListener);
+struct SimulatedListener {
+    listener: TcpListener,
+    trace: Option<CentralReceiveTrace>,
+    clock: Arc<ManualClock>,
+}
 
 impl Listener for SimulatedListener {
-    type Io = TcpStream;
+    type Io = ObservedCentralStream<TcpStream>;
     type Addr = SocketAddr;
 
     async fn accept(&mut self) -> (Self::Io, Self::Addr) {
-        self.0.accept().await.unwrap()
+        let (socket, remote) = self.listener.accept().await.unwrap();
+        (
+            ObservedCentralStream::new(
+                socket,
+                self.trace.clone(),
+                remote.port(),
+                self.clock.clone(),
+            ),
+            remote,
+        )
     }
 
     fn local_addr(&self) -> io::Result<Self::Addr> {
-        self.0.local_addr()
+        self.listener.local_addr()
     }
 }
 
 async fn serve_central(
     clock: Arc<ManualClock>,
+    trace: Option<CentralReceiveTrace>,
     ready: watch::Sender<Option<Arc<MachineLinkFixture>>>,
     mut stop: watch::Receiver<bool>,
     closed: watch::Sender<bool>,
 ) -> turmoil::Result {
-    let fixture = Arc::new(start_session_link_fixture(clock).await.unwrap());
+    let fixture = Arc::new(start_session_link_fixture(clock.clone()).await.unwrap());
     let link = Arc::new(WorkspaceLink::new(fixture.host.clone()));
     let stopping_link = link.clone();
-    let listener = SimulatedListener(TcpListener::bind(("0.0.0.0", LINK_PORT)).await?);
+    let listener = SimulatedListener {
+        listener: TcpListener::bind(("0.0.0.0", LINK_PORT)).await?,
+        trace,
+        clock,
+    };
     ready.send_replace(Some(fixture.clone()));
     axum::serve(listener, link.router())
         .with_graceful_shutdown(async move {
@@ -382,6 +403,13 @@ type DriverReadReport = (ReadBytesSender, Vec<u8>);
 struct ReadProbe {
     report: Arc<Mutex<Option<ReadBytesSender>>>,
     discard: Arc<Mutex<Option<ReadBytesSender>>>,
+    replay: Arc<Mutex<DeferredRead>>,
+}
+
+#[derive(Default)]
+struct DeferredRead {
+    bytes: VecDeque<u8>,
+    waker: Option<Waker>,
 }
 
 impl ReadProbe {
@@ -395,6 +423,15 @@ impl ReadProbe {
         let (report, observed) = oneshot::channel();
         assert!(self.discard.lock().unwrap().replace(report).is_none());
         observed
+    }
+
+    fn replay_read(&self, bytes: Vec<u8>) {
+        let mut replay = self.replay.lock().unwrap();
+        assert!(replay.bytes.is_empty());
+        replay.bytes.extend(bytes);
+        if let Some(waker) = replay.waker.take() {
+            waker.wake();
+        }
     }
 }
 
@@ -418,6 +455,16 @@ impl<Reader: AsyncRead + Unpin> AsyncRead for ResettableRead<Reader> {
         // stream, rather than while it is still decoding the reply.
         if let Some((report, bytes)) = self.read_to_report.take() {
             let _ = report.send(bytes);
+        }
+        {
+            let mut replay = self.read_probe.replay.lock().unwrap();
+            if !replay.bytes.is_empty() {
+                let length = replay.bytes.len().min(buffer.remaining());
+                buffer.put_slice(replay.bytes.make_contiguous().get(..length).unwrap());
+                replay.bytes.drain(..length);
+                return Poll::Ready(Ok(()));
+            }
+            replay.waker = Some(context.waker().clone());
         }
         let discard_armed = self.read_probe.discard.lock().unwrap().is_some();
         if discard_armed {
@@ -462,6 +509,17 @@ where
     Case: FnOnce(SimulatedLink) -> Running + 'static,
     Running: Future<Output = ()> + 'static,
 {
+    run_link_case_with_trace(network, None, case);
+}
+
+fn run_link_case_with_trace<Case, Running>(
+    network: PacketFlight,
+    trace: Option<CentralReceiveTrace>,
+    case: Case,
+) where
+    Case: FnOnce(SimulatedLink) -> Running + 'static,
+    Running: Future<Output = ()> + 'static,
+{
     let clock = Arc::new(ManualClock::new("2030-03-17T17:46:40Z".parse().unwrap()));
     let mut simulation = turmoil::Builder::new()
         .enable_tokio_io()
@@ -476,6 +534,7 @@ where
         move || {
             serve_central(
                 clock.clone(),
+                trace.clone(),
                 ready.clone(),
                 stopped.clone(),
                 closed.clone(),

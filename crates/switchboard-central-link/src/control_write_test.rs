@@ -520,6 +520,8 @@ async fn blocked_refusal_preserves_the_pending_command_deadline_and_discards_its
         lane.next_event().now_or_never(),
         Some(Some(LinkLaneEvent::ConnectionAdmitted(_)))
     ));
+    assert!(drive.as_mut().now_or_never().is_none());
+    assert!(lane.watch_registered().borrow().is_some());
     let mut command = lane.request_status(RequestStatusCommand {
         connection: attempt.clone(),
         send_before: elapsed_tick(12),

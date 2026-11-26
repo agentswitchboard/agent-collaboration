@@ -228,6 +228,8 @@ async fn check_termination(
     });
     assert!(poll_driver(&turns).await);
     expect_advertisement(&mut peer).await;
+    assert!(poll_driver(&turns).await);
+    assert!(lane.watch_registered().borrow().is_some());
     let admitted = lane.watch_admitted().borrow().clone().unwrap();
     crossed.store(0, Ordering::Relaxed);
     let prev_polls = write_polls.load(Ordering::Relaxed);

@@ -76,7 +76,7 @@ async fn collecting_an_old_receipt_does_not_consume_the_replacement_mark() {
     let mut replacement = new_admission(session.machine_id.clone(), clock.clone());
     replacement.clock_anchor.central_time =
         Timestamp::from_timestamp_millis(clock.utc_now().timestamp_millis() - 1_000).unwrap();
-    lane.admitted.send_replace(Some(replacement.clone()));
+    lane.set_connected(Some(replacement.clone()));
     clock.advance(Duration::from_millis(500)).unwrap();
     clock.not_due_check_now(retention).await;
     clock.advance(Duration::from_millis(500)).unwrap();

@@ -111,7 +111,7 @@ async fn selection_fixture(
         clock.clone(),
         lost,
     );
-    peer.admitted.send_replace(None);
+    peer.set_connected(None);
     let outbox_store = MachineLocalStore::open(&path).await.unwrap();
     let lane = Arc::new(ElapsedSettlementLane {
         peer,
@@ -161,8 +161,7 @@ async fn the_available_mark_claims_and_sends_a_write_with_ten_seconds_left() {
     enqueue_post(&mut custody, 91).await;
     lane.clock.advance(until_mark).unwrap();
     lane.peer
-        .admitted
-        .send_replace(Some(new_admission(machine, lane.clock.clone())));
+        .set_connected(Some(new_admission(machine, lane.clock.clone())));
 
     let mut worker = ObservedWorker::start(custody, observed.clone());
     let flush = flush_event(&mut worker.events, "the near-cutoff frame result").await;
@@ -195,8 +194,7 @@ async fn a_send_at_the_last_eligible_millisecond_ends_unconfirmed_at_its_deadlin
     enqueue_post(&mut custody, 92).await;
     lane.clock.advance(until_mark).unwrap();
     lane.peer
-        .admitted
-        .send_replace(Some(new_admission(machine, lane.clock.clone())));
+        .set_connected(Some(new_admission(machine, lane.clock.clone())));
 
     let (_calls, group, mut events) = start_worker(custody);
     let flush = flush_event(&mut events, "the first frame's exact cutoff").await;
@@ -229,8 +227,7 @@ async fn a_checked_answer_before_the_original_deadline_settles_the_write() {
     enqueue_post(&mut custody, 93).await;
     lane.clock.advance(until_mark).unwrap();
     lane.peer
-        .admitted
-        .send_replace(Some(new_admission(machine, lane.clock.clone())));
+        .set_connected(Some(new_admission(machine, lane.clock.clone())));
 
     let mut worker = ObservedWorker::start(custody, observed.clone());
     let flush = flush_event(&mut worker.events, "the checked answer").await;
@@ -262,8 +259,7 @@ async fn an_untouched_result_ready_at_the_fence_uses_the_members_original_cutoff
             .decide_next_batch(Some(ScriptedBatch::UntouchedAtFence));
         lane.clock.advance(until_mark).unwrap();
         lane.peer
-            .admitted
-            .send_replace(Some(new_admission(machine, lane.clock.clone())));
+            .set_connected(Some(new_admission(machine, lane.clock.clone())));
 
         let mut worker = ObservedWorker::start(custody, observed.clone());
         let flush = if remaining == closes_in {

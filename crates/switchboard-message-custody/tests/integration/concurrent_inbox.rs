@@ -209,7 +209,7 @@ async fn an_offline_intake_retry_does_not_delay_receipts_on_a_backwards_welcome(
         clock.clone(),
         Default::default(),
     ));
-    lane.admitted.send_replace(None);
+    lane.set_connected(None);
 
     let database = MachineLocalStore::open(&path).await.unwrap();
     let mut commits = database.subscribe_commits();
@@ -272,7 +272,7 @@ async fn an_offline_intake_retry_does_not_delay_receipts_on_a_backwards_welcome(
     let mut replacement = new_admission(session.machine_id.clone(), clock.clone());
     replacement.clock_anchor.central_time =
         Timestamp::from_timestamp_millis(LOCAL_MARK_MS - 1_800_000).unwrap();
-    lane.admitted.send_replace(Some(replacement));
+    lane.set_connected(Some(replacement));
     let outcome = custody_turns_to_complete(
         observations.recv(),
         "receipt progress on the current Central anchor",
@@ -308,7 +308,7 @@ async fn a_held_directory_does_not_block_status_deadlines_or_shutdown() {
         clock.clone(),
         Default::default(),
     ));
-    lane.admitted.send_replace(None);
+    lane.set_connected(None);
     let directory = Arc::new(HeldDirectory::default());
     let mut inbox_store = InboxStore::new(MachineLocalStore::open(&path).await.unwrap());
     let owed = MessageRecord::queued_central(
