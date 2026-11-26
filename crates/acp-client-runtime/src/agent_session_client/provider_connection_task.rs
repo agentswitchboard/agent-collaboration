@@ -476,10 +476,18 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
             });
             #[cfg(not(feature = "test-observation"))]
             let _ = sdk_failed;
-            if writer.await.is_err() {
+            #[cfg(feature = "test-observation")]
+            let writer_result = provider_exit_observation
+                .await_observed_writer_for_test(writer)
+                .await;
+            #[cfg(not(feature = "test-observation"))]
+            let writer_result = writer.await;
+            if writer_result.is_err() {
                 task_shutdown_failed.store(true, Ordering::Relaxed);
             }
 
+            #[cfg(feature = "test-observation")]
+            provider_exit_observation.publish_provider_reap_start_for_test();
             if !child_exited {
                 lifetime.end().await;
             }

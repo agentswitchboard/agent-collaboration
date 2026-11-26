@@ -55,9 +55,36 @@ impl OpeningAsyncPause {
 }
 
 #[cfg(feature = "test-observation")]
-struct AsyncBarrier {
+pub(super) struct AsyncBarrier {
     signal: oneshot::Sender<()>,
     wait: oneshot::Receiver<()>,
+}
+
+#[cfg(feature = "test-observation")]
+impl AsyncBarrier {
+    pub(super) async fn pause(self) {
+        let _test_gone = self.signal.send(());
+        let _test_gone = self.wait.await;
+    }
+}
+
+#[cfg(feature = "test-observation")]
+pub struct OrderedWriterPause {
+    pub before_dequeue: OpeningAsyncPause,
+    pub during_drain: OpeningAsyncPause,
+}
+
+#[cfg(feature = "test-observation")]
+pub struct WriterExitObservation {
+    pub join_pending: oneshot::Receiver<()>,
+    pub reap_started: oneshot::Receiver<()>,
+}
+
+#[cfg(feature = "test-observation")]
+#[derive(Default)]
+struct WriterExitSignals {
+    join_pending: Option<oneshot::Sender<()>>,
+    reap_started: Option<oneshot::Sender<()>>,
 }
 
 #[cfg(feature = "test-observation")]
@@ -87,6 +114,8 @@ pub(super) struct OpeningTestControls {
     before_input_eof: Mutex<Option<AsyncBarrier>>,
     #[cfg(feature = "test-observation")]
     provider_end: Mutex<Option<oneshot::Sender<ProviderConnectionEnd>>>,
+    #[cfg(feature = "test-observation")]
+    writer_exit: Mutex<WriterExitSignals>,
 }
 
 struct Barrier {
@@ -99,13 +128,75 @@ impl OwnerAcpWire {
     pub fn hold_ordered_writer_for_test(
         &self,
         run: TransportRun,
-    ) -> Result<OpeningAsyncPause, crate::acp_transport::TransportRefusal> {
-        let (pause, barrier) = OpeningAsyncPause::new();
+    ) -> Result<OrderedWriterPause, crate::acp_transport::TransportRefusal> {
+        let (before_dequeue, dequeue_barrier) = OpeningAsyncPause::new();
+        let (during_drain, drain_barrier) = OpeningAsyncPause::new();
         self.transport.enqueue_control(
             run,
-            super::AcpFrame::FixturePauseWriter(barrier.signal, barrier.wait),
+            super::AcpFrame::FixturePauseWriter {
+                before_dequeue: dequeue_barrier,
+                during_drain: drain_barrier,
+            },
         )?;
-        Ok(pause)
+        Ok(OrderedWriterPause {
+            before_dequeue,
+            during_drain,
+        })
+    }
+
+    #[cfg(feature = "test-observation")]
+    pub fn observe_writer_exit_for_test(&self) -> WriterExitObservation {
+        let (pending_signal, join_pending) = oneshot::channel();
+        let (reap_signal, reap_started) = oneshot::channel();
+        let mut signals = self
+            .opening_test
+            .writer_exit
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(signals.join_pending.replace(pending_signal).is_none());
+        assert!(signals.reap_started.replace(reap_signal).is_none());
+        WriterExitObservation {
+            join_pending,
+            reap_started,
+        }
+    }
+
+    #[cfg(feature = "test-observation")]
+    pub(crate) async fn await_observed_writer_for_test(
+        &self,
+        mut writer: tokio::task::JoinHandle<()>,
+    ) -> Result<(), tokio::task::JoinError> {
+        std::future::poll_fn(|context| {
+            let result = std::future::Future::poll(std::pin::Pin::new(&mut writer), context);
+            if result.is_pending() {
+                let signal = self
+                    .opening_test
+                    .writer_exit
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .join_pending
+                    .take();
+                if let Some(signal) = signal {
+                    let _test_gone = signal.send(());
+                }
+            }
+            result
+        })
+        .await
+    }
+
+    #[cfg(feature = "test-observation")]
+    pub(crate) fn publish_provider_reap_start_for_test(&self) {
+        let signal = self
+            .opening_test
+            .writer_exit
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .reap_started
+            .take();
+        if let Some(signal) = signal {
+            let _test_gone = signal.send(());
+        }
     }
 
     #[cfg(feature = "test-observation")]
@@ -130,8 +221,7 @@ impl OwnerAcpWire {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
         if let Some(barrier) = barrier {
-            let _test_gone = barrier.signal.send(());
-            let _test_gone = barrier.wait.await;
+            barrier.pause().await;
         }
     }
 

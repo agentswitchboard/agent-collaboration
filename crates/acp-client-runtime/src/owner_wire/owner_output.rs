@@ -88,6 +88,8 @@ impl PromptTerminal {
 pub(crate) struct OwnerAcpOutput {
     pub(super) output: mpsc::Receiver<OrderedOutput<AcpFrame>>,
     pub(super) restore_updates: Arc<crate::owner_restore_updates::RestoreUpdates>,
+    #[cfg(feature = "test-observation")]
+    pub(super) drain_pause: Option<super::owner_opening_test_control::AsyncBarrier>,
 }
 
 impl OwnerAcpOutput {
@@ -164,9 +166,12 @@ impl OwnerAcpOutput {
                     break;
                 }
                 #[cfg(feature = "test-observation")]
-                AcpFrame::FixturePauseWriter(reached, release) => {
-                    let _test_gone = reached.send(());
-                    let _test_gone = release.await;
+                AcpFrame::FixturePauseWriter {
+                    before_dequeue,
+                    during_drain,
+                } => {
+                    self.drain_pause = Some(during_drain);
+                    before_dequeue.pause().await;
                 }
                 #[cfg(feature = "test-observation")]
                 AcpFrame::FixtureDispatchFence(point, complete) => {
@@ -232,6 +237,10 @@ impl OwnerAcpOutput {
     pub(crate) async fn drain_unsent(&mut self, shutdown: &CancellationToken) {
         self.output.close();
         shutdown.cancel();
+        #[cfg(feature = "test-observation")]
+        if let Some(pause) = self.drain_pause.take() {
+            pause.pause().await;
+        }
         while let Some(OrderedOutput { run, frame }) = self.output.recv().await {
             match frame {
                 AcpFrame::Open(open) => {
@@ -247,7 +256,7 @@ impl OwnerAcpOutput {
                     let _fixture_gone = receipt.send(Err(Error::internal_error()));
                 }
                 #[cfg(feature = "test-observation")]
-                AcpFrame::FixtureStopWriter | AcpFrame::FixturePauseWriter(..) => {}
+                AcpFrame::FixtureStopWriter | AcpFrame::FixturePauseWriter { .. } => {}
             }
         }
     }

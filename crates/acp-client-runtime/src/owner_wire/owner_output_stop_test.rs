@@ -293,6 +293,8 @@ async fn writer_waits_for_a_taken_permit_to_enqueue_after_close() {
     let output = OwnerAcpOutput {
         output,
         restore_updates: Arc::default(),
+        #[cfg(feature = "test-observation")]
+        drain_pause: None,
     };
     let mut writer = std::pin::pin!(output.run(
         inert_connection().await,
