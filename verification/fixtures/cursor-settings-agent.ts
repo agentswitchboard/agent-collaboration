@@ -149,6 +149,7 @@ async function serveSharedSettings(peer: {
 //     text is "hold-open" stays running, as hold-first-prompt-open, until a
 //     session/cancel ends it.
 //   exit-on-stop-file: the agent exits once the file <receipt>.stop exists.
+//   invalid-utf8-on-release: emit an invalid stdout line after the release gate.
 //   permission-after-steer: with advertise-steering, a steer answered injected
 //     is followed by a permission request for a fetch in the running turn;
 //     the client's answer is recorded and the turn keeps running.
@@ -181,6 +182,7 @@ const reactiveBehaviourNames = [
   "advertise-steering",
   "prompt-directives",
   "exit-on-stop-file",
+  "invalid-utf8-on-release",
   "permission-after-steer",
   "held-turn-ends-max-tokens",
   "hold-load",
@@ -516,6 +518,11 @@ async function serveReactiveSettings(peer: ReactivePeer): Promise<void> {
   /** The held-open prompt, while its turn runs. */
   let heldOpen: Record<string, unknown> | undefined;
   if (peer.behaviours.has("exit-on-stop-file")) exitWhenFileAppears(peer.stopPath);
+  if (peer.behaviours.has("invalid-utf8-on-release")) {
+    void fileAppears(`${peer.releasePath}-invalid-utf8`).then((): void => {
+      process.stdout.write(Uint8Array.of(0xff, 0x0a));
+    });
+  }
   const sessions = new Map<string, ReactiveSession>();
   const replies = new ReactiveFastReplies(peer.behaviours);
   for (;;) {

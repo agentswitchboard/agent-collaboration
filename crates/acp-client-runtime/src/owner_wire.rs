@@ -8,6 +8,8 @@ pub(crate) use owner_output::{OwnerAcpOutput, PromptTerminal};
 mod owner_opening_test_control;
 #[cfg(any(test, feature = "test-observation"))]
 pub use crate::owner_opening_disposal::{OpeningDisposalKind, OpeningDisposalProbe};
+#[cfg(feature = "test-observation")]
+pub use owner_opening_test_control::{OpeningAsyncPause, ProviderConnectionEnd};
 #[cfg(any(test, feature = "test-observation"))]
 pub use owner_opening_test_control::{OpeningPause, OpeningPausePoint, OpeningReaderEnd};
 pub(crate) mod owner_restore_update_router;
@@ -60,6 +62,8 @@ enum AcpFrame {
     FixtureDispatchFence(FixtureDispatchPoint, oneshot::Sender<Result<(), Error>>),
     #[cfg(feature = "test-observation")]
     FixtureStopWriter,
+    #[cfg(feature = "test-observation")]
+    FixturePauseWriter(oneshot::Sender<()>, oneshot::Receiver<()>),
 }
 
 #[cfg(feature = "test-observation")]

@@ -39,6 +39,35 @@ pub struct OpeningPause {
     pub release: mpsc::Sender<()>,
 }
 
+#[cfg(feature = "test-observation")]
+pub struct OpeningAsyncPause {
+    pub reached: oneshot::Receiver<()>,
+    pub release: oneshot::Sender<()>,
+}
+
+#[cfg(feature = "test-observation")]
+impl OpeningAsyncPause {
+    fn new() -> (Self, AsyncBarrier) {
+        let (signal, reached) = oneshot::channel();
+        let (release, wait) = oneshot::channel();
+        (Self { reached, release }, AsyncBarrier { signal, wait })
+    }
+}
+
+#[cfg(feature = "test-observation")]
+struct AsyncBarrier {
+    signal: oneshot::Sender<()>,
+    wait: oneshot::Receiver<()>,
+}
+
+#[cfg(feature = "test-observation")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProviderConnectionEnd {
+    ChildExited,
+    SdkFailed,
+    SdkReturned,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OpeningReaderEnd {
     Retired,
@@ -54,6 +83,10 @@ pub(super) struct OpeningTestControls {
     disposals: Mutex<BTreeMap<OpeningDisposalKind, OpeningDisposalProbe>>,
     reader_ending: Mutex<Option<oneshot::Sender<(TransportRun, OpeningReaderEnd)>>>,
     close_restored_reader_start: AtomicBool,
+    #[cfg(feature = "test-observation")]
+    before_input_eof: Mutex<Option<AsyncBarrier>>,
+    #[cfg(feature = "test-observation")]
+    provider_end: Mutex<Option<oneshot::Sender<ProviderConnectionEnd>>>,
 }
 
 struct Barrier {
@@ -62,6 +95,74 @@ struct Barrier {
 }
 
 impl OwnerAcpWire {
+    #[cfg(feature = "test-observation")]
+    pub fn hold_ordered_writer_for_test(
+        &self,
+        run: TransportRun,
+    ) -> Result<OpeningAsyncPause, crate::acp_transport::TransportRefusal> {
+        let (pause, barrier) = OpeningAsyncPause::new();
+        self.transport.enqueue_control(
+            run,
+            super::AcpFrame::FixturePauseWriter(barrier.signal, barrier.wait),
+        )?;
+        Ok(pause)
+    }
+
+    #[cfg(feature = "test-observation")]
+    pub fn hold_provider_eof_for_test(&self) -> OpeningAsyncPause {
+        let (pause, barrier) = OpeningAsyncPause::new();
+        let prior = self
+            .opening_test
+            .before_input_eof
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .replace(barrier);
+        assert!(prior.is_none(), "one pending provider EOF pause");
+        pause
+    }
+
+    #[cfg(feature = "test-observation")]
+    pub(crate) async fn before_provider_eof_for_test(&self) {
+        let barrier = self
+            .opening_test
+            .before_input_eof
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(barrier) = barrier {
+            let _test_gone = barrier.signal.send(());
+            let _test_gone = barrier.wait.await;
+        }
+    }
+
+    #[cfg(feature = "test-observation")]
+    pub fn observe_provider_end_for_test(&self) -> oneshot::Receiver<ProviderConnectionEnd> {
+        let (signal, observed) = oneshot::channel();
+        let prior = self
+            .opening_test
+            .provider_end
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .replace(signal);
+        assert!(
+            prior.is_none(),
+            "one pending provider connection exit observation"
+        );
+        observed
+    }
+
+    #[cfg(feature = "test-observation")]
+    pub(crate) fn publish_provider_end_for_test(&self, cause: ProviderConnectionEnd) {
+        let receipt = self
+            .opening_test
+            .provider_end
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(receipt) = receipt {
+            let _test_gone = receipt.send(cause);
+        }
+    }
     pub fn observe_next_reader_ending_for_test(
         &self,
     ) -> oneshot::Receiver<(TransportRun, OpeningReaderEnd)> {

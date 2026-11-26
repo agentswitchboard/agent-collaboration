@@ -74,9 +74,9 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
         let task_frame_observation = Arc::clone(&frame_observation);
         let shutdown_failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let task_shutdown_failed = Arc::clone(&shutdown_failed);
+        let listing_shutdown_failed = Arc::clone(&shutdown_failed);
         let task_shutdown = shutdown.clone();
         let connection_retirement = retirement.clone();
-        let task_connection_retirement = retirement.clone();
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
         let (admission_settled_tx, admission_settled_rx) = tokio::sync::oneshot::channel();
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(32);
@@ -85,6 +85,10 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
             Arc::clone(&behavior),
         );
         let owner_wire = Arc::new(owner_wire);
+        #[cfg(feature = "test-observation")]
+        let provider_exit_observation = Arc::clone(&owner_wire);
+        #[cfg(feature = "test-observation")]
+        let input_eof_control = Arc::clone(&owner_wire);
         let callbacks = Arc::new(crate::owner_callback_routing::OwnerCallbackRouting::new(
             owner_wire.clone(),
         ));
@@ -213,6 +217,8 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
                         })
                     })
                     .chain(futures_util::stream::once(async move {
+                        #[cfg(feature = "test-observation")]
+                        input_eof_control.before_provider_eof_for_test().await;
                         eof_approvals.stop_connection();
                         input_eof.cancel();
                         Err(std::io::Error::new(
@@ -220,6 +226,23 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
                             "provider stdout closed",
                         ))
                     }));
+
+            let (start_writer, writer_ready) = tokio::sync::oneshot::channel();
+            let writer_shutdown = connection_retirement.child_token();
+            // A forced outer-task abort still asks the independently owned
+            // writer to drain. Normal exits also join it below.
+            let _stop_writer_on_drop = writer_shutdown.clone().drop_guard();
+            let writer = tokio::spawn(async move {
+                let mut owner_output = owner_output;
+                match writer_ready.await {
+                    Ok((connection, configuration)) => {
+                        owner_output
+                            .run(connection, configuration, writer_shutdown, input_ended)
+                            .await;
+                    }
+                    Err(_) => owner_output.drain_unsent(&writer_shutdown).await,
+                }
+            });
 
             let connection = Client.builder().name("codex-router-host")
                 .with_handler(ProviderRequestSessionGuard::new(request_routes))
@@ -382,15 +405,15 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
                                 #[cfg(any(test, feature = "test-observation"))]
                                 observed_tool_calls,
                             };
+                            let _writer_gone = start_writer.send((connection.clone(), configuration));
                             let _reader_gone = ready_tx.send(Ok((admission, capabilities)));
-                            Some(configuration)
+                            true
                         }
-                        Err(error) => { let _reader_gone = ready_tx.send(Err(error)); None }
+                        Err(error) => { let _reader_gone = ready_tx.send(Err(error)); false }
                     };
                     let _reader_gone = admission_settled_tx.send(());
-                    if let Some(configuration) = opened {
-                        let mut executors = tokio::task::JoinSet::new();
-                        executors.spawn(owner_output.run(connection.clone(), configuration, task_connection_retirement.clone(), input_ended));
+                    if opened {
+                        let mut listings = tokio::task::JoinSet::new();
                         loop {
                             tokio::select! {
                                 () = task_shutdown.cancelled() => break,
@@ -398,7 +421,7 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
                                     Some(ProviderCommand { cwd, reply }) => {
                                         let connection = connection.clone();
                                         let stopped = task_shutdown.clone();
-                                        executors.spawn(async move {
+                                        listings.spawn(async move {
                                             let result = tokio::select! {
                                                 () = stopped.cancelled() => Err(ExternalProviderRuntimeError::TransportFailure),
                                                 listed = provider_lifecycle_requests::list_provider_sessions(connection, cwd) => listed,
@@ -408,24 +431,23 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
                                     }
                                     None => break,
                                 },
-                                Some(result) = executors.join_next(), if !executors.is_empty() => {
-                                    if result.is_err() { task_shutdown_failed.store(true, Ordering::Relaxed); }
+                                Some(result) = listings.join_next(), if !listings.is_empty() => {
+                                    if result.is_err() { listing_shutdown_failed.store(true, Ordering::Relaxed); }
                                 }
                             }
                         }
-                        task_connection_retirement.cancel();
                         task_shutdown.cancel();
 
-                        while let Some(result) = executors.join_next().await {
-                            if result.is_err() { task_shutdown_failed.store(true, Ordering::Relaxed); }
+                        while let Some(result) = listings.join_next().await {
+                            if result.is_err() { listing_shutdown_failed.store(true, Ordering::Relaxed); }
                         }
                     }
                     Ok(())
                 },
             );
-            tokio::pin!(connection);
-            let child_exited = tokio::select! {
-                _result = &mut connection => false,
+            let mut connection = Box::pin(connection);
+            let (child_exited, sdk_failed) = tokio::select! {
+                result = &mut connection => (false, result.is_err()),
                 () = lifetime.exited() => {
                     // The exited child may have flushed its initialize response into stdout.
                     // Let the connection settle admission before retiring it.
@@ -433,11 +455,30 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
                         _settled = admission_settled_rx => {}
                         _result = &mut connection => {}
                     }
-                    true
+                    (true, false)
                 },
             };
+            // The SDK may drop its foreground and its listing tasks. The
+            // ordered writer is joined by this task after the SDK is gone.
+            drop(connection);
             connection_approval_bindings.stop_connection();
             connection_retirement.cancel();
+            #[cfg(feature = "test-observation")]
+            provider_exit_observation.publish_provider_end_for_test({
+                use crate::owner_wire::ProviderConnectionEnd;
+                if child_exited {
+                    ProviderConnectionEnd::ChildExited
+                } else if sdk_failed {
+                    ProviderConnectionEnd::SdkFailed
+                } else {
+                    ProviderConnectionEnd::SdkReturned
+                }
+            });
+            #[cfg(not(feature = "test-observation"))]
+            let _ = sdk_failed;
+            if writer.await.is_err() {
+                task_shutdown_failed.store(true, Ordering::Relaxed);
+            }
 
             if !child_exited {
                 lifetime.end().await;

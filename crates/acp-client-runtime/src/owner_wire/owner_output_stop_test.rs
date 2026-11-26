@@ -7,7 +7,7 @@ use crate::{
     owner_session_setting::tests::ConnectionCatalogueBehavior,
 };
 use agent_client_protocol::{Agent, Client, ConnectionTo, Lines};
-use futures_util::{SinkExt as _, sink, stream};
+use futures_util::{FutureExt as _, SinkExt as _, sink, stream};
 use provider_session_machines::{
     ProviderConfigOption, ProviderConfigValue, ProviderSettingChoice, ProviderSettingKind,
     ProviderSettingsCatalog, ProviderSettingsCatalogRecord,
@@ -253,5 +253,71 @@ async fn stopped_writer_settles_each_queued_frame_once_as_unsent() {
     assert_eq!(
         unoffered.try_recv(),
         Err(oneshot::error::TryRecvError::Empty)
+    );
+}
+
+#[tokio::test]
+async fn writer_waits_for_a_taken_permit_to_enqueue_after_close() {
+    let (sender, output) = mpsc::channel(1);
+    let permit = sender
+        .clone()
+        .reserve_owned()
+        .await
+        .expect("writer granted its exact queue permit");
+    let claim = crate::owner_opening_instance::OpeningOffer::default();
+    assert!(claim.take());
+    let run = TransportRun {
+        incarnation: OwnerIncarnation(Uuid::now_v7()),
+        generation: SessionGeneration::from_number(1),
+    };
+    let restore = RunAttempt {
+        generation: run.generation,
+        attempt: LoadAttempt(Uuid::now_v7()),
+    };
+    let setting = OwnerSetting {
+        change: RunAttempt {
+            generation: run.generation,
+            attempt: SettingApplication(Uuid::now_v7()),
+        },
+        kind: ProviderSettingKind::Mode,
+    };
+    let (reply, mut receipt) = oneshot::channel();
+    let frame = restore_setting_frame(
+        restore,
+        setting,
+        setting_plan(ProviderSettingKind::Mode),
+        Box::new(ReplyRecorder(reply)),
+    );
+    let stopped = CancellationToken::new();
+    stopped.cancel();
+    let output = OwnerAcpOutput {
+        output,
+        restore_updates: Arc::default(),
+    };
+    let mut writer = std::pin::pin!(output.run(
+        inert_connection().await,
+        configuration(),
+        stopped,
+        CancellationToken::new(),
+    ));
+    // This poll is the barrier. A pending result is possible only after
+    // the post-close receive sees an empty queue with a live permit.
+    assert!(
+        writer.as_mut().now_or_never().is_none(),
+        "post-close drain must wait for the already-granted writer permit"
+    );
+    assert!(
+        sender.is_closed(),
+        "the barrier observed the receiver after close"
+    );
+    assert!(matches!(
+        receipt.try_recv(),
+        Err(oneshot::error::TryRecvError::Empty)
+    ));
+    let _sender = permit.send(crate::acp_transport::OrderedOutput { run, frame });
+    writer.await;
+    assert!(
+        matches!(receipt.try_recv(), Ok(SettingFact::NotSent { restore: exact, setting: application })
+        if exact == restore && application == setting)
     );
 }

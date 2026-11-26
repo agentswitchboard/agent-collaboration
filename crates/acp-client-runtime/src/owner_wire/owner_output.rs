@@ -164,6 +164,11 @@ impl OwnerAcpOutput {
                     break;
                 }
                 #[cfg(feature = "test-observation")]
+                AcpFrame::FixturePauseWriter(reached, release) => {
+                    let _test_gone = reached.send(());
+                    let _test_gone = release.await;
+                }
+                #[cfg(feature = "test-observation")]
                 AcpFrame::FixtureDispatchFence(point, complete) => {
                     let after = match point {
                         FixtureDispatchPoint::Cancel => "session/cancel",
@@ -219,6 +224,12 @@ impl OwnerAcpOutput {
                 }
             }
         }
+        self.drain_unsent(&shutdown).await;
+        replies.close();
+        replies.wait().await;
+    }
+
+    pub(crate) async fn drain_unsent(&mut self, shutdown: &CancellationToken) {
         self.output.close();
         shutdown.cancel();
         while let Some(OrderedOutput { run, frame }) = self.output.recv().await {
@@ -236,11 +247,9 @@ impl OwnerAcpOutput {
                     let _fixture_gone = receipt.send(Err(Error::internal_error()));
                 }
                 #[cfg(feature = "test-observation")]
-                AcpFrame::FixtureStopWriter => {}
+                AcpFrame::FixtureStopWriter | AcpFrame::FixturePauseWriter(..) => {}
             }
         }
-        replies.close();
-        replies.wait().await;
     }
 }
 
