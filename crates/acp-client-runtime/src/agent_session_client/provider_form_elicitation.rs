@@ -301,12 +301,8 @@ impl<P: InteractionPort> HandleDispatchFrom<Agent> for ProviderFormElicitationHa
             .track("elicitation/create", responder.id());
         connection.spawn(async move {
             let agent_cancellation = CancellationToken::new();
-            let answer = port.request_question(
-                context.approval,
-                canonical,
-                context.cancelling,
-                agent_cancellation.clone(),
-            );
+            let answer =
+                context.decide_question(port.as_ref(), canonical, agent_cancellation.clone());
             tokio::pin!(answer);
             let response = tokio::select! {
                 biased;

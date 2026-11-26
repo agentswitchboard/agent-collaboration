@@ -208,7 +208,10 @@ impl ExternalProviderRuntime {
                 let approvals = self.client.owner_approval_bindings();
                 let clock = self.client.runtime_clock();
                 let harness_clock = Arc::clone(&clock);
+                let retired = self.retirement();
+                let connection_retired = retired.clone();
                 let door = Arc::new(crate::session_owner_door::SessionOwnerDoor::new(
+                    #[cfg(any(test, feature = "test-support"))]
                     Arc::clone(&wire),
                     move |tasks| {
                         Arc::new(
@@ -217,13 +220,14 @@ impl ExternalProviderRuntime {
                                 approvals,
                                 harness_clock,
                                 tasks,
+                                connection_retired,
                             ),
                         )
                     },
                     clock,
                     store,
                     hub,
-                    self.retirement(),
+                    retired,
                     #[cfg(any(test, feature = "test-support"))]
                     self.preparation_fixture.clone(),
                 ));

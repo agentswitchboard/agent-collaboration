@@ -308,6 +308,61 @@ fn only_exact_slot_enqueues_and_taken_evidence_survives_close_and_retirement() {
 }
 
 #[test]
+fn owner_recovery_answers_each_input_after_fencing_the_writer() {
+    let (transport, mut writer) = new_transport(4);
+    let run = route(1);
+    transport.open_route(run, "session".into());
+    transport.activate_route(run);
+    let taken = authorization(run, AuthorizationTarget::Session);
+    let pending = authorization(run, AuthorizationTarget::Session);
+    let never_offered = InputId::generate();
+    transport
+        .offer(taken.clone(), None, "taken")
+        .expect("offer");
+    transport
+        .offer(pending.clone(), None, "pending")
+        .expect("offer");
+    assert_eq!(
+        transport.take(&taken),
+        Ok(DispatchResult::Taken(taken.clone()))
+    );
+
+    let evidence = transport.give_up_owner(
+        run.incarnation,
+        &BTreeSet::from([
+            taken.input_id.clone(),
+            pending.input_id.clone(),
+            never_offered.clone(),
+        ]),
+    );
+
+    assert_eq!(
+        evidence,
+        OwnerEvidence::from([
+            (
+                taken.input_id.clone(),
+                OwnerInputEvidence::Taken {
+                    slots: vec![(taken, SlotEvidence::Taken)]
+                }
+            ),
+            (
+                pending.input_id.clone(),
+                OwnerInputEvidence::Withdrawn {
+                    slots: vec![(pending.clone(), SlotEvidence::Revoked)]
+                }
+            ),
+            (never_offered, OwnerInputEvidence::NeverOffered),
+        ]),
+    );
+    assert_eq!(
+        transport.take(&pending),
+        Ok(DispatchResult::DefinitelyUnsent(pending))
+    );
+    assert_eq!(writer.try_recv().expect("taken frame").frame, "taken");
+    assert!(matches!(writer.try_recv(), Err(TryRecvError::Empty)));
+}
+
+#[test]
 fn writer_refusal_does_not_mark_close_as_enqueued() {
     let (transport, mut writer) = new_transport(1);
     let run = route(1);

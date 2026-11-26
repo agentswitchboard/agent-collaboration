@@ -175,10 +175,9 @@ async fn handle_contextual_permission_request<P: InteractionPort>(
         options,
     };
     let agent_cancellation = CancellationToken::new();
-    let approval = state.interaction_port.request_approval(
-        context.approval.clone(),
+    let approval = context.decide_approval(
+        state.interaction_port.as_ref(),
         canonical_request,
-        context.cancelling,
         agent_cancellation.clone(),
     );
     tokio::pin!(approval);

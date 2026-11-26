@@ -214,12 +214,8 @@ impl<P: InteractionPort> HandleDispatchFrom<Agent> for ProviderCursorCreatePlanH
                 return queued;
             }
             let agent_cancellation = CancellationToken::new();
-            let decision = port.request_approval(
-                context.approval,
-                approval,
-                context.cancelling,
-                agent_cancellation.clone(),
-            );
+            let decision =
+                context.decide_approval(port.as_ref(), approval, agent_cancellation.clone());
             tokio::pin!(decision);
             let outcome = tokio::select! {
                 biased;
