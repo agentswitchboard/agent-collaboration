@@ -107,6 +107,7 @@ pub enum RevokeReason {
     SkillSelectionChanged,
     SettingsUnresolved,
     RunReplaced,
+    NamedSteerRunReplaced,
     Cancelled,
     Closed,
     EnqueueExpired,
@@ -148,7 +149,9 @@ impl RevokeReason {
             Self::SettingsUnresolved => {
                 "settings-uncertain: run conversation settings set to resolve the unknown provider setting outcome"
             }
-            Self::RunReplaced => "the session was restored again; send again if still needed",
+            Self::RunReplaced | Self::NamedSteerRunReplaced => {
+                "the session was restored again; send again if still needed"
+            }
             Self::Cancelled => "cancelled before sending",
             Self::Closed => "the session closed first; send again",
             Self::EnqueueExpired => "the Router couldn't send in time; send again",

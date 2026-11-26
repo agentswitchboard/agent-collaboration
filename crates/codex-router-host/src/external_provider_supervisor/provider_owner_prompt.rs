@@ -457,7 +457,9 @@ pub(super) fn retained_prompt(
                 }
                 RevokeReason::EarlierSendInFlight { .. } => ConversationOperationFailureKind::Busy,
                 RevokeReason::NoActiveTurn => ConversationOperationFailureKind::NoActiveTurn,
-                RevokeReason::RunReplaced => ConversationOperationFailureKind::StaleGeneration,
+                RevokeReason::NamedSteerRunReplaced => {
+                    ConversationOperationFailureKind::StaleGeneration
+                }
                 _ => ConversationOperationFailureKind::Unavailable,
             },
             ConversationOperationFailureStage::Dispatch,

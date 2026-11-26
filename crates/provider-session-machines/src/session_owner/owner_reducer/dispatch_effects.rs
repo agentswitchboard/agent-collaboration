@@ -612,7 +612,7 @@ impl OwnerTransition {
                 .cell
                 .run_generation()
                 .filter(|generation| *generation != input.generation)
-                .map(|_| RevokeReason::RunReplaced)
+                .map(|_| RevokeReason::NamedSteerRunReplaced)
         }
     }
 
