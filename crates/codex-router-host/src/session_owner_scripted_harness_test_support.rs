@@ -1,9 +1,13 @@
 //! A second harness used to drive the production session owner in tests.
 
+#[path = "session_owner_scripted_harness_loss_test_support.rs"]
+mod loss;
 #[path = "session_owner_scripted_harness_work_test_support.rs"]
 mod work;
+pub(super) use loss::PolicySignal;
 
 use crate::{
+    acp_interaction_port::HostRequestPayloads,
     external_provider_approval_context::ExternalProviderApprovalContext,
     session_owner_lifecycle_reports::{OwnerHarnessPayloads, SessionHarnessBinding},
 };
@@ -52,7 +56,22 @@ pub(super) enum ScriptObservation {
     Activated(ActivationSetup),
     SkillsReported,
     LiveReported,
+    PromptOffered(DispatchAuthorization),
+    PromptHeld(DispatchAuthorization),
     PromptTaken(DispatchAuthorization),
+    SteerTaken(
+        DispatchAuthorization,
+        provider_session_machines::session_turn_machine::TurnId,
+    ),
+    ObservedLeaseRefused {
+        turn: ExactTurn,
+        operation: collaboration_protocol::OperationId,
+    },
+    OwnerGivenUp {
+        incarnation: OwnerIncarnation,
+        asked: BTreeSet<InputId>,
+        evidence: OwnerEvidence,
+    },
     Closed(RunAttempt<CloseAttempt>),
     Retired(SessionGeneration),
 }
@@ -62,6 +81,24 @@ pub(super) struct ScriptedHarness {
     journal: mpsc::UnboundedSender<ScriptObservation>,
     replay: ReplayCapture,
     owners: Mutex<BTreeMap<OwnerIncarnation, Arc<Mutex<BindingState>>>>,
+    controls: ScriptControls,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum ScriptedWork {
+    #[default]
+    Complete,
+    UnavailableRecovery,
+    HoldPromptReply,
+    RefuseObservedLease,
+}
+
+#[derive(Clone, Default)]
+pub(super) struct ScriptControls {
+    pub(super) work: ScriptedWork,
+    pub(super) policy: Option<
+        Arc<dyn provider_session_machines::session_owner::RequestPolicy<HostRequestPayloads>>,
+    >,
 }
 
 #[derive(Clone, Copy)]
@@ -91,6 +128,14 @@ impl ScriptedHarness {
         tasks: TaskTracker,
         replay: ReplayCapture,
     ) -> (Arc<Self>, mpsc::UnboundedReceiver<ScriptObservation>) {
+        Self::with_controls(tasks, replay, ScriptControls::default())
+    }
+
+    pub(super) fn with_controls(
+        tasks: TaskTracker,
+        replay: ReplayCapture,
+        controls: ScriptControls,
+    ) -> (Arc<Self>, mpsc::UnboundedReceiver<ScriptObservation>) {
         let (journal, observations) = mpsc::unbounded_channel();
         (
             Arc::new(Self {
@@ -98,9 +143,40 @@ impl ScriptedHarness {
                 journal,
                 replay,
                 owners: Mutex::default(),
+                controls,
             }),
             observations,
         )
+    }
+
+    pub(super) fn owner_events(
+        &self,
+        owner: OwnerIncarnation,
+    ) -> Option<Arc<dyn HarnessOwnerEvents<ProviderAuthStatus>>> {
+        let state = lock(&self.owners).get(&owner)?.clone();
+        let events = lock(&state).owner_events.clone();
+        events
+    }
+
+    pub(super) fn take_prompt_reply(
+        &self,
+        owner: OwnerIncarnation,
+    ) -> Option<(DispatchAuthorization, ReservedWorkReply)> {
+        let state = lock(&self.owners).get(&owner)?.clone();
+        let reply = lock(&state).prompt_reply.take();
+        reply
+    }
+
+    pub(super) fn finish_prompt(&self, owner: OwnerIncarnation) -> Option<DispatchAuthorization> {
+        let (authorization, reply) = self.take_prompt_reply(owner)?;
+        work::finish_prompt(authorization.clone(), reply);
+        Some(authorization)
+    }
+
+    pub(super) fn run_events(&self, owner: OwnerIncarnation) -> Option<SessionLifecyclePort> {
+        let state = lock(&self.owners).get(&owner)?.clone();
+        let events = lock(&state).run_events.clone();
+        events
     }
 }
 
@@ -131,7 +207,7 @@ impl HarnessOwnerRecovery for ScriptedHarness {
                 *evidence = SlotEvidence::Revoked;
             }
         }
-        inputs
+        let evidence: OwnerEvidence = inputs
             .iter()
             .map(|input| {
                 let slots: Vec<_> = state
@@ -140,7 +216,9 @@ impl HarnessOwnerRecovery for ScriptedHarness {
                     .filter(|(authorization, _)| authorization.input_id == *input)
                     .cloned()
                     .collect();
-                let evidence = if slots.iter().any(|(_, slot)| *slot == SlotEvidence::Taken) {
+                let evidence = if self.controls.work == ScriptedWork::UnavailableRecovery {
+                    OwnerInputEvidence::NoEvidence { slots: Vec::new() }
+                } else if slots.iter().any(|(_, slot)| *slot == SlotEvidence::Taken) {
                     OwnerInputEvidence::Taken { slots }
                 } else if slots.is_empty() {
                     OwnerInputEvidence::NeverOffered
@@ -149,7 +227,18 @@ impl HarnessOwnerRecovery for ScriptedHarness {
                 };
                 (input.clone(), evidence)
             })
-            .collect()
+            .collect();
+        if self.controls.work != ScriptedWork::Complete {
+            record(
+                &self.journal,
+                ScriptObservation::OwnerGivenUp {
+                    incarnation,
+                    asked: inputs.clone(),
+                    evidence: evidence.clone(),
+                },
+            );
+        }
+        evidence
     }
 }
 
@@ -160,15 +249,18 @@ impl HarnessProvider<OwnerHarnessPayloads> for ScriptedHarness {
         owner_events: Arc<dyn HarnessOwnerEvents<ProviderAuthStatus>>,
     ) -> SessionHarnessBinding {
         record(&self.journal, ScriptObservation::Bound(address));
-        let state = Arc::new(Mutex::new(BindingState::default()));
+        let state = Arc::new(Mutex::new(BindingState {
+            owner_events: Some(owner_events),
+            ..BindingState::default()
+        }));
         lock(&self.owners).insert(address.incarnation, state.clone());
         Box::new(ScriptedBinding {
             address,
             tasks: self.tasks.clone(),
             journal: self.journal.clone(),
             state,
-            _owner_events: owner_events,
             replay: self.replay,
+            controls: self.controls.clone(),
         })
     }
 
@@ -187,8 +279,8 @@ struct ScriptedBinding {
     tasks: TaskTracker,
     journal: mpsc::UnboundedSender<ScriptObservation>,
     state: Arc<Mutex<BindingState>>,
-    _owner_events: Arc<dyn HarnessOwnerEvents<ProviderAuthStatus>>,
     replay: ReplayCapture,
+    controls: ScriptControls,
 }
 
 #[derive(Default)]
@@ -197,6 +289,11 @@ struct BindingState {
     active: Option<SessionGeneration>,
     offered: Option<(DispatchAuthorization, ReservedWorkReply)>,
     dispatches: Vec<(DispatchAuthorization, SlotEvidence)>,
+    owner_events: Option<Arc<dyn HarnessOwnerEvents<ProviderAuthStatus>>>,
+    run_events: Option<SessionLifecyclePort>,
+    prompt_reply: Option<(DispatchAuthorization, ReservedWorkReply)>,
+    approval: Option<(ExactTurn, ExternalProviderApprovalContext)>,
+    pending_request: Option<loss::PendingRequest>,
 }
 
 impl BindingState {
@@ -374,6 +471,7 @@ impl OwnerHarnessBinding<OwnerHarnessPayloads> for ScriptedBinding {
             let mut state = lock(&self.state);
             assert_eq!(state.held.take(), Some(attempt));
             state.active = Some(run);
+            state.run_events = Some(events.clone());
         }
         record(&self.journal, ScriptObservation::Activated(setup));
         let journal = self.journal.clone();
@@ -436,17 +534,35 @@ impl ApprovalLeaseBinding<ExternalProviderApprovalContext> for ScriptedBinding {
     fn install_approval_lease_before_offer(
         &self,
         turn: ExactTurn,
-        _context: ExternalProviderApprovalContext,
+        mut context: ExternalProviderApprovalContext,
     ) -> Result<Box<dyn ApprovalLease>, BeforeOfferApprovalLeaseRefusal> {
-        self.install_lease(turn)
-            .map_err(BeforeOfferApprovalLeaseRefusal)
+        let lease = self
+            .install_lease(turn)
+            .map_err(BeforeOfferApprovalLeaseRefusal)?;
+        if let Some(policy) = &self.controls.policy {
+            policy.bind_owner_scope(&mut context, turn);
+            lock(&self.state).approval = Some((turn, context));
+        }
+        Ok(lease)
     }
 
     fn install_approval_lease_for_observed_turn(
         &self,
         turn: ExactTurn,
-        _context: ExternalProviderApprovalContext,
+        context: ExternalProviderApprovalContext,
     ) -> Result<Box<dyn ApprovalLease>, ObservedTurnApprovalLeaseRefusal> {
+        if self.controls.work == ScriptedWork::RefuseObservedLease {
+            record(
+                &self.journal,
+                ScriptObservation::ObservedLeaseRefused {
+                    turn,
+                    operation: context.operation_id,
+                },
+            );
+            return Err(ObservedTurnApprovalLeaseRefusal(
+                ApprovalLeaseRefusalReason::AlreadyActive,
+            ));
+        }
         self.install_lease(turn)
             .map_err(ObservedTurnApprovalLeaseRefusal)
     }

@@ -31,6 +31,8 @@ use switchboard_session_store::ProviderOperationAdmission;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use uuid::Uuid;
 
+#[path = "session_owner_scripted_recovery_test.rs"]
+mod recovery;
 #[path = "session_owner_scripted_harness_test_support.rs"]
 mod script;
 use script::{
