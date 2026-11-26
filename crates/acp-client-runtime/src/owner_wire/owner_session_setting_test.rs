@@ -11,6 +11,7 @@ use provider_session_machines::{
 };
 use serde_json::{Value, json};
 use session_event_model::{InputId, PromptContent, ProviderSubmission};
+use std::sync::Arc;
 use switchboard_harness_contracts::ReservedReply;
 
 struct CapturedWorkReply(std::sync::mpsc::Sender<WorkReply>);

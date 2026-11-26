@@ -133,6 +133,35 @@ impl OwnerCompletion {
     pub fn send(self, event: OwnerEvent) {
         self.reply.send(event);
     }
+
+    pub(crate) fn map<Reply>(
+        self,
+        convert: impl FnOnce(Reply) -> OwnerEvent + Send + 'static,
+    ) -> switchboard_harness_contracts::LifecycleReply<Reply> {
+        Box::new(OwnerReplyMapping {
+            completion: self,
+            convert,
+        })
+    }
+}
+
+struct OwnerReplyMapping<Convert> {
+    completion: OwnerCompletion,
+    convert: Convert,
+}
+
+impl<Reply, Convert> switchboard_harness_contracts::ReservedReply<Reply>
+    for OwnerReplyMapping<Convert>
+where
+    Convert: FnOnce(Reply) -> OwnerEvent + Send,
+{
+    fn send(self: Box<Self>, reply: Reply) {
+        let Self {
+            completion,
+            convert,
+        } = *self;
+        completion.send(convert(reply));
+    }
 }
 
 fn owner_event_for_work_reply(reply: WorkReply) -> OwnerEvent {

@@ -18,20 +18,24 @@ use crate::session_owner_task::OwnerCompletion;
 use agent_client_protocol::schema::v1::{CancelNotification, CloseSessionRequest, ErrorCode};
 use agent_client_protocol::{Agent, ConnectionTo, Error, JsonRpcMessage as _, UntypedMessage};
 use provider_session_machines::SessionGeneration;
+use provider_session_machines::harness_lifecycle::{CloseFact, LifecycleReply, SettingFact};
 use provider_session_machines::session_lifecycle_machine::{CloseAttempt, LoadAttempt, RestoreVia};
 use provider_session_machines::session_owner::{
     DispatchAuthorization, DispatchResult, OwnerEvent, OwnerIncarnation, OwnerSetting,
-    PromptCompletion, RunAttempt, SessionWireResult, TurnMembership, WireOutcome,
+    PromptCompletion, RestorePreparation, RunAttempt, SessionWireResult, TurnMembership,
+    WireOutcome,
 };
 use provider_session_machines::session_turn_machine::TurnId;
 use provider_session_machines::tool_ownership::{ToolObservation, ToolOwnershipEffect};
+use session_event_model::ProviderAuthStatus;
 use std::{
     collections::BTreeMap,
     num::NonZeroUsize,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
 };
 use switchboard_harness_contracts::{
-    HandOverRefusal, ReservedWorkReply, SteerIdlePolicy, WorkReply,
+    CloseUncertainty, HandOverRefusal, HarnessOwnerEvents, ReservedWorkReply, SteerIdlePolicy,
+    WorkReply,
 };
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
@@ -75,7 +79,7 @@ enum ResponseKind {
     },
     Close {
         run: RunAttempt<CloseAttempt>,
-        completion: OwnerCompletion,
+        completion: LifecycleReply<CloseFact>,
     },
     Setting(Box<CorrelatedSetting>),
 }
@@ -88,12 +92,15 @@ pub enum OwnerWireRefusal {
     Encoding,
 }
 
+pub(crate) type AcpOwnerEvents = dyn HarnessOwnerEvents<ProviderAuthStatus>;
+
 pub struct OwnerAcpWire {
     transport: AcpTransport<AcpFrame>,
     readers: Mutex<BTreeMap<TransportRun, mpsc::Sender<PromptTerminal>>>,
     restore_updates: Arc<crate::owner_restore_updates::RestoreUpdates>,
     cursor_plans: Arc<crate::provider_cursor_plan_items::CursorPlanItems>,
     behavior: Arc<dyn crate::ProviderBehavior>,
+    owner_events: Mutex<BTreeMap<OwnerIncarnation, Weak<AcpOwnerEvents>>>,
     #[cfg(feature = "test-observation")]
     fixture_dispatch: Mutex<FixtureDispatchObservation>,
 }
@@ -188,6 +195,7 @@ impl OwnerAcpWire {
                 restore_updates: restore_updates.clone(),
                 cursor_plans: Arc::default(),
                 behavior,
+                owner_events: Mutex::default(),
                 #[cfg(feature = "test-observation")]
                 fixture_dispatch: Mutex::default(),
             },
@@ -426,8 +434,46 @@ impl OwnerAcpWire {
         self.transport.session_for_route(run)
     }
 
-    pub(crate) fn routed_sessions(&self) -> Vec<String> {
-        self.transport.routed_sessions()
+    pub(crate) fn register_owner_events(
+        &self,
+        owner: OwnerIncarnation,
+        events: &Arc<AcpOwnerEvents>,
+    ) {
+        self.owner_events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(owner, Arc::downgrade(events));
+    }
+
+    pub(crate) fn unregister_owner_events(
+        &self,
+        owner: OwnerIncarnation,
+        events: &Arc<AcpOwnerEvents>,
+    ) {
+        let mut registered = self
+            .owner_events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if registered
+            .get(&owner)
+            .is_some_and(|registered| registered.ptr_eq(&Arc::downgrade(events)))
+        {
+            registered.remove(&owner);
+        }
+    }
+
+    pub(crate) fn auth_observation_targets(&self) -> (Vec<Arc<AcpOwnerEvents>>, Vec<String>) {
+        let routes = self.transport.routed_owner_sessions();
+        let registered = self
+            .owner_events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let owner_ports = registered.values().filter_map(Weak::upgrade).collect();
+        let unbound_sessions = routes
+            .into_iter()
+            .filter_map(|(owner, session)| (!registered.contains_key(&owner)).then_some(session))
+            .collect();
+        (owner_ports, unbound_sessions)
     }
 
     pub(crate) fn allows_explicit_tool_request(&self, session: &str, tool: &str) -> bool {
@@ -441,6 +487,49 @@ impl OwnerAcpWire {
         setting: OwnerSetting,
         plan: OwnerSettingWirePlan,
         completion: OwnerCompletion,
+    ) -> Result<(), TransportRefusal> {
+        let catalogue = |record| {
+            Arc::new(provider_session_machines::ProviderSettingsCatalog::from_record(record))
+        };
+        self.reapply_lifecycle_setting(
+            owner,
+            run,
+            setting,
+            plan,
+            completion.map(move |fact| match fact {
+                SettingFact::Mode {
+                    restore: run,
+                    setting,
+                    outcome,
+                    catalogue: record,
+                } => OwnerEvent::Wire(SessionWireResult::RestoreMode {
+                    run,
+                    setting,
+                    outcome,
+                    catalogue: record.map(catalogue),
+                }),
+                SettingFact::FastOff {
+                    restore: run,
+                    setting,
+                    observation,
+                    catalogue: record,
+                } => OwnerEvent::Prepare(RestorePreparation::FastOff {
+                    run,
+                    setting,
+                    observation,
+                    catalogue: record.map(catalogue),
+                }),
+            }),
+        )
+    }
+
+    pub(crate) fn reapply_lifecycle_setting(
+        &self,
+        owner: OwnerIncarnation,
+        run: RunAttempt<LoadAttempt>,
+        setting: OwnerSetting,
+        plan: OwnerSettingWirePlan,
+        completion: LifecycleReply<SettingFact>,
     ) -> Result<(), TransportRefusal> {
         let correlation = match setting.kind {
             provider_session_machines::ProviderSettingKind::Fast => {
@@ -529,6 +618,31 @@ impl OwnerAcpWire {
         run: RunAttempt<CloseAttempt>,
         session: String,
         completion: OwnerCompletion,
+    ) -> Result<(), OwnerWireRefusal> {
+        self.enqueue_lifecycle_close(
+            owner,
+            run,
+            session,
+            completion.map(|fact| {
+                let (run, outcome) = match fact {
+                    CloseFact::Closed { run } => (run, WireOutcome::Confirmed(())),
+                    CloseFact::RefusedStillLive { run } => (run, WireOutcome::Refused),
+                    CloseFact::NotOffered { run } => {
+                        return OwnerEvent::Wire(SessionWireResult::CloseNotSent(run));
+                    }
+                    CloseFact::Unknown { run, .. } => (run, WireOutcome::Unknown),
+                };
+                OwnerEvent::Wire(SessionWireResult::Close { run, outcome })
+            }),
+        )
+    }
+
+    pub(crate) fn enqueue_lifecycle_close(
+        &self,
+        owner: OwnerIncarnation,
+        run: RunAttempt<CloseAttempt>,
+        session: String,
+        completion: LifecycleReply<CloseFact>,
     ) -> Result<(), OwnerWireRefusal> {
         let frame = AcpFrame::Request {
             message: CloseSessionRequest::new(session)
@@ -700,12 +814,21 @@ impl ResponseKind {
                 )));
             }
             Self::Close { run, completion } => {
-                let outcome = match reply {
-                    Some(Ok(_)) => WireOutcome::Confirmed(()),
-                    Some(Err(error)) if definite_refusal(&error) => WireOutcome::Refused,
-                    _ => WireOutcome::Unknown,
+                let fact = match reply {
+                    Some(Ok(_)) => CloseFact::Closed { run },
+                    Some(Err(error)) if definite_refusal(&error) => {
+                        CloseFact::RefusedStillLive { run }
+                    }
+                    Some(Err(_)) => CloseFact::Unknown {
+                        run,
+                        cause: CloseUncertainty::EffectUnconfirmed,
+                    },
+                    None => CloseFact::Unknown {
+                        run,
+                        cause: CloseUncertainty::ReplyLost,
+                    },
                 };
-                completion.send(OwnerEvent::Wire(SessionWireResult::Close { run, outcome }));
+                completion.send(fact);
             }
         }
     }

@@ -204,11 +204,11 @@ impl<Frame> AcpTransport<Frame> {
             .map(|route| route.session.clone())
     }
 
-    pub(crate) fn routed_sessions(&self) -> Vec<String> {
+    pub(crate) fn routed_owner_sessions(&self) -> Vec<(OwnerIncarnation, String)> {
         self.state()
             .routes
-            .values()
-            .map(|route| route.session.clone())
+            .iter()
+            .map(|(run, route)| (run.incarnation, route.session.clone()))
             .collect()
     }
 
