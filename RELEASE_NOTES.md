@@ -1,5 +1,9 @@
 # Release Notes
 
+## 0.1.164
+
+- An explicit `steer` is refused when no turn is running, including provider-backed `turn/steer` and ACP `_session/steering`. Send a prompt or use `auto` to start a turn. Prompt tools report `NoActiveTurn` (`noActiveTurn` in JSON), and ACP message delivery reports `notSubmitted` with reason `noActiveTurn`.
+
 ## 0.1.163
 
 - A signed-in person can list, read, and answer approval requests with `codex-router central approvals list`, `read`, and `decide` over their own WebSocket connection to Central. If the decision outcome is unknown, the CLI prints the operation ID and the command to retry. Retrying with the same operation ID returns the saved decision if Central already applied it.

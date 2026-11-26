@@ -22,6 +22,7 @@ mod publication_projection;
 pub(super) use publication_projection::OwnerProjection;
 mod registry_effects;
 mod setting_effects;
+mod steer_effects;
 mod store_effects;
 mod tool_effects;
 
@@ -158,10 +159,16 @@ impl OwnerTransition {
                 admission,
                 selected,
             } => self.admit_selected_prompt(input, admission, selected),
-            SessionOwnerCommand::Steer { input, supported } => self.admit_steer(input, supported),
-            SessionOwnerCommand::SteerExisting { input, supported } => {
-                self.admit_existing_steer(input, supported)
+            SessionOwnerCommand::Steer {
+                input,
+                supported,
+                origin,
             }
+            | SessionOwnerCommand::SteerExisting {
+                input,
+                supported,
+                origin,
+            } => self.admit_existing_steer(input, supported, origin),
             SessionOwnerCommand::PlaceDelivery { input, delivery } => {
                 self.place_delivery(input, delivery)
             }

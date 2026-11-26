@@ -642,7 +642,9 @@ impl SessionOwnerAddress {
                     admission,
                     selected,
                 },
-                SessionOwnerCommand::Steer { supported, .. } => DeliveryInput::Steer { supported },
+                SessionOwnerCommand::Steer {
+                    supported, origin, ..
+                } => DeliveryInput::Steer { supported, origin },
                 _ => return Err(OwnerDoorError::Unavailable),
             };
             self.calls

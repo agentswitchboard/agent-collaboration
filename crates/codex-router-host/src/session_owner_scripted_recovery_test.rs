@@ -12,7 +12,9 @@ use collaboration_protocol::{
 };
 use provider_session_machines::{
     harness_lifecycle::{ExactTurn, SessionLifecycleFact, TransportRun},
-    session_owner::{DeliveryInput, OwnerInput, OwnerInputEvidence, PromptAdmission, RemoteEffect},
+    session_owner::{
+        DeliveryInput, OwnerInput, OwnerInputEvidence, PromptAdmission, RemoteEffect, SteerOrigin,
+    },
     session_turn_machine::{SessionTurn, TurnId},
 };
 use script::{ScriptControls, ScriptedWork};
@@ -448,6 +450,7 @@ async fn refused_observed_turn_lease_keeps_the_provider_started_turn_without_a_n
         SessionOwnerCommand::Steer {
             input: steer.clone(),
             supported: true,
+            origin: SteerOrigin::Named,
         },
     )
     .await;

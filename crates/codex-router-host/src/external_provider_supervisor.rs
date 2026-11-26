@@ -15,6 +15,7 @@ mod provider_operation_handoff;
 mod provider_operation_properties;
 mod provider_owner_delivery;
 pub use provider_notice_delivery::ManagedAcpNoticeAdapter;
+pub(crate) use provider_owner_delivery::ExactTurnSteer;
 mod provider_owner_operations;
 mod provider_owner_prompt;
 pub(crate) use provider_owner_prompt::{SessionQueuePlan, WarmRun};

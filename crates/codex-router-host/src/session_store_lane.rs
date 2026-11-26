@@ -471,6 +471,13 @@ impl SessionStoreLane {
     }
 
     #[cfg(test)]
+    pub(crate) async fn hold_steer_mark_receipt(&self, operation: &OperationId) {
+        if let Some(binding) = self.inner.binding.get() {
+            binding.fixture.hold_steer_mark_receipt(operation).await;
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) async fn wait_for_accepted_mark(&self, operation: &OperationId) {
         loop {
             let accepted = self.inner.mark_accepted.notified();

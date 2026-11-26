@@ -596,7 +596,11 @@ impl ExternalProviderRuntime {
             .start_delivery(
                 input.clone(),
                 content,
-                SessionOwnerCommand::Steer { input, supported },
+                SessionOwnerCommand::Steer {
+                    input,
+                    supported,
+                    origin: provider_session_machines::session_owner::SteerOrigin::Named,
+                },
             )
             .await
             .map_err(fixture_error)?;

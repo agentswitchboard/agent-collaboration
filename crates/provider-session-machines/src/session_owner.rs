@@ -49,6 +49,13 @@ pub enum PromptAdmission {
     DeliveryAuto { steering_supported: bool },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SteerOrigin {
+    Named,
+    Auto,
+    Notice,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DeliveryInput {
     Prompt {
@@ -57,6 +64,7 @@ pub enum DeliveryInput {
     },
     Steer {
         supported: bool,
+        origin: SteerOrigin,
     },
 }
 
@@ -91,10 +99,12 @@ pub enum SessionOwnerCommand {
     Steer {
         input: OwnerInput,
         supported: bool,
+        origin: SteerOrigin,
     },
     SteerExisting {
         input: OwnerInput,
         supported: bool,
+        origin: SteerOrigin,
     },
     PlaceDelivery {
         input: OwnerInput,
@@ -539,6 +549,8 @@ pub enum SessionOwnerRefusal {
     CancelTargetInactive,
     QueueFull,
     CannotSteer,
+    NoActiveTurn,
+    NamedSteerTurnChanged { actual: TurnId },
     SkillSelectionChanged,
 }
 
@@ -619,11 +631,18 @@ pub(in crate::session_owner) struct PendingPrompt {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub(in crate::session_owner) struct PendingSteer {
+    input: OwnerInput,
+    wait: InputWait,
+    origin: SteerOrigin,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct SessionOwnerState {
     pub(in crate::session_owner) cell: SessionCell,
     pub(in crate::session_owner) restore: Option<PendingRestore>,
     pub(in crate::session_owner) prompts: BTreeMap<u64, PendingPrompt>,
-    pub(in crate::session_owner) steer: Option<PendingPrompt>,
+    pub(in crate::session_owner) steer: Option<PendingSteer>,
     pub(in crate::session_owner) setting: Option<(OwnerSetting, SettingWait)>,
     pub(in crate::session_owner) tools: BTreeMap<String, ToolOwnership>,
     pub(in crate::session_owner) ports: owner_ports::PendingPorts,

@@ -198,7 +198,7 @@ impl Mailbox {
                                 }),
                             }))
                     }
-                    AuthorizedWork::Steer(_) => {
+                    AuthorizedWork::Steer { .. } => {
                         self.arrivals
                             .push(OwnerEvent::Dispatch(DispatchResult::SteerFinished {
                                 authorization,
@@ -364,13 +364,18 @@ fn pending(
             attempt,
         }));
     }
-    for prompt in state.prompts.values().chain(state.steer.iter()) {
-        match prompt.wait {
+    let prompts = state
+        .prompts
+        .values()
+        .map(|prompt| (&prompt.input, prompt.wait));
+    let steers = state.steer.iter().map(|steer| (&steer.input, steer.wait));
+    for (input, wait) in prompts.chain(steers) {
+        match wait {
             InputWait::DispatchStore => waits.push(OwnerDeadline::DispatchMark {
-                input: prompt.input.clone(),
+                input: input.clone(),
             }),
             InputWait::UndoStore => waits.push(OwnerDeadline::UndoStore {
-                input: prompt.input.clone(),
+                input: input.clone(),
             }),
             InputWait::Admission | InputWait::Enqueue | InputWait::Wire => {}
         }
@@ -389,7 +394,7 @@ fn pending(
             // Cancel takes use the drain's budget, with no second enqueue timer.
             (AuthorizationStatus::Offered, AuthorizedWork::Cancel(_)) => {}
             (AuthorizationStatus::Offered, _) => waits.push(OwnerDeadline::Enqueue(key.clone())),
-            (AuthorizationStatus::Taken, AuthorizedWork::Steer(_)) => {
+            (AuthorizationStatus::Taken, AuthorizedWork::Steer { .. }) => {
                 waits.push(OwnerDeadline::SteerResult(key.clone()))
             }
             (AuthorizationStatus::DrainingCancel, _) => {

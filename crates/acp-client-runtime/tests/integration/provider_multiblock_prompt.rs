@@ -266,6 +266,7 @@ async fn multi_block_steer_reaches_extension_in_order() {
             "fixture-session".to_owned(),
             InputId::generate(),
             session_event_model::ProviderSubmission::plain(vec![image]),
+            provider_session_machines::session_owner::SteerOrigin::Auto,
         )
         .await;
     assert!(matches!(
@@ -279,6 +280,7 @@ async fn multi_block_steer_reaches_extension_in_order() {
             "fixture-session".to_owned(),
             InputId::generate(),
             session_event_model::ProviderSubmission::plain(text_and_link()),
+            provider_session_machines::session_owner::SteerOrigin::Auto,
         )
         .await;
     assert!(matches!(

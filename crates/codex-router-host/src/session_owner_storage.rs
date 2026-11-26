@@ -434,6 +434,10 @@ impl SessionOwnerStorage {
                 Err(_) => EffectOutcome::Failed,
             };
             let result = if kind == LaneDispatchKind::Steer {
+                #[cfg(test)]
+                if outcome == EffectOutcome::Applied {
+                    lane.hold_steer_mark_receipt(&operation).await;
+                }
                 SessionStoreResult::SteerDispatch { input, outcome }
             } else {
                 SessionStoreResult::Dispatch { input, outcome }

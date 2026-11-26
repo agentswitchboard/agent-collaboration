@@ -77,7 +77,7 @@ fn steering_fixture(observed_prompt_socket: &std::path::Path) -> ExternalProvide
 
 #[cfg(unix)]
 #[tokio::test]
-async fn steering_injects_during_a_prompt_and_starts_a_normal_prompt_when_idle() {
+async fn steering_injects_during_a_prompt_and_is_refused_when_idle() {
     let root = tempfile::tempdir().expect("fixture root");
     let marker = root.path().join("prompt.sock");
     let listener = tokio::net::UnixListener::bind(&marker).expect("prompt event listener");
@@ -173,10 +173,9 @@ async fn steering_injects_during_a_prompt_and_starts_a_normal_prompt_when_idle()
     );
     let idle = runtime
         .steer_session("fixture-session".to_owned(), "later".to_owned())
-        .await
-        .expect("steer idle session");
+        .await;
     assert!(
-        matches!(idle, ProviderSteeringOutcome::StartedNewTurn),
+        matches!(&idle, Err(ExternalProviderRuntimeError::Operation(answer)) if answer.contains("NoActiveTurn")),
         "{idle:?}"
     );
     runtime.shutdown().await;

@@ -2,7 +2,7 @@ use super::{
     InputId, LastLiveTurn, OwnerInput, OwnerSetting, RunAttempt, SessionGeneration,
     SessionLifecycle, SessionOwnerCommand, SessionOwnerReply, SessionPublication,
     SessionStoreRequest, SessionStoreResult, SessionTurn, SessionWireRequest, SessionWireResult,
-    TurnId,
+    SteerOrigin, TurnId,
 };
 use crate::provider_settings_catalog::ProviderSettingsUpdate;
 use crate::session_lifecycle_machine::{CloseAttempt, LoadAttempt};
@@ -83,7 +83,10 @@ pub use switchboard_harness_contracts::{AuthorizationTarget, DispatchAuthorizati
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AuthorizedWork {
     Prompt(OwnerInput),
-    Steer(OwnerInput),
+    Steer {
+        input: OwnerInput,
+        origin: SteerOrigin,
+    },
     Cancel(OwnerInput),
     Setting {
         input_id: InputId,
@@ -105,11 +108,14 @@ pub enum RevokeReason {
     SkillSelectionChanged,
     SettingsUnresolved,
     RunReplaced,
+    NamedSteerRunReplaced,
     Cancelled,
     Closed,
     EnqueueExpired,
     ConnectionLost,
     TurnEnded,
+    NamedSteerTurnChanged { actual: TurnId },
+    NoActiveTurn,
     ProviderSteerRefused,
     ProviderSteerNeedsPrompt,
 }
@@ -145,12 +151,17 @@ impl RevokeReason {
             Self::SettingsUnresolved => {
                 "settings-uncertain: run conversation settings set to resolve the unknown provider setting outcome"
             }
-            Self::RunReplaced => "the session was restored again; send again if still needed",
+            Self::RunReplaced | Self::NamedSteerRunReplaced => {
+                "the session was restored again; send again if still needed"
+            }
             Self::Cancelled => "cancelled before sending",
             Self::Closed => "the session closed first; send again",
             Self::EnqueueExpired => "the Router couldn't send in time; send again",
             Self::ConnectionLost => "the provider connection ended; reconnect and send again",
-            Self::TurnEnded => "the turn you steered had already ended; send again",
+            Self::TurnEnded | Self::NamedSteerTurnChanged { .. } => {
+                "the turn you steered had already ended; send again"
+            }
+            Self::NoActiveTurn => "no running turn; send a prompt, or use auto",
             Self::ProviderSteerRefused => "steerFailed",
             Self::ProviderSteerNeedsPrompt => "the provider requires a new prompt",
         }

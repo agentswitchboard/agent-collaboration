@@ -53,13 +53,14 @@ impl SessionOwnerExecution {
         let events = self
             .observations
             .observed_at(LifecycleObservationScope::Restoring(run), cancel.clone());
+        let session = HarnessSessionId(self.session_id());
         if self
-            .binding
+            .binding_mut()
             .open(
                 OpenRequest::Restore {
                     owner,
                     run,
-                    session: HarnessSessionId(self.session_id()),
+                    session,
                     via,
                     setup: OpenSetup {
                         cwd,
@@ -103,7 +104,7 @@ impl SessionOwnerExecution {
             catalogue: catalogue.clone().into_record(),
         };
         match self
-            .binding
+            .binding()
             .put_setting_back(attempt, &mut || match completions.reserve(address) {
                 Ok(completion) => {
                     ReplyAdmission::Reserved(completion.map(owner_event_for_restore_setting))
@@ -147,7 +148,7 @@ impl SessionOwnerExecution {
             LifecycleObservationScope::Activated(generation),
             cancel.clone(),
         );
-        self.binding
+        self.binding()
             .activate(setup, accepted, events, Box::pin(cancel.cancelled_owned()));
     }
 
@@ -157,7 +158,7 @@ impl SessionOwnerExecution {
         reply: LifecycleReply<SessionCreatedSetupFact>,
         retired: RunRetirement,
     ) -> Result<(), LifecycleRefusal> {
-        self.binding.configure_created(attempt, reply, retired)
+        self.binding().configure_created(attempt, reply, retired)
     }
 
     pub(crate) fn prepare_created(&mut self, attempt: CreateAttempt) {
@@ -180,7 +181,7 @@ impl SessionOwnerExecution {
                 .is_some_and(|route| route.router_auto_requested),
         };
         let preparation = match self
-            .binding
+            .binding()
             .accept_settings(OpenAttempt::Restore(run), &accepted)
         {
             Ok(report) => RestorePreparation::HostReady {

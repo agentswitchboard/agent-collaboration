@@ -519,28 +519,20 @@ pub(super) async fn handle_app_server_turn_request(
             let content = parse_turn_input(&params, &session).await?;
             let outcome = commands
                 .steer(SteerSessionCommand {
-                    target: session.clone(),
-                    input_id: input_id.clone(),
+                    target: session,
+                    input_id,
                     expected_turn_id,
-                    submission: content.clone(),
-                    actor: actor.clone(),
+                    intent: collaboration_contracts::SessionSteerIntent::Named,
+                    submission: content,
+                    actor,
                 })
                 .await
-                .map_err(command_error)?;
+                .map_err(steer_command_error)?;
             let turn_id = match outcome {
                 SessionSteerOutcome::Injected { turn_id }
                 | SessionSteerOutcome::StartedNewTurn { turn_id } => turn_id,
                 SessionSteerOutcome::PromptRequired => {
-                    commands
-                        .prompt(PromptSessionCommand {
-                            target: session,
-                            input_id,
-                            submission: content,
-                            actor,
-                        })
-                        .await
-                        .map_err(command_error)?
-                        .turn_id
+                    return Err(ThreadMethodError::NoActiveTurnToSteer);
                 }
                 SessionSteerOutcome::Failed { .. } => return Err(ThreadMethodError::Unavailable),
             };
@@ -560,6 +552,20 @@ pub(super) async fn handle_app_server_turn_request(
             Ok(json!({}))
         }
         _ => Err(ThreadMethodError::InvalidParams),
+    }
+}
+
+fn steer_command_error(error: collaboration_contracts::CommandFailure) -> ThreadMethodError {
+    use collaboration_contracts::CommandFailure;
+    match error {
+        CommandFailure::NoActiveTurn => ThreadMethodError::NoActiveTurnToSteer,
+        CommandFailure::SteerTurnMismatch { expected, actual } => {
+            ThreadMethodError::SteerTurnMismatch { expected, actual }
+        }
+        CommandFailure::ProviderOperation(_) | CommandFailure::ProviderSteerOperation(_) => {
+            steer_command_error(error.classification().into_owned())
+        }
+        error => command_error(error),
     }
 }
 
@@ -584,7 +590,9 @@ fn command_error(error: collaboration_contracts::CommandFailure) -> ThreadMethod
         CommandFailure::Unsupported | CommandFailure::UnsupportedOperation { .. } => {
             ThreadMethodError::Unsupported
         }
-        CommandFailure::Busy | CommandFailure::NoActiveTurn => ThreadMethodError::Busy,
+        CommandFailure::Busy
+        | CommandFailure::NoActiveTurn
+        | CommandFailure::SteerTurnMismatch { .. } => ThreadMethodError::Busy,
         CommandFailure::SessionNotFound => ThreadMethodError::NotFound,
         CommandFailure::InvalidSetting { .. } | CommandFailure::UnsupportedContent(_) => {
             ThreadMethodError::InvalidParams

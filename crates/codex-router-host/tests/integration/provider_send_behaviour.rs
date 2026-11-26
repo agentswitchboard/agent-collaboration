@@ -650,10 +650,9 @@ async fn mail_and_cli_outcomes_for_each_session_state() {
     }
 }
 
-/// T2 uses a normal prompt when idle. An existing turn on an agent without
-/// steering refuses the explicit steer without adding any wire input.
+/// T2 refuses an explicit steer while idle or when the running agent cannot steer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_explicit_steer_starts_a_prompt_when_idle_and_refuses_an_unsupported_active_turn() {
+async fn an_explicit_steer_refuses_idle_and_an_unsupported_active_turn() {
     let staging = tempfile::tempdir().expect("receipt folder");
     let idle_wire = staging.path().join("idle-wire.json");
     let steering = ComposedHost::start(cursor_reactive(&idle_wire, &[]), "cursor-local").await;
@@ -684,6 +683,8 @@ async fn an_explicit_steer_starts_a_prompt_when_idle_and_refuses_an_unsupported_
             MessageDelivery::Steer,
         )
         .await;
+    let idle_prompts = recorded(&idle_wire, "session/prompt");
+    let idle_steers = recorded(&idle_wire, "_session/steering");
     let to_non_steering = non_steering
         .prompt_answer(
             &busy,
@@ -715,12 +716,24 @@ async fn an_explicit_steer_starts_a_prompt_when_idle_and_refuses_an_unsupported_
             _ => None,
         }
     };
-    assert!(
-        matches!(&to_idle, Ok(ConversationOperationResult::Completed { operation_id: Some(operation), .. }) if operation == &idle_input),
-        "idle steer completes as a prompt: {to_idle:?}"
+    assert_eq!(
+        refusal(&to_idle),
+        Some((
+            collaboration_protocol::ConversationOperationFailureKind::NoActiveTurn,
+            "no running turn; send a prompt, or use auto".into(),
+        )),
+        "{to_idle:?}"
     );
-    assert_eq!(recorded(&idle_wire, "session/prompt"), 1);
-    assert_eq!(recorded(&idle_wire, "_session/steering"), 0);
+    let Err(collaboration_client::ConversationClientError::Client(error)) = to_idle else {
+        panic!("idle steer must return the typed failure");
+    };
+    let failure = error.conversation_failure().expect("idle refusal");
+    assert_eq!(
+        failure.effect,
+        collaboration_protocol::ProviderOperationEffect::None
+    );
+    assert_eq!(idle_prompts, 0);
+    assert_eq!(idle_steers, 0);
     assert_eq!(
         refusal(&to_non_steering),
         Some((
@@ -734,4 +747,99 @@ async fn an_explicit_steer_starts_a_prompt_when_idle_and_refuses_an_unsupported_
         "the active-turn refusal did not reach the agent"
     );
     assert_eq!(cancels, 0, "no turn is interrupted");
+}
+
+#[tokio::test]
+async fn named_steer_reports_no_active_turn_through_the_prompt_api() {
+    use crate::provider_acp_steering_route::peer_turn_requests;
+    use collaboration_protocol::{ConversationOperationFailureKind, ProviderOperationEffect};
+    use tokio::io::AsyncReadExt as _;
+
+    let receipts = tempfile::tempdir().expect("provider receipts");
+    let wire = receipts.path().join("wire.jsonl");
+    let foreground_socket = receipts.path().join("foreground.sock");
+    let foreground_listener =
+        tokio::net::UnixListener::bind(&foreground_socket).expect("foreground witness socket");
+    let launch = ExternalProviderLaunchBinding::claude(
+        node_test_fixture::node_executable().expect("Node"),
+        vec![
+            node_test_fixture::fixture_program("provider-steering-route-agent.ts")
+                .display()
+                .to_string(),
+            "prompt-required".into(),
+            foreground_socket.display().to_string(),
+            wire.display().to_string(),
+        ],
+    )
+    .expect("Claude fixture binding");
+    let host = ComposedHost::start(launch, "claude-local").await;
+    let actor = ComposedHost::human("steer-owner");
+    let target = host.create(&actor).await;
+
+    let idle = host
+        .prompt_answer(
+            &target,
+            &actor,
+            OperationId::generate(),
+            "idle steer",
+            SHORT_WAIT,
+            MessageDelivery::Steer,
+        )
+        .await;
+    assert!(peer_turn_requests(&wire).is_empty());
+    let ended = {
+        let foreground = host.prompt_answer(
+            &target,
+            &actor,
+            OperationId::generate(),
+            "held foreground",
+            Duration::from_secs(30),
+            MessageDelivery::Auto,
+        );
+        tokio::pin!(foreground);
+        let (mut active, _) = tokio::select! {
+            event = foreground_listener.accept() => event.expect("peer received the foreground prompt"),
+            answer = &mut foreground => panic!("foreground answered before reaching the peer: {answer:?}"),
+        };
+        let mut notice = [0; 6];
+        active
+            .read_exact(&mut notice)
+            .await
+            .expect("foreground take receipt");
+        assert_eq!(&notice, b"active");
+        let ended = host
+            .prompt_answer(
+                &target,
+                &actor,
+                OperationId::generate(),
+                "\"follow-up\" · router://fixture",
+                SHORT_WAIT,
+                MessageDelivery::Steer,
+            )
+            .await;
+        let foreground = foreground.await.expect("foreground completion response");
+        assert!(matches!(
+            foreground,
+            ConversationOperationResult::Completed { .. }
+        ));
+        ended
+    };
+    host.runtime.shutdown().await.expect("Host shutdown");
+
+    for answer in [idle, ended] {
+        let Err(collaboration_client::ConversationClientError::Client(error)) = answer else {
+            panic!("expected the prompt API's typed failure: {answer:?}");
+        };
+        let failure = error.conversation_failure().expect("prompt refusal");
+        assert_eq!(failure.kind, ConversationOperationFailureKind::NoActiveTurn);
+        assert_eq!(failure.effect, ProviderOperationEffect::None);
+        assert_eq!(
+            String::from(failure.message),
+            "no running turn; send a prompt, or use auto"
+        );
+    }
+    assert_eq!(
+        peer_turn_requests(&wire),
+        ["session/prompt", "_session/steering"]
+    );
 }

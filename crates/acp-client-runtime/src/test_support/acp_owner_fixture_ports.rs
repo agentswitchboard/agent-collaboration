@@ -19,7 +19,8 @@ use provider_session_machines::session_owner::{
     OwnerInput, OwnerSetting, PreparationStage, PublicationBatch, PublicationFact,
     PublicationResult, RestoreFailure, RestoreLoadReadback, RestorePreparation, RunAttempt,
     SessionOwnerReply, SessionPublication, SessionStoreRequest, SessionStoreResult,
-    SessionWireRequest, SessionWireResult, SettingEvidence, TurnMembership, WireOutcome,
+    SessionWireRequest, SessionWireResult, SettingEvidence, SteerOrigin, TurnMembership,
+    WireOutcome,
 };
 use provider_session_machines::{
     ProviderSettingsCatalog, SessionGeneration,
@@ -261,7 +262,7 @@ impl<P: AcpRequestPayloads> FixturePorts<P> {
                     )));
                 }
             }
-            AuthorizedWork::Steer(input) => {
+            AuthorizedWork::Steer { input, origin } => {
                 let content = lock(&self.shared)
                     .inputs
                     .get(&input.input)
@@ -270,7 +271,10 @@ impl<P: AcpRequestPayloads> FixturePorts<P> {
                     self.work_binding.offer_steer(
                         authorization.clone(),
                         content.as_harness_content(),
-                        SteerIdlePolicy::AllowOwnerPrompt,
+                        match origin {
+                            SteerOrigin::Auto => SteerIdlePolicy::AllowOwnerPrompt,
+                            SteerOrigin::Named | SteerOrigin::Notice => SteerIdlePolicy::Refuse,
+                        },
                         reserve_fixture_work_reply(completions, address)?,
                     )
                 } else {

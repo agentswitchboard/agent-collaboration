@@ -433,6 +433,7 @@ async fn owner_dies_after_accepting_mark(steer: bool) {
         SessionOwnerCommand::Steer {
             input,
             supported: true,
+            origin: provider_session_machines::session_owner::SteerOrigin::Named,
         }
     } else {
         SessionOwnerCommand::Prompt {

@@ -9,8 +9,8 @@ use tokio::{
 };
 
 use crate::{
-    CloseReport, Event, Front, FrontRefusal, MessageFront, MessageRoots, MessageSystemEvents,
-    MessageSystemObservation,
+    CentralWorkPort, CloseReport, Event, Front, FrontRefusal, MessageFront, MessageRoots,
+    MessageSystemEvents, MessageSystemObservation,
 };
 use crate::{
     interpreter::{Interpreter, MessageInputs, OpenedEnrollment, start_supervisor},
@@ -23,6 +23,7 @@ pub struct MessageSystem {
     close: CloseRequest,
     interpreter: JoinHandle<CloseReport>,
     front: MessageFront,
+    central_calls: CentralWorkPort,
     status: watch::Receiver<MessageSystemObservation>,
 }
 
@@ -81,13 +82,21 @@ impl MessageSystem {
         ));
         let (events, queue) = mpsc::unbounded_channel();
         let close = CloseRequest(events.clone());
-        let interpreter =
-            Interpreter::new(inputs, front_out, status_out, events, queue, enrollment);
+        let (interpreter, central_calls) = Interpreter::new(
+            inputs,
+            front_out,
+            status_out,
+            events,
+            queue,
+            enrollment,
+            supervisor.state(),
+        );
         let interpreter = tokio::spawn(interpreter.run(supervisor, effects, build));
         Self {
             close,
             interpreter,
             front,
+            central_calls,
             status,
         }
     }
@@ -95,6 +104,11 @@ impl MessageSystem {
     #[must_use]
     pub fn front(&self) -> MessageFront {
         self.front.clone()
+    }
+
+    #[must_use]
+    pub fn central_calls(&self) -> CentralWorkPort {
+        self.central_calls.clone()
     }
 
     #[must_use]

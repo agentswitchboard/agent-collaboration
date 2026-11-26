@@ -21,6 +21,16 @@ use crate::{
     message_unit::{MessageUnit, UnitLinkInputs},
 };
 
+pub use crate::status::StatusPublicationHold;
+
+impl MessageSystemEvents {
+    #[must_use]
+    pub fn with_status_publication_hold(mut self, hold: StatusPublicationHold) -> Self {
+        self.status_publication_hold = Some(hold);
+        self
+    }
+}
+
 type FixtureDriver = LinkDriver<EnrollmentKey, EnrollmentLeaseSource>;
 
 /// Request the live supervisor's normal metadata reread after a fixture changes its read boundary.

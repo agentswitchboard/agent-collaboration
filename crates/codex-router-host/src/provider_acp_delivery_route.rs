@@ -460,7 +460,13 @@ impl ProviderAcpDeliveryRoute {
                 ));
             }
             Ok(InputAcceptance::Unsent { reason }) => {
+                let refusal = if reason == Some(RevokeReason::NoActiveTurn) {
+                    NativeRefusalCode::NoActiveTurn
+                } else {
+                    NativeRefusalCode::ProviderNotSubmitted
+                };
                 let answer = match reason {
+                    Some(RevokeReason::NoActiveTurn) => refusal.as_str().into(),
                     Some(RevokeReason::SettingsUnresolved) => settings_hold_answer(UnresolvedCause::OutcomeUnknown),
                     Some(RevokeReason::NotLoaded) => self.supervisor.owner_session_snapshot(&request.target)
                         .map_or_else(|| RevokeReason::NotLoaded.display_detail().into_owned(), |snapshot| state_answer(&snapshot.lifecycle)),
@@ -474,12 +480,24 @@ impl ProviderAcpDeliveryRoute {
                         &mut effect,
                         answer,
                         false,
-                        UnsentCause::Refused(NativeRefusalCode::ProviderNotSubmitted),
+                        UnsentCause::Refused(refusal),
                     )
                     .await;
             }
             Err(failure) if failure.kind == collaboration_protocol::ConversationOperationFailureKind::CannotSteer => {
                 return Ok(Self::rejected(DeliveryRejectionReason::SteerUnsupported, &String::from(failure.message)));
+            }
+            Err(failure) if failure.kind == collaboration_protocol::ConversationOperationFailureKind::NoActiveTurn => {
+                return self
+                    .finish_known_none(
+                        &request,
+                        sink,
+                        &mut effect,
+                        NativeRefusalCode::NoActiveTurn.as_str(),
+                        false,
+                        UnsentCause::Refused(NativeRefusalCode::NoActiveTurn),
+                    )
+                    .await;
             }
             Err(failure) if failure.effect == ProviderOperationEffect::None => {
                 return self

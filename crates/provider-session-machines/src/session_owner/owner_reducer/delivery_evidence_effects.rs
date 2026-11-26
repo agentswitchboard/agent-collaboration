@@ -49,7 +49,9 @@ impl OwnerTransition {
                 admission,
                 selected,
             } => self.admit_selected_prompt(input, admission, selected),
-            DeliveryInput::Steer { supported } => self.admit_steer(input, supported),
+            DeliveryInput::Steer { supported, origin } => {
+                self.admit_existing_steer(input, supported, origin)
+            }
         }
     }
 
@@ -118,7 +120,15 @@ impl OwnerTransition {
                 if !self.is_live(input.generation)
                     || self.next.turn() != (SessionTurn::Running { turn: input.turn })
                 {
-                    return self.reject_delivery_placement(input, kind, RevokeReason::TurnEnded);
+                    let reason = if self.next.steer.as_ref().is_some_and(|pending| {
+                        pending.origin == crate::session_owner::SteerOrigin::Named
+                    }) {
+                        self.named_steer_target_loss(&input)
+                            .unwrap_or(RevokeReason::TurnEnded)
+                    } else {
+                        RevokeReason::TurnEnded
+                    };
+                    return self.reject_delivery_placement(input, kind, reason);
                 }
                 self.start_steer_mark(input);
                 Ok(())

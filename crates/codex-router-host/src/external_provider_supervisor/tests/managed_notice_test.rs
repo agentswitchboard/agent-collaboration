@@ -162,7 +162,7 @@ async fn managed_notice_fixture(
     };
     let script = if matches!(notices, NoticeScript::SettingWork) {
         script
-            .expect_request(
+            .expect_terminal_request(
                 "setter",
                 "session/set_config_option",
                 json!({"sessionId": "saved-notice-session", "configId":"model", "value":"new"}),

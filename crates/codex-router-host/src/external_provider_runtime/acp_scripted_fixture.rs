@@ -54,6 +54,24 @@ impl AcpFixtureScript {
         self
     }
 
+    /// Match a request if sent, or end the script cleanly when input closes here.
+    #[cfg(test)]
+    pub(crate) fn expect_terminal_request(
+        mut self,
+        request_name: &str,
+        method: &str,
+        expected_params: Value,
+    ) -> Self {
+        self.steps.push(json!({
+            "action": "expect_request",
+            "requestName": request_name,
+            "method": method,
+            "params": expected_params,
+            "exitOnEof": true,
+        }));
+        self
+    }
+
     #[cfg(test)]
     pub(crate) fn expect_exact_request(
         mut self,

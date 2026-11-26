@@ -38,7 +38,7 @@ use self::{
     write_readiness::{HeldWriter, WriterGate},
 };
 
-mod central_receive;
+pub(super) mod central_receive;
 mod custody_cases;
 mod mac_capabilities;
 mod packet_flight;
