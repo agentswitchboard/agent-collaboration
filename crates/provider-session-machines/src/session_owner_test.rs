@@ -124,6 +124,7 @@ fn open_wire(state: &mut SessionOwnerState, number: u64) -> RunAttempt<LoadAttem
 fn restore_reply(run: RunAttempt<LoadAttempt>) -> OwnerEvent {
     OwnerEvent::Wire(SessionWireResult::Restore {
         run,
+        replay: Some(switchboard_harness_contracts::ReplayCompleteness::Complete),
         outcome: WireOutcome::Confirmed(RestoreLoadReadback {
             catalogue: Arc::default(),
             router_auto_requested: false,

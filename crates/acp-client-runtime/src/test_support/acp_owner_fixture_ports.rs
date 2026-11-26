@@ -181,6 +181,7 @@ impl<P: AcpRequestPayloads> FixturePorts<P> {
             let event = match receipt {
                 Ok(Ok(mut opened)) => match opened.prepare_replay() {
                     Ok(replay) => {
+                        let completeness = (via == RestoreVia::Load).then_some(replay.completeness);
                         let planned = opened.restore_setting_plan(setup.requested_mode.as_deref());
                         let catalogue = Arc::new(opened.catalog().clone());
                         lock(&restores).insert(
@@ -194,6 +195,7 @@ impl<P: AcpRequestPayloads> FixturePorts<P> {
                         );
                         SessionWireResult::Restore {
                             run,
+                            replay: completeness,
                             outcome: WireOutcome::Confirmed(RestoreLoadReadback {
                                 catalogue,
                                 router_auto_requested: setup.requested_mode.as_deref()

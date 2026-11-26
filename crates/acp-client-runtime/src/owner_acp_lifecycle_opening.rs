@@ -275,7 +275,7 @@ impl OwnerOpenings {
                     Ok(Err(error)) => return Err(opening_failure(error)),
                     Err(_) => return Err(OpeningFailure::OutcomeUnknown),
                 };
-                let skills = if via == RestoreVia::Load {
+                let (skills, completeness) = if via == RestoreVia::Load {
                     let replay = session
                         .prepare_replay()
                         .map_err(|_| OpeningFailure::ReplayNotKnown)?;
@@ -289,9 +289,9 @@ impl OwnerOpenings {
                     {
                         return Ok(None);
                     }
-                    replay.skills
+                    (replay.skills, Some(replay.completeness))
                 } else {
-                    None
+                    (None, None)
                 };
                 let RestoreSettingPlan {
                     mode,
@@ -319,12 +319,13 @@ impl OwnerOpenings {
                     accepted_mode_fallback,
                     skills,
                 }));
-                let opening = match via {
-                    RestoreVia::Load => RestoredOpening::Loaded {
+                let opening = match completeness {
+                    Some(replay) => RestoredOpening::Loaded {
                         readback,
                         accepted_mode_fallback: reported_fallback,
+                        replay,
                     },
-                    RestoreVia::Resume => RestoredOpening::Resumed {
+                    None => RestoredOpening::Resumed {
                         readback,
                         accepted_mode_fallback: reported_fallback,
                     },

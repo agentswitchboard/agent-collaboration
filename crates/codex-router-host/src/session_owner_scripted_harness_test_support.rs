@@ -380,6 +380,7 @@ impl OwnerHarnessBinding<OwnerHarnessPayloads> for ScriptedBinding {
                                 RestoredOpening::Loaded {
                                     readback,
                                     accepted_mode_fallback: None,
+                                    replay: provider_session_machines::harness_lifecycle::ReplayCompleteness::Complete,
                                 }
                             }
                             RestoreVia::Resume => RestoredOpening::Resumed {

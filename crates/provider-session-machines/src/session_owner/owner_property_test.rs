@@ -98,6 +98,7 @@ impl Mailbox {
                 restore_reply(run),
                 OwnerEvent::Wire(SessionWireResult::Restore {
                     run,
+                    replay: Some(switchboard_harness_contracts::ReplayCompleteness::Complete),
                     outcome: WireOutcome::Confirmed(RestoreLoadReadback {
                         catalogue: Arc::default(),
                         router_auto_requested: false,

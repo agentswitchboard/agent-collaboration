@@ -21,10 +21,10 @@ pub use switchboard_harness_contracts::{
     HarnessProvider, HarnessSessionId, Held, InvalidRequestedSetting, LifecycleEventPort,
     LifecycleFact, LifecycleMove, LifecycleRefusal, LifecycleReply,
     ObservedTurnApprovalLeaseRefusal, OpenAttempt, OpenRequest, OpenSetup, OpeningFact,
-    OpeningFailure, OwnerHarnessBinding, PermissionModeReport, RequestedProviderSettings,
-    ReservedReply, RestoreLoadReadback, RestoreSettingRefusal, RestoredOpening, RunRetirement,
-    SessionWorkRoots, SettingAttempt, SettingFact, SetupReport, SlotEvidence, StreamTurn,
-    TransportRun, WorkReply,
+    OpeningFailure, OwnerHarnessBinding, PermissionModeReport, ReplayCompleteness,
+    RequestedProviderSettings, ReservedReply, RestoreLoadReadback, RestoreSettingRefusal,
+    RestoredOpening, RunRetirement, SessionWorkRoots, SettingAttempt, SettingFact, SetupReport,
+    SlotEvidence, StreamTurn, TransportRun, WorkReply,
 };
 
 pub struct SessionHarnessPayloads<ApprovalContext>(PhantomData<fn() -> ApprovalContext>);

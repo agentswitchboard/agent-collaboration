@@ -512,6 +512,7 @@ fn restore_effect(generation: provider_session_machines::SessionGeneration) -> O
                 earlier_unanswered: false,
             },
             observed: Default::default(),
+            replay: Some(switchboard_harness_contracts::ReplayCompleteness::Complete),
         },
     }
 }

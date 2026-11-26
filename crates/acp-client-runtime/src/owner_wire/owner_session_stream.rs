@@ -77,6 +77,7 @@ impl SessionEventSink for ProjectionBuffer {
 pub struct ReplayedSessionFacts {
     pub events: Vec<SessionEvent>,
     pub skills: Option<SkillView>,
+    pub completeness: switchboard_harness_contracts::ReplayCompleteness,
 }
 
 pub struct OwnerStreamTarget {
@@ -317,16 +318,18 @@ impl OwnerOpenedSession {
         let Some(OpenedSessionRoute::Restored { updates, .. }) = self.route.as_mut() else {
             return Err(ExternalProviderRuntimeError::HistoryReplayUnavailable);
         };
-        self.projection = Some(replay_queued_session_updates(
+        let (projection, completeness) = replay_queued_session_updates(
             session_id,
             updates,
             Arc::clone(&self.buffer) as Arc<dyn SessionEventSink>,
             Arc::clone(&self.behavior),
             &mut self.catalog,
-        )?);
+        )?;
+        self.projection = Some(projection);
         let mut result = ReplayedSessionFacts {
             events: Vec::new(),
             skills: None,
+            completeness,
         };
         for fact in self.buffer.take() {
             match fact {

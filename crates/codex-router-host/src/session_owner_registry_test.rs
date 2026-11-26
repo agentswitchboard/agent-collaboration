@@ -175,9 +175,12 @@ impl SessionOwnerPorts for ScenarioPorts {
                     outcome: EffectOutcome::Applied,
                 }))
             }
-            OwnerEffect::Wire(SessionWireRequest::Restore { run, .. }) => {
+            OwnerEffect::Wire(SessionWireRequest::Restore { run, via }) => {
                 Some(OwnerEvent::Wire(SessionWireResult::Restore {
                     run,
+                    replay: (via == RestoreVia::Load).then_some(
+                        provider_session_machines::harness_lifecycle::ReplayCompleteness::Complete,
+                    ),
                     outcome: WireOutcome::Confirmed(RestoreLoadReadback {
                         catalogue: Arc::default(),
                         router_auto_requested: false,

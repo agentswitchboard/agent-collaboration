@@ -539,6 +539,7 @@ fn t5_late_restore_mode_correlation_releases_only_its_own_fence() {
         &mut state,
         OwnerEvent::Wire(SessionWireResult::Restore {
             run: first,
+            replay: Some(switchboard_harness_contracts::ReplayCompleteness::Complete),
             outcome: WireOutcome::Confirmed(RestoreLoadReadback {
                 catalogue: Arc::default(),
                 router_auto_requested: false,
@@ -690,6 +691,7 @@ fn time_out_restore_fast_off(
         state,
         OwnerEvent::Wire(SessionWireResult::Restore {
             run,
+            replay: Some(switchboard_harness_contracts::ReplayCompleteness::Complete),
             outcome: WireOutcome::Confirmed(RestoreLoadReadback {
                 catalogue: fast_catalogue(true),
                 router_auto_requested: false,

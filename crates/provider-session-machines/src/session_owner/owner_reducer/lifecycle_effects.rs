@@ -19,6 +19,7 @@ use crate::session_setting_machine::{SessionSettingEvent, SettingValueId};
 use crate::session_turn_machine::{SessionTurn, SessionTurnEffect};
 use crate::{ProviderSettingKind, ProviderSettingsCatalog, SessionGeneration};
 use std::sync::Arc;
+use switchboard_harness_contracts::ReplayCompleteness;
 
 impl PendingRestore {
     pub(super) const fn run(self) -> RunAttempt<LoadAttempt> {
@@ -81,6 +82,7 @@ impl OwnerTransition {
         self.next.ports.mode_reason = None;
         self.next.ports.admitted_inputs.clear();
         self.next.ports.replay.clear();
+        self.next.ports.replay_completeness = None;
         self.next.ports.route_ready = false;
         self.next.ports.fast_reapply = None;
         let Some(generation) = self.next.cell.run_generation() else {
@@ -165,6 +167,7 @@ impl OwnerTransition {
         &mut self,
         run: RunAttempt<LoadAttempt>,
         outcome: WireOutcome<RestoreLoadReadback>,
+        replay: Option<ReplayCompleteness>,
     ) -> OwnerResult {
         let Some(PendingRestore::Wire { run: pending, via }) = self.next.restore else {
             return Err(OwnerRejection::IgnoredLate);
@@ -186,6 +189,10 @@ impl OwnerTransition {
                 return self.fail_loading(run, RestoreFailureStage::Wire, RemoteEffect::Unknown);
             }
         };
+        if (via == RestoreVia::Load) != replay.is_some() {
+            return Err(OwnerRejection::IgnoredLate);
+        }
+        self.next.ports.replay_completeness = replay;
         self.next.ports.settings_catalogue = Some(Arc::clone(&catalogue));
         self.next.ports.router_auto_requested = router_auto_requested;
         self.next.ports.fast_reapply = fast_on.map(|application| OwnerSetting {
@@ -532,6 +539,7 @@ impl OwnerTransition {
             run,
             via,
         }));
+        let replay = self.next.ports.replay_completeness.take();
         self.settle_restore(RestoreResult {
             attempt: run,
             phase: RestorePhase::Attempted,
@@ -539,6 +547,7 @@ impl OwnerTransition {
                 earlier_unanswered: self.next.cell.last_unanswered_restore.is_some(),
             },
             observed: self.next.ports.observed.clone(),
+            replay,
         });
         if self.next.cell.settings_held() {
             return self
@@ -699,7 +708,9 @@ impl OwnerTransition {
             },
             disposition: RestoreDisposition::Retired { failure, remote },
             observed: self.next.ports.observed.clone(),
+            replay: None,
         });
+        self.next.ports.replay_completeness = None;
         self.next.ports.replay.clear();
         self.next.ports.setup = None;
     }

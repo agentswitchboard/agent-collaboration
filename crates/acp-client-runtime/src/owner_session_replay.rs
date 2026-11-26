@@ -9,7 +9,8 @@ use agent_client_protocol::{
     schema::v1::{SessionNotification, SessionUpdate},
 };
 use session_event_model::{InputId, SessionEvent, StopReason, TurnOutcome};
-use std::sync::Arc;
+use std::{num::NonZeroUsize, sync::Arc};
+use switchboard_harness_contracts::ReplayCompleteness;
 
 pub(crate) fn replay_queued_session_updates(
     session_id: String,
@@ -17,7 +18,7 @@ pub(crate) fn replay_queued_session_updates(
     event_sink: Arc<dyn SessionEventSink>,
     behavior: Arc<dyn crate::ProviderBehavior>,
     settings_catalog: &mut provider_session_machines::ProviderSettingsCatalog,
-) -> Result<ProviderItemProjection, ExternalProviderRuntimeError> {
+) -> Result<(ProviderItemProjection, ReplayCompleteness), ExternalProviderRuntimeError> {
     let mut projection = ProviderItemProjection::new(
         session_id.clone(),
         Arc::clone(&event_sink),
@@ -26,6 +27,7 @@ pub(crate) fn replay_queued_session_updates(
     projection.admit().map_err(replay_projection_error)?;
     let mut historical_turn: Option<String> = None;
     let mut saw_agent_output = false;
+    let mut skipped_updates = 0;
     while let Ok(update) = updates.try_recv() {
         let Dispatch::Notification(notification) = update else {
             continue;
@@ -53,6 +55,7 @@ pub(crate) fn replay_queued_session_updates(
             continue;
         }
         let Ok(notification) = serde_json::from_value::<SessionNotification>(params.clone()) else {
+            skipped_updates += 1;
             tracing::warn!("malformed ACP replay update");
             continue;
         };
@@ -90,7 +93,11 @@ pub(crate) fn replay_queued_session_updates(
         &event_sink,
         &session_id,
     )?;
-    Ok(projection)
+    let completeness = NonZeroUsize::new(skipped_updates)
+        .map_or(ReplayCompleteness::Complete, |skipped_updates| {
+            ReplayCompleteness::Incomplete { skipped_updates }
+        });
+    Ok((projection, completeness))
 }
 
 fn end_historical_turn(

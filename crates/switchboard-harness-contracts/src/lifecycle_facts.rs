@@ -15,8 +15,8 @@ pub type LifecycleEventPort<Event, SkillView, TurnOutcome> =
     Arc<dyn EventPort<LifecycleFact<Event, SkillView, TurnOutcome>>>;
 
 pub enum LifecycleFact<Event, SkillView, TurnOutcome> {
-    /// Complete load history in ingress order. Empty history is valid. Unavailable
-    /// replay settles the open as a failure instead of sending this fact.
+    /// Captured load history in ingress order. The opening answer reports capture
+    /// completeness. Empty history is valid, and unavailable replay fails the open.
     Replay {
         run: RunAttempt<LoadAttempt>,
         events: Vec<Event>,

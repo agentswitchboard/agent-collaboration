@@ -169,6 +169,7 @@ pub enum SessionWireResult {
     Restore {
         run: RunAttempt<LoadAttempt>,
         outcome: WireOutcome<RestoreLoadReadback>,
+        replay: Option<switchboard_harness_contracts::ReplayCompleteness>,
     },
     RestoreFailed {
         run: RunAttempt<LoadAttempt>,

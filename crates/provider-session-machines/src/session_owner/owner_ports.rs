@@ -395,6 +395,8 @@ pub struct RestoreResult {
     pub phase: RestorePhase,
     pub disposition: RestoreDisposition,
     pub observed: BTreeMap<ProviderSettingKind, SettingEvidence>,
+    /// Capture evidence for a successfully activated load. Resume makes no replay claim.
+    pub replay: Option<switchboard_harness_contracts::ReplayCompleteness>,
 }
 
 impl RestoreResult {
@@ -683,6 +685,7 @@ pub(in crate::session_owner) struct PendingPorts {
     pub history: HistoryAvailability,
     pub last_restore: Option<RestoreResult>,
     pub replay: Vec<SessionEvent>,
+    pub replay_completeness: Option<switchboard_harness_contracts::ReplayCompleteness>,
     pub observed: BTreeMap<ProviderSettingKind, SettingEvidence>,
     pub settings_catalogue: Option<Arc<ProviderSettingsCatalog>>,
     pub router_auto_requested: bool,
@@ -728,6 +731,7 @@ impl PendingPorts {
             history: HistoryAvailability::Unavailable,
             last_restore: None,
             replay: Vec::new(),
+            replay_completeness: None,
             observed: BTreeMap::new(),
             settings_catalogue: None,
             router_auto_requested: false,

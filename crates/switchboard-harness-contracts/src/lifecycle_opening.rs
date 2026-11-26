@@ -1,6 +1,6 @@
 //! Opening requests, correlation, and evidence retained before adoption.
 
-use std::{path::PathBuf, sync::Arc};
+use std::{num::NonZeroUsize, path::PathBuf, sync::Arc};
 
 use crate::{
     LifecycleMove, LifecycleRefusal, LoadAttempt, OwnerAddress, ProviderSettingsCatalogRecord,
@@ -101,11 +101,18 @@ pub enum ActivationSetup {
     Restored(RunAttempt<LoadAttempt>),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReplayCompleteness {
+    Complete,
+    Incomplete { skipped_updates: NonZeroUsize },
+}
+
 pub enum RestoredOpening {
-    /// The owner accepted the complete replay before the harness published this reply.
+    /// The owner accepted all captured events before the harness sent this reply.
     Loaded {
         readback: RestoreLoadReadback,
         accepted_mode_fallback: Option<SettingValueId>,
+        replay: ReplayCompleteness,
     },
     /// Resume provides readback without making a claim about replay.
     Resumed {

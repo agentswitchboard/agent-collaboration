@@ -157,6 +157,8 @@ async function serveSharedSettings(peer: {
 //     a test can tell that turn's end from any later turn's.
 //   hold-load: session/load is answered only once the file
 //     <receipt>.release-load exists; other requests are answered meanwhile.
+//   saved-history: replay one user update and one agent update on session/load.
+//   malformed-saved-update and opaque-saved-update: insert one such update between them.
 const reactiveBehaviourNames = [
   "boolean-fast",
   "on-off-fast",
@@ -177,6 +179,9 @@ const reactiveBehaviourNames = [
   "permission-after-steer",
   "held-turn-ends-max-tokens",
   "hold-load",
+  "saved-history",
+  "malformed-saved-update",
+  "opaque-saved-update",
 ] as const;
 type ReactiveBehaviour = (typeof reactiveBehaviourNames)[number];
 
@@ -424,6 +429,44 @@ function methodNotFound(peer: ReactivePeer, request: Record<string, unknown>): v
   });
 }
 
+function answerReactiveLoad(
+  peer: ReactivePeer,
+  request: Record<string, unknown>,
+  sessions: Map<string, ReactiveSession>,
+): void {
+  // A restarted agent loads a stored session at its defaults.
+  const sessionId = String(requestParameters(request).sessionId);
+  const session = sessions.get(sessionId) ?? {
+    mode: "agent",
+    model: "fixture-a",
+    effort: "medium",
+    fast: true,
+  };
+  sessions.set(sessionId, session);
+  const answer = (): void => {
+    if (peer.behaviours.has("saved-history")) {
+      const sendUpdate = (kind: string, text: string | number): void => {
+        peer.send({
+          jsonrpc: "2.0",
+          method: "session/update",
+          params: {
+            sessionId,
+            update: { sessionUpdate: kind, content: { type: "text", text } },
+          },
+        });
+      };
+      sendUpdate("user_message_chunk", "first saved update");
+      if (peer.behaviours.has("malformed-saved-update")) sendUpdate("agent_message_chunk", 42);
+      if (peer.behaviours.has("opaque-saved-update"))
+        sendUpdate("fixture_future_update", "opaque saved update");
+      sendUpdate("agent_message_chunk", "second saved update");
+    }
+    peer.reply(request, { configOptions: reactiveOptions(session, peer.behaviours, true) });
+  };
+  if (peer.behaviours.has("hold-load")) void fileAppears(`${peer.releasePath}-load`).then(answer);
+  else answer();
+}
+
 async function serveReactiveSettings(peer: ReactivePeer): Promise<void> {
   let promptsSeen = 0;
   /** The held-open prompt, while its turn runs. */
@@ -447,23 +490,9 @@ async function serveReactiveSettings(peer: ReactivePeer): Promise<void> {
         });
         break;
       }
-      case "session/load": {
-        // A restarted agent loads a stored session at its defaults.
-        const sessionId = String(requestParameters(request).sessionId);
-        const session = sessions.get(sessionId) ?? {
-          mode: "agent",
-          model: "fixture-a",
-          effort: "medium",
-          fast: true,
-        };
-        sessions.set(sessionId, session);
-        const answer = (): void =>
-          peer.reply(request, { configOptions: reactiveOptions(session, peer.behaviours, true) });
-        if (peer.behaviours.has("hold-load"))
-          void fileAppears(`${peer.releasePath}-load`).then(answer);
-        else answer();
+      case "session/load":
+        answerReactiveLoad(peer, request, sessions);
         break;
-      }
       case "session/set_config_option":
         answerReactiveSetting(
           peer,

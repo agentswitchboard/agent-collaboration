@@ -9,13 +9,14 @@ use provider_session_machines::{
         AcceptedRunSettings, ActivationRefusal, ActivationSetup, CallbackAdmission, CreateAttempt,
         CreatedSettingsFailure, CreatedSetupFact, EventPort, EventSendFuture, HarnessOwnerEvents,
         HarnessProvider, HarnessSessionId, Held, LifecycleMove, OpenAttempt, OpenRequest,
-        OpenSetup, OpeningFact, RequestedProviderSettings, ReservedReply, RestoredOpening,
-        SessionLifecycleFact, SessionLifecyclePort,
+        OpenSetup, OpeningFact, ReplayCompleteness, RequestedProviderSettings, ReservedReply,
+        RestoredOpening, SessionLifecycleFact, SessionLifecyclePort,
     },
     session_lifecycle_machine::{LoadAttempt, RestoreVia},
     session_owner::{ConnectionEpoch, OwnerAddress, OwnerIncarnation, RunAttempt},
 };
 use session_event_model::ProviderAuthStatus;
+use std::num::NonZeroUsize;
 use tokio::sync::oneshot;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use uuid::Uuid;
@@ -110,6 +111,134 @@ async fn acp_invalid_create_setting_is_known_unsent_and_offers_only_correction()
     tasks.close();
     tasks.wait().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn acp_replay_completeness_reaches_the_owner_without_changing_visible_history() {
+    use provider_session_machines::{
+        session_lifecycle_machine::SessionLifecycle, session_owner::RestoreDisposition,
+    };
+
+    let cases: [(&[&str], ReplayCompleteness, &[&str]); 3] = [
+        (
+            &["saved-history"],
+            ReplayCompleteness::Complete,
+            &["first saved update", "second saved update"],
+        ),
+        (
+            &["saved-history", "malformed-saved-update"],
+            ReplayCompleteness::Incomplete {
+                skipped_updates: NonZeroUsize::MIN,
+            },
+            &["first saved update", "second saved update"],
+        ),
+        (
+            &["saved-history", "opaque-saved-update"],
+            ReplayCompleteness::Complete,
+            &[
+                "first saved update",
+                "opaque saved update",
+                "second saved update",
+            ],
+        ),
+    ];
+    for (behaviours, completeness, expected_history) in cases {
+        let fixture = hub_runtime_with(behaviours).await;
+        let tasks = TaskTracker::new();
+        let (owner, mut binding) = bind_fixture(&fixture.runtime, &tasks);
+        let direct_run = RunAttempt {
+            generation: SessionGeneration::from_number(1),
+            attempt: LoadAttempt(Uuid::now_v7()),
+        };
+        let direct = load_fixture_binding(
+            &fixture,
+            &mut binding,
+            owner,
+            direct_run,
+            CancellationToken::new(),
+        )
+        .await;
+        binding.retire(direct_run.generation);
+        drop(binding);
+        tasks.close();
+        tasks.wait().await;
+
+        let saved = "reactive-session-1";
+        fixture
+            .runtime
+            .load_session(saved.to_owned(), fixture._root.path().to_owned())
+            .await
+            .expect("the public restore still succeeds");
+        let (inbox, worker) = fixture
+            .hub
+            .owner_inbox(fixture.hub_target.clone(), NonZeroUsize::MIN);
+        assert!(
+            worker.is_none(),
+            "the real owner registered the publication inbox"
+        );
+        let mut publication = inbox.capacity_returned();
+        let retained = loop {
+            let attached = fixture
+                .hub
+                .attach(fixture.hub_target.clone())
+                .await
+                .expect("retained history");
+            if attached.snapshot.iter().any(|event| {
+                matches!(
+                    event.event,
+                    SessionEvent::StateChanged {
+                        state: SessionState::Idle
+                    }
+                )
+            }) {
+                break attached.snapshot;
+            }
+            publication.changed().await.expect("activation publication");
+        };
+        let history: Vec<_> = retained
+            .iter()
+            .filter_map(|observed| match &observed.event {
+                SessionEvent::ItemStarted { item } => item.text.as_deref(),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            history, expected_history,
+            "{behaviours:?} keeps every decodable update in order"
+        );
+        assert_eq!(
+            direct, completeness,
+            "{behaviours:?} exact ACP opening must report replay completeness"
+        );
+        let restore = fixture
+            .runtime
+            .owner_door
+            .get()
+            .expect("production door")
+            .existing_provider_session(saved)
+            .expect("restored owner")
+            .snapshots();
+        let snapshot = restore.borrow().clone();
+        let answer = snapshot
+            .last_restore
+            .expect("owner recorded the exact restore result");
+        assert_eq!(
+            answer.replay,
+            Some(completeness),
+            "{behaviours:?} Host retained the ACP replay claim"
+        );
+        assert!(matches!(
+            answer.disposition,
+            RestoreDisposition::Restored { .. }
+        ));
+        assert_eq!(
+            snapshot.lifecycle,
+            SessionLifecycle::Live {
+                generation: answer.attempt.generation
+            }
+        );
+        fixture.runtime.shutdown().await;
+    }
+}
 impl EventPort<SessionLifecycleFact> for AcceptEvents {
     fn send<'a>(&'a self, _: SessionLifecycleFact) -> EventSendFuture<'a>
     where
@@ -146,6 +275,44 @@ fn bind_fixture(
     (owner, provider.bind(owner, Arc::new(AcceptEvents)))
 }
 
+async fn load_fixture_binding(
+    fixture: &HubRuntime,
+    binding: &mut SessionHarnessBinding,
+    owner: OwnerAddress,
+    run: RunAttempt<LoadAttempt>,
+    stop: CancellationToken,
+) -> ReplayCompleteness {
+    let (reply, answer) = oneshot::channel();
+    binding
+        .open(
+            OpenRequest::Restore {
+                owner,
+                run,
+                session: HarnessSessionId("reactive-session-1".into()),
+                via: RestoreVia::Load,
+                setup: OpenSetup {
+                    cwd: fixture._root.path().to_owned(),
+                    work_roots: Default::default(),
+                    scratch_folder: None,
+                },
+                requested_mode: None,
+            },
+            Box::new(Reply(reply)),
+            Arc::new(AcceptEvents),
+            Box::pin(stop.cancelled_owned()),
+        )
+        .expect("real ACP load offered");
+    let OpeningFact::Restored {
+        run: exact,
+        opening: RestoredOpening::Loaded { replay, .. },
+    } = answer.await.expect("real ACP opening answer")
+    else {
+        panic!("ACP did not report a load opening");
+    };
+    assert_eq!(exact, run);
+    replay
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn acp_activation_preserves_the_exact_held_and_active_attempts() {
     let fixture = hub_runtime().await;
@@ -177,30 +344,9 @@ async fn acp_activation_preserves_the_exact_held_and_active_attempts() {
         Err(ActivationRefusal::OpeningNotHeld)
     );
     for run in [first, second] {
-        let (reply, answer) = oneshot::channel();
-        binding
-            .open(
-                OpenRequest::Restore {
-                    owner,
-                    run,
-                    session: HarnessSessionId("reactive-session-1".into()),
-                    via: RestoreVia::Load,
-                    setup: OpenSetup {
-                        cwd: fixture._root.path().to_owned(),
-                        work_roots: Default::default(),
-                        scratch_folder: None,
-                    },
-                    requested_mode: None,
-                },
-                Box::new(Reply(reply)),
-                events.clone(),
-                Box::pin(stop.clone().cancelled_owned()),
-            )
-            .expect("real ACP load offered");
-        assert!(
-            matches!(answer.await.expect("real ACP opening answer"), OpeningFact::Restored {
-            run: exact, opening: RestoredOpening::Loaded { .. }
-        } if exact == run)
+        assert_eq!(
+            load_fixture_binding(&fixture, &mut binding, owner, run, stop.clone()).await,
+            ReplayCompleteness::Complete
         );
         let wrong = RunAttempt {
             attempt: LoadAttempt(Uuid::now_v7()),

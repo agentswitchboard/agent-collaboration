@@ -117,7 +117,7 @@ pub trait OwnerHarnessBinding<Payloads: HarnessLifecyclePayloads>:
     /// Start one opening and keep its connection under the exact attempt. An immediate refusal
     /// means nothing was sent. Otherwise the opening settles through the reserved reply.
     /// The request must name the owner for which the binding was created.
-    /// Before finishing a load, publish its complete replay through `events` and wait for ingress
+    /// Before finishing a load, publish its captured replay through `events` and wait for ingress
     /// acceptance. `retired` can stop the opening or a backpressured replay. A resume skips replay.
     fn open(
         &mut self,

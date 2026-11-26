@@ -246,13 +246,19 @@ fn restore_reply(
 ) -> Option<OwnerEvent> {
     match fact {
         OpeningFact::Restored { run, opening } if expected == run => {
-            let readback = match (via, opening) {
-                (RestoreVia::Load, RestoredOpening::Loaded { readback, .. })
-                | (RestoreVia::Resume, RestoredOpening::Resumed { readback, .. }) => readback,
+            let (readback, replay) = match (via, opening) {
+                (
+                    RestoreVia::Load,
+                    RestoredOpening::Loaded {
+                        readback, replay, ..
+                    },
+                ) => (readback, Some(replay)),
+                (RestoreVia::Resume, RestoredOpening::Resumed { readback, .. }) => (readback, None),
                 _ => return None,
             };
             Some(OwnerEvent::Wire(SessionWireResult::Restore {
                 run,
+                replay,
                 outcome: WireOutcome::Confirmed(
                     provider_session_machines::session_owner::RestoreLoadReadback {
                         catalogue: Arc::new(ProviderSettingsCatalog::from_record(
