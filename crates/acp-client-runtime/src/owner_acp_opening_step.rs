@@ -573,40 +573,16 @@ fn apply_edge(
             store(State::Active(run), Effect::None)
         }
         (state, Command::WriterStopped) => stop_writer(state, instance, edge),
-        (
-            state,
-            command @ (Command::RouteRemoved(_)
-            | Command::ReaderStopped(_)
-            | Command::ReadmitResult(..)),
-        ) => {
-            let report_loss = matches!(
-                command,
-                Command::ReaderStopped(ReaderEnd::Failed | ReaderEnd::HandoffClosed)
-            );
-            let reader = matches!(command, Command::ReaderStopped(_));
-            if reader && matches!(state, State::Active(_)) {
-                return Ok((
-                    None,
-                    Effect::ReaderEnded {
-                        release: Release::new(instance, state, true),
-                        report_loss,
-                    },
-                ));
-            }
+        (state, Command::ReaderStopped(reason)) => end_reader(state, instance, reason, taken),
+        (state, command @ (Command::RouteRemoved(_) | Command::ReadmitResult(..))) => {
             let Some(run) = state.run().cloned() else {
                 return Err((state, command));
             };
             let receipt = lost_receipt(&state, taken);
-            let release = Release::new(instance, state, true);
-            let effect = if reader {
-                Effect::ReaderEnded {
-                    release,
-                    report_loss,
-                }
-            } else {
-                Effect::Release(release)
-            };
-            store(State::RouteLost { run, receipt }, effect)
+            store(
+                State::RouteLost { run, receipt },
+                Effect::Release(Release::new(instance, state, true)),
+            )
         }
         (state, command @ (Command::Configured(_) | Command::Created(_)))
             if edge == Edge::FinishOnStoppedWriter =>
@@ -630,6 +606,60 @@ fn apply_edge(
         ) => finish(state, instance),
         (state, command) => Err((state, command)),
     }
+}
+
+fn end_reader(
+    state: OpeningState,
+    instance: &OpeningInstance,
+    reason: ReaderEnd,
+    taken: bool,
+) -> Step {
+    use OpeningState as State;
+    let report_loss = match reason {
+        ReaderEnd::Failed | ReaderEnd::HandoffClosed => true,
+        ReaderEnd::Retired | ReaderEnd::Finished | ReaderEnd::IngressClosed => false,
+    };
+    let run = match &state {
+        State::Active(_) => {
+            return Ok((
+                None,
+                Effect::ReaderEnded {
+                    release: Release::new(instance, state, true),
+                    report_loss,
+                },
+            ));
+        }
+        State::ClosingLive { run, .. }
+        | State::CloseRefusedLive { run, .. }
+        | State::Readmitting { run, .. } => Some(run),
+        State::OfferingClose { origin, .. } => origin.live_reader(),
+        State::Vacant { .. }
+        | State::OfferingCreate { .. }
+        | State::AwaitingCreate(_)
+        | State::HeldCreate(_)
+        | State::ConfiguringCreate(_)
+        | State::ConfiguredCreate(_)
+        | State::OfferingRestore { .. }
+        | State::AwaitingRestore(_)
+        | State::PublishingReplay(_)
+        | State::HeldRestore(_)
+        | State::PreparedRestore(_)
+        | State::StartingReader(_)
+        | State::ClosingRestore { .. }
+        | State::RouteLost { .. }
+        | State::StoppedAwaitingReply(_) => None,
+    };
+    let Some(run) = run.cloned() else {
+        return Err((state, Command::ReaderStopped(reason)));
+    };
+    let receipt = lost_receipt(&state, taken);
+    store(
+        State::RouteLost { run, receipt },
+        Effect::ReaderEnded {
+            release: Release::new(instance, state, true),
+            report_loss,
+        },
+    )
 }
 
 fn stop_writer(state: OpeningState, instance: &OpeningInstance, edge: Edge) -> Step {
