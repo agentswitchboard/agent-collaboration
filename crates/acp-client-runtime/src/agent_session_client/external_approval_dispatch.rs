@@ -60,6 +60,19 @@ pub(super) async fn record_permission_refusal<P: AcpRequestPayloads>(
     operation_id: Option<P::OperationId>,
     reason: ExternalProviderApprovalRefusalReason,
 ) {
+    report_permission_refusal(state, provider_session_id, reason).await;
+    if let Some(operation_id) = operation_id
+        && let Ok(mut reasons) = state.refusal_reasons.lock()
+    {
+        reasons.insert(operation_id, reason);
+    }
+}
+
+async fn report_permission_refusal<P: AcpRequestPayloads>(
+    state: &PermissionDispatchState<P>,
+    provider_session_id: &str,
+    reason: ExternalProviderApprovalRefusalReason,
+) {
     let endpoint = state
         .endpoint_id
         .read()
@@ -81,11 +94,6 @@ pub(super) async fn record_permission_refusal<P: AcpRequestPayloads>(
             method: "session/request_permission",
             reason_code: reason,
         });
-    }
-    if let Some(operation_id) = operation_id
-        && let Ok(mut reasons) = state.refusal_reasons.lock()
-    {
-        reasons.insert(operation_id, reason);
     }
 }
 
@@ -124,13 +132,8 @@ pub(super) fn spawn_external_approval_dispatch<P: AcpRequestPayloads>(
             let response: RequestPermissionResponse =
                 serde_json::from_value(refusal.acp_permission())
                     .map_err(|_| Error::internal_error())?;
-            record_permission_refusal(
-                &state,
-                &provider_session_id,
-                Some(context.operation_id.as_ref().clone()),
-                ExternalProviderApprovalRefusalReason::Managed(refusal),
-            )
-            .await;
+            let reason = ExternalProviderApprovalRefusalReason::Managed(refusal);
+            let operation_id = context.operation_id.as_ref().clone();
             #[cfg(any(test, feature = "test-observation"))]
             state
                 .permission_outcome
@@ -141,12 +144,24 @@ pub(super) fn spawn_external_approval_dispatch<P: AcpRequestPayloads>(
                 .before_permission_reply(responder.id(), request_cancellation.clone())
                 .await;
             let declined = RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled);
-            let (open, queued) = response_guard.commit(|open| {
-                (
-                    open,
-                    responder.respond(if open { response } else { declined }),
-                )
-            });
+            let (committed, queued) = {
+                // Lock order is refusal reasons, then the response scope.
+                // The peer can finish the prompt as soon as its reply is
+                // queued. Keep the reader fenced through the record write,
+                // with hashing outside the scope lock.
+                let mut reasons = state.refusal_reasons.lock().ok();
+                let (open, queued) = response_guard.commit(|open| {
+                    (
+                        open,
+                        responder.respond(if open { response } else { declined }),
+                    )
+                });
+                let committed = open && queued.is_ok();
+                if committed && let Some(reasons) = reasons.as_mut() {
+                    reasons.insert(operation_id, reason);
+                }
+                (committed, queued)
+            };
             drop(response_guard);
             #[cfg(feature = "test-observation")]
             if queued.is_ok()
@@ -154,14 +169,17 @@ pub(super) fn spawn_external_approval_dispatch<P: AcpRequestPayloads>(
             {
                 let _fixture = witness.send(());
             }
-            if open && queued.is_ok() && !request_cancellation.is_cancelled() {
+            if committed {
+                report_permission_refusal(&state, &provider_session_id, reason).await;
                 #[cfg(feature = "test-observation")]
                 state
                     .frame_observation
                     .record_managed_permission_enqueue(responder_id);
-                context
-                    .cancel_after_refusal(Arc::clone(&state.request_policy), refusal)
-                    .await;
+                if !request_cancellation.is_cancelled() {
+                    context
+                        .cancel_after_refusal(Arc::clone(&state.request_policy), refusal)
+                        .await;
+                }
             }
             return queued;
         }

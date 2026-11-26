@@ -456,10 +456,17 @@ async fn managed_refusal_queues_before_cancel_while_an_independent_batch_sibling
     assert_eq!(cancel["params"]["sessionId"], SESSION);
     peer.respond(&first, json!({"stopReason":"cancelled"}))
         .await;
-    first_done
+    let outcome = first_done
         .await
         .expect("managed task")
         .expect("original turn settles");
+    assert_eq!(
+        outcome.permission_refusal_reason,
+        Some(acp_client_runtime::ExternalProviderApprovalRefusalReason::Managed(
+            session_event_model::managed_interaction_refusal::ManagedInteractionRefusal::ApprovalsUnavailableOnBuild
+        )),
+        "the committed managed reply remains visible to the prompt caller"
+    );
     peer.sync().await;
     sibling
         .send(())

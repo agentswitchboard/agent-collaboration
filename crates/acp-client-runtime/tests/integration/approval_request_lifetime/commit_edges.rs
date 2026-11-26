@@ -158,10 +158,18 @@ async fn cancel_before_enqueue(policy: Arc<Policy>, managed: bool) {
     )));
     peer.respond(&prompt, json!({"stopReason":"end_turn"}))
         .await;
-    joined
+    let outcome = joined
         .await
         .expect("prompt task")
         .expect("cancelled request did not end its turn");
+    assert_eq!(
+        outcome.stop_reason,
+        session_event_model::StopReason::EndTurn
+    );
+    assert_eq!(
+        outcome.permission_refusal_reason, None,
+        "an ordinary decline at the cancelled reply gate must not taint the prompt outcome"
+    );
     client.shutdown().await;
 }
 
