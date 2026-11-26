@@ -28,7 +28,7 @@ enum ExitCause {
 enum Scenario {
     Exit(ExitCause),
     LiveRefusal,
-    BufferedClose,
+    BufferedSuccess,
 }
 
 #[tokio::test]
@@ -64,8 +64,32 @@ async fn taken_requests_preserve_live_peer_refusals() {
 }
 
 #[tokio::test]
-async fn a_buffered_success_stays_successful_across_sdk_shutdown() {
-    assert_taken_reply(TakenKind::Close, Scenario::BufferedClose).await;
+async fn buffered_work_close_and_setter_successes_beat_the_writer_stop() {
+    for kind in [
+        TakenKind::Prompt,
+        TakenKind::Steer,
+        TakenKind::WorkSetting,
+        TakenKind::Close,
+        TakenKind::RestoreMode,
+        TakenKind::RestoreFastOff,
+    ] {
+        assert_taken_reply(kind, Scenario::BufferedSuccess).await;
+    }
+}
+
+#[tokio::test]
+async fn a_buffered_create_success_names_the_created_session_after_writer_stop() {
+    assert_taken_reply(TakenKind::Create, Scenario::BufferedSuccess).await;
+}
+
+#[tokio::test]
+async fn a_buffered_load_success_keeps_the_peer_acknowledgement_after_writer_stop() {
+    assert_taken_reply(TakenKind::Load, Scenario::BufferedSuccess).await;
+}
+
+#[tokio::test]
+async fn a_buffered_resume_success_keeps_the_peer_acknowledgement_after_writer_stop() {
+    assert_taken_reply(TakenKind::Resume, Scenario::BufferedSuccess).await;
 }
 
 async fn assert_all_requests_on_exit(cause: ExitCause) {
@@ -149,12 +173,12 @@ async fn assert_taken_reply(kind: TakenKind, scenario: Scenario) {
         None
     };
     let wire = fixture.runtime.client.owner_wire();
+    let buffered = matches!(scenario, Scenario::BufferedSuccess);
+    if buffered && matches!(kind, TakenKind::Load | TakenKind::Resume) {
+        wire.buffer_next_restore_success_for_test();
+    }
     let waiting = wire.hold_taken_reply_for_test();
     let reply = take_call(&fixture, &mut binding, owner, run, kind, catalogue, turn);
-    waiting
-        .reached
-        .await
-        .expect("the real writer owns the response wait");
     let sent: serde_json::Value =
         serde_json::from_str(&notice(&listener).await.0).expect("exact peer receipt");
     assert_eq!(sent["method"], kind.method());
@@ -162,6 +186,57 @@ async fn assert_taken_reply(kind: TakenKind, scenario: Scenario) {
         !sent["id"].is_null(),
         "the peer read an exact JSON-RPC request id"
     );
+    if buffered {
+        if kind == TakenKind::Prompt {
+            assert_eq!(
+                wire.current_turn(TransportRun {
+                    incarnation: owner.incarnation,
+                    generation: run.generation
+                }),
+                Some(turn),
+                "the exact prompt owns its live turn before publishing stop",
+            );
+        }
+        node_test_fixture::release_fixture(&fixture.receipt, ".confirm")
+            .expect("release the real success");
+        assert_eq!(notice(&listener).await.0, "reply-buffered");
+    }
+    waiting
+        .reached
+        .await
+        .expect("the real writer owns the response wait");
+
+    if buffered {
+        // Mark the actual writer as stopping while the SDK remains live.
+        // The later fence proves it can still attach the created session.
+        fixture.runtime.retirement().cancel();
+        node_test_fixture::release_fixture(&fixture.receipt, ".after-stop-fence")
+            .expect("issue a real peer fence after publishing the writer stop");
+        assert_eq!(notice(&listener).await.0, "sdk-live-after-stop");
+        assert_eq!(
+            binding.opening_is_held(OpenAttempt::Restore(run)),
+            Held::NotHeld(LifecycleRefusal::ConnectionRetired),
+        );
+        let mut binding = Some(binding);
+        if kind == TakenKind::Prompt {
+            // The reply will use its original terminal envelope once the
+            // reader has actually released its receive end.
+            drop(binding.take());
+            tasks.close();
+            tasks.wait().await;
+        }
+        waiting
+            .release
+            .send(())
+            .expect("let the actual selection see both ready arms");
+        reply.assert(kind, ExpectedReply::BufferedSuccess).await;
+        drop(binding);
+        fixture.runtime.shutdown().await;
+        drop(warm_prompt);
+        tasks.close();
+        tasks.wait().await;
+        return;
+    }
 
     if let Scenario::LiveRefusal = scenario {
         node_test_fixture::release_fixture(&fixture.receipt, ".refuse")
@@ -180,16 +255,8 @@ async fn assert_taken_reply(kind: TakenKind, scenario: Scenario) {
         return;
     }
 
-    let buffered = matches!(scenario, Scenario::BufferedClose);
-    if buffered {
-        node_test_fixture::release_fixture(&fixture.receipt, ".confirm")
-            .expect("release the real success");
-        assert_eq!(notice(&listener).await.0, "reply-buffered");
-    }
-    let cause = match scenario {
-        Scenario::Exit(cause) => cause,
-        Scenario::BufferedClose => ExitCause::Shutdown,
-        Scenario::LiveRefusal => panic!("live reply was handled before the loss schedule"),
+    let Scenario::Exit(cause) = scenario else {
+        panic!("the successful and live cases are already handled")
     };
     let before_fallback = wire.hold_sdk_drop_before_retirement_for_test();
     let provider_end = wire.observe_provider_end_for_test();
@@ -252,16 +319,7 @@ async fn assert_taken_reply(kind: TakenKind, scenario: Scenario) {
         .release
         .send(())
         .expect("poll the actual SDK result with only the source mark");
-    reply
-        .assert(
-            kind,
-            if buffered {
-                ExpectedReply::BufferedClose
-            } else {
-                ExpectedReply::Lost
-            },
-        )
-        .await;
+    reply.assert(kind, ExpectedReply::Lost).await;
     before_fallback
         .release
         .send(())

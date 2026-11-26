@@ -275,6 +275,7 @@ impl OpenFrame {
                             wire.before_taken_reply_for_test().await;
                         }
                         tokio::select! {
+                            biased;
                             () = start => {}
                             () = signals.shutdown.cancelled() => {}
                         }
@@ -364,12 +365,30 @@ impl OpenFrame {
                 } else {
                     tasks.spawn(async move {
                         #[cfg(feature = "test-observation")]
-                        if let Some(wire) = reply_test_wire {
-                            wire.before_taken_reply_for_test().await;
-                        }
+                        let start = {
+                            let mut buffered = None;
+                            if let Some(wire) = reply_test_wire {
+                                if wire.take_restore_success_buffer_for_test() {
+                                    // The SDK's ordered restore blocks later
+                                    // peer requests until its real result is
+                                    // consumed and the new route attached.
+                                    let result = start.as_mut().await;
+                                    assert!(result.is_ok(), "expected the real SDK restore success");
+                                    buffered = Some(result);
+                                }
+                                wire.before_taken_reply_for_test().await;
+                            }
+                            async move {
+                                match buffered {
+                                    Some(result) => result,
+                                    None => start.await,
+                                }
+                            }
+                        };
                         // Keep this SDK request and its replay tap correlated until
                         // the wire answers. A retired owner's receiver has no successor.
                         let result = tokio::select! {
+                            biased;
                             result = start => result,
                             () = signals.shutdown.cancelled() => Err(ExternalProviderRuntimeError::RestoreDisconnected),
                         };

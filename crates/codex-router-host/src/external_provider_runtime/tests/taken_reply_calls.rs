@@ -15,7 +15,7 @@ use provider_session_machines::{
     session_setting_machine::{SettingApplication, SettingValueId},
     session_turn_machine::TurnId,
 };
-use session_event_model::{InputId, PromptContent};
+use session_event_model::{InputId, PromptContent, StopReason};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum TakenKind {
@@ -86,7 +86,7 @@ impl TakenKind {
 pub(super) enum ExpectedReply {
     Lost,
     PeerRefusal,
-    BufferedClose,
+    BufferedSuccess,
 }
 
 pub(super) enum TakenReply {
@@ -114,7 +114,7 @@ impl TakenReply {
                         cause: CloseUncertainty::ReplyLost,
                     },
                     ExpectedReply::PeerRefusal => CloseFact::RefusedStillLive { run },
-                    ExpectedReply::BufferedClose => CloseFact::Closed { run },
+                    ExpectedReply::BufferedSuccess => CloseFact::Closed { run },
                 };
                 assert_eq!(
                     receipt.await.expect("the exact taken close must settle"),
@@ -125,7 +125,7 @@ impl TakenReply {
                 let reply = receipt
                     .await
                     .expect("the original taken opening must settle");
-                assert_open_reply(exact, expected, reply);
+                assert_open_reply(kind, exact, expected, reply);
             }
             Self::Setting(restore, setting, receipt) => {
                 let reply = receipt
@@ -155,6 +155,15 @@ fn assert_work_reply(
             );
             return;
         }
+        (TakenKind::Prompt, ExpectedReply::BufferedSuccess) => {
+            assert!(
+                matches!(reply, WorkReply::Dispatch(DispatchResult::PromptFinished {
+                authorization, outcome: WireOutcome::Confirmed(completion)
+            }) if authorization == auth && completion.stop_reason == StopReason::EndTurn
+                && completion.response.is_empty() && completion.local_cause.is_none())
+            );
+            return;
+        }
         (TakenKind::Steer, ExpectedReply::Lost) => DispatchResult::SteerFinished {
             authorization: auth,
             outcome: WireOutcome::Unknown,
@@ -162,6 +171,10 @@ fn assert_work_reply(
         (TakenKind::Steer, ExpectedReply::PeerRefusal) => DispatchResult::SteerFinished {
             authorization: auth,
             outcome: WireOutcome::Refused,
+        },
+        (TakenKind::Steer, ExpectedReply::BufferedSuccess) => DispatchResult::SteerFinished {
+            authorization: auth,
+            outcome: WireOutcome::Confirmed(()),
         },
         (TakenKind::WorkSetting, ExpectedReply::Lost) => DispatchResult::SettingFinished {
             authorization: auth,
@@ -174,6 +187,14 @@ fn assert_work_reply(
                 catalogue: None,
             },
         },
+        (TakenKind::WorkSetting, ExpectedReply::BufferedSuccess) => {
+            assert!(
+                matches!(reply, WorkReply::Dispatch(DispatchResult::SettingFinished {
+                authorization, observation: SettingObservation::AppliedWithReadback(readback)
+            }) if authorization == auth && readback.value.0 == "plan")
+            );
+            return;
+        }
         _ => panic!("unexpected work receipt class {kind:?}"),
     };
     assert_eq!(
@@ -183,8 +204,19 @@ fn assert_work_reply(
     );
 }
 
-fn assert_open_reply(expected_attempt: OpenAttempt, expected: ExpectedReply, reply: OpeningFact) {
+fn assert_open_reply(
+    kind: TakenKind,
+    expected_attempt: OpenAttempt,
+    expected: ExpectedReply,
+    reply: OpeningFact,
+) {
     match (expected_attempt, reply) {
+        (OpenAttempt::Create(exact), OpeningFact::Created { attempt, session })
+            if matches!(expected, ExpectedReply::BufferedSuccess) =>
+        {
+            assert_eq!(attempt, exact);
+            assert_eq!(session.0, "reactive-session-1");
+        }
         (
             OpenAttempt::Create(exact),
             OpeningFact::CreateFailed {
@@ -204,7 +236,9 @@ fn assert_open_reply(expected_attempt: OpenAttempt, expected: ExpectedReply, rep
                     assert!(matches!(failure, OpeningFailure::Refused(failure)
                         if failure.kind == ProviderWireFailureKind::UnsupportedMethod));
                 }
-                ExpectedReply::BufferedClose => panic!("create has no close result"),
+                ExpectedReply::BufferedSuccess => {
+                    panic!("buffered create success must name the exact created session")
+                }
             }
         }
         (OpenAttempt::Restore(exact), OpeningFact::RestoreFailed { run, failure }) => {
@@ -215,7 +249,14 @@ fn assert_open_reply(expected_attempt: OpenAttempt, expected: ExpectedReply, rep
                     assert!(matches!(failure, OpeningFailure::Refused(failure)
                         if failure.kind == ProviderWireFailureKind::UnsupportedMethod));
                 }
-                ExpectedReply::BufferedClose => panic!("restore has no close result"),
+                ExpectedReply::BufferedSuccess => {
+                    let OpeningFailure::Unavailable { diagnostic } = failure else {
+                        panic!(
+                            "buffered {kind:?} success must retain the provider acknowledgement after local stop, got {failure:?}"
+                        );
+                    };
+                    assert!(diagnostic.contains(kind.method()), "{diagnostic}");
+                }
             }
         }
         _ => panic!("the exact taken opening must deliver its typed failure"),
@@ -236,13 +277,19 @@ fn assert_setting_reply(
             catalogue,
         } => {
             assert_eq!((restore, setting), (exact_restore, exact_setting));
-            assert!(catalogue.is_none());
+            assert_eq!(
+                catalogue.is_some(),
+                matches!(expected, ExpectedReply::BufferedSuccess)
+            );
             match expected {
                 ExpectedReply::Lost => assert_eq!(outcome, RestoreModeOutcome::Unconfirmed),
                 ExpectedReply::PeerRefusal => {
                     assert!(matches!(outcome, RestoreModeOutcome::Refused { .. }));
                 }
-                ExpectedReply::BufferedClose => panic!("mode has no close result"),
+                ExpectedReply::BufferedSuccess => assert_eq!(
+                    outcome,
+                    RestoreModeOutcome::Confirmed(SettingValueId("plan".into()))
+                ),
             }
         }
         SettingFact::FastOff {
@@ -252,16 +299,28 @@ fn assert_setting_reply(
             catalogue,
         } => {
             assert_eq!((restore, setting), (exact_restore, exact_setting));
-            assert!(catalogue.is_none());
-            assert_eq!(observation.value, ObservedSetting::Unknown);
-            assert_eq!(
-                observation.cause,
-                Some(match expected {
-                    ExpectedReply::Lost => ObservationCause::Unconfirmed,
-                    ExpectedReply::PeerRefusal => ObservationCause::Refused,
-                    ExpectedReply::BufferedClose => panic!("fast-off has no close result"),
-                })
-            );
+            match expected {
+                ExpectedReply::BufferedSuccess => {
+                    assert!(catalogue.is_some());
+                    assert_eq!(
+                        observation.value,
+                        ObservedSetting::Confirmed(SettingValueId("off".into()))
+                    );
+                    assert_eq!(observation.cause, None);
+                }
+                ExpectedReply::Lost | ExpectedReply::PeerRefusal => {
+                    assert!(catalogue.is_none());
+                    assert_eq!(observation.value, ObservedSetting::Unknown);
+                    assert_eq!(
+                        observation.cause,
+                        Some(if matches!(expected, ExpectedReply::Lost) {
+                            ObservationCause::Unconfirmed
+                        } else {
+                            ObservationCause::Refused
+                        })
+                    );
+                }
+            }
         }
         SettingFact::NotSent { .. } => panic!("the peer already received the exact setter"),
     }

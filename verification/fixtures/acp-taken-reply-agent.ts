@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { closeSync } from "node:fs";
 import { createConnection } from "node:net";
+import { field } from "../exact-json.ts";
 import { AcpExchange } from "./acp-exchange.ts";
 import { requireArgument, wireJson } from "./acp-stdio.ts";
 import { sendSocketNotice } from "./fixture-socket-notice.ts";
@@ -34,6 +35,45 @@ const configOptions = [
     currentValue: true,
   },
 ];
+
+function success(request: Readonly<Record<string, unknown>>): unknown {
+  switch (request.method) {
+    case "session/prompt":
+      return { stopReason: "end_turn" };
+    case "_session/steering":
+      return { outcome: "injected" };
+    case "session/close":
+      return {};
+    case "session/new":
+      return { sessionId: "reactive-session-1", configOptions };
+    case "session/load":
+    case "session/resume":
+      return { configOptions };
+    case "session/set_config_option": {
+      const id = field(request, "params", "configId");
+      const value = field(request, "params", "value");
+      assert.ok(id === "mode" || id === "fast");
+      assert.ok(typeof value === "string" || typeof value === "boolean");
+      return {
+        configOptions: configOptions.map((option) =>
+          option.id === id ? { ...option, currentValue: value } : option,
+        ),
+      };
+    }
+    default:
+      throw new Error(`unexpected success request ${String(request.method)}`);
+  }
+}
+
+async function fence(id: string): Promise<void> {
+  agent.send({ jsonrpc: "2.0", id, method: "fixture/reply-fence", params: {} });
+  for (;;) {
+    const response = await agent.read();
+    if (response.id === undefined) continue;
+    assert.equal(response.id, id);
+    return;
+  }
+}
 
 await agent.initialize("taken-reply-fixture", {
   agentCapabilities: {
@@ -105,13 +145,17 @@ switch (action) {
     });
     break;
   case ".confirm": {
-    assert.equal(targetMethod, "session/close");
-    agent.respond(taken, {});
-    const fence = "fixture-buffered-reply-fence";
-    agent.send({ jsonrpc: "2.0", id: fence, method: "fixture/reply-fence", params: {} });
-    const response = await agent.read();
-    assert.equal(response.id, fence);
-    await sendSocketNotice(notices, "reply-buffered\n");
+    try {
+      agent.respond(taken, success(taken));
+      await fence("fixture-buffered-reply-fence");
+      await sendSocketNotice(notices, "reply-buffered\n");
+      await fileAppears(`${receipt}.after-stop-fence`);
+      await fence("fixture-after-stop-fence");
+      await sendSocketNotice(notices, "sdk-live-after-stop\n");
+    } catch (error) {
+      await sendSocketNotice(notices, `fixture-error for ${targetMethod}: ${String(error)}\n`);
+      throw error;
+    }
     break;
   }
   default:

@@ -146,6 +146,8 @@ pub(super) struct OpeningTestControls {
     fatal_callback: tokio_util::sync::CancellationToken,
     #[cfg(feature = "test-observation")]
     transport_end: crate::provider_transport_diagnostics::TransportEndObserver,
+    #[cfg(feature = "test-observation")]
+    buffer_restore_success: AtomicBool,
 }
 
 struct Barrier {
@@ -154,6 +156,22 @@ struct Barrier {
 }
 
 impl OwnerAcpWire {
+    #[cfg(feature = "test-observation")]
+    pub fn buffer_next_restore_success_for_test(&self) {
+        let already_armed = self
+            .opening_test
+            .buffer_restore_success
+            .swap(true, Ordering::AcqRel);
+        assert!(!already_armed, "one pending restore success buffer");
+    }
+
+    #[cfg(feature = "test-observation")]
+    pub(crate) fn take_restore_success_buffer_for_test(&self) -> bool {
+        self.opening_test
+            .buffer_restore_success
+            .swap(false, Ordering::AcqRel)
+    }
+
     #[cfg(feature = "test-observation")]
     pub(crate) fn transport_end_observer_for_test(
         &self,
