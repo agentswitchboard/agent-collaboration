@@ -15,6 +15,7 @@ pub enum OpeningPausePoint {
     ResumeReaderBeforeCommit,
     CloseReceiptPublished,
     ReaderHandoffAccepted,
+    BeforeFailedHandoffCommit,
     CreatedUpdateIngress,
     WriterStopDelivered,
     BeforeSetterTake,
@@ -37,6 +38,14 @@ struct Barrier {
 }
 
 impl OwnerAcpWire {
+    #[cfg(feature = "test-observation")]
+    pub fn opening_route_is_registered_for_test(
+        &self,
+        run: crate::acp_transport::TransportRun,
+    ) -> bool {
+        self.transport.opening_route_is_registered_for_test(run)
+    }
+
     #[cfg(feature = "test-observation")]
     pub fn replace_closing_marker_for_test(
         &self,

@@ -1,12 +1,22 @@
 //! A real created SDK reader can lose its exact handoff on a live connection.
 
 use super::*;
+use acp_client_runtime::{acp_transport::TransportRun, owner_wire::OpeningPausePoint};
 use provider_session_machines::{
     harness_lifecycle::LifecycleRefusal, session_lifecycle_machine::CloseAttempt,
 };
 
 #[tokio::test]
 async fn acp_create_refuses_activation_when_its_reader_handoff_was_closed() {
+    exercise_failed_created_handoff(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+async fn retirement_fences_failed_activation_before_its_result_reaches_the_row() {
+    exercise_failed_created_handoff(true).await;
+}
+
+async fn exercise_failed_created_handoff(retire_before_result: bool) {
     let fixture = hub_runtime_with(&["advertise-close"]).await;
     let tasks = TaskTracker::new();
     let (owner, mut binding) = bind_fixture(&fixture.runtime, &tasks);
@@ -63,22 +73,57 @@ async fn acp_create_refuses_activation_when_its_reader_handoff_was_closed() {
         Held::Held
     );
 
-    assert_eq!(
+    let start_reader = move |binding: &SessionHarnessBinding, stop: CancellationToken| {
         binding.activate(
             ActivationSetup::Created {
                 attempt,
-                generation
+                generation,
             },
             AcceptedRunSettings {
                 catalogue: Default::default(),
-                router_auto_requested: false
+                router_auto_requested: false,
             },
             Arc::new(AcceptEvents),
-            Box::pin(stop.clone().cancelled_owned()),
-        ),
+            Box::pin(stop.cancelled_owned()),
+        )
+    };
+    let binding = Arc::new(binding);
+    let route = TransportRun {
+        incarnation: owner.incarnation,
+        generation,
+    };
+    let activation = if retire_before_result {
+        let failure = wire.pause_opening_for_test(OpeningPausePoint::BeforeFailedHandoffCommit);
+        let activating = tokio::task::spawn_blocking({
+            let binding = Arc::clone(&binding);
+            let stop = stop.clone();
+            move || start_reader(&binding, stop)
+        });
+        failure
+            .reached
+            .await
+            .expect("the staged SDK reader has refused");
+        assert!(wire.opening_route_is_registered_for_test(route));
+        binding.retire(generation);
+        assert!(
+            !wire.opening_route_is_registered_for_test(route),
+            "the retirement step must fence the staged route before the failed actor returns"
+        );
+        failure
+            .release
+            .send(())
+            .expect("deliver the late exact activation failure");
+        activating.await.expect("activation call completes")
+    } else {
+        start_reader(&binding, stop.clone())
+    };
+    assert_eq!(
+        activation,
         Err(ActivationRefusal::ReaderUnavailable),
         "created activation must refuse synchronously when the exact SDK handoff is closed",
     );
+    assert!(!wire.opening_route_is_registered_for_test(route));
+    let mut binding = Arc::into_inner(binding).expect("the activating actor released its binding");
     let (reply, _answer) = oneshot::channel();
     assert_eq!(
         binding.close(
@@ -140,7 +185,6 @@ impl EventPort<SessionLifecycleFact> for RecordLifecycle {
 }
 
 async fn exercise_created_handoff(retire_before_commit: bool) {
-    use acp_client_runtime::owner_wire::OpeningPausePoint;
     let fixture = hub_runtime_with(&["hold-created-update"]).await;
     let tasks = TaskTracker::new();
     let (owner, mut binding) = bind_fixture(&fixture.runtime, &tasks);

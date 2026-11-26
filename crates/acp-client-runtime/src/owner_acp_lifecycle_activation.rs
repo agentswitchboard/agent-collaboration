@@ -59,12 +59,17 @@ impl OwnerOpenings {
         let (start, reader) = match handoff {
             Ok(reader) => reader,
             Err(reason) => {
+                #[cfg(any(test, feature = "test-observation"))]
+                self.wire.at_opening_effect_for_test(
+                    crate::owner_wire::OpeningPausePoint::BeforeFailedHandoffCommit,
+                );
                 let ended = lock(&self.attempts).apply(slot, &instance, Command::ActivationFailed);
                 if let Ok(effect) = ended {
                     effect.finish(&self.wire);
-                } else if !route.is_removed() {
-                    self.wire.retire_opening_route(route, &instance);
                 }
+                // This actor alone can accept the handoff. If its failure
+                // arrives after StartingReader has gone, the earlier
+                // retirement or observed loss already fenced its exact route.
                 return Err(reason);
             }
         };

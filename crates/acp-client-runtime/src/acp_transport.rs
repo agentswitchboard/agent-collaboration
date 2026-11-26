@@ -900,6 +900,14 @@ impl<Frame> AcpTransport<Frame> {
     }
 
     #[cfg(feature = "test-observation")]
+    pub(crate) fn opening_route_is_registered_for_test(&self, run: TransportRun) -> bool {
+        self.state()
+            .routes
+            .get(&run)
+            .is_some_and(|entry| entry.lifecycle.is_some())
+    }
+
+    #[cfg(feature = "test-observation")]
     pub(crate) fn replace_closing_marker_for_test(
         &self,
         run: TransportRun,
