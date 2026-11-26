@@ -25,6 +25,8 @@ use uuid::Uuid;
 
 #[path = "owner_acp_opening_matrix_expectations.rs"]
 mod expectations;
+#[path = "owner_acp_opening_payloads_test.rs"]
+mod payloads;
 use expectations::{expected, expected_actions};
 
 struct Fixture {
@@ -617,28 +619,15 @@ async fn every_applicable_owned_step_matches_the_independent_effect_matrix() {
     let fixture = Fixture::new().await;
     for &phase in P::ALL {
         for &event in E::ALL {
+            if !expectations::canonical_stimulus(phase, event) {
+                continue;
+            }
             let (Some(state), Some(command)) =
                 (fixture.state(phase, event), fixture.command(phase, event))
             else {
                 continue;
             };
             let declared = expected(phase, event);
-            // Several observer commands choose an edge using the current
-            // payload. Other spellings of that same command are covered by
-            // their own cases, with separately constructed payloads.
-            let taken = event == E::WriterStoppedAfterOffer
-                && matches!(phase, P::QueuedCreate | P::QueuedRestore | P::OfferingClose);
-            if let Some(projected) = edge(&state, &command, taken)
-                && projected != event
-            {
-                assert!(
-                    declared.is_none(),
-                    "{phase:?} + {event:?} projected as {projected:?}"
-                );
-                drop((state, command));
-                fixture.assert_disposals();
-                continue;
-            }
             let instance = OpeningInstance::default();
             let identity = if matches!(
                 phase,
@@ -679,6 +668,9 @@ async fn every_applicable_owned_step_matches_the_independent_effect_matrix() {
                     if let Some(stored) = stored {
                         assert!(stored.instance().is_same_as(&instance));
                         assert_eq!(stored.attempt(), identity);
+                        if let Some(run) = stored.state.run() {
+                            assert!(run.route.is_same_as(&fixture.run.route));
+                        }
                     }
                     assert_eq!(
                         actual_actions(&effects, &fixture, &instance),
@@ -688,6 +680,7 @@ async fn every_applicable_owned_step_matches_the_independent_effect_matrix() {
                 }
                 (None, Err(refused)) => {
                     assert_eq!(refused.row.phase(), phase);
+                    assert_eq!(refused.rejection.reason, expectations::refusal(phase));
                     assert!(refused.row.instance().is_same_as(&instance));
                     assert_eq!(refused.row.attempt(), identity);
                 }

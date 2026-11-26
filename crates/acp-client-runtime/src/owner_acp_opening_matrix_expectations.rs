@@ -1,6 +1,61 @@
 //! Independent expectations for the declared and executable opening outcomes.
 
 use super::{Action, E, OpeningPolicy, P, StateMachine};
+use switchboard_harness_contracts::{HeldOpeningKind, LifecycleRefusal, WriterState};
+
+// These declaration labels share a command. Choose their canonical fixture
+// from the stipulated opening context before producing its payload.
+pub(super) fn canonical_stimulus(phase: P, event: E) -> bool {
+    match (phase, event) {
+        (P::ConfiguredCreate, E::AcceptSettings) => false,
+        (other, E::AcceptCreatedSettings) => other == P::ConfiguredCreate,
+        (other, E::LateOpenReply) => other == P::ClosingRestore,
+        (other, E::DeferRestore) => other == P::OfferingClose,
+        (other, E::FinishOnStoppedWriter) => other == P::StoppedAwaitingReply,
+        (other, E::WriterStoppedAfterOffer) => {
+            matches!(other, P::QueuedCreate | P::QueuedRestore | P::OfferingClose)
+        }
+        (other, E::WriterStoppedWithOlderRestore | E::WriterStoppedWithDeferredRestore) => {
+            other == P::OfferingClose
+        }
+        (other, E::WriterStoppedWithoutReceipt) => other == P::RouteLost,
+        (
+            P::RouteLost | P::StoppedAwaitingReply | P::ClosingRestore,
+            E::RestoreLoadReply | E::RestoreResumeReply,
+        ) => false,
+        (P::RouteLost | P::StoppedAwaitingReply, E::ReplayAdmitted | E::ReplayRejected) => false,
+        (P::RouteLost, E::WorkerExited) => false,
+        (other, E::RestoreAfterLocalLoss) => {
+            matches!(other, P::RouteLost | P::StoppedAwaitingReply)
+        }
+        _ => true,
+    }
+}
+
+pub(super) fn refusal(phase: P) -> LifecycleRefusal {
+    match phase {
+        P::UnboundIdle => LifecycleRefusal::OpeningNotHeld,
+        P::BoundIdle => LifecycleRefusal::BoundSessionNotLoaded,
+        P::QueuedCreate
+        | P::QueuedRestore
+        | P::AwaitingCreate
+        | P::ConfiguringCreate
+        | P::AwaitingRestore
+        | P::CapturingReplay
+        | P::StartingReader => LifecycleRefusal::OpeningInProgress,
+        P::HeldCreate => LifecycleRefusal::OpeningAlreadyHeld(HeldOpeningKind::Create),
+        P::HeldRestore => LifecycleRefusal::OpeningAlreadyHeld(HeldOpeningKind::Restore),
+        P::ConfiguredCreate | P::PreparedRestore => LifecycleRefusal::OpeningPrepared,
+        P::Active => LifecycleRefusal::OpeningActive,
+        P::OfferingClose | P::ClosingRestore | P::ClosingLive | P::Readmitting => {
+            LifecycleRefusal::RouteClosing
+        }
+        P::CloseRefusedLive => LifecycleRefusal::CloseAlreadyRefused,
+        P::RouteLost => LifecycleRefusal::BoundRouteUnavailable,
+        P::StoppedAwaitingReply => LifecycleRefusal::Writer(WriterState::Stopped),
+        P::RetiredAwaitingReply | P::Terminal => LifecycleRefusal::OpeningEnded,
+    }
+}
 
 // The expected machine is expressed by lifecycle responsibility, independently
 // of the declaration macro and without using a production transition adapter.

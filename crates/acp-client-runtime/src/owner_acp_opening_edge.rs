@@ -82,7 +82,7 @@ pub(super) fn edge(state: &OpeningState, command: &Command, taken: bool) -> Opti
         Command::ReaderAccepted => Edge::ReaderAccepted,
         Command::ReaderStopped(_) if state.live_reader().is_some() => Edge::ReaderStopped,
         Command::ReaderStopped(_) => return None,
-        Command::RestoreProgress(milestone, _) => match state {
+        Command::RestoreProgress(milestone, signal) => match state {
             State::RouteLost {
                 receipt: LostReceipt::None | LostReceipt::Close(_),
                 ..
@@ -102,7 +102,7 @@ pub(super) fn edge(state: &OpeningState, command: &Command, taken: bool) -> Opti
                 origin,
                 deferred: None,
                 ..
-            } if origin.pending_restore(false).is_some() => Edge::DeferRestore,
+            } if signal.is_some() && origin.pending_restore(false).is_some() => Edge::DeferRestore,
             State::ClosingRestore { .. }
                 if matches!(
                     milestone,
