@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::{
-    ExternalProviderBinding, ExternalProviderSupervisor, session_owner_door::SessionOwnerDoor,
+    ExternalProviderSupervisor, session_owner_door::SessionOwnerDoor,
     session_owner_scripted_harness_test::harness_refusing_first_activation,
 };
 use collaboration_contracts::ProviderConversationBackend;
@@ -27,7 +27,7 @@ async fn a_refused_create_activation_keeps_the_applied_session_for_public_restor
         ..
     } = hub_runtime().await;
     let runtime = Arc::try_unwrap(runtime).expect("fixture runtime is exclusively owned");
-    let clock = runtime.owner_clock();
+    let clock = runtime.client.runtime_clock();
     let store = hub.store_for_fixture();
     let endpoint =
         serde_json::from_value(serde_json::to_value(hub_target.endpoint).expect("board endpoint"))
@@ -59,10 +59,7 @@ async fn a_refused_create_activation_keeps_the_applied_session_for_public_restor
     ));
     assert!(runtime.owner_door.set(door.clone()).is_ok());
     let host = ExternalProviderSupervisor::with_fixture_hub(
-        vec![ExternalProviderBinding {
-            identity: binding.clone(),
-            runtime,
-        }],
+        vec![runtime.into_binding(binding.clone())],
         store,
         hub.clone(),
         clock,

@@ -63,10 +63,7 @@ impl ControlFixture {
         ));
         let supervisor = Arc::new(
             ExternalProviderSupervisor::new(
-                vec![ExternalProviderBinding {
-                    identity: binding(),
-                    runtime,
-                }],
+                vec![runtime.into_binding(binding())],
                 Arc::clone(&store),
                 crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
             )

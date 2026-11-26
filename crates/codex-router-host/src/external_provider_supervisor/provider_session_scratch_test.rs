@@ -10,9 +10,7 @@ async fn a_supervisor_without_a_scratch_root_grants_no_folder() {
 /// Router's scratch root, and nothing else.
 #[tokio::test]
 async fn supervisor_create_grants_the_agent_a_fresh_session_folder() {
-    use crate::external_provider_supervisor::{
-        ExternalProviderBinding, ExternalProviderSupervisor,
-    };
+    use crate::external_provider_supervisor::ExternalProviderSupervisor;
     use collaboration_contracts::ProviderConversationBackend;
     use collaboration_protocol::{
         ConversationCreateRequest, ConversationOperationSettlement,
@@ -49,10 +47,7 @@ async fn supervisor_create_grants_the_agent_a_fresh_session_folder() {
     let binding = crate::external_provider_supervisor::tests::binding();
     let requester = crate::external_provider_supervisor::tests::requester();
     let backend = ExternalProviderSupervisor::new_with_hub(
-        vec![ExternalProviderBinding {
-            identity: binding.clone(),
-            runtime,
-        }],
+        vec![runtime.into_binding(binding.clone())],
         std::sync::Arc::new(tokio::sync::Mutex::new(store)),
         None,
         Some(crate::provider_session_scratch::provider_scratch_preparer(

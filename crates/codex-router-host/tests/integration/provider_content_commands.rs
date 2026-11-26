@@ -1,9 +1,8 @@
 //! Host content admission preserves actor authority and ACP block order.
 
 use codex_router_host::{
-    ExternalProviderBinding, ExternalProviderLaunch, ExternalProviderRuntime,
-    ExternalProviderSupervisor, ProviderAcpDeliveryRoute, ProviderPromptContentsError,
-    ProviderQueueAdmissionError,
+    ExternalProviderLaunch, ExternalProviderRuntime, ExternalProviderSupervisor,
+    ProviderAcpDeliveryRoute, ProviderPromptContentsError, ProviderQueueAdmissionError,
 };
 use collaboration_protocol::{
     ProviderRequestedPolicy, ProviderWorkingDirectory, RouterAccess, SessionId,
@@ -62,10 +61,7 @@ async fn non_creator_content_prompt_is_accepted_after_capability_validation() {
         .expect("session record");
     let supervisor = Arc::new(
         ExternalProviderSupervisor::new(
-            vec![ExternalProviderBinding {
-                identity: binding.clone(),
-                runtime,
-            }],
+            vec![runtime.into_binding(binding.clone())],
             Arc::clone(&store),
             fixture_clock.clone(),
         )
@@ -201,10 +197,7 @@ async fn active_control_turn_cancel_uses_operation_bound_path_and_settles_after_
         .expect("session record");
     let supervisor = Arc::new(
         ExternalProviderSupervisor::new(
-            vec![ExternalProviderBinding {
-                identity: binding.clone(),
-                runtime,
-            }],
+            vec![runtime.into_binding(binding.clone())],
             Arc::clone(&store),
             fixture_clock.clone(),
         )

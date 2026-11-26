@@ -1,6 +1,5 @@
 use codex_router_host::{
-    ExternalProviderBinding, ExternalProviderLaunch, ExternalProviderRuntime,
-    ExternalProviderSupervisor,
+    ExternalProviderLaunch, ExternalProviderRuntime, ExternalProviderSupervisor,
 };
 use collaboration_contracts::ProviderConversationBackend;
 use collaboration_protocol::{
@@ -171,10 +170,7 @@ async fn supervisor_with_binding(
 ) -> TestResult<ExternalProviderSupervisor> {
     let store = ProviderOperationStore::open(database_path).await?;
     Ok(ExternalProviderSupervisor::new(
-        vec![ExternalProviderBinding {
-            identity: binding,
-            runtime,
-        }],
+        vec![runtime.into_binding(binding)],
         Arc::new(Mutex::new(store)),
         fixture_clock,
     )?)

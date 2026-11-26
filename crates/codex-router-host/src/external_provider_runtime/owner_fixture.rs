@@ -151,7 +151,7 @@ impl ExternalProviderRuntime {
                     ));
                     let hub = Arc::new(ProviderSessionEventHub::new(
                         store.clone(),
-                        self.owner_clock(),
+                        self.client.runtime_clock(),
                     ));
                     (Some(directory), store, hub, binding)
                 };

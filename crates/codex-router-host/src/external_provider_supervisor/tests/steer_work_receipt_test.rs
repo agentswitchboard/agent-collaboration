@@ -607,7 +607,7 @@ async fn named_steer_reports_stale_generation_after_its_marked_run_is_replaced()
         .expect("fixture runtime");
     let legacy_id = OperationId::generate();
     let legacy = crate::external_provider_supervisor::provider_owner_prompt::retained_prompt(
-        &runtime,
+        runtime.as_ref(),
         legacy_id.clone(),
         rig.target.clone(),
         crate::session_owner_calls::OwnedSettlement {

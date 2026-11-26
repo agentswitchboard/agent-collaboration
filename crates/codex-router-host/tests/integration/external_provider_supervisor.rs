@@ -1,6 +1,5 @@
 use codex_router_host::{
-    ExternalProviderBinding, ExternalProviderLaunch, ExternalProviderRuntime,
-    ExternalProviderSupervisor,
+    ExternalProviderLaunch, ExternalProviderRuntime, ExternalProviderSupervisor,
 };
 use collaboration_contracts::ProviderConversationBackend;
 use collaboration_protocol::{
@@ -216,7 +215,7 @@ async fn supervisor(
     Ok(ExternalProviderSupervisor::new(
         bindings
             .into_iter()
-            .map(|(identity, runtime)| ExternalProviderBinding { identity, runtime })
+            .map(|(identity, runtime)| runtime.into_binding(identity))
             .collect(),
         Arc::new(Mutex::new(store)),
         clock,

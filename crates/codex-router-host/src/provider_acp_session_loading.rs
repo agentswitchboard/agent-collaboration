@@ -1,8 +1,8 @@
 //! Load a recorded provider session only after checking live peer ownership.
 use crate::external_provider_supervisor::SessionQueuePlan;
 use crate::{
-    ExternalProviderRuntime, ExternalProviderRuntimeError, ExternalProviderSupervisor,
-    LiveSessionOwnership, LiveSessionOwnershipCheck, ProviderSessionActivity,
+    ExternalProviderRuntimeError, ExternalProviderSupervisor, LiveSessionOwnership,
+    LiveSessionOwnershipCheck, ProviderSessionActivity,
 };
 use acp_client_runtime::{RestoreFailure, RestorePhase, acp_transport::TransportRun};
 use collaboration_contracts::LoadPolicy;
@@ -100,9 +100,9 @@ pub(crate) async fn ensure_provider_session_loaded(
     target: &SessionRef,
     load_policy: LoadPolicy,
 ) -> ProviderSessionLoadOutcome {
-    let Some(runtime) = supervisor.runtime_for(&target.endpoint) else {
+    if !supervisor.has_binding(&target.endpoint) {
         return unavailable("provider runtime is unavailable");
-    };
+    }
     use provider_session_machines::{
         session_lifecycle_machine::SessionLifecycle,
         session_owner::{RunAttempt, SessionOwnerReply},
@@ -144,7 +144,7 @@ pub(crate) async fn ensure_provider_session_loaded(
             SessionLifecycle::NotLoaded { .. } | SessionLifecycle::Closing { .. } => {}
         }
     }
-    match checked_loadability(supervisor, &runtime, store, ownership, target).await {
+    match checked_loadability(supervisor, store, ownership, target).await {
         ProviderSessionLoadability::AlreadyLoaded => {
             return if load_policy == LoadPolicy::LoadedOnly {
                 ProviderSessionLoadOutcome::AlreadyLoaded
@@ -181,16 +181,15 @@ pub(crate) async fn ensure_provider_session_loaded(
 
 async fn checked_loadability(
     supervisor: &ExternalProviderSupervisor,
-    runtime: &ExternalProviderRuntime,
     store: &Arc<Mutex<ProviderOperationStore>>,
     ownership: &dyn LiveSessionOwnershipCheck,
     target: &SessionRef,
 ) -> ProviderSessionLoadability {
-    let clock = runtime.owner_clock();
+    let clock = supervisor.clock();
     router_clock::timeout(
         clock.as_ref(),
         std::time::Duration::from_secs(10),
-        inspect_provider_session_loadability(supervisor, runtime, store, ownership, target),
+        inspect_provider_session_loadability(supervisor, store, ownership, target),
     )
     .await
     .unwrap_or_else(|_| ProviderSessionLoadability::Unavailable {
@@ -214,10 +213,10 @@ pub(crate) async fn session_queue_plan(
     if policy == LoadPolicy::LoadedOnly {
         return Err(ProviderSessionLoadOutcome::NotLoaded);
     }
-    let runtime = supervisor
-        .runtime_for(&target.endpoint)
-        .ok_or_else(|| unavailable("provider runtime is unavailable"))?;
-    match checked_loadability(supervisor, &runtime, store, ownership, target).await {
+    if !supervisor.has_binding(&target.endpoint) {
+        return Err(unavailable("provider runtime is unavailable"));
+    }
+    match checked_loadability(supervisor, store, ownership, target).await {
         ProviderSessionLoadability::Loadable | ProviderSessionLoadability::AlreadyLoaded => {}
         ProviderSessionLoadability::UnsupportedLoad => {
             return Err(ProviderSessionLoadOutcome::UnsupportedLoad);
@@ -442,23 +441,20 @@ pub(crate) fn closed_restore_reason(phase: RestorePhase) -> &'static str {
 
 pub(crate) async fn inspect_provider_session_loadability(
     supervisor: &ExternalProviderSupervisor,
-    runtime: &ExternalProviderRuntime,
     store: &Arc<Mutex<ProviderOperationStore>>,
     ownership: &dyn LiveSessionOwnershipCheck,
     target: &SessionRef,
 ) -> ProviderSessionLoadability {
-    let provider_session_id = String::from(target.session_id.clone());
     match supervisor.owner_session_activity(target) {
         ProviderSessionActivity::Idle | ProviderSessionActivity::Running => {
             return ProviderSessionLoadability::AlreadyLoaded;
         }
         ProviderSessionActivity::NotLoaded => {}
     }
-    if !runtime
-        .capability_report(&provider_session_id)
-        .await
-        .supports_load
-    {
+    let Some(capabilities) = supervisor.session_capabilities(target).await else {
+        return unavailable_loadability("provider runtime is unavailable".to_owned());
+    };
+    if !capabilities.load {
         return ProviderSessionLoadability::UnsupportedLoad;
     }
     match ownership.check(target).await {

@@ -8,9 +8,7 @@
 
 use super::provider_acp_message_fifo_support::{provider_binding, recorded_requests, target};
 use super::provider_fixture_launch;
-use codex_router_host::{
-    ExternalProviderBinding, ExternalProviderRuntime, ExternalProviderSupervisor,
-};
+use codex_router_host::{ExternalProviderRuntime, ExternalProviderSupervisor};
 use collaboration_contracts::ProviderConversationBackend;
 use collaboration_protocol::{
     ConversationOperationSettlement, ConversationOperationShowRequest,
@@ -91,10 +89,7 @@ async fn a_queued_message_commits_only_after_the_previous_settlement_is_written(
         .expect("session record");
     let supervisor = Arc::new(
         ExternalProviderSupervisor::new(
-            vec![ExternalProviderBinding {
-                identity: binding.clone(),
-                runtime,
-            }],
+            vec![runtime.into_binding(binding.clone())],
             Arc::clone(&store),
             fixture_clock.clone(),
         )

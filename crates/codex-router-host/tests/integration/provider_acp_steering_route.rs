@@ -3,9 +3,8 @@ use crate::provider_fixture_launch;
 
 use agent_automation::{RouteEffectEvidence, SubmissionEffect};
 use codex_router_host::{
-    ExternalProviderBinding, ExternalProviderLaunch, ExternalProviderRuntime,
-    ExternalProviderSupervisor, LiveSessionOwnership, LiveSessionOwnershipCheck,
-    ProviderAcpDeliveryRoute,
+    ExternalProviderLaunch, ExternalProviderRuntime, ExternalProviderSupervisor,
+    LiveSessionOwnership, LiveSessionOwnershipCheck, ProviderAcpDeliveryRoute,
 };
 use collaboration_contracts::AttemptEvidenceSink;
 use collaboration_contracts::AttemptReconciliation;
@@ -157,10 +156,7 @@ async fn prepared_route(
     let fixture_retirement = runtime.retirement();
     let supervisor = Arc::new(
         ExternalProviderSupervisor::new(
-            vec![ExternalProviderBinding {
-                identity: binding.clone(),
-                runtime,
-            }],
+            vec![runtime.into_binding(binding.clone())],
             Arc::clone(&store),
             fixture_clock.clone(),
         )

@@ -45,14 +45,13 @@ impl SessionDeliveryRoute for ProviderAcpDeliveryRoute {
                     reason: reason.reason,
                 },
                 RouteClaim::CanLoad => {
-                    let Some(runtime) = self.supervisor.runtime_for(&target.endpoint) else {
+                    if !self.supervisor.has_binding(&target.endpoint) {
                         return Ok(RoutePresence::Unreachable {
                             reason: "provider runtime is unavailable".to_owned(),
                         });
-                    };
+                    }
                     let loadability = inspect_provider_session_loadability(
                         &self.supervisor,
-                        runtime.as_ref(),
                         &self.store,
                         self.ownership.as_ref(),
                         &target,

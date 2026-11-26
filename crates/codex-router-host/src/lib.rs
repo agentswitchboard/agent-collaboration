@@ -77,8 +77,8 @@ pub use external_provider_runtime::{
 };
 mod external_provider_supervisor;
 pub use external_provider_supervisor::{
-    ExternalProviderBinding, ExternalProviderSupervisor, ManagedAcpNoticeAdapter,
-    ProviderPromptContentsRequest,
+    ConnectionShutdown, ExternalProviderBinding, ExternalProviderSupervisor, HarnessConnection,
+    ManagedAcpNoticeAdapter, ProviderPromptContentsRequest,
 };
 mod global_claude_executable;
 mod host_configuration;

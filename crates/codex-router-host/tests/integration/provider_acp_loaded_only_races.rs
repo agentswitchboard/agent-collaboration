@@ -5,9 +5,9 @@ use crate::provider_fixture_launch;
 use agent_automation::{RouteEffectEvidence, SubmissionEffect};
 use claude_code_peer_messaging::{ClaudeCodePeerSocket, ClaudeCodeSessionRegistry};
 use codex_router_host::{
-    ClaudeCodePeerDeliveryRoute, ExternalProviderBinding, ExternalProviderLaunch,
-    ExternalProviderRuntime, ExternalProviderSupervisor, LiveSessionOwnership,
-    LiveSessionOwnershipCheck, ProviderAcpDeliveryRoute,
+    ClaudeCodePeerDeliveryRoute, ExternalProviderLaunch, ExternalProviderRuntime,
+    ExternalProviderSupervisor, LiveSessionOwnership, LiveSessionOwnershipCheck,
+    ProviderAcpDeliveryRoute,
 };
 use collaboration_contracts::AttemptEvidenceSink;
 use collaboration_contracts::DeliveryContractError;
@@ -190,10 +190,7 @@ async fn loaded_only_close_after_placement_retires_dispatch_without_loading() {
         .expect("provider session record");
     let supervisor = Arc::new(
         ExternalProviderSupervisor::new(
-            vec![ExternalProviderBinding {
-                identity: binding.clone(),
-                runtime,
-            }],
+            vec![runtime.into_binding(binding.clone())],
             Arc::clone(&store),
             fixture_clock.clone(),
         )
@@ -286,10 +283,7 @@ async fn loaded_only_reports_non_retryable_unsupported_load_after_can_load_claim
     let store = store_with_session_record(root.path(), &target).await;
     let supervisor = Arc::new(
         ExternalProviderSupervisor::new(
-            vec![ExternalProviderBinding {
-                identity: binding.clone(),
-                runtime,
-            }],
+            vec![runtime.into_binding(binding.clone())],
             Arc::clone(&store),
             fixture_clock.clone(),
         )
@@ -343,10 +337,7 @@ async fn loaded_only_preserves_live_elsewhere_reason_after_can_load_claim() {
     let store = store_with_session_record(root.path(), &target).await;
     let supervisor = Arc::new(
         ExternalProviderSupervisor::new(
-            vec![ExternalProviderBinding {
-                identity: binding.clone(),
-                runtime,
-            }],
+            vec![runtime.into_binding(binding.clone())],
             Arc::clone(&store),
             fixture_clock.clone(),
         )
@@ -429,10 +420,7 @@ async fn loaded_only_reports_non_retryable_missing_record_after_can_load_claim()
     let store = store_with_session_record(root.path(), &target).await;
     let supervisor = Arc::new(
         ExternalProviderSupervisor::new(
-            vec![ExternalProviderBinding {
-                identity: binding.clone(),
-                runtime,
-            }],
+            vec![runtime.into_binding(binding.clone())],
             Arc::clone(&store),
             fixture_clock.clone(),
         )
@@ -498,10 +486,7 @@ async fn loaded_only_queue_refuses_not_loaded_session_before_enqueue() {
     let store = store_with_session_record(root.path(), &target).await;
     let supervisor = Arc::new(
         ExternalProviderSupervisor::new(
-            vec![ExternalProviderBinding {
-                identity: binding.clone(),
-                runtime,
-            }],
+            vec![runtime.into_binding(binding.clone())],
             Arc::clone(&store),
             fixture_clock.clone(),
         )
@@ -594,10 +579,7 @@ async fn provider_and_absent_peer_presence_aggregates_to_not_running() {
     ));
     let supervisor = Arc::new(
         ExternalProviderSupervisor::new(
-            vec![ExternalProviderBinding {
-                identity: binding.clone(),
-                runtime,
-            }],
+            vec![runtime.into_binding(binding.clone())],
             Arc::clone(&store),
             fixture_clock.clone(),
         )
