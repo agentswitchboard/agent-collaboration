@@ -1,5 +1,5 @@
 //! Public metadata projection for stored conversation operations.
-use crate::ProviderOperationRecord;
+use crate::provider_operation_record::ProviderOperationRecord;
 use collaboration_protocol::{ConversationOperationSnapshot, ObservationTimestamp};
 
 pub fn conversation_operation_snapshot(
