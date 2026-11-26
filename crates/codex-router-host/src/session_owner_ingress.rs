@@ -6,14 +6,13 @@ use crate::{
     session_owner_door::SessionOwnerDoor,
     session_owner_lifecycle_reports::inline_admission,
 };
-use acp_client_runtime::InteractionFuture;
 use provider_session_machines::{
     SessionGeneration,
     harness_lifecycle::{
         CallbackAdmission, HarnessCallbackIngress, HarnessSessionId, SessionHarnessPayloads,
     },
     session_lifecycle_machine::SessionLifecycle,
-    session_owner::OwnerEvent,
+    session_owner::{OwnerEvent, RequestFuture},
     session_turn_machine::SessionTurn,
 };
 use session_event_model::{SessionEvent, SkillView};
@@ -42,7 +41,7 @@ impl RefusedTurnCancellation for SessionOwnerIngress {
         &self,
         session: String,
         scope: OwnerApprovalScope,
-    ) -> InteractionFuture<'_, ()> {
+    ) -> RequestFuture<'_, ()> {
         Box::pin(async move {
             if let Some(owner) = self.owner(&session) {
                 let _settlement = owner.cancel_turn(scope.run, scope.turn).await;

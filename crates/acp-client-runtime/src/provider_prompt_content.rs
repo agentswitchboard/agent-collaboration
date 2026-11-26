@@ -7,12 +7,6 @@ use agent_client_protocol::schema::v1::{
     ImageContent, ResourceLink, TextContent, TextResourceContents,
 };
 use session_event_model::{PromptContent, PromptEmbeddedSource};
-use std::sync::Arc;
-use switchboard_harness_contracts::HarnessContent;
-
-pub(crate) fn join_submitted_text_blocks<'a>(blocks: impl Iterator<Item = &'a str>) -> String {
-    blocks.collect()
-}
 
 /// Translate validated Session content only at the ACP client edge.
 pub(crate) fn acp_blocks_from_prompt_content(contents: &[PromptContent]) -> Vec<ContentBlock> {
@@ -69,78 +63,28 @@ pub(crate) fn acp_blocks_from_prompt_content(contents: &[PromptContent]) -> Vec<
         .collect()
 }
 
-#[derive(Clone, Debug)]
-pub struct ProviderPromptContent {
-    contents: Arc<[PromptContent]>,
-    history_text: Option<String>,
-    selected_skills: Vec<session_event_model::SelectedSkill>,
-}
-
-impl ProviderPromptContent {
-    pub fn from_session_contents(
-        contents: Vec<PromptContent>,
-        capabilities: &ProviderCapabilityReport,
-    ) -> Result<Self, ExternalProviderRuntimeError> {
-        for content in &contents {
-            let unsupported = match content {
-                PromptContent::Image { .. } if !capabilities.accepts_image => Some("image"),
-                PromptContent::Audio { .. } if !capabilities.accepts_audio => Some("audio"),
-                PromptContent::EmbeddedResource { .. }
-                    if !capabilities.accepts_embedded_resource =>
-                {
-                    Some("embeddedResource")
-                }
-                PromptContent::Text { .. }
-                | PromptContent::ResourceLink { .. }
-                | PromptContent::Image { .. }
-                | PromptContent::Audio { .. }
-                | PromptContent::EmbeddedResource { .. } => None,
-            };
-            if let Some(content_type) = unsupported {
-                return Err(ExternalProviderRuntimeError::UnsupportedContent { content_type });
+pub(crate) fn validate_prompt_content(
+    contents: &[PromptContent],
+    capabilities: &ProviderCapabilityReport,
+) -> Result<(), ExternalProviderRuntimeError> {
+    for content in contents {
+        let unsupported = match content {
+            PromptContent::Image { .. } if !capabilities.accepts_image => Some("image"),
+            PromptContent::Audio { .. } if !capabilities.accepts_audio => Some("audio"),
+            PromptContent::EmbeddedResource { .. } if !capabilities.accepts_embedded_resource => {
+                Some("embeddedResource")
             }
-        }
-        let history_text =
-            join_submitted_text_blocks(contents.iter().filter_map(|content| match content {
-                PromptContent::Text { text } => Some(text.as_str()),
-                _ => None,
-            }));
-        Ok(Self {
-            contents: contents.into(),
-            history_text: Some(history_text),
-            selected_skills: Vec::new(),
-        })
-    }
-
-    #[must_use]
-    pub fn as_harness_content(&self) -> HarnessContent<'_> {
-        if self.is_compaction() {
-            HarnessContent::Compaction(&self.contents)
-        } else {
-            HarnessContent::Input(&self.contents)
+            PromptContent::Text { .. }
+            | PromptContent::ResourceLink { .. }
+            | PromptContent::Image { .. }
+            | PromptContent::Audio { .. }
+            | PromptContent::EmbeddedResource { .. } => None,
+        };
+        if let Some(content_type) = unsupported {
+            return Err(ExternalProviderRuntimeError::UnsupportedContent { content_type });
         }
     }
-
-    pub fn submitted_text(&self) -> Option<&str> {
-        self.history_text.as_deref()
-    }
-
-    fn is_compaction(&self) -> bool {
-        self.history_text.is_none()
-    }
-
-    pub fn selected_skills(&self) -> &[session_event_model::SelectedSkill] {
-        &self.selected_skills
-    }
-
-    pub(crate) fn set_input_context(
-        &mut self,
-        text: Option<String>,
-        selected: Vec<session_event_model::SelectedSkill>,
-    ) {
-        self.history_text = text;
-        self.selected_skills = selected;
-    }
+    Ok(())
 }
 
 #[cfg(test)]

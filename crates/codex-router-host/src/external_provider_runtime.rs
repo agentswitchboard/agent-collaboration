@@ -164,7 +164,7 @@ impl ExternalProviderRuntime {
         &self,
         provider_id: &str,
         input: acp_client_runtime::ProviderTurnInput,
-    ) -> Result<acp_client_runtime::ProviderPromptContent, ExternalProviderRuntimeError> {
+    ) -> Result<session_event_model::PreparedPrompt, ExternalProviderRuntimeError> {
         let capabilities = self.capability_report(provider_id).await;
         self.client.prepare_owner_prompt(input, &capabilities)
     }

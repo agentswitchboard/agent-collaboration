@@ -29,6 +29,7 @@ mod provider_acp_delivery_route;
 #[path = "provider_acp_restore_seam_test.rs"]
 mod provider_acp_restore_seam_tests;
 mod provider_acp_route_claim;
+mod provider_create_result;
 mod provider_queue_operation_registry;
 mod provider_session_command_port;
 mod provider_session_setup;

@@ -3,12 +3,12 @@
 use super::*;
 use crate::session_owner_calls::InputAcceptance;
 use crate::session_owner_door::{SessionOwnerAddress, SessionOwnerDoor};
-use acp_client_runtime::{RequestedProviderSettings, owner_session_open::OwnerSessionOpenSetup};
 use collaboration_protocol::{
     ConversationBindingIdentity, ProviderBindingIdentity, ProviderIdentity, ProviderOperationKind,
     ProviderRequestedPolicy, RouterAccess, SessionId,
 };
 use provider_session_machines::{
+    harness_lifecycle::{OpenSetup, RequestedProviderSettings},
     session_lifecycle_machine::{CloseAttempt, SessionLifecycle},
     session_owner::{
         CloseOutcome, CloseRequest, OwnerInput, PromptAdmission, RestoreDisposition, RunAttempt,
@@ -188,12 +188,12 @@ impl ExternalProviderRuntime {
                 None,
             )
             .await?;
-        let created = fixture
+        let result = fixture
             .door
-            .create(
+            .create_with_harness(
                 fixture.binding.endpoint.clone(),
                 operation.clone(),
-                OwnerSessionOpenSetup {
+                OpenSetup {
                     cwd: cwd.clone(),
                     work_roots: Default::default(),
                     scratch_folder: None,
@@ -201,8 +201,10 @@ impl ExternalProviderRuntime {
                 settings,
                 Default::default(),
             )
-            .await?;
-        let id = created.created.provider_session_id;
+            .await;
+        let id = crate::provider_create_result::project_owner_create(result)?
+            .created
+            .provider_session_id;
         let record = RuntimeFixture::record(fixture.target(id.clone())?, cwd)?;
         fixture
             .store

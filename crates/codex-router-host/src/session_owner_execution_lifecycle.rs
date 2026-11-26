@@ -7,8 +7,8 @@ use provider_session_machines::{
     ProviderSettingKind, ProviderSettingsCatalog,
     harness_lifecycle::{
         AUTO_PERMISSION_MODE, AcceptedRunSettings, ActivationSetup, CreateAttempt,
-        HarnessSessionId, LifecycleRefusal, LifecycleReply, OpenAttempt, OpenRequest, OpenSetup,
-        OpeningFact, OpeningFailure, RestoreSettingRefusal, RestoredOpening, RunRetirement,
+        HarnessSessionId, LifecycleRefusal, LifecycleReply, OpenAttempt, OpenRequest, OpeningFact,
+        OpeningFailure, RestoreSettingRefusal, RestoredOpening, RunRetirement,
         SessionCreatedSetupFact, SettingAttempt, owner_event_for_restore_setting,
     },
     session_lifecycle_machine::{LoadAttempt, RestoreVia},
@@ -45,8 +45,8 @@ impl SessionOwnerExecution {
             .storage
             .explicit_working_directory(run.attempt)
             .unwrap_or_else(|| PathBuf::from(String::from(saved.working_directory.clone())));
-        let restored =
-            crate::provider_session_setup::restore_setup(&self.work_roots, &cwd, &saved.resume);
+        let setup =
+            crate::provider_session_setup::restore_setup(&self.work_roots, cwd, &saved.resume);
         let requested_mode = saved.resume.requested_mode;
         let router_auto_requested = requested_mode.as_deref() == Some(AUTO_PERMISSION_MODE);
         let cancel = CancellationToken::new();
@@ -61,11 +61,7 @@ impl SessionOwnerExecution {
                     run,
                     session: HarnessSessionId(self.session_id()),
                     via,
-                    setup: OpenSetup {
-                        cwd,
-                        work_roots: restored.work_roots,
-                        scratch_folder: restored.scratch_folder,
-                    },
+                    setup,
                     requested_mode,
                 },
                 completion,

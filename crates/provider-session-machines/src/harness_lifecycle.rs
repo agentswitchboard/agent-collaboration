@@ -16,14 +16,14 @@ pub use switchboard_harness_contracts::{
     ApprovalLeaseBinding, ApprovalLeaseRefusalReason, BeforeOfferApprovalLeaseRefusal,
     CallbackAdmission, CatalogueFact, CatalogueRequest, CloseFact, CreateAttempt,
     CreatedSettingsFailure, CreatedSetupFact, CreatedSetupReport, CreationEffect, EventPort,
-    EventRefusal, EventSendFuture, ExactTurn, HandOverRefusal, HarnessCallbackIngress,
+    EventRefusal, EventSendFuture, ExactTurn, FastRequest, HandOverRefusal, HarnessCallbackIngress,
     HarnessContent, HarnessLifecyclePayloads, HarnessOwnerEvents, HarnessOwnerRecovery,
     HarnessProvider, HarnessSessionId, Held, InvalidRequestedSetting, LifecycleEventPort,
     LifecycleFact, LifecycleRefusal, LifecycleReply, ObservedTurnApprovalLeaseRefusal, OpenAttempt,
     OpenRequest, OpenSetup, OpeningFact, OpeningFailure, OwnerHarnessBinding, PermissionModeReport,
     RequestedProviderSettings, ReservedReply, RestoreLoadReadback, RestoreSettingRefusal,
-    RestoredOpening, RunRetirement, SettingAttempt, SettingFact, SetupReport, SlotEvidence,
-    StreamTurn, TransportRun, WorkReply,
+    RestoredOpening, RunRetirement, SessionWorkRoots, SettingAttempt, SettingFact, SetupReport,
+    SlotEvidence, StreamTurn, TransportRun, WorkReply,
 };
 
 pub struct SessionHarnessPayloads<ApprovalContext>(PhantomData<fn() -> ApprovalContext>);

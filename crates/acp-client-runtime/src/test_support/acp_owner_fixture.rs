@@ -6,9 +6,9 @@ mod steering;
 use crate::{
     AcpRequestPayloads, AcpRequestPolicy, AgentSessionClient, ExternalProviderCreatedSession,
     ExternalProviderLaunch, ExternalProviderRuntimeError, ProviderBehavior,
-    ProviderCapabilityReport, ProviderModelPicker, ProviderPromptContent,
-    ProviderPromptDispatchObservation, ProviderSettingRequest, ProviderTurnInput,
-    RequestedProviderSettings, SessionEventSink, SessionRestoreSetup, SessionWorkRoots,
+    ProviderCapabilityReport, ProviderModelPicker, ProviderPromptDispatchObservation,
+    ProviderSettingRequest, ProviderTurnInput, RequestedProviderSettings, SessionEventSink,
+    SessionRestoreSetup, SessionWorkRoots,
     owner_session_open::{OwnerOpenedSession, OwnerSessionOpenSetup},
     session_owner_task::{SessionOwnerHandle, SessionOwnerTask},
 };
@@ -25,7 +25,7 @@ use provider_session_machines::{
     session_turn_machine::{SessionTurn, TurnId},
 };
 use router_clock::RuntimeClock;
-use session_event_model::InputId;
+use session_event_model::{InputId, PreparedPrompt};
 use std::{
     collections::HashMap,
     num::NonZeroUsize,
@@ -66,7 +66,7 @@ struct FixtureState<P: AcpRequestPayloads> {
 }
 
 struct FixtureInput<P: AcpRequestPayloads> {
-    content: ProviderPromptContent,
+    content: PreparedPrompt,
     context: Option<P::Context>,
     dispatch: Option<oneshot::Sender<ProviderPromptDispatchObservation>>,
 }

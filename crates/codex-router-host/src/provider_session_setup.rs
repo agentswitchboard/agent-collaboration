@@ -6,6 +6,9 @@
 //! record, whichever path restores it.
 
 use crate::provider_work_roots::{ProviderWorkRoots, WorkRootsHook};
+use provider_session_machines::harness_lifecycle::{
+    AUTO_PERMISSION_MODE, OpenSetup, PermissionModeReport, SessionWorkRoots,
+};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
@@ -19,7 +22,7 @@ pub(crate) struct RequestedModeRecord {
 }
 
 impl RequestedModeRecord {
-    fn from_report(report: &acp_client_runtime::PermissionModeReport) -> Self {
+    fn from_report(report: &PermissionModeReport) -> Self {
         Self {
             requested_mode: report.requested.clone(),
             mode_reason: report
@@ -50,16 +53,6 @@ impl BindingSessionSetup {
             .clone()
     }
 
-    /// What a load or resume of a session working in `cwd` rebuilds from its
-    /// record, with this binding's roots as configured now.
-    pub(crate) fn restore_setup(
-        &self,
-        cwd: &Path,
-        resume: &ProviderSessionResumeInputs,
-    ) -> acp_client_runtime::SessionRestoreSetup {
-        restore_setup(&self.work_roots(), cwd, resume)
-    }
-
     pub(crate) fn record_requested_mode(
         &self,
         provider_session_id: &str,
@@ -74,7 +67,7 @@ impl BindingSessionSetup {
     pub(crate) fn record_created_mode(
         &self,
         provider_session_id: &str,
-        report: &acp_client_runtime::PermissionModeReport,
+        report: &PermissionModeReport,
     ) {
         self.record_requested_mode(
             provider_session_id,
@@ -89,7 +82,7 @@ impl BindingSessionSetup {
     pub(crate) fn record_restored_mode(
         &self,
         provider_session_id: &str,
-        report: &acp_client_runtime::PermissionModeReport,
+        report: &PermissionModeReport,
     ) {
         if report.requested.is_some() {
             self.record_created_mode(provider_session_id, report);
@@ -112,13 +105,17 @@ impl BindingSessionSetup {
 /// were kept) rebuilds nothing.
 pub(crate) fn restore_setup(
     configured: &ProviderWorkRoots,
-    cwd: &Path,
+    cwd: PathBuf,
     resume: &ProviderSessionResumeInputs,
-) -> acp_client_runtime::SessionRestoreSetup {
-    let Some(requested_mode) = resume.requested_mode.clone() else {
-        return acp_client_runtime::SessionRestoreSetup::default();
+) -> OpenSetup {
+    let Some(requested_mode) = resume.requested_mode.as_deref() else {
+        return OpenSetup {
+            cwd,
+            work_roots: SessionWorkRoots::default(),
+            scratch_folder: None,
+        };
     };
-    let auto = requested_mode == acp_client_runtime::AUTO_PERMISSION_MODE;
+    let auto = requested_mode == AUTO_PERMISSION_MODE;
     let scratch_folder = resume
         .scratch_folder
         .clone()
@@ -138,9 +135,9 @@ pub(crate) fn restore_setup(
     } else {
         Vec::new()
     };
-    let work_roots = session_work_roots(&configured, cwd, scratch_folder.as_deref(), &named, auto);
-    acp_client_runtime::SessionRestoreSetup {
-        requested_mode: Some(requested_mode),
+    let work_roots = session_work_roots(&configured, &cwd, scratch_folder.as_deref(), &named, auto);
+    OpenSetup {
+        cwd,
         scratch_folder,
         work_roots,
     }
@@ -155,15 +152,15 @@ pub(crate) fn session_work_roots(
     scratch_folder: Option<&Path>,
     named: &[PathBuf],
     router_auto: bool,
-) -> acp_client_runtime::SessionWorkRoots {
+) -> SessionWorkRoots {
     let ready_hook = match &configured.hook {
         WorkRootsHook::Ready(hook) => Some(hook),
         _ => None,
     };
     if configured.roots.is_empty() && ready_hook.is_none() && named.is_empty() {
-        return acp_client_runtime::SessionWorkRoots {
+        return SessionWorkRoots {
             router_auto,
-            ..acp_client_runtime::SessionWorkRoots::default()
+            ..SessionWorkRoots::default()
         };
     }
     let roots = crate::provider_work_roots::session_work_roots(&configured.roots, cwd, named);
@@ -174,7 +171,7 @@ pub(crate) fn session_work_roots(
             .collect::<Vec<_>>();
         hook.command(&inside)
     });
-    acp_client_runtime::SessionWorkRoots {
+    SessionWorkRoots {
         roots,
         ask_outside_command,
         router_auto,

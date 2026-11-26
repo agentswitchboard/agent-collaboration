@@ -496,14 +496,10 @@ async fn queued_receipt_after_owner_failure(replace_owner: bool) {
         generation,
         turn: TurnId(uuid::Uuid::now_v7()),
     };
-    let content = acp_client_runtime::ProviderPromptContent::from_session_contents(
-        vec![
-            session_event_model::PromptContent::text("awaiting a dispatch mark".to_owned())
-                .expect("text"),
-        ],
-        &acp_client_runtime::ProviderCapabilityReport::default(),
-    )
-    .expect("provider text");
+    let content = session_event_model::PreparedPrompt::plain(vec![
+        session_event_model::PromptContent::text("awaiting a dispatch mark".to_owned())
+            .expect("text"),
+    ]);
     let delivery = owner.start_delivery(
         input.clone(),
         content,
@@ -619,15 +615,15 @@ async fn real_create_result_wakes_with_the_adopted_owner_already_live() {
         .owner_door(&rig.target.endpoint)
         .expect("real owner door");
     let operation = OperationId::generate();
-    let create = door.create(
+    let create = door.create_with_harness(
         rig.target.endpoint.clone(),
         operation.clone(),
-        acp_client_runtime::owner_session_open::OwnerSessionOpenSetup {
+        provider_session_machines::harness_lifecycle::OpenSetup {
             cwd: rig.root.path().to_owned(),
             scratch_folder: None,
             work_roots: Default::default(),
         },
-        acp_client_runtime::RequestedProviderSettings::default(),
+        Default::default(),
         Default::default(),
     );
     tokio::pin!(create);
@@ -662,8 +658,10 @@ async fn real_create_result_wakes_with_the_adopted_owner_already_live() {
     let at_wake = at_wake
         .await
         .expect("the real result sender wakes its caller");
-    let created = create.await.expect("create completed");
-    assert!(!created.created.provider_session_id.is_empty());
+    let Ok(created) = create.await else {
+        panic!("create did not complete");
+    };
+    assert!(!created.session.0.is_empty());
     assert!(
         matches!(at_wake, SessionLifecycle::Live { .. }),
         "Host create result woke its caller before the adopted snapshot was live: {at_wake:?}"

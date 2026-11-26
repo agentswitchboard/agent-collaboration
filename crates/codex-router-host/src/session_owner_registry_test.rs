@@ -607,11 +607,9 @@ async fn check_recovered_mark_and_caller(answer: RecoveryAnswer, unsent: bool) {
     assert_eq!(before.effect, ProviderOperationEffect::Unknown);
 
     let callers = Arc::new(SessionOwnerCalls::default());
-    let content = acp_client_runtime::ProviderPromptContent::from_session_contents(
-        vec![session_event_model::PromptContent::text("recover".to_owned()).expect("prompt")],
-        &acp_client_runtime::ProviderCapabilityReport::default(),
-    )
-    .expect("validated prompt");
+    let content = session_event_model::PreparedPrompt::plain(vec![
+        session_event_model::PromptContent::text("recover".to_owned()).expect("prompt"),
+    ]);
     callers.insert_content(&input, content);
     let acceptance = callers.expect_acceptance(input.operation);
     let terminal = callers.expect_settlement(input.operation);

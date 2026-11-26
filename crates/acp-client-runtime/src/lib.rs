@@ -7,7 +7,7 @@
 //! ```
 //!
 //! ```compile_fail
-//! let _ = acp_client_runtime::ProviderPromptContent::new;
+//! let _ = acp_client_runtime::provider_prompt_content::acp_blocks_from_prompt_content;
 //! ```
 //!
 //! ```compile_fail
@@ -124,7 +124,6 @@ pub use provider_client_contract::ProviderPromptDispatchObservation;
 pub use provider_client_contract::{ProviderSessionActivity, ProviderSteeringOutcome};
 pub use provider_model_picker::ProviderModelPicker;
 pub use provider_persistence_target::ProviderPersistenceTarget;
-pub use provider_prompt_content::ProviderPromptContent;
 pub use provider_restore_failure::{RestoreFailure, RestorePhase};
 pub use provider_session_settings::{
     AppliedProviderSetting, FailedProviderSetting, FastRequest, InvalidSettingSessionDisposition,

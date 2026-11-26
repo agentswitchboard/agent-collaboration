@@ -1,38 +1,24 @@
 //! Project neutral create settlements into the current provider API.
 
-use super::{
-    SessionOwnerDoor,
-    creation::{OwnerCreateFailure, OwnerCreateReport},
-};
+use crate::session_owner_door::{OwnerCreateFailure, OwnerCreateReport};
 use acp_client_runtime::{
     ExternalProviderCreatedSession, ExternalProviderRuntimeError, InvalidSettingSessionDisposition,
 };
-use collaboration_protocol::{EndpointRef, OperationId};
 use provider_session_machines::harness_lifecycle::{
-    CreatedSettingsFailure, InvalidRequestedSetting, OpenSetup, OpeningFailure,
-    RequestedProviderSettings,
+    CreatedSettingsFailure, InvalidRequestedSetting, OpeningFailure,
 };
-use std::sync::Arc;
 
 pub(crate) struct ProviderCreatedOwnerSetup {
     pub(crate) created: ExternalProviderCreatedSession,
     pub(crate) settings_failure: Option<ExternalProviderRuntimeError>,
 }
 
-impl SessionOwnerDoor {
-    pub(crate) async fn create(
-        self: &Arc<Self>,
-        endpoint: EndpointRef,
-        operation: OperationId,
-        setup: OpenSetup,
-        requested: RequestedProviderSettings,
-        work_roots: crate::provider_work_roots::ProviderWorkRoots,
-    ) -> Result<ProviderCreatedOwnerSetup, ExternalProviderRuntimeError> {
-        self.create_with_harness(endpoint, operation, setup, requested, work_roots)
-            .await
-            .map(provider_created_setup)
-            .map_err(provider_create_failure)
-    }
+pub(crate) fn project_owner_create(
+    result: Result<OwnerCreateReport, OwnerCreateFailure>,
+) -> Result<ProviderCreatedOwnerSetup, ExternalProviderRuntimeError> {
+    result
+        .map(provider_created_setup)
+        .map_err(provider_create_failure)
 }
 
 fn provider_created_setup(report: OwnerCreateReport) -> ProviderCreatedOwnerSetup {

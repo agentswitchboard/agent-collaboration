@@ -19,6 +19,10 @@ use super::{
     provider_settings_control, runtime_failure, snapshot_failure, snapshot_from_record,
     unavailable_failure,
 };
+use crate::provider_create_result::project_owner_create;
+use provider_session_machines::harness_lifecycle::{
+    FastRequest, OpenSetup, RequestedProviderSettings,
+};
 
 impl ProviderConversationBackend for ExternalProviderSupervisor {
     fn resume(
@@ -203,22 +207,24 @@ impl ProviderConversationBackend for ExternalProviderSupervisor {
                         let Some(owner_door) = completion_backend.owner_door(&endpoint) else {
                             return ProviderOperationCompletion::Failure(unavailable_failure(operation_id, None));
                         };
-                        let created = owner_door.create(
+                        let result = owner_door.create_with_harness(
                             endpoint.clone(),
                             operation_id.clone(),
-                            acp_client_runtime::owner_session_open::OwnerSessionOpenSetup { cwd, scratch_folder, work_roots },
-                            acp_client_runtime::RequestedProviderSettings {
+                            OpenSetup { cwd, scratch_folder, work_roots },
+                            RequestedProviderSettings {
                                 mode: requested_settings.mode,
                                 model: requested_settings.model,
                                 effort: requested_settings.effort,
                                 fast: if requested_settings.fast == Some(collaboration_protocol::FastSetting::Auto) {
-                                    acp_client_runtime::FastRequest::Leave
+                                    FastRequest::Leave
                                 } else {
-                                    acp_client_runtime::FastRequest::OffIfOffered
+                                    FastRequest::OffIfOffered
                                 },
                             },
                             configured_roots,
-                        ).await.and_then(|setup| setup.settings_failure.map_or(Ok(setup.created), Err));
+                        ).await;
+                        let created = project_owner_create(result)
+                            .and_then(|setup| setup.settings_failure.map_or(Ok(setup.created), Err));
                         let completion = match created {
                             Ok(created) => {
                                 match SessionId::try_from(created.provider_session_id) {

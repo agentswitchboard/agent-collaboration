@@ -6,7 +6,6 @@ use crate::{
     session_owner_calls::InputAcceptance,
     session_owner_door::{OwnerDeliveryHandle, OwnerDoorError, SessionOwnerAddress},
 };
-use acp_client_runtime::{ProviderCapabilityReport, ProviderPromptContent};
 use collaboration_protocol::{
     ProviderOperationEffect, ProviderOperationStage, ProviderReconciliationState,
 };
@@ -18,7 +17,7 @@ use provider_session_machines::{
     session_turn_machine::{SessionTurn, TurnId},
 };
 use script::{ScriptControls, ScriptedWork};
-use session_event_model::{InputId, PromptContent, StopReason, TurnOutcome};
+use session_event_model::{InputId, PreparedPrompt, PromptContent, StopReason, TurnOutcome};
 use std::collections::{BTreeMap, BTreeSet};
 use switchboard_session_store::ProviderOperationStore;
 use tokio::sync::{mpsc, oneshot};
@@ -166,11 +165,9 @@ async fn start_delivery(
     input: OwnerInput,
     command: SessionOwnerCommand,
 ) -> OwnerDeliveryHandle {
-    let content = ProviderPromptContent::from_session_contents(
-        vec![PromptContent::text("scripted input".into()).expect("fixture prompt")],
-        &ProviderCapabilityReport::default(),
-    )
-    .expect("validated fixture content");
+    let content = PreparedPrompt::plain(vec![
+        PromptContent::text("scripted input".into()).expect("fixture prompt"),
+    ]);
     owner
         .start_delivery(input, content, command)
         .await

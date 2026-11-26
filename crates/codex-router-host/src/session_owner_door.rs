@@ -14,7 +14,7 @@ use crate::{
     session_owner_registry::{RegisteredOwner, SessionOwnerRegistry},
     session_owner_storage::SessionOwnerStorage,
 };
-use acp_client_runtime::{ProviderPromptContent, session_owner_task::OwnerMailboxUnavailable};
+use acp_client_runtime::session_owner_task::OwnerMailboxUnavailable;
 use collaboration_protocol::SessionRef;
 use provider_session_machines::{
     harness_lifecycle::{CatalogueFact, CatalogueRequest, ReservedReply},
@@ -25,6 +25,7 @@ use provider_session_machines::{
     },
 };
 use router_clock::RuntimeClock;
+use session_event_model::PreparedPrompt;
 use std::{
     collections::BTreeMap,
     num::NonZeroUsize,
@@ -550,7 +551,7 @@ impl SessionOwnerAddress {
     pub async fn submit_input(
         &self,
         input: OwnerInput,
-        content: ProviderPromptContent,
+        content: PreparedPrompt,
         admission: PromptAdmission,
     ) -> Result<OwnedSettlement, OwnerDoorError> {
         let command = prompt_with_requirements(input.clone(), admission, &content);
@@ -581,7 +582,7 @@ impl SessionOwnerAddress {
     pub(crate) async fn start_delivery(
         &self,
         input: OwnerInput,
-        content: ProviderPromptContent,
+        content: PreparedPrompt,
         command: SessionOwnerCommand,
     ) -> Result<OwnerDeliveryHandle, OwnerDoorError> {
         self.start_delivery_with_evidence(input, content, command, None, None)
@@ -591,7 +592,7 @@ impl SessionOwnerAddress {
     pub(crate) async fn start_delivery_with_evidence(
         &self,
         input: OwnerInput,
-        content: ProviderPromptContent,
+        content: PreparedPrompt,
         command: SessionOwnerCommand,
         evidence: Option<crate::session_owner_delivery_evidence::OwnerDeliveryEvidence>,
         cold_restore: Option<LoadAttempt>,
@@ -772,7 +773,7 @@ impl ReservedReply<CatalogueFact> for SessionCatalogueReply {
 fn prompt_with_requirements(
     input: OwnerInput,
     admission: PromptAdmission,
-    content: &ProviderPromptContent,
+    content: &PreparedPrompt,
 ) -> SessionOwnerCommand {
     if content.selected_skills().is_empty() {
         SessionOwnerCommand::Prompt { input, admission }
@@ -791,9 +792,7 @@ mod tests;
 
 #[path = "session_owner_door_creation.rs"]
 mod creation;
-
-#[path = "session_owner_create_result.rs"]
-mod create_result;
+pub(crate) use creation::{OwnerCreateFailure, OwnerCreateReport};
 
 #[path = "session_owner_door_recovery.rs"]
 mod recovery;

@@ -164,32 +164,27 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
         &self,
         input: crate::ProviderTurnInput,
         capabilities: &ProviderCapabilityReport,
-    ) -> Result<crate::ProviderPromptContent, ExternalProviderRuntimeError> {
-        use crate::provider_prompt_content::join_submitted_text_blocks;
-        use session_event_model::PromptContent;
-        let (contents, history_text, selected) = match input {
+    ) -> Result<session_event_model::PreparedPrompt, ExternalProviderRuntimeError> {
+        use crate::provider_prompt_content::validate_prompt_content;
+        use session_event_model::PreparedPrompt;
+        let prepared = match input {
             crate::ProviderTurnInput::Prompt(submission) => {
-                let original =
-                    join_submitted_text_blocks(submission.content.iter().filter_map(|block| {
-                        match block {
-                            PromptContent::Text { text } => Some(text.as_str()),
-                            _ => None,
-                        }
-                    }));
-                let selected = submission.selected.clone();
-                (
-                    self.provider_behavior.prepare(submission)?,
-                    Some(original),
-                    selected,
-                )
+                let submitted_text = submission.submitted_text();
+                let selected_skills = submission.selected.clone();
+                let blocks = self.provider_behavior.prepare(submission)?;
+                PreparedPrompt::Input {
+                    blocks: blocks.into(),
+                    submitted_text,
+                    selected_skills,
+                }
             }
             crate::ProviderTurnInput::Compact => match self.provider_behavior.compact()? {
-                crate::PreparedCompact::Prompt(content) => (content, None, Vec::new()),
+                crate::PreparedCompact::Prompt(blocks) => PreparedPrompt::Compaction {
+                    blocks: blocks.into(),
+                },
             },
         };
-        let mut prepared =
-            crate::ProviderPromptContent::from_session_contents(contents, capabilities)?;
-        prepared.set_input_context(history_text, selected);
+        validate_prompt_content(prepared.as_harness_content().blocks(), capabilities)?;
         Ok(prepared)
     }
 }
