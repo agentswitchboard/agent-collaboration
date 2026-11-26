@@ -248,11 +248,11 @@ impl WorkerFaultCampaign {
     }
 
     pub(super) fn disconnect(&self) {
-        self.peer.admitted.send_replace(None);
+        self.peer.set_connected(None);
     }
 
     pub(super) fn reconnect(&self) {
-        self.peer.admitted.send_replace(Some(new_admission(
+        self.peer.set_connected(Some(new_admission(
             self.machine.clone(),
             self.clock.clone(),
         )));
@@ -339,7 +339,7 @@ impl WorkerFaultCampaign {
                     ));
                 }
                 FaultSite::SentWithoutAnswer => {
-                    self.peer.admitted.send_replace(original_admission.clone());
+                    self.peer.set_connected(original_admission.clone());
                     assert!(matches!(
                         self.worker.events.recv().await,
                         Some(CustodyTaskEvent::Failed(_))

@@ -46,6 +46,7 @@ pub(super) enum FaultStage {
 struct FaultJournal {
     planned: Vec<(FaultSite, FaultStage)>,
     fired: Vec<(FaultSite, FaultStage)>,
+    claim_calls: usize,
     insert_entry: Option<InsertEntry>,
     committed_insert: Option<Arc<StoreCommitGate>>,
     committed_claim: Option<Arc<StoreCommitGate>>,
@@ -111,6 +112,10 @@ impl StoreFaultPlan {
 
     pub(super) fn is_drained(&self) -> bool {
         self.0.lock().unwrap().planned.is_empty()
+    }
+
+    pub(super) fn claim_calls(&self) -> usize {
+        self.0.lock().unwrap().claim_calls
     }
 
     pub(super) fn hold_next_insert_commit(&self) -> Arc<StoreCommitGate> {
@@ -297,7 +302,11 @@ impl OutboxStorage for FaultyOutbox {
         required_deadline_after_ms: i64,
         excluded_request_ids: &'call BTreeSet<RequestId>,
     ) -> OutboxFuture<'call, StoreScan<ClaimedBatch>> {
-        let gate = self.plan.0.lock().unwrap().committed_claim.take();
+        let gate = {
+            let mut journal = self.plan.0.lock().unwrap();
+            journal.claim_calls += 1;
+            journal.committed_claim.take()
+        };
         let claiming = self.plan.wrap(
             FaultSite::ClaimBatch,
             self.inner.claim_next_batch(

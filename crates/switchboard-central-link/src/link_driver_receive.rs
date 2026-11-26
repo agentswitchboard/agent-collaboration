@@ -60,7 +60,7 @@ where
                 permit,
             ),
             Err(ProtocolError::UnknownTypedCall { correlation_id })
-                if admitted_lane.is_admitted() =>
+                if admitted_lane.is_registered(attempt) =>
             {
                 SocketReceive::RefuseCall(correlation_id)
             }
@@ -290,7 +290,7 @@ where
                 correlation_id,
                 result,
             },
-            ClientEvent::CallMac { correlation_id, .. } if admitted_lane.is_admitted() => {
+            ClientEvent::CallMac { correlation_id, .. } if admitted_lane.is_registered(attempt) => {
                 SocketReceive::RefuseCall(correlation_id)
             }
             ClientEvent::CallMac { .. }

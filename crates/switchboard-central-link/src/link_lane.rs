@@ -220,6 +220,14 @@ impl LinkLaneHandle {
         if !self.is_admitted(&connection) {
             return LaneResult::Untouched(UntouchedCommand::ConnectionUnavailable);
         }
+        if !self
+            .registered
+            .borrow()
+            .as_ref()
+            .is_some_and(|registered| registered.admitted().connection == connection)
+        {
+            return LaneResult::Untouched(UntouchedCommand::RunNotRegistered);
+        }
         let wire = match encode_user_frame(&frame) {
             Ok(wire) => wire,
             Err(cause) => return LaneResult::Untouched(cause),

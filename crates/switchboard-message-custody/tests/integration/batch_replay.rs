@@ -7,9 +7,9 @@
 use central_link_client::{
     AdmittedConnection, CheckedBatchResults, ClientAction, CorrelatedReceiptResults,
     CorrelatedRequestReply, CorrelatedStatusReply, ImmediateRequestCommand, LinkClient,
-    LinkLaneDisposition, LinkLaneEvent, ReadyLinkLane, RegisteredConnection, RequestStatusCommand,
-    SubmitReceiptsCommand, UntouchedCommand, WriteBatchCommand, WriteBatchDisposition,
-    WriteBatchMemberDisposition,
+    LinkLaneDisposition, LinkLaneEvent, PendingRunRegistration, ReadyLinkLane,
+    RegisteredConnection, RequestStatusCommand, RunRegistrationDecision, SubmitReceiptsCommand,
+    UntouchedCommand, WriteBatchCommand, WriteBatchDisposition, WriteBatchMemberDisposition,
 };
 use central_link_protocol::{
     DataFrame, FrameDirection, LinkFrame, ReceiptResult, ReplyPayload, RequestPayload,
@@ -128,6 +128,7 @@ impl ScriptedBatchGate {
 
 pub(super) struct ScriptedBatchLane {
     pub(super) admitted: watch::Sender<Option<AdmittedConnection>>,
+    registered: watch::Sender<Option<RegisteredConnection>>,
     clock: Arc<ManualClock>,
     lost_first_answers: BTreeSet<RequestId>,
     history: Mutex<PeerHistory>,
@@ -170,6 +171,7 @@ impl ScriptedBatchLane {
     ) -> Self {
         let (queued_events, events) = mpsc::unbounded_channel();
         Self {
+            registered: watch::channel(Some(registered_fixture(&admitted))).0,
             admitted: watch::channel(Some(admitted)).0,
             clock,
             lost_first_answers,
@@ -185,6 +187,26 @@ impl ScriptedBatchLane {
             held_immediate: Mutex::new(None),
             held_receipt_completion: Mutex::new(None),
             receipt_commands: watch::channel(Vec::new()).0,
+        }
+    }
+
+    pub(super) fn set_admitted(&self, admitted: Option<AdmittedConnection>) {
+        self.registered
+            .send_if_modified(|current| current.take().is_some());
+        self.admitted.send_replace(admitted);
+    }
+
+    pub(super) fn register_admitted(&self) {
+        let admitted = self.admitted.borrow().clone().unwrap();
+        self.registered
+            .send_replace(Some(registered_fixture(&admitted)));
+    }
+
+    pub(super) fn set_connected(&self, admitted: Option<AdmittedConnection>) {
+        let has_connection = admitted.is_some();
+        self.set_admitted(admitted);
+        if has_connection {
+            self.register_admitted();
         }
     }
 
@@ -367,7 +389,7 @@ impl ScriptedBatchLane {
         }
         history.attempts.push(sent_requests);
         if first_batch && !self.lost_first_answers.is_empty() {
-            self.admitted.send_replace(None);
+            self.set_admitted(None);
         }
         WriteBatchDisposition::MemberResults(CheckedBatchResults::new(&requests, members).unwrap())
     }
@@ -379,7 +401,7 @@ impl ReadyLinkLane for ScriptedBatchLane {
     }
 
     fn watch_registered(&self) -> watch::Receiver<Option<RegisteredConnection>> {
-        panic!("message custody requires only admission")
+        self.registered.subscribe()
     }
 
     fn submit_write_batch(
@@ -573,6 +595,34 @@ pub(super) fn new_admission(machine: MachineId, clock: Arc<ManualClock>) -> Admi
     }
 }
 
+fn registered_fixture(admitted: &AdmittedConnection) -> RegisteredConnection {
+    let request = r#"{"kind":"callCentral","correlationId":"019f0000-0000-7000-8000-000000000001","request":{"call":"registerRun","envelope":{"target":{"organizationId":"019f0000-0000-7000-8000-000000000002"},"body":{"routerRun":"019f0000-0000-7000-8000-000000000003"}}}}"#;
+    let reply = r#"{"kind":"centralCallReply","correlationId":"019f0000-0000-7000-8000-000000000001","result":{"kind":"answered","reply":{"call":"registerRun","envelope":{"target":{"organizationId":"019f0000-0000-7000-8000-000000000002"},"body":{"kind":"registered"}}}}}"#;
+    let request = decode_text(request, FrameDirection::ToCentral).unwrap();
+    let LinkFrame::Data(DataFrame::CentralCallReply {
+        correlation_id,
+        result,
+    }) = decode_text(reply, FrameDirection::ToRouter).unwrap()
+    else {
+        panic!("scripted peer must send a registration reply");
+    };
+    let mut pending = PendingRunRegistration::from_sent_frame(
+        admitted.clone(),
+        &request,
+        ClockInstant::ZERO.after(Duration::from_secs(1)),
+    )
+    .unwrap();
+    let RunRegistrationDecision::Registered(evidence) = pending.observe_reply(
+        &admitted.connection,
+        &correlation_id,
+        &result,
+        ClockInstant::ZERO,
+    ) else {
+        panic!("scripted peer must acknowledge the matching run");
+    };
+    RegisteredConnection::from_registration(evidence)
+}
+
 async fn check_partial_replay(answers: &[bool]) {
     let root = tempfile::tempdir().unwrap();
     let database = root.path().join("machine_local.sqlite");
@@ -654,8 +704,7 @@ async fn check_partial_replay(answers: &[bool]) {
         );
     }
 
-    lane.admitted
-        .send_replace(Some(new_admission(machine, clock.clone())));
+    lane.set_connected(Some(new_admission(machine, clock.clone())));
     let replay = worker.advance(Duration::from_secs(60)).await.unwrap();
     assert!(replay.issues.is_empty());
     let (sent_again, decisions) = {

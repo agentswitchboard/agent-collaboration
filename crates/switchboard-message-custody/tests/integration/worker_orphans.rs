@@ -317,7 +317,7 @@ pub(super) async fn flush_event(
 #[tokio::test]
 async fn a_failed_startup_orphan_read_retries_offline_and_ends_at_the_original_deadline() {
     let campaign = FaultCampaign::start().await;
-    campaign.peer.admitted.send_replace(None);
+    campaign.peer.set_connected(None);
     let item = thread_post(601);
     seed_orphan(&campaign, &item, START_MS - 895_000).await;
     campaign
@@ -383,7 +383,7 @@ async fn a_failed_untouched_return_keeps_its_first_attempt_unsent_offline() {
     clock.advance(Duration::from_secs(20)).unwrap();
     let attempted = flush_event(&mut events, "the failed definite return").await;
     assert_eq!(attempted.issues.len(), 1);
-    peer.admitted.send_replace(None);
+    peer.set_connected(None);
     let retry = ClockInstant::ZERO.after(Duration::from_secs(21));
     clock.not_due_check_now(retry).await;
     clock.advance(Duration::from_secs(1)).unwrap();
@@ -451,6 +451,48 @@ async fn a_recovered_orphan_uses_the_scoped_status_answer_without_retransmission
         group.request_stop();
         group.join().await.unwrap();
     }
+}
+
+#[tokio::test]
+async fn registration_alone_wakes_a_live_orphan_after_a_local_expiry() {
+    let campaign = FaultCampaign::start().await;
+    let peer = campaign.peer.clone();
+    let clock = campaign.clock.clone();
+    let live = thread_post(631);
+    let expiring = thread_post(632);
+    seed_orphan(&campaign, &live, START_MS - 10_000).await;
+    seed_orphan(&campaign, &expiring, START_MS - 890_000).await;
+    let live_query = scoped_query(&live);
+    peer.script_status_answer(
+        live.caller.clone(),
+        live_query.clone(),
+        RequestStatusAnswer::Answered(post_created(99)),
+    );
+    let admission = peer.admitted.borrow().clone().unwrap();
+    peer.set_admitted(Some(admission));
+    let (_calls, group, mut events) = start_worker(campaign.custody);
+    let expiry = ClockInstant::ZERO.after(Duration::from_secs(10));
+    clock.not_due_check_now(expiry).await;
+    clock.advance(Duration::from_secs(10)).unwrap();
+    let ended = flush_event(&mut events, "a claim ending locally before registration").await;
+    assert!(matches!(ended.ended.as_slice(), [one] if one.request_id == expiring.request));
+    assert!(peer.take_calls().is_empty());
+
+    peer.register_admitted();
+
+    let report = flush_event(
+        &mut events,
+        "the live orphan answered after registration alone",
+    )
+    .await;
+    assert!(matches!(report.answered.as_slice(), [one] if one.request == live.request));
+    assert!(
+        matches!(peer.take_calls().as_slice(), [ScriptedCommand::RequestStatus(call)] if call.query == live_query)
+    );
+    assert_eq!(clock.monotonic_now(), expiry);
+    assert!(peer.batch_commands().is_empty());
+    group.request_stop();
+    group.join().await.unwrap();
 }
 
 #[tokio::test]

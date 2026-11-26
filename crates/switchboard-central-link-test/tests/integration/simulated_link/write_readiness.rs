@@ -7,7 +7,7 @@ use std::{
 
 use tokio::{io::AsyncWrite, sync::oneshot};
 
-use super::registration_preface::RegistrationPreface;
+use super::{central_receive::SocketObserver, registration_preface::RegistrationPreface};
 
 #[derive(Clone)]
 pub(super) struct WriterGate(Arc<Mutex<Option<BlockedWrite>>>);
@@ -43,6 +43,7 @@ pub(super) struct HeldWriter<Writer> {
     pub(super) raw: Writer,
     pub(super) gate: WriterGate,
     pub(super) registration_preface: Option<RegistrationPreface>,
+    pub(super) observer: Option<SocketObserver>,
 }
 
 impl<Writer: AsyncWrite + Unpin> AsyncWrite for HeldWriter<Writer> {
@@ -64,6 +65,7 @@ impl<Writer: AsyncWrite + Unpin> AsyncWrite for HeldWriter<Writer> {
         let Self {
             raw,
             registration_preface,
+            observer,
             ..
         } = self.as_mut().get_mut();
         if let Some(preface) = registration_preface
@@ -71,7 +73,13 @@ impl<Writer: AsyncWrite + Unpin> AsyncWrite for HeldWriter<Writer> {
         {
             *registration_preface = None;
         }
-        Pin::new(raw).poll_write(context, bytes)
+        let result = Pin::new(raw).poll_write(context, bytes);
+        if let Poll::Ready(Ok(written)) = result
+            && let Some(observer) = observer
+        {
+            observer.observe(bytes.get(..written).unwrap());
+        }
+        result
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {

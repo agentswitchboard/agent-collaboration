@@ -12,6 +12,11 @@ TCP segments to delay or drop a selected WebSocket frame and model connections
 that reset or outlive their requests. The existing fixture supplies the signed
 enrollment and JWKS service.
 
+Registration cases also decode frames from the native Central socket's byte
+stream. They hold the acknowledgement independently of later heartbeat and
+renewal traffic and check custody across minute boundaries, registration
+failures, reconnects, and a full inbox intake.
+
 The C5 transcript case observes one empty capability announcement before an
 ordinary request and reply on both the original and replacement sockets.
 
