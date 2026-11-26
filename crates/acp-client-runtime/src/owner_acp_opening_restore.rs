@@ -138,6 +138,7 @@ impl OwnerOpenings {
                         .await
                         .is_err()
                     {
+                        let _released = restored.advance(RestoreMilestone::ReplayRejected).await?;
                         return Ok(None);
                     }
                     if !restored.advance(RestoreMilestone::ReplayAdmitted).await? {

@@ -19,6 +19,7 @@ pub enum OpeningPausePoint {
     WriterStopDelivered,
     BeforeSetterTake,
     AfterSetterTake,
+    ReaderStoppedDelivered,
 }
 
 pub struct OpeningPause {

@@ -75,7 +75,7 @@ enum OpeningState {
     },
     RouteLost {
         run: RunResources,
-        close: Option<CloseAttempt>,
+        receipt: LostReceipt,
     },
     StoppedAwaitingReply(StoppedReceipt),
 }
@@ -136,6 +136,7 @@ pub(super) enum RestoreMilestone {
     Loaded(Box<HeldRestore>),
     Resumed(Box<HeldRestore>),
     ReplayAdmitted,
+    ReplayRejected,
     Failed,
     WorkerExited,
 }
@@ -165,11 +166,28 @@ impl RestoreMilestone {
             Self::Loaded(_) => Edge::RestoreLoadReply,
             Self::Resumed(_) => Edge::RestoreResumeReply,
             Self::ReplayAdmitted => Edge::ReplayAdmitted,
+            Self::ReplayRejected => Edge::ReplayRejected,
             Self::Failed => Edge::OpenFailed,
             Self::WorkerExited => Edge::WorkerExited,
         }
     }
 }
+#[derive(Clone, Copy)]
+enum LostReceipt {
+    None,
+    Open,
+    Close(CloseAttempt),
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(super) enum ReaderEnd {
+    Retired,
+    Finished,
+    Failed,
+    IngressClosed,
+    HandoffClosed,
+}
+
 pub(super) enum StoppedReceipt {
     OpenCreate(CancellationToken),
     OpenRestore(RunResources),
@@ -178,6 +196,14 @@ pub(super) enum StoppedReceipt {
 }
 
 impl OpeningState {
+    fn reader_alive(&self) -> bool {
+        match self {
+            Self::Active(_) | Self::ClosingLive { .. } | Self::Readmitting { .. } => true,
+            Self::OfferingClose { origin, .. } => matches!(**origin, Self::Active(_)),
+            _ => false,
+        }
+    }
+
     fn phase(&self) -> OpeningPhase {
         match self {
             Self::OfferingCreate { .. } => OpeningPhase::QueuedCreate,
@@ -277,6 +303,7 @@ pub(super) enum Command {
     },
     ActivationFailed,
     ReaderAccepted,
+    ReaderStopped(ReaderEnd),
     RestoreProgress(RestoreMilestone, Option<oneshot::Sender<bool>>),
     CloseAsked(RunAttempt<CloseAttempt>),
     CloseOffered(RunAttempt<CloseAttempt>, bool),
@@ -324,6 +351,10 @@ pub(super) enum Effect {
         release: Option<Release>,
     },
     Release(Release),
+    ReaderEnded {
+        release: Release,
+        report_loss: bool,
+    },
 }
 
 pub(super) struct StepFault {
@@ -530,6 +561,7 @@ impl OpeningRow {
         } = self;
         let seal_offer = match &command {
             Command::WriterStopped => true,
+            Command::ReaderStopped(_) => state.reader_alive(),
             Command::RouteRemoved(route) => {
                 state.run().is_some_and(|run| run.route.is_same_as(route))
             }
@@ -581,7 +613,8 @@ impl Effect {
                 next.fence();
             }
             Self::Fault(fault) => fault.fence(),
-            Self::Release(release)
+            Self::ReaderEnded { release, .. }
+            | Self::Release(release)
             | Self::ResolveRestore {
                 release: Some(release),
                 ..
@@ -604,7 +637,7 @@ impl Effect {
                 false
             }
             Self::None | Self::Rollback(None) => true,
-            Self::Release(release) => {
+            Self::ReaderEnded { release, .. } | Self::Release(release) => {
                 release.run(wire);
                 true
             }

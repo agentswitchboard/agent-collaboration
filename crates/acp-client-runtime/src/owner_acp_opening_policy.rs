@@ -71,6 +71,7 @@ tagged_enum!(OpeningEvent,
     RestoreLoadReply => "restore_load_reply",
     RestoreResumeReply => "restore_resume_reply",
     ReplayAdmitted => "replay_admitted",
+    ReplayRejected => "replay_rejected",
     OpenFailed => "open_failed",
     PutSettingBack => "put_setting_back",
     SetterReserved => "setter_reserved",
@@ -79,6 +80,7 @@ tagged_enum!(OpeningEvent,
     AcceptCreatedSettings => "accept_created_settings",
     Activate => "activate",
     ReaderAccepted => "reader_accepted",
+    ReaderStopped => "reader_stopped",
     ActivationFailed => "activation_failed",
     CloseAsked => "close_asked",
     CloseAcceptedRestore => "close_accepted_restore",
@@ -102,6 +104,7 @@ tagged_enum!(OpeningEvent,
     WorkerExited => "worker_exited",
     WriterStopped => "writer_stopped",
     WriterStoppedAfterOffer => "writer_stopped_after_offer",
+    WriterStoppedWithoutReceipt => "writer_stopped_without_receipt",
     ConnectionRetired => "connection_retired",
     WaitOpening => "wait_opening",
     WaitClose => "wait_close",
@@ -194,6 +197,7 @@ impl StateMachine for OpeningPolicy {
         AwaitingRestore + WorkerExited => RetiredAwaitingReply;
         AwaitingRestore + WaitOpening => AwaitingRestore;
         CapturingReplay + ReplayAdmitted => HeldRestore;
+        CapturingReplay + ReplayRejected => Terminal;
         CapturingReplay + OpenFailed => Terminal;
         CapturingReplay + CloseAsked => OfferingClose;
         CapturingReplay + Retire => Terminal;
@@ -209,6 +213,10 @@ impl StateMachine for OpeningPolicy {
         PreparedRestore + ActivationFailed => Terminal;
         PreparedRestore + CloseAsked => OfferingClose;
         PreparedRestore + Retire => Terminal;
+        Active + ReaderStopped => Terminal;
+        ClosingLive + ReaderStopped => RouteLost;
+        OfferingClose + ReaderStopped => RouteLost;
+        Readmitting + ReaderStopped => RouteLost;
         Active + KeepActive => Active;
         StartingReader + ReaderAccepted => Active;
         StartingReader + ActivationFailed => Terminal;
@@ -303,6 +311,9 @@ impl StateMachine for OpeningPolicy {
         ClosingLive + WriterStopped => StoppedAwaitingReply;
         CloseRefusedLive + WriterStopped => Terminal;
         RouteLost + WriterStopped => StoppedAwaitingReply;
+        RouteLost + WriterStoppedWithoutReceipt => Terminal;
+        RouteLost + OpenFailed => RouteLost;
+        RouteLost + WorkerExited => RouteLost;
         StoppedAwaitingReply + FinishOnStoppedWriter => Terminal;
         StoppedAwaitingReply + WriterAccepted => StoppedAwaitingReply;
         StoppedAwaitingReply + Retire => Terminal;

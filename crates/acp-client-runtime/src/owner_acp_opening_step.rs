@@ -1,9 +1,10 @@
 //! The transition selected by the ACP opening declaration.
 
 use super::{
-    Command, DeferredRestore, Edge, Effect, HeldCreate, HeldRestore, OpeningInstance, OpeningPhase,
-    OpeningPolicy, OpeningState, PendingSetter, ReaderHandoff, Release, RestoreMilestone,
-    RoutedRestore, SetterPlan, SetterWrite, StateMachine, StepFault, StoppedReceipt,
+    Command, DeferredRestore, Edge, Effect, HeldCreate, HeldRestore, LostReceipt, OpeningInstance,
+    OpeningPhase, OpeningPolicy, OpeningState, PendingSetter, ReaderEnd, ReaderHandoff, Release,
+    RestoreMilestone, RoutedRestore, SetterPlan, SetterWrite, StateMachine, StepFault,
+    StoppedReceipt,
 };
 use crate::{
     owner_opening_instance::OpeningOffer, owner_session_open::OwnerOpenedSession,
@@ -192,7 +193,13 @@ fn edge(state: &OpeningState, command: &Command, taken: bool) -> Option<Edge> {
         Command::Activate { .. } => Edge::Activate,
         Command::ActivationFailed => Edge::ActivationFailed,
         Command::ReaderAccepted => Edge::ReaderAccepted,
+        Command::ReaderStopped(_) if state.reader_alive() => Edge::ReaderStopped,
+        Command::ReaderStopped(_) => return None,
         Command::RestoreProgress(milestone, _) => match state {
+            State::RouteLost {
+                receipt: LostReceipt::None | LostReceipt::Close(_),
+                ..
+            } => return None,
             State::OfferingClose { deferred: None, .. } => Edge::DeferRestore,
             State::ClosingRestore { .. }
                 if matches!(
@@ -254,7 +261,7 @@ fn edge(state: &OpeningState, command: &Command, taken: bool) -> Option<Edge> {
                 State::ClosingRestore { attempt, .. }
                 | State::ClosingLive { attempt, .. }
                 | State::RouteLost {
-                    close: Some(attempt),
+                    receipt: LostReceipt::Close(attempt),
                     ..
                 }
                 | State::StoppedAwaitingReply(StoppedReceipt::Close(_, attempt)) => attempt,
@@ -291,6 +298,17 @@ fn edge(state: &OpeningState, command: &Command, taken: bool) -> Option<Edge> {
         }
         Command::Retire => Edge::Retire,
         Command::WriterStopped if taken => Edge::WriterStoppedAfterOffer,
+        Command::WriterStopped
+            if matches!(
+                state,
+                State::RouteLost {
+                    receipt: LostReceipt::None,
+                    ..
+                }
+            ) =>
+        {
+            Edge::WriterStoppedWithoutReceipt
+        }
         Command::WriterStopped => Edge::WriterStopped,
         Command::ConnectionRetired => Edge::ConnectionRetired,
         Command::RouteRemoved(route) => {
@@ -503,8 +521,29 @@ fn apply_edge(
             store(state, Effect::Discarded(Box::new(command)))
         }
         (
+            State::RouteLost {
+                run,
+                receipt: LostReceipt::Open,
+            },
+            command @ Command::RestoreProgress(
+                RestoreMilestone::Failed | RestoreMilestone::WorkerExited,
+                _,
+            ),
+        ) => store(
+            State::RouteLost {
+                run,
+                receipt: LostReceipt::None,
+            },
+            Effect::Discarded(Box::new(command)),
+        ),
+        (
             state,
-            Command::RestoreProgress(RestoreMilestone::Failed | RestoreMilestone::WorkerExited, _),
+            Command::RestoreProgress(
+                RestoreMilestone::Failed
+                | RestoreMilestone::WorkerExited
+                | RestoreMilestone::ReplayRejected,
+                _,
+            ),
         ) => finish(state, instance),
         (mut origin, Command::CloseAsked(close)) => {
             let Some(route) = origin.run().map(|run| run.route.clone()) else {
@@ -582,21 +621,35 @@ fn apply_edge(
             store(State::CloseRefusedLive { run, attempt }, Effect::None)
         }
         (state, Command::WriterStopped) => stop_writer(state, instance, edge),
-        (state, command @ Command::RouteRemoved(_)) => {
+        (state, command @ (Command::RouteRemoved(_) | Command::ReaderStopped(_))) => {
+            let report_loss = matches!(
+                command,
+                Command::ReaderStopped(ReaderEnd::Failed | ReaderEnd::HandoffClosed)
+            );
+            let reader = matches!(command, Command::ReaderStopped(_));
+            if reader && matches!(state, State::Active(_)) {
+                return Ok((
+                    None,
+                    Effect::ReaderEnded {
+                        release: Release::new(instance, state, true),
+                        report_loss,
+                    },
+                ));
+            }
             let Some(run) = state.run().cloned() else {
                 return Err((state, command));
             };
-            let close = match &state {
-                State::OfferingClose { attempt, .. } if taken => Some(*attempt),
-                State::ClosingRestore { attempt, .. } | State::ClosingLive { attempt, .. } => {
-                    Some(*attempt)
+            let receipt = lost_receipt(&state, taken);
+            let release = Release::new(instance, state, true);
+            let effect = if reader {
+                Effect::ReaderEnded {
+                    release,
+                    report_loss,
                 }
-                _ => None,
+            } else {
+                Effect::Release(release)
             };
-            store(
-                State::RouteLost { run, close },
-                Effect::Release(Release::new(instance, state, true)),
-            )
+            store(State::RouteLost { run, receipt }, effect)
         }
         (state, command @ Command::Configured(_)) if edge == Edge::FinishOnStoppedWriter => {
             let (next, effect) = finish(state, instance)?;
@@ -636,7 +689,7 @@ fn stop_writer(state: OpeningState, instance: &OpeningInstance, edge: Edge) -> S
         | State::ClosingLive { run, attempt }
         | State::RouteLost {
             run,
-            close: Some(attempt),
+            receipt: LostReceipt::Close(attempt),
         } => StoppedReceipt::Close(run.clone(), *attempt),
         State::OfferingClose {
             origin, attempt, ..
@@ -646,7 +699,10 @@ fn stop_writer(state: OpeningState, instance: &OpeningInstance, edge: Edge) -> S
             };
             StoppedReceipt::Close(run.clone(), *attempt)
         }
-        State::RouteLost { run, close: None } => StoppedReceipt::OpenRestore(run.clone()),
+        State::RouteLost {
+            run,
+            receipt: LostReceipt::Open,
+        } => StoppedReceipt::OpenRestore(run.clone()),
         _ => return finish(state, instance),
     };
     store(
@@ -678,5 +734,26 @@ fn withdraw_setters(setters: Vec<PendingSetter>, effect: Effect) -> Effect {
         effect
     } else {
         Effect::WithdrawSetters(setters, Box::new(effect))
+    }
+}
+
+fn lost_receipt(state: &OpeningState, taken: bool) -> LostReceipt {
+    use OpeningState as State;
+    match state {
+        State::OfferingRestore { .. } if taken => LostReceipt::Open,
+        State::AwaitingRestore(_) => LostReceipt::Open,
+        State::ClosingRestore { attempt, .. }
+        | State::ClosingLive { attempt, .. }
+        | State::OfferingClose { attempt, .. }
+            if taken || !matches!(state, State::OfferingClose { .. }) =>
+        {
+            LostReceipt::Close(*attempt)
+        }
+        State::OfferingClose {
+            origin,
+            deferred: None,
+            ..
+        } if matches!(**origin, State::AwaitingRestore(_)) => LostReceipt::Open,
+        _ => LostReceipt::None,
     }
 }

@@ -1,7 +1,7 @@
 //! Stage the exact reader, then authorize it only after its real handoff.
 
 use super::policy::activation_refusal;
-use super::row::ReaderHandoff;
+use super::row::{ReaderEnd, ReaderHandoff};
 use super::{
     Arc, Command, Effect, OpeningSlot, OwnerOpenings, RunRetirement, SessionLifecycleFact,
     SessionLifecyclePort, lock,
@@ -81,46 +81,82 @@ impl OwnerOpenings {
                 retired();
                 return Err(ActivationRefusal::ConnectionRetired);
             }
-            let accepted = attempts.apply(slot, &instance, Command::ReaderAccepted);
+            let route_lost = route.is_removed();
+            let command = if route_lost {
+                Command::RouteRemoved(route.clone())
+            } else {
+                Command::ReaderAccepted
+            };
+            let accepted = attempts.apply(slot, &instance, command);
             drop(attempts);
+            if route_lost {
+                if let Ok(effect) = accepted {
+                    effect.finish(&self.wire);
+                }
+                return Err(ActivationRefusal::RouteUnavailable);
+            }
             let effect = accepted.map_err(|rejected| activation_refusal(rejected.reason))?;
             if !effect.finish(&self.wire) {
                 return Err(ActivationRefusal::OperationNotOffered);
             }
         }
         if install_route {
-            self.watch_route(slot, instance, route.clone());
+            self.watch_route(slot, instance.clone(), route.clone());
         }
         let stopped = run.stopped;
         let route = run.route;
+        let attempts = Arc::clone(&self.attempts);
+        let wire = Arc::clone(&self.wire);
         self.tasks.spawn(async move {
             let read = async {
-                if let Some(view) = skills {
-                    tokio::select! {
-                        biased;
-                        () = stopped.cancelled() => return,
-                        _result = events.send(SessionLifecycleFact::SkillView { run: generation, view }) => {}
-                    }
+                if let Some(view) = skills
+                    && events
+                        .send(SessionLifecycleFact::SkillView {
+                            run: generation,
+                            view,
+                        })
+                        .await
+                        .is_err()
+                {
+                    return ReaderEnd::IngressClosed;
                 }
-                if stopped.is_cancelled() || route.is_removed() {
-                    return;
+                if route.is_removed() {
+                    return ReaderEnd::HandoffClosed;
                 }
-                let _reader_retired = start.send(());
+                if start.send(()).is_err() {
+                    return ReaderEnd::HandoffClosed;
+                }
                 if reader.await.is_err() {
-                    tokio::select! {
-                        biased;
-                        () = stopped.cancelled() => {}
-                        _result = events.send(SessionLifecycleFact::RunObservationFailed { run: generation }) => {}
-                    }
+                    ReaderEnd::Failed
+                } else {
+                    ReaderEnd::Finished
                 }
             };
-            tokio::pin!(read);
-            tokio::select! {
-                () = retired => {
-                    stopped.cancel();
-                    read.await;
+            let reason = tokio::select! {
+                biased;
+                () = stopped.cancelled() => return,
+                () = retired => ReaderEnd::Retired,
+                reason = read => reason,
+            };
+            let ended = lock(&attempts).apply(slot, &instance, Command::ReaderStopped(reason));
+            #[cfg(any(test, feature = "test-observation"))]
+            wire.at_opening_effect_for_test(
+                crate::owner_wire::OpeningPausePoint::ReaderStoppedDelivered,
+            );
+            if let Ok(effect) = ended {
+                let report = matches!(
+                    effect,
+                    Effect::ReaderEnded {
+                        report_loss: true,
+                        ..
+                    }
+                );
+                effect.finish(&wire);
+                if report {
+                    let _owner_gone = events
+                        .send(SessionLifecycleFact::RunObservationFailed { run: generation })
+                        .await;
                 }
-                () = &mut read => {}
             }
         });
         Ok(())

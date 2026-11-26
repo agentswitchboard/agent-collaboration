@@ -23,3 +23,47 @@ fn an_undeclared_outcome_removes_the_row_and_keeps_a_typed_fault() {
     assert_eq!(fault.declared, OpeningPhase::AwaitingCreate);
     assert_eq!(fault.actual, Some(OpeningPhase::ConfiguringCreate));
 }
+
+#[test]
+fn an_already_answered_gone_route_has_no_restore_receipt_to_await() {
+    use provider_session_machines::{
+        SessionGeneration,
+        session_owner::{ConnectionEpoch, OwnerAddress, OwnerIncarnation},
+    };
+    use uuid::Uuid;
+
+    let owner = OwnerAddress {
+        incarnation: OwnerIncarnation(Uuid::now_v7()),
+        connection_epoch: ConnectionEpoch(Uuid::now_v7()),
+    };
+    let run = super::super::RunResources::new(
+        owner,
+        SessionGeneration::from_number(1),
+        &CancellationToken::new(),
+    );
+    let route = run.route.clone();
+    let instance = OpeningInstance::default();
+    let Ok((Some(lost), Effect::Release(_))) = step(
+        OpeningState::Active(run),
+        Command::RouteRemoved(route),
+        &instance,
+        false,
+    ) else {
+        panic!("route loss must keep only the facts that are still owed");
+    };
+    assert!(matches!(
+        lost,
+        OpeningState::RouteLost {
+            receipt: LostReceipt::None,
+            ..
+        }
+    ));
+    let Ok((stored, Effect::Release(_))) = step(lost, Command::WriterStopped, &instance, false)
+    else {
+        panic!("writer loss must release an already answered opening");
+    };
+    assert!(
+        stored.is_none(),
+        "a disappeared active route must not invent a pending restore receipt"
+    );
+}
