@@ -5,7 +5,7 @@ use approval_request_protocol::{
     ApprovalRequestId,
 };
 use central_link_protocol::{
-    CorrelationId,
+    CorrelationId, LinkCallRefusal,
     person_link_rpc::{
         DecidePersonApproval, ListOrganizationWorkspaces, ListPersonApprovals,
         OrganizationWorkspace, PERSON_WORKSPACE_PAGE_LIMIT, PersonWorkspacePageLimit,
@@ -35,6 +35,9 @@ const CALL_BUDGET: Duration = Duration::from_secs(30);
 #[derive(Debug, Eq, PartialEq)]
 pub enum ApprovalDecisionOutcome {
     Reply(ApprovalDecideReply),
+    Refused {
+        reason: LinkCallRefusal,
+    },
     /// A submission may have reached Central. Retry with the same request, answer and operation ID.
     Unknown {
         operation_id: RequestId,
@@ -219,6 +222,9 @@ impl PersonLinkClient {
                 operation_id,
                 cause: PersonLinkError::Protocol,
             }),
+            Err(CallFailure::AfterWrite(PersonLinkError::CallRefused(reason))) => {
+                Ok(ApprovalDecisionOutcome::Refused { reason })
+            }
             Err(CallFailure::AfterWrite(cause)) => Ok(ApprovalDecisionOutcome::Unknown {
                 operation_id,
                 cause,

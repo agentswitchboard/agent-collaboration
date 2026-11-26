@@ -5,7 +5,7 @@ use central_person_link_client::{
     approvals::{
         ApprovalDecideReply, ApprovalDecisionOutcome, ApprovalInvalidReason, ApprovalListReply,
         ApprovalReadReply, ApprovalSummaryEnding, ApprovalSummaryState, DecidedBy, InvalidAnswer,
-        RequestId, RequestKind, RequestSummary, RequestView, SessionCallOperation,
+        LinkCallRefusal, RequestId, RequestKind, RequestSummary, RequestView, SessionCallOperation,
     },
 };
 use router_clock::RuntimeClock;
@@ -33,6 +33,8 @@ pub enum ApprovalExit {
     OperationConflict,
     #[error("Central approval outcome is unknown")]
     Unknown,
+    #[error("Central refused the approval request")]
+    Refused,
 }
 
 impl ApprovalExit {
@@ -45,6 +47,7 @@ impl ApprovalExit {
             Self::NotVisible => 6,
             Self::OperationConflict => 7,
             Self::Unknown => 8,
+            Self::Refused => 9,
         }
     }
 }
@@ -125,6 +128,18 @@ async fn decide(
             }
             Ok(decision_status(&reply))
         }
+        ApprovalDecisionOutcome::Refused { reason } => {
+            if arguments.output.json {
+                write_json(stdout, &DecisionReport::Refused { reason })?;
+            } else {
+                let reason = refusal_text(reason);
+                writeln!(
+                    stdout,
+                    "Central refused the request: {reason}. The decision was not applied."
+                )?;
+            }
+            Ok(ApprovalExit::Refused)
+        }
         ApprovalDecisionOutcome::Unknown {
             operation_id,
             cause,
@@ -133,7 +148,7 @@ async fn decide(
             if arguments.output.json {
                 write_json(
                     stdout,
-                    &UnknownDecision::Unknown {
+                    &DecisionReport::Unknown {
                         operation_id: &operation_id,
                         cause: &cause.to_string(),
                         retry_command: &retry_command,
@@ -170,12 +185,26 @@ fn mint_operation_id(clock: &dyn RuntimeClock) -> Result<RequestId, CentralComma
     rename_all = "camelCase",
     rename_all_fields = "camelCase"
 )]
-enum UnknownDecision<'a> {
+enum DecisionReport<'a> {
+    Refused {
+        reason: LinkCallRefusal,
+    },
     Unknown {
         operation_id: &'a RequestId,
         cause: &'a str,
         retry_command: &'a str,
     },
+}
+
+fn refusal_text(reason: LinkCallRefusal) -> String {
+    match reason {
+        LinkCallRefusal::UnknownCall => "unknown call".to_owned(),
+        LinkCallRefusal::WrongTarget => "wrong target".to_owned(),
+        LinkCallRefusal::NotPermitted => "not permitted".to_owned(),
+        LinkCallRefusal::AuthorityLapsed { cause } => format!("authority lapsed ({cause:?})"),
+        LinkCallRefusal::SessionProofNotAccepted => "session proof was not accepted".to_owned(),
+        LinkCallRefusal::CentralFault => "the call was rolled back or declined".to_owned(),
+    }
 }
 
 fn retry_command(arguments: &ApprovalDecisionArguments, operation_id: &RequestId) -> String {

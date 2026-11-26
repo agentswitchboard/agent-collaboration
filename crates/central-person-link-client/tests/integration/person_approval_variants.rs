@@ -5,6 +5,67 @@ use fleet_contracts::{DeviceLoginDecision, MachineTokenDecision, ProvisionOrgani
 use reqwest_websocket::RequestBuilderExt;
 
 #[tokio::test]
+async fn typed_refusal_keeps_the_waiting_request_and_operation_log_unchanged() {
+    let fixture = ApprovalFixture::with_person_claims(300, |person| {
+        person
+            .permissions
+            .retain(|grant| grant != "approval:decide");
+    })
+    .await;
+    let (target, mut holder) = fixture.holder().await;
+    let request = seed(
+        &mut holder,
+        &target,
+        held_start(&target.router_run, 1).unwrap(),
+    )
+    .await;
+    let operation_id = operation(&fixture);
+    let statement = "SELECT record_state, ended_at, ending_json, delivery_state FROM approval_requests WHERE request_id = ?1";
+    let args = vec![SqlValue::Text(request.request_id().to_string())];
+    let before = fixture.rows(statement, args.clone()).await;
+    assert_eq!(
+        before,
+        [vec![
+            SqlValue::Text("waiting".into()),
+            SqlValue::Null,
+            SqlValue::Null,
+            SqlValue::Null
+        ]]
+    );
+    assert!(fixture.operation_rows().await.is_empty());
+    let mut client = fixture.signin.client();
+
+    let outcome = client
+        .decide_approval(request.request_id().clone(), operation_id.clone(), allow())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        outcome,
+        ApprovalDecisionOutcome::Refused {
+            reason: central_link_protocol::LinkCallRefusal::NotPermitted
+        }
+    );
+    assert_eq!(fixture.rows(statement, args).await, before);
+    assert!(fixture.operation_rows().await.is_empty());
+    {
+        let evidence = fixture.signin.relay.evidence.lock().unwrap();
+        let [attempt] = evidence.approval_calls.as_slice() else {
+            panic!("expected exactly one decide attempt");
+        };
+        assert!(
+            matches!(&attempt.request, CentralCall::DecidePersonApproval(call)
+            if &call.body.request_id == request.request_id() && call.body.operation_id == operation_id)
+        );
+        assert!(evidence.closes.is_empty());
+    }
+    heartbeat(&mut holder).await.unwrap();
+    drop(client);
+    drop(holder);
+    fixture.close().await;
+}
+
+#[tokio::test]
 async fn expiry_before_apply_reconnects_before_the_first_commit() {
     let fixture = ApprovalFixture::with_first_snapshot(1).await;
     let (target, mut holder) = fixture.holder().await;

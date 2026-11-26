@@ -12,6 +12,13 @@ impl ApprovalFixture {
     }
 
     pub(super) async fn with_first_snapshot(first_snapshot_seconds: i64) -> Self {
+        Self::with_person_claims(first_snapshot_seconds, |_| {}).await
+    }
+
+    pub(super) async fn with_person_claims(
+        first_snapshot_seconds: i64,
+        configure: fn(&mut Person),
+    ) -> Self {
         let clock = Arc::new(ManualClock::new(
             chrono::DateTime::from_timestamp(INITIAL_SECONDS, 0).unwrap(),
         ));
@@ -30,6 +37,7 @@ impl ApprovalFixture {
             let mut person = Person::owner(ORGANIZATION, now).unwrap();
             person.revision = revision_for_upgrade.load(Ordering::SeqCst);
             person.second_factor_at = None;
+            configure(&mut person);
             let snapshot = if socket == 1 {
                 first_snapshot_seconds
             } else {

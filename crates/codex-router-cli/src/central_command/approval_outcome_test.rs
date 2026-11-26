@@ -1,6 +1,49 @@
 use super::*;
 
 #[tokio::test]
+async fn real_central_refusal_reports_the_reason_without_retry_guidance() {
+    let fixture = Fixture::with_person_claims(|person| {
+        person
+            .permissions
+            .retain(|grant| grant != "approval:decide");
+    })
+    .await;
+    let request = fixture.seed().await.held;
+    let operation = fixture.operation();
+    let mut client = fixture.signin.client();
+    let mut args = vec![
+        "decide",
+        request.as_str(),
+        "--allow",
+        "--operation",
+        operation.as_str(),
+    ];
+
+    let result = capture(&fixture, &mut client, &args).await;
+
+    assert_eq!(result.status.code(), 9);
+    assert_eq!(
+        result.text(),
+        "Central refused the request: not permitted. The decision was not applied.\n"
+    );
+    assert_eq!(
+        result.stderr,
+        format!("Operation ID {operation}\n").into_bytes()
+    );
+
+    args.push("--json");
+    let result = capture(&fixture, &mut client, &args).await;
+    assert_eq!(result.status.code(), 9);
+    assert_eq!(
+        result.json::<Value>(),
+        json!({"kind":"refused", "reason":{"kind":"notPermitted"}})
+    );
+
+    drop(client);
+    fixture.close().await;
+}
+
+#[tokio::test]
 async fn committed_decide_with_an_invalid_reply_reports_unknown_and_recovers() {
     let fixture = Fixture::start().await;
     let offers = fixture.seed().await;

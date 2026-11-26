@@ -6,6 +6,7 @@ pub use approval_request_protocol::{
     InvalidAnswer, OfferedOptionId, RequestKind, RequestSummary, RequestView, SessionCallDecision,
     SessionCallOperation,
 };
+pub use central_link_protocol::LinkCallRefusal;
 pub use workspace_ids::RequestId;
 
 pub use super::person_link_client::{ApprovalDecisionOutcome, ApprovalNotSent};
