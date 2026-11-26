@@ -4,7 +4,10 @@ use central_storage::AlarmPublicationFailure;
 use collaboration_central_conformance::{
     ConformanceResult,
     approval_link_scenarios::{read_request, receive_decision, receive_decision_before},
-    signin_fixtures::approval_routes::check_signed_holder_delivery_after_publication_failure,
+    signin_fixtures::{
+        approval_routes::check_socket_holder_delivery_after_publication_failure,
+        approval_socket::PersonApprovalEndpoint,
+    },
 };
 use collaboration_central_tokio::test_support::start_session_link_fixture;
 
@@ -16,7 +19,7 @@ use crate::workspace_link::fixture::{receive, send};
     reason = "The socket assertions name the failed observation."
 )]
 #[tokio::test]
-async fn tokio_releases_committed_person_ending_when_alarm_publication_fails()
+async fn tokio_socket_releases_committed_person_ending_when_alarm_publication_fails()
 -> ConformanceResult<()> {
     let fixture = NativeApprovalFixture {
         link: start_session_link_fixture(signed_clock()?).await?,
@@ -37,8 +40,15 @@ async fn tokio_releases_committed_person_ending_when_alarm_publication_fails()
             .no_proxy()
             .unix_socket(fixture.link.signin_socket.clone())
             .build()?;
-        check_signed_holder_delivery_after_publication_failure(
+        let public = fixture.link.client()?;
+        let origin = fixture.link.origin();
+        check_socket_holder_delivery_after_publication_failure(
             &fixture,
+            PersonApprovalEndpoint {
+                client: &public,
+                origin: &origin,
+                now_seconds: collaboration_central_conformance::signin_fixtures::NOW_SECONDS,
+            },
             async |path, body, headers| {
                 let mut request = client
                     .post(format!("http://central.local{path}"))

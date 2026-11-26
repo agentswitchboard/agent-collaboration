@@ -70,13 +70,6 @@ impl<Ed: Ed25519Verification, Es: Es256Verification, Keys: IssuerKeySource>
         self.0.verify_person_link(token, audience).await
     }
 
-    pub async fn verify_approval(
-        &self,
-        input: fleet_signin::ApprovalPersonVerificationInput<'_>,
-    ) -> Result<fleet_signin::VerifiedApprovalPersonRequest, PersonRequestRefusal> {
-        input.verify_with(&self.0).await
-    }
-
     pub async fn verify(
         &self,
         input: &PersonRequestInput,

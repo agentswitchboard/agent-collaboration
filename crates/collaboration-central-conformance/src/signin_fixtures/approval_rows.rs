@@ -1,4 +1,4 @@
-//! Seed the owning approval tables while exercising the real C3 HTTP entry.
+//! Seed the owning approval tables while exercising the real person socket.
 
 use approval_request_protocol::{
     ApprovalWindow, CancelReason, CentralTime, DeliverEndingRequest, Ending, HolderStopCause,

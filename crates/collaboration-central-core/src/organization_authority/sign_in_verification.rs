@@ -12,7 +12,6 @@ use fleet_signin::machine_token::{
 use fleet_signin::organization_authority::{
     FleetOrganizationStatementVerifier, StoredStatementFacts, VerifiedFleetOrganizationStatement,
 };
-use fleet_signin::{ApprovalPersonVerificationInput, VerifiedApprovalPersonRequest};
 use futures_util::future::BoxFuture;
 use std::sync::Arc;
 
@@ -32,14 +31,6 @@ pub trait SignInVerification: fleet_signin::StampVerification + 'static {
         &'a self,
         input: &'a PersonRequestInput,
     ) -> BoxFuture<'a, Result<VerifiedPersonRequest, PersonRequestRefusal>>;
-
-    fn verify_person_approval<'a>(
-        &'a self,
-        input: ApprovalPersonVerificationInput<'a>,
-    ) -> BoxFuture<'a, Result<VerifiedApprovalPersonRequest, PersonRequestRefusal>> {
-        let _ = input;
-        Box::pin(async { Err(PersonRequestRefusal::VerificationUnavailable) })
-    }
 
     fn verify_machine_token<'a>(
         &'a self,
@@ -157,13 +148,6 @@ where
         input: &'a PersonRequestInput,
     ) -> BoxFuture<'a, Result<VerifiedPersonRequest, PersonRequestRefusal>> {
         Box::pin(self.persons.verify(input))
-    }
-
-    fn verify_person_approval<'a>(
-        &'a self,
-        input: ApprovalPersonVerificationInput<'a>,
-    ) -> BoxFuture<'a, Result<VerifiedApprovalPersonRequest, PersonRequestRefusal>> {
-        Box::pin(self.persons.verify_approval(input))
     }
 
     fn verify_machine_token<'a>(

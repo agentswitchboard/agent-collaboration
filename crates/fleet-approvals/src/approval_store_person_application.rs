@@ -3,7 +3,7 @@ use central_engine_model::{EngineTime, IdSource};
 use fleet_runtime_ports::workspace_decode_error::corrupt;
 use fleet_signin::{
     AdmittedApprovalFacts, AdmittedApprovalPersonOperation, RetainedDecisionRequest,
-    approval_person_wire::{
+    approval_person_commands::{
         ApprovalDecideReply, ApprovalDecideRequest, ApprovalListReply, ApprovalListRequest,
         ApprovalReadReply, ApprovalReadRequest,
     },
@@ -34,7 +34,7 @@ enum PersonApprovalAction<'loan> {
     Retry(AdmittedApprovalFacts<'loan, RetainedDecisionRequest>),
 }
 
-/// A signed retry without permission consumes its proof only if a retained result matched.
+/// A decision retry without permission can recover only an exact retained result.
 pub async fn apply_person_command<Transaction: ApprovalPersonStoreTransaction>(
     command: AdmittedApprovalPersonOperation<'_, Transaction>,
     commit: &ApprovalCommitScope,
@@ -68,7 +68,7 @@ pub async fn apply_person_command<Transaction: ApprovalPersonStoreTransaction>(
     let retained_at = EngineTime::from_timestamp_millis(sampled.unix_millis())
         .ok_or_else(|| corrupt("approval_store.applying_time"))?;
     let mut store = ApprovalApplyingStore::new(commit, transaction, &(), &time, row_ids);
-    let (reply, address, reservation) = match action {
+    let (reply, address) = match action {
         PersonApprovalAction::List(admitted) => {
             let request = admitted.request();
             let reply = store
@@ -77,7 +77,6 @@ pub async fn apply_person_command<Transaction: ApprovalPersonStoreTransaction>(
             (
                 PersonApprovalStoreReply::List(reply),
                 reply_address(admitted.identity()),
-                admitted.into_reservation(),
             )
         }
         PersonApprovalAction::Read(admitted) => {
@@ -87,7 +86,6 @@ pub async fn apply_person_command<Transaction: ApprovalPersonStoreTransaction>(
             (
                 PersonApprovalStoreReply::Read(reply),
                 reply_address(admitted.identity()),
-                admitted.into_reservation(),
             )
         }
         PersonApprovalAction::Decide(admitted) => {
@@ -97,7 +95,6 @@ pub async fn apply_person_command<Transaction: ApprovalPersonStoreTransaction>(
             (
                 PersonApprovalStoreReply::Decide(reply),
                 reply_address(admitted.identity()),
-                admitted.into_reservation(),
             )
         }
         PersonApprovalAction::Retry(admitted) => {
@@ -110,13 +107,9 @@ pub async fn apply_person_command<Transaction: ApprovalPersonStoreTransaction>(
             (
                 PersonApprovalStoreReply::Decide(reply),
                 reply_address(admitted.identity()),
-                admitted.into_reservation(),
             )
         }
     };
-    if let Some(reservation) = reservation {
-        store.execute_guarded_write(reservation).await?;
-    }
     let settled_approval = !store.holder_offers.is_empty();
     let effects = store.finish_effects();
     if settled_approval {

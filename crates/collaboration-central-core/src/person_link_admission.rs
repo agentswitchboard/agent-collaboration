@@ -433,8 +433,7 @@ fn approval_reply(
                 },
             );
         }
-        PersonApprovalAnswer::Unauthenticated
-        | PersonApprovalAnswer::Refused(
+        PersonApprovalAnswer::Refused(
             AdmissionRefusal::Expired | AdmissionRefusal::RefreshRequired,
         ) => {
             return PersonLinkReply::Reconnect;

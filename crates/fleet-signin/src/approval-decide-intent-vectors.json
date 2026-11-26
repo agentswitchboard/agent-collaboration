@@ -1,0 +1,77 @@
+[
+  {
+    "body": {
+      "organization": "019a3dce-2000-7000-8000-000000000001",
+      "requestId": "019a3dce-2000-7000-8000-000000000002",
+      "operationId": "019a3dce-2000-7000-8000-000000000003",
+      "answer": {
+        "kind": "unprovenCall",
+        "decision": "allow"
+      }
+    },
+    "canonical": "{\"operation\":\"ApprovalDecide\",\"operationId\":\"019a3dce-2000-7000-8000-000000000003\",\"organization\":\"019a3dce-2000-7000-8000-000000000001\",\"params\":{\"answer\":{\"decision\":\"allow\",\"kind\":\"unprovenCall\"}},\"target\":\"019a3dce-2000-7000-8000-000000000002\",\"v\":1}",
+    "digest": "atfRi4XxdNm341HTqovNGfTEZLqLJj9nSBUDhWznNmM"
+  },
+  {
+    "body": {
+      "answer": {
+        "answer": {
+          "fields": [
+            {
+              "fieldId": 1,
+              "value": {
+                "kind": "selectedOptions",
+                "selectedOptionIds": [
+                  2
+                ]
+              }
+            },
+            {
+              "fieldId": 2,
+              "value": {
+                "kind": "text",
+                "value": "Release café"
+              }
+            },
+            {
+              "fieldId": 3,
+              "value": {
+                "kind": "number",
+                "value": "42.25"
+              }
+            },
+            {
+              "fieldId": 4,
+              "value": {
+                "kind": "boolean",
+                "value": true
+              }
+            }
+          ],
+          "kind": "answered"
+        },
+        "kind": "question"
+      },
+      "operationId": "019f0000-0000-7000-8000-000000000064",
+      "organization": "019f0000-0000-7000-8000-00000000d201",
+      "requestId": "019f0000-0000-7000-8000-00000000000a"
+    },
+    "canonical": "{\"operation\":\"ApprovalDecide\",\"operationId\":\"019f0000-0000-7000-8000-000000000064\",\"organization\":\"019f0000-0000-7000-8000-00000000d201\",\"params\":{\"answer\":{\"answer\":{\"fields\":[{\"fieldId\":1,\"value\":{\"kind\":\"selectedOptions\",\"selectedOptionIds\":[2]}},{\"fieldId\":2,\"value\":{\"kind\":\"text\",\"value\":\"Release café\"}},{\"fieldId\":3,\"value\":{\"kind\":\"number\",\"value\":\"42.25\"}},{\"fieldId\":4,\"value\":{\"kind\":\"boolean\",\"value\":true}}],\"kind\":\"answered\"},\"kind\":\"question\"}},\"target\":\"019f0000-0000-7000-8000-00000000000a\",\"v\":1}",
+    "digest": "RrwbqwfHKgTBV9FCS7wjJWooTz1DQZ85EJlvFzDzJtE"
+  },
+  {
+    "body": {
+      "answer": {
+        "answer": {
+          "kind": "declined"
+        },
+        "kind": "question"
+      },
+      "operationId": "019f0000-0000-7000-8000-000000000064",
+      "organization": "019f0000-0000-7000-8000-00000000d201",
+      "requestId": "019f0000-0000-7000-8000-00000000000a"
+    },
+    "canonical": "{\"operation\":\"ApprovalDecide\",\"operationId\":\"019f0000-0000-7000-8000-000000000064\",\"organization\":\"019f0000-0000-7000-8000-00000000d201\",\"params\":{\"answer\":{\"answer\":{\"kind\":\"declined\"},\"kind\":\"question\"}},\"target\":\"019f0000-0000-7000-8000-00000000000a\",\"v\":1}",
+    "digest": "trpy2pkdBuh-xO6ZMYHPNl4CZ8q5AZJoDF2sfw8AnK4"
+  }
+]

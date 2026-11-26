@@ -28,8 +28,8 @@ use central_storage::{
     BatchOutcome, ReadOutcome, Statement, StatementBatch, StoreCall, StoreFailure, StoreReply,
 };
 use collaboration_central_core::{
-    MacCallResult, OrganizationAdminAnswer, OrganizationSignInPort, PersonApprovalAnswer,
-    SignInTrustSettings, TYPED_LINK_CALL_TIMEOUT, WorkspaceRuntime, finish_mac_call,
+    MacCallResult, OrganizationAdminAnswer, OrganizationSignInPort, SignInTrustSettings,
+    TYPED_LINK_CALL_TIMEOUT, WorkspaceRuntime, finish_mac_call,
     identity_contract::{AuthorizationRevision, AuthorizationRevisionAcknowledgement},
     person_request::PersonRequestInput,
 };
@@ -38,7 +38,6 @@ use fleet_identity_protocol::OrganizationId;
 use fleet_runtime::{ClockIds, FleetRuntime};
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
 use fleet_runtime_ports::{Clock, IdSource, SyncTime};
-use fleet_signin::ApprovalPersonVerificationInput;
 use router_clock::RuntimeClock;
 use std::{
     collections::BTreeMap,
@@ -532,17 +531,6 @@ impl OrganizationSignInPort for TokioWorkspaceHost {
             .admin(organization, input)
             .await
     }
-    async fn person_approval(
-        &self,
-        organization: OrganizationId,
-        input: ApprovalPersonVerificationInput<'_>,
-    ) -> Result<PersonApprovalAnswer, StoreFailure> {
-        self.central(&organization)
-            .await?
-            .person_approval(organization, input)
-            .await
-    }
-
     async fn device_login(
         &self,
         request: &fleet_contracts::DecideDeviceLogin,

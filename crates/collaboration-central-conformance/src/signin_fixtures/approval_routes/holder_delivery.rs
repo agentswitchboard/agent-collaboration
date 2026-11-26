@@ -5,8 +5,8 @@ use central_storage::{SqlValue, Statement};
 use serde_json::{Value, json};
 
 use super::{
-    AnswerClass, NOW_SECONDS, OWNER, OWNER_SUBJECT, Person, REVISIONS, decide_in_organization,
-    expect, expect_status, fresh_request_id, saved,
+    AnswerClass, NOW_SECONDS, OWNER, OWNER_SUBJECT, Person, REVISIONS, expect, expect_http_status,
+    saved,
 };
 use crate::{
     ConformanceResult,
@@ -16,6 +16,7 @@ use crate::{
     signin_fixtures::{
         POLICY,
         approval_socket::{self, PersonApprovalEndpoint, SocketApprovalReply},
+        fresh_request_id,
     },
 };
 
@@ -61,7 +62,7 @@ pub async fn check_socket_holder_delivery(
         .call(approval_socket::DECIDE, organization, &body)
         .await?
         .answer()?;
-    expect((200, first.clone()), 200, saved(&answer))?;
+    expect(SocketApprovalReply::Answer(first.clone()), saved(&answer))?;
     receive_decision(
         fixture,
         &mut holder,
@@ -78,13 +79,21 @@ pub async fn check_socket_holder_delivery(
     heartbeat(&mut holder).await
 }
 
-pub async fn check_signed_holder_delivery_after_publication_failure(
+pub async fn check_socket_holder_delivery_after_publication_failure(
     fixture: &impl ApprovalLinkFixture,
+    endpoint: PersonApprovalEndpoint<'_>,
     post: impl AsyncFn(&str, &Value, Vec<(&'static str, String)>) -> ConformanceResult<(u16, Vec<u8>)>,
     arm_publication_failure: impl AsyncFnOnce() -> ConformanceResult<()>,
     observe_ending: impl EndingObserver,
 ) -> ConformanceResult<()> {
-    check_publication_failure(fixture, post, arm_publication_failure, observe_ending).await
+    check_publication_failure(
+        fixture,
+        endpoint,
+        post,
+        arm_publication_failure,
+        observe_ending,
+    )
+    .await
 }
 
 type HolderTarget = central_link_protocol::approval_rpc::ApprovalHolderTarget;
@@ -111,6 +120,7 @@ impl<Observer> EndingObserver for Observer where
 
 async fn check_publication_failure(
     fixture: &impl ApprovalLinkFixture,
+    endpoint: PersonApprovalEndpoint<'_>,
     post: impl AsyncFn(&str, &Value, Vec<(&'static str, String)>) -> ConformanceResult<(u16, Vec<u8>)>,
     before_decide: impl AsyncFnOnce() -> ConformanceResult<()>,
     observe_ending: impl EndingObserver,
@@ -122,22 +132,18 @@ async fn check_publication_failure(
 
     let answer = AnswerClass::HeldStartAllow.answer();
     let operation = fresh_request_id(NOW_SECONDS)?;
-    let signed = decide_in_organization(
-        organization,
-        request.request_id().as_str(),
-        &operation,
-        &answer,
-    );
+    let body = json!({"requestId":request.request_id(),"operationId":operation,"answer":answer});
+    let mut person_socket = endpoint.connect(&owner).await?;
     before_decide().await?;
-
-    let headers = signed.headers(&owner, &fresh_request_id(NOW_SECONDS)?, &|_| {})?;
-    let first_reply = post(signed.path, &signed.body, headers).await?;
-    if !expect_status(first_reply, 503)?.is_empty() {
-        return Err("a failed publication must return an empty 503".into());
-    }
+    assert_eq!(
+        person_socket
+            .call(approval_socket::DECIDE, organization, &body)
+            .await?,
+        SocketApprovalReply::Closed { code: 1011 },
+    );
 
     // The first call must have released the ending. Do not retry to prompt delivery.
-    observe_ending(&mut socket, target, &request, person_ending()?).await?;
+    observe_ending(&mut socket, target.clone(), &request, person_ending()?).await?;
 
     let answer_query = Statement {
         sql: "SELECT answer FROM runtime_request_log WHERE request_id = ?1",
@@ -150,12 +156,15 @@ async fn check_publication_failure(
     let [SqlValue::Text(answer_bytes)] = row.as_slice() else {
         return Err("the retained answer is not stored as text".into());
     };
-    let headers = signed.headers(&owner, &fresh_request_id(NOW_SECONDS)?, &|_| {})?;
-    let replay = post(signed.path, &signed.body, headers).await?;
-    if replay.1.as_slice() != answer_bytes.as_bytes() {
-        return Err("a fresh proof must return exactly the committed response bytes".into());
+    let mut retry_socket = endpoint.connect(&owner).await?;
+    let replay = retry_socket
+        .call(approval_socket::DECIDE, organization, &body)
+        .await?
+        .answer()?;
+    if replay.as_slice() != answer_bytes.as_bytes() {
+        return Err("a fresh socket must return exactly the committed response bytes".into());
     }
-    expect(replay, 200, saved(&answer))?;
+    expect(SocketApprovalReply::Answer(replay), saved(&answer))?;
     if fixture.read(answer_query).await?.rows != retained.rows {
         return Err("the exact replay changed the retained result".into());
     }
@@ -183,7 +192,7 @@ async fn publish_floors(
             "subjectId": OWNER_SUBJECT, "revision": 4, "state": "active",
         }),
     ] {
-        expect_status(post(REVISIONS, &floor, Vec::new()).await?, 200)?;
+        expect_http_status(post(REVISIONS, &floor, Vec::new()).await?, 200)?;
     }
     Ok(())
 }
