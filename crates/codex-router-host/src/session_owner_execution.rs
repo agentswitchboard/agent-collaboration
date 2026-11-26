@@ -1,5 +1,7 @@
 //! Execute the effects of one adopted session owner.
 
+#[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
+use crate::session_owner_work_observation::{WorkObservationKind, WorkObservationSink};
 use crate::{
     session_owner_calls::{InputAcceptance, SessionOwnerCalls},
     session_owner_lifecycle_reports::{SessionHarnessBinding, SessionOwnerLifecycleReports},
@@ -8,10 +10,6 @@ use crate::{
 };
 use acp_client_runtime::session_owner_task::{
     OwnerCallerWakes, OwnerCompletionPort, OwnerTaskError, SessionOwnerPorts,
-};
-#[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
-use acp_client_runtime::work_call_observation::{
-    WorkWitnessEvent, WorkWitnessKind, record_host_work,
 };
 use collaboration_protocol::{ProviderIdentity, SessionRef};
 use lifecycle::lifecycle_settings;
@@ -52,6 +50,8 @@ pub struct SessionOwnerExecution {
     routes: BTreeMap<SessionGeneration, OwnerRun>,
     created: Option<CreateAttempt>,
     work_roots: crate::provider_work_roots::ProviderWorkRoots,
+    #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
+    work_observer: Option<Arc<dyn WorkObservationSink>>,
     #[cfg(any(test, feature = "test-support"))]
     preparation_fixture: Arc<crate::session_owner_preparation_fixture::PreparationFixture>,
 }
@@ -95,9 +95,20 @@ impl SessionOwnerExecution {
             work_roots,
             routes: BTreeMap::new(),
             created: None,
+            #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
+            work_observer: None,
             #[cfg(any(test, feature = "test-support"))]
             preparation_fixture: Arc::default(),
         }
+    }
+
+    #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
+    pub(crate) fn with_work_observer(
+        mut self,
+        observer: Option<Arc<dyn WorkObservationSink>>,
+    ) -> Self {
+        self.work_observer = observer;
+        self
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -178,9 +189,9 @@ impl SessionOwnerExecution {
         };
         #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
         let witness_kind = if notice.is_some() {
-            Some(WorkWitnessKind::ManagedNotice)
+            Some(WorkObservationKind::ManagedNotice)
         } else if matches!(&work, AuthorizedWork::Prompt(_)) {
-            Some(WorkWitnessKind::Prompt)
+            Some(WorkObservationKind::Prompt)
         } else {
             None
         };
@@ -263,8 +274,8 @@ impl SessionOwnerExecution {
             )));
         }
         #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
-        if let Some(work_kind) = witness_kind {
-            record_host_work(&authorization, WorkWitnessEvent::Offered { work_kind });
+        if let (Some(work_kind), Some(observer)) = (witness_kind, &self.work_observer) {
+            observer.offered(&authorization, work_kind);
         }
         let handed_over = if let Some(notice) = notice {
             notice.take(&authorization, self.binding.as_ref())
@@ -277,10 +288,10 @@ impl SessionOwnerExecution {
                 .ok()
         };
         #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
-        if let Some(work_kind) = witness_kind
+        if let (Some(work_kind), Some(observer)) = (witness_kind, &self.work_observer)
             && matches!(&handed_over, Some(DispatchResult::Taken(_)))
         {
-            record_host_work(&authorization, WorkWitnessEvent::NewlyTaken { work_kind });
+            observer.newly_taken(&authorization, work_kind);
         }
         Ok(handed_over.map(OwnerEvent::Dispatch))
     }

@@ -219,7 +219,7 @@ impl ExternalProviderRuntime {
                         Box::new(wire.hold_writer_capacity_for_test())
                     }))
                 };
-                let door = Arc::new(crate::session_owner_door::SessionOwnerDoor::new(
+                let door = crate::session_owner_door::SessionOwnerDoor::new(
                     #[cfg(any(test, feature = "test-support"))]
                     hold_writer_capacity,
                     move |tasks| {
@@ -239,7 +239,12 @@ impl ExternalProviderRuntime {
                     retired,
                     #[cfg(any(test, feature = "test-support"))]
                     self.preparation_fixture.clone(),
-                ));
+                );
+                #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
+                let door = door.with_work_observer(
+                    acp_client_runtime::work_call_observation::host_work_observation_sink(),
+                );
+                let door = Arc::new(door);
                 self.owner_ingress.attach(&door);
                 door
             })

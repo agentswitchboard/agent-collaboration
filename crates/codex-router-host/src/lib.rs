@@ -50,6 +50,12 @@ pub mod session_owner_registry;
 #[cfg(test)]
 mod session_owner_scripted_harness_test;
 pub mod session_owner_storage;
+#[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
+mod session_owner_work_observation {
+    pub(crate) use acp_client_runtime::work_call_observation::{
+        WorkObservationKind, WorkObservationSink,
+    };
+}
 pub mod session_store_lane;
 pub use provider_queue_operation_registry::{ProviderQueueCancellationError, ProviderQueuedInput};
 pub use provider_session_command_port::HostSessionCommandPort;

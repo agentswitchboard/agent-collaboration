@@ -1,5 +1,7 @@
 //! Start and address a session-owner task through the Host registry.
 
+#[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
+use crate::session_owner_work_observation::WorkObservationSink;
 use crate::{
     session_owner_calls::{
         CancelReceipt, CancelTarget, InputAcceptance, OwnedSettlement, SessionOwnerCalls,
@@ -57,6 +59,8 @@ pub struct SessionOwnerDoor {
     #[cfg(any(test, feature = "test-support"))]
     hold_writer_capacity: Option<Arc<HoldProviderWriterCapacity>>,
     provider: Arc<SessionHarnessProvider>,
+    #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
+    work_observer: Option<Arc<dyn WorkObservationSink>>,
     connection: ConnectionEpoch,
     retired: CancellationToken,
     shutdown: CancellationToken,
@@ -119,6 +123,8 @@ impl SessionOwnerDoor {
             #[cfg(any(test, feature = "test-support"))]
             hold_writer_capacity,
             provider,
+            #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
+            work_observer: None,
             connection: ConnectionEpoch(Uuid::now_v7()),
             retired,
             shutdown: CancellationToken::new(),
@@ -128,6 +134,12 @@ impl SessionOwnerDoor {
             #[cfg(any(test, feature = "test-support"))]
             preparation_fixture,
         }
+    }
+
+    #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
+    pub(crate) fn with_work_observer(mut self, observer: Arc<dyn WorkObservationSink>) -> Self {
+        self.work_observer = Some(observer);
+        self
     }
 
     pub(crate) fn install_binding_permit(
@@ -255,6 +267,8 @@ impl SessionOwnerDoor {
         );
         #[cfg(any(test, feature = "test-support"))]
         let ports = ports.with_preparation_fixture(self.preparation_fixture.clone());
+        #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
+        let ports = ports.with_work_observer(self.work_observer.clone());
         let mut snapshots = registered_owner.handle.snapshots();
         let mut previous = snapshots.borrow_and_update().clone();
         let observer = Arc::clone(&self.snapshot_observer);
