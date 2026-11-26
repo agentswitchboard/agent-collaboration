@@ -160,23 +160,6 @@ impl RecipientSessionDirectory for HeldDirectory {
     }
 }
 
-#[expect(
-    clippy::panic,
-    reason = "The fixture names the observation that made no progress."
-)]
-async fn custody_turns_to_complete<Output>(
-    operation: impl Future<Output = Output>,
-    observation: &str,
-) -> Output {
-    tokio::select! {
-        biased;
-        output = operation => output,
-        () = async { for _ in 0..50_000 { tokio::task::yield_now().await; } } => {
-            panic!("recipient lookup blocked {observation}");
-        }
-    }
-}
-
 #[derive(Default)]
 struct RetryDirectory {
     calls: AtomicUsize,
@@ -252,19 +235,15 @@ async fn an_offline_intake_retry_does_not_delay_receipts_on_a_backwards_welcome(
     );
     let (events, mut observations) = mpsc::unbounded_channel();
     let (_calls, group) = custody_task(custody, Arc::new(RecordEvents(events)));
-    custody_turns_to_complete(
-        clock.not_due_check_now(ClockInstant::ZERO.after(Duration::from_secs(20))),
-        "the local intake retry",
-    )
-    .await;
+    clock
+        .not_due_check_now(ClockInstant::ZERO.after(Duration::from_secs(20)))
+        .await;
     clock.advance(Duration::from_secs(20)).unwrap();
     drop(
-        custody_turns_to_complete(
-            commits.wait_for(|count| *count == 2),
-            "the offline offer commit",
-        )
-        .await
-        .unwrap(),
+        commits
+            .wait_for(|count| *count == 2)
+            .await
+            .expect("custody stopped before committing the offline offer"),
     );
     assert_eq!(directory.calls.load(Ordering::SeqCst), 2);
     assert!(observations.try_recv().is_err());
@@ -273,13 +252,12 @@ async fn an_offline_intake_retry_does_not_delay_receipts_on_a_backwards_welcome(
     replacement.clock_anchor.central_time =
         Timestamp::from_timestamp_millis(LOCAL_MARK_MS - 1_800_000).unwrap();
     lane.set_connected(Some(replacement));
-    let outcome = custody_turns_to_complete(
-        observations.recv(),
-        "receipt progress on the current Central anchor",
-    )
-    .await;
+    let outcome = observations
+        .recv()
+        .await
+        .expect("custody stopped before reporting the receipts");
     assert!(
-        matches!(outcome, Some(CustodyTaskEvent::Receipt(ReceiptFrameOutcome::Confirmed { results }))
+        matches!(outcome, CustodyTaskEvent::Receipt(ReceiptFrameOutcome::Confirmed { results })
         if results == [ReceiptResult::Recorded, ReceiptResult::Recorded])
     );
     let mut reopened = InboxStore::new(MachineLocalStore::open(&path).await.unwrap());
@@ -354,36 +332,30 @@ async fn a_held_directory_does_not_block_status_deadlines_or_shutdown() {
     lane.push_event(offer);
     let (events, mut observations) = mpsc::unbounded_channel();
     let (calls, group) = custody_task(custody, Arc::new(RecordEvents(events)));
-    custody_turns_to_complete(directory.entered.notified(), "directory entry").await;
-    assert!(
-        custody_turns_to_complete(calls.waiting_for_session(session), "the waiting view")
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    directory.entered.notified().await;
+    assert!(calls.waiting_for_session(session).await.unwrap().is_empty());
     let query = RequestStatusQuery {
         request_id: item.request.clone(),
         scope: RequestScope::Workspace("019f0000-0000-7000-8000-000000000021".parse().unwrap()),
     };
     assert!(matches!(
-        custody_turns_to_complete(calls.request_status(item.caller, query), "sender status").await,
+        calls.request_status(item.caller, query).await,
         CustodyRequestStatus::InOutbox { .. }
     ));
     let due = ClockInstant::ZERO.after(Duration::from_secs(5));
-    custody_turns_to_complete(clock.not_due_check_now(due), "deadline registration").await;
+    clock.not_due_check_now(due).await;
     clock.advance(Duration::from_secs(5)).unwrap();
-    let ending = custody_turns_to_complete(observations.recv(), "the original outbox deadline")
+    let ending = observations
+        .recv()
         .await
-        .unwrap();
+        .expect("custody stopped before reporting the original outbox deadline");
     assert!(matches!(ending, CustodyTaskEvent::Flush(report)
         if matches!(report.ended.as_slice(), [ended] if ended.request_id == item.request
             && ended.reason == OutboxCancellation::NotSentWithin15Minutes)));
     assert!(lane.batch_commands().is_empty());
     group.request_stop();
-    custody_turns_to_complete(group.join(), "worker shutdown")
-        .await
-        .unwrap();
-    custody_turns_to_complete(directory.cancelled.notified(), "lookup cancellation").await;
+    group.join().await.unwrap();
+    directory.cancelled.notified().await;
     let mut reopened = InboxStore::new(MachineLocalStore::open(&path).await.unwrap());
     let interrupted = "019f0000-0000-7000-8000-000000000b23".parse().unwrap();
     assert!(
@@ -434,25 +406,18 @@ async fn an_unanswered_lookup_defers_at_its_injected_deadline() {
         sender: ResolvedSender::Central {},
     });
     let observing = tokio::spawn(async move { custody.observe_next_event().await });
-    custody_turns_to_complete(directory.entered.notified(), "directory entry").await;
+    directory.entered.notified().await;
     clock.advance(Duration::from_secs(29)).unwrap();
     assert!(!observing.is_finished());
     clock.advance(Duration::from_secs(1)).unwrap();
     assert_eq!(
-        custody_turns_to_complete(observing, "its injected timeout")
-            .await
-            .unwrap()
-            .unwrap(),
+        observing.await.unwrap().unwrap(),
         CustodyLinkObservation::Delivery {
             connection: admission.connection,
             result: InboxOfferResult::LookupDeferred
         }
     );
-    custody_turns_to_complete(
-        directory.cancelled.notified(),
-        "timed-out lookup cancellation",
-    )
-    .await;
+    directory.cancelled.notified().await;
     let mut reopened = InboxStore::new(MachineLocalStore::open(&path).await.unwrap());
     assert!(
         reopened
@@ -546,12 +511,10 @@ async fn a_full_offer_queue_is_saved_while_the_senders_status_reply_is_outstandi
     }
 
     drop(
-        custody_turns_to_complete(
-            commits.wait_for(|count| *count == 2),
-            "the two durable offers",
-        )
-        .await
-        .unwrap(),
+        commits
+            .wait_for(|count| *count == 2)
+            .await
+            .expect("custody stopped before committing both offers"),
     );
     let saved = calls.waiting_for_session(session).await.unwrap();
     assert_eq!(

@@ -1,15 +1,18 @@
 use central_link_protocol::{RequestScope, RequestStatusQuery};
 use router_clock::ClockInstant;
-use std::{future::Future, path::Path, process::Command, sync::Arc, time::Duration};
+use std::{path::Path, process::Command, sync::Arc, time::Duration};
 use switchboard_machine_core_store::{
     InboxDecision, InboxOfferExpiry, InboxRefusalReason, InboxStore, MachineLocalStore,
     OutboxAccepted, OutboxStorage, OutboxWriteOutcome,
 };
 use switchboard_message_custody::{
+    custody_link::CustodyLink,
     custody_operator::CustodyOperatorEvent,
     custody_status::CustodyRequestStatus,
     custody_submission::{Submission, SubmissionPayload},
     custody_task::{CustodyTaskEvent, custody_task},
+    outbox_work::OutboxWork,
+    recipient_inbox::RecipientInbox,
 };
 use tokio::sync::mpsc;
 use workspace_model::{
@@ -19,9 +22,10 @@ use workspace_model::{
 
 use super::{
     batch_limits::limits_fixture,
+    batch_replay::{KnownRecipient, NoFlushJitter, ScriptedBatchLane, new_admission},
     custody_task::ObserveTask,
     inbox_custody::recipient_session,
-    outbox_timing::{open_outbox, thread_post},
+    outbox_timing::{manual_clock, open_outbox, thread_post},
 };
 
 const NOW_MS: i64 = 1_763_380_780_000;
@@ -45,30 +49,19 @@ fn mutate_fixture_row(database: &Path, sql: &str) {
     );
 }
 
-#[expect(
-    clippy::panic,
-    reason = "The fixture fails at the missing custody progress rather than hanging."
-)]
-async fn maintenance_progress<Output>(
-    operation: impl Future<Output = Output>,
-    expected: &str,
-) -> Output {
-    tokio::select! {
-        biased;
-        output = operation => output,
-        () = async { for _ in 0..50_000 { tokio::task::yield_now().await; } } => {
-            panic!("custody did not reach {expected}");
-        }
-    }
-}
-
 #[tokio::test]
 async fn offline_inbox_retention_prunes_only_healthy_confirmed_rows() {
-    let (root, custody, lane, clock) = limits_fixture().await;
-    lane.set_connected(None);
+    let root = tempfile::tempdir().unwrap();
     let database = root.path().join("machine_local.sqlite");
-    let mut store = InboxStore::new(MachineLocalStore::open(&database).await.unwrap());
+    let clock = manual_clock(NOW_MS);
     let session = recipient_session();
+    let lane = Arc::new(ScriptedBatchLane::new(
+        new_admission(session.machine_id.clone(), clock.clone()),
+        clock.clone(),
+        Default::default(),
+    ));
+    lane.set_connected(None);
+    let mut store = InboxStore::new(MachineLocalStore::open(&database).await.unwrap());
     let arrived_ms = NOW_MS - RETENTION_MS + 100;
     let make_record = |id: &str| {
         MessageRecord::queued_central(
@@ -115,19 +108,31 @@ async fn offline_inbox_retention_prunes_only_healthy_confirmed_rows() {
         ),
     );
 
+    let owned_inbox = MachineLocalStore::open(&database).await.unwrap();
+    let mut inbox_commits = owned_inbox.subscribe_commits();
+    let custody = CustodyLink::new(
+        lane.clone(),
+        clock.clone(),
+        Arc::new(NoFlushJitter),
+        OutboxWork::new(Box::new(open_outbox(&database).await), clock.clone()),
+        RecipientInbox::new(
+            InboxStore::new(owned_inbox),
+            session.machine_id.clone(),
+            Arc::new(KnownRecipient),
+            clock.clone(),
+        ),
+    );
     let (sender, mut observations) = mpsc::unbounded_channel();
     let (_calls, group) = custody_task(custody, Arc::new(ObserveTask(sender)));
     let eligible = ClockInstant::ZERO.after(Duration::from_millis(100));
-    maintenance_progress(
-        clock.not_due_check_now(eligible),
-        "the offline inbox retention wake",
-    )
-    .await;
-    assert!(
-        matches!(maintenance_progress(observations.recv(), "the corrupt inbox diagnostic").await,
-        Some(CustodyTaskEvent::Operator(CustodyOperatorEvent::CorruptInboxRow(row)))
-            if row.key == damaged.message_id.as_str())
-    );
+    clock.not_due_check_now(eligible).await;
+    let diagnostic = observations
+        .recv()
+        .await
+        .expect("custody stopped before reporting the corrupt inbox row");
+    assert!(matches!(diagnostic,
+        CustodyTaskEvent::Operator(CustodyOperatorEvent::CorruptInboxRow(row))
+            if row.key == damaged.message_id.as_str()));
 
     clock.advance(Duration::from_millis(99)).unwrap();
     assert!(
@@ -139,24 +144,18 @@ async fn offline_inbox_retention_prunes_only_healthy_confirmed_rows() {
             .is_some()
     );
     clock.advance(Duration::from_millis(1)).unwrap();
-    maintenance_progress(
-        async {
-            loop {
-                if store
-                    .receipt_for(&refused.message_id)
-                    .await
-                    .unwrap()
-                    .healthy
-                    .is_none()
-                {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        },
-        "healthy completed row pruning",
-    )
-    .await;
+    inbox_commits
+        .changed()
+        .await
+        .expect("custody stopped before committing inbox retention");
+    assert!(
+        store
+            .receipt_for(&refused.message_id)
+            .await
+            .unwrap()
+            .healthy
+            .is_none()
+    );
     assert_eq!(store.pending_handoffs().await.unwrap().healthy, [kept]);
     assert_eq!(
         store
@@ -266,17 +265,15 @@ async fn a_corrupt_owned_point_is_reported_without_leaking_it_to_other_callers()
         Submission::InOutbox(_)
     ));
     let mark = ClockInstant::ZERO.after(Duration::from_secs(20));
-    maintenance_progress(
-        clock.not_due_check_now(mark),
-        "the healthy writer's flush wake",
-    )
-    .await;
+    clock.not_due_check_now(mark).await;
     clock.advance(Duration::from_secs(20)).unwrap();
-    assert!(
-        matches!(maintenance_progress(observations.recv(), "a healthy settlement").await,
-        Some(CustodyTaskEvent::Flush(report))
-            if matches!(report.answered.as_slice(), [answer] if answer.request == healthy.request))
-    );
+    let settlement = observations
+        .recv()
+        .await
+        .expect("custody stopped before reporting the healthy settlement");
+    assert!(matches!(settlement,
+        CustodyTaskEvent::Flush(report)
+            if matches!(report.answered.as_slice(), [answer] if answer.request == healthy.request)));
     group.request_stop();
     group.join().await.unwrap();
 }
