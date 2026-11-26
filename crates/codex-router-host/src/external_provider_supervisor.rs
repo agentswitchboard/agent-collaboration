@@ -26,6 +26,7 @@ mod provider_full_access_guard;
 mod provider_session_inspection;
 mod provider_session_lifecycle;
 mod provider_session_scratch;
+pub(crate) use provider_session_scratch::PrepareProviderScratch;
 mod provider_settings_control;
 #[cfg(test)]
 pub(crate) use provider_settings_control::snapshot_settings;
@@ -63,10 +64,8 @@ use collaboration_protocol::{
     ProviderOperationStage, ProviderReconciliationState, ProviderSessionInspectRequest,
     ProviderSettingsAcceptRequest, ProviderSettingsSetRequest, SessionId, SessionRef,
 };
-use collaboration_service::conversation_operation_snapshot as snapshot_from_record;
 use std::{
     collections::HashMap,
-    path::PathBuf,
     sync::{Arc, Mutex as StdMutex},
     time::Duration,
 };
@@ -74,6 +73,7 @@ use switchboard_session_store::ProviderOperationAdmission;
 use switchboard_session_store::ProviderOperationAdmissionResult;
 use switchboard_session_store::ProviderOperationRecord;
 use switchboard_session_store::ProviderOperationStore;
+use switchboard_session_store::conversation_operation_snapshot as snapshot_from_record;
 use tokio::sync::Mutex;
 use tokio_util::task::TaskTracker;
 
@@ -104,9 +104,7 @@ struct SupervisorInner {
     /// Wakes schedulers on publication and retention when custody ends.
     completions: tokio::sync::watch::Sender<u64>,
     queued_operations: ProviderQueueOperationRegistry,
-    /// `<router root>/scratch`: each Claude or Cursor session created here gets
-    /// its own `session-<uuidv7>` folder in it (R4). `None` grants no folder.
-    scratch_root: Option<PathBuf>,
+    prepare_scratch: Option<PrepareProviderScratch>,
     settings_catalogs:
         Arc<Mutex<HashMap<SessionRef, provider_session_machines::ProviderSettingsCatalog>>>,
     started_at_ms: i64,
@@ -332,14 +330,14 @@ impl ExternalProviderSupervisor {
         bindings: Vec<ExternalProviderBinding>,
         store: Arc<Mutex<ProviderOperationStore>>,
         hub: Option<Arc<switchboard_session_events::ProviderSessionEventHub>>,
-        scratch_root: Option<PathBuf>,
+        prepare_scratch: Option<PrepareProviderScratch>,
         clock: Arc<dyn router_clock::RuntimeClock>,
     ) -> Result<Self, &'static str> {
         Self::new_with_session_tokens(
             bindings,
             store,
             hub,
-            scratch_root,
+            prepare_scratch,
             clock,
             Arc::new(collaboration_contracts::V0SessionTokenIssuer),
         )
@@ -349,7 +347,7 @@ impl ExternalProviderSupervisor {
         bindings: Vec<ExternalProviderBinding>,
         store: Arc<Mutex<ProviderOperationStore>>,
         hub: Option<Arc<switchboard_session_events::ProviderSessionEventHub>>,
-        scratch_root: Option<PathBuf>,
+        prepare_scratch: Option<PrepareProviderScratch>,
         clock: Arc<dyn router_clock::RuntimeClock>,
         session_token_at_creation: Arc<dyn SessionTokenAtCreation>,
     ) -> Result<Self, &'static str> {
@@ -465,7 +463,7 @@ impl ExternalProviderSupervisor {
                 uncertainty,
                 completions,
                 queued_operations,
-                scratch_root,
+                prepare_scratch,
                 settings_catalogs,
                 started_at_ms,
                 #[cfg(test)]

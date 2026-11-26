@@ -92,23 +92,30 @@ export const LEDGER_BASE = {
   leftOutByName: ["*_test.rs", "*_tests.rs"],
 } as const;
 
-/** Current locations of historical entries whose ownership moved in DEL-01. */
-export const LEDGER_RELOCATIONS = new Map<string, string>([
+/** Current locations of historical entries whose ownership moved or split. */
+export const LEDGER_RELOCATIONS = new Map<string, readonly string[]>([
+  [
+    "crates/collaboration-service/src/conversation_operation_projection.rs",
+    ["crates/switchboard-session-store/src/conversation_operation_projection.rs"],
+  ],
   [
     "crates/collaboration-runtime/src/provider_operation_store.rs",
-    "crates/switchboard-session-store/src/provider_operation_store.rs",
+    [
+      "crates/switchboard-session-store/src/provider_operation_store.rs",
+      "crates/switchboard-session-store/src/provider_operation_record.rs",
+    ],
   ],
   [
     "crates/collaboration-runtime/src/provider_session_event_hub.rs",
-    "crates/switchboard-session-events/src/provider_session_event_hub.rs",
+    ["crates/switchboard-session-events/src/provider_session_event_hub.rs"],
   ],
   [
     "crates/collaboration-runtime/src/provider_session_inventory_metadata.rs",
-    "crates/switchboard-session-events/src/provider_session_inventory_metadata.rs",
+    ["crates/switchboard-session-events/src/provider_session_inventory_metadata.rs"],
   ],
   [
     "crates/collaboration-runtime/src/provider_session_record.rs",
-    "crates/switchboard-session-store/src/provider_session_record.rs",
+    ["crates/switchboard-session-store/src/provider_session_record.rs"],
   ],
 ]);
 

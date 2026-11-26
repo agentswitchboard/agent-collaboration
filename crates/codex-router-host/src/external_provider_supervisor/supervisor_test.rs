@@ -22,6 +22,7 @@ use collaboration_protocol::{
     ProviderWorkingDirectory, PushId, RouterAccess, SessionId, UuidIdentity,
 };
 use std::io::{self, Write};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex};
 
 struct PreparedPromptFixture {

@@ -11,7 +11,7 @@ const repositoryRoot = join(import.meta.dirname, "../../..");
 
 const ledgerFiles = LEDGER_SECTIONS.flatMap((section) => section.files.map((entry) => entry.file));
 
-test("the ledger gives every base file exactly one disposition", () => {
+test("the ledger gives each file in the projected base one disposition", () => {
   const counts = new Map<string, number>();
   for (const file of ledgerFiles) counts.set(file, (counts.get(file) ?? 0) + 1);
   const repeated = [...counts].filter(([, count]) => count > 1).map(([file]) => file);
@@ -19,7 +19,7 @@ test("the ledger gives every base file exactly one disposition", () => {
   const historicalFiles = new Set(LEDGER_BASE_FILES);
   for (const historicalPath of LEDGER_RELOCATIONS.keys())
     assert.ok(historicalFiles.has(historicalPath), `${historicalPath} needs its historical key`);
-  const expected = LEDGER_BASE_FILES.map((file) => LEDGER_RELOCATIONS.get(file) ?? file);
+  const expected = LEDGER_BASE_FILES.flatMap((file) => LEDGER_RELOCATIONS.get(file) ?? [file]);
   assert.equal(
     new Set(expected).size,
     expected.length,

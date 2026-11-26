@@ -6,11 +6,9 @@ pub use collaboration_application::{CollaborationApplication, ResultByteBudget};
 mod application_fixture;
 #[cfg(any(test, feature = "test-support"))]
 pub use application_fixture::ApplicationFixture;
-mod conversation_operation_projection;
 pub use codex_acp_adapter::ConversationOperationRecorder;
 pub use codex_acp_adapter::{ACP_SCHEMA_DIGEST, NativeStoredSessions};
 pub use collaboration_protocol::{DeliveryClientReceipt, DeliveryReceipt};
-pub use conversation_operation_projection::conversation_operation_snapshot;
 mod codex_session_inventory;
 mod inventory_failures;
 mod response_budget;

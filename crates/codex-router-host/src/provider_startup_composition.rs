@@ -317,7 +317,9 @@ pub(crate) async fn compose_provider_startup(
                 bindings,
                 store,
                 hub.clone(),
-                scratch_root,
+                scratch_root.map(|root| {
+                    crate::provider_session_scratch::provider_scratch_preparer(root, clock.clone())
+                }),
                 clock,
                 Arc::new(collaboration_contracts::V0SessionTokenIssuer),
             )

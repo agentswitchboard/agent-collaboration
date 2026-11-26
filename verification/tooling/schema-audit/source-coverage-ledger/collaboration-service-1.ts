@@ -111,11 +111,6 @@ export const section: LedgerSection = {
       note: "PublishedRejection l51 {code,message,data}: the JSON-RPC error object every family's failure becomes (codes l60-66), consumed by collaboration-mcp application_tool_results.rs:21; CollaborationRejectionReason l9 is not published",
     },
     {
-      file: "crates/collaboration-service/src/conversation_operation_projection.rs",
-      disposition: { kind: "none" },
-      note: "conversation_operation_snapshot l5: typed field copy ProviderOperationRecord to ConversationOperationSnapshot (queue_state and input_id set None l17-18); no serde round trip",
-    },
-    {
       file: "crates/collaboration-service/src/delivery_projection.rs",
       disposition: { kind: "converts", owners: ["router-vocabulary"] },
       note: "snapshot l8 maps the stored mode string auto/steer/queue onto MessageDelivery l15; DeliveryStatus to DeliveryDisposition l21 and AttemptOutcome to DeliveryEvidence l30 typed",

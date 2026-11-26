@@ -7,23 +7,23 @@ use super::{
     ConversationOperationWaitOutput, ConversationOperationWaitRequest,
     ConversationOperationWaitResult, ConversationOutputUnavailableReason,
     ConversationPromptRequest, ConversationResumeRequest, Duration, EndpointRef,
-    ExternalProviderRuntimeError, ExternalProviderSupervisor, OperationId, PathBuf,
-    PreparedOperation, ProviderBindingIdentity, ProviderConversationBackend,
-    ProviderConversationFuture, ProviderOperationCompletion, ProviderOperationEffect,
-    ProviderOperationKind, ProviderOperationStage, ProviderPromptContentsRequest,
-    ProviderReconciliationState, ProviderSessionInspectFuture, ProviderSessionInspectRequest,
-    ProviderSettingsAcceptRequest, ProviderSettingsFuture, ProviderSettingsSetRequest, SessionId,
-    SessionRef, admitted_submission, effective_settings, existing_submission, failure,
-    invalid_setting_failure, provider_applied_setting, provider_failed_setting,
-    provider_session_inspection, provider_session_lifecycle, provider_session_record,
-    provider_settings_control, runtime_failure, snapshot_failure, snapshot_from_record,
-    unavailable_failure,
+    ExternalProviderRuntimeError, ExternalProviderSupervisor, OperationId, PreparedOperation,
+    ProviderBindingIdentity, ProviderConversationBackend, ProviderConversationFuture,
+    ProviderOperationCompletion, ProviderOperationEffect, ProviderOperationKind,
+    ProviderOperationStage, ProviderPromptContentsRequest, ProviderReconciliationState,
+    ProviderSessionInspectFuture, ProviderSessionInspectRequest, ProviderSettingsAcceptRequest,
+    ProviderSettingsFuture, ProviderSettingsSetRequest, SessionId, SessionRef, admitted_submission,
+    effective_settings, existing_submission, failure, invalid_setting_failure,
+    provider_applied_setting, provider_failed_setting, provider_session_inspection,
+    provider_session_lifecycle, provider_session_record, provider_settings_control,
+    runtime_failure, snapshot_failure, snapshot_from_record, unavailable_failure,
 };
 use crate::provider_create_result::project_owner_create;
 use crate::session_owner_door::OwnerCreateFailure;
 use provider_session_machines::harness_lifecycle::{
     FastRequest, OpenSetup, RequestedProviderSettings,
 };
+use std::path::PathBuf;
 
 impl ProviderConversationBackend for ExternalProviderSupervisor {
     fn resume(
@@ -185,11 +185,11 @@ impl ProviderConversationBackend for ExternalProviderSupervisor {
                         Vec::new()
                     };
                     let named_work_roots = request.work_roots;
-                    let scratch_root = backend.inner.scratch_root.clone();
+                    let prepare_scratch = backend.inner.prepare_scratch.clone();
                     let completion_inner = Arc::clone(&backend.inner);
                     let completion_backend = backend.clone();
                     backend.spawn_operation_for_handoff(operation_id.clone(), live, async move {
-                        let scratch_folder = match super::provider_session_scratch::prepare_provider_session_scratch(scratch_root.as_deref(), completion_inner.clock.as_ref()).await {
+                        let scratch_folder = match super::provider_session_scratch::prepare_provider_session_scratch(prepare_scratch.as_ref()).await {
                             Ok(scratch_folder) => scratch_folder,
                             Err(message) => {
                                 return ProviderOperationCompletion::Failure(failure(
