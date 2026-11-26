@@ -464,7 +464,10 @@ impl LiveOperations {
             .filter(|(_, holder)| !request.is_own_cancel_holder(holder.kind, holder.cancel_target));
         let (operation, holder) = blockers.next()?;
         let wait_for_eligibility = ended_turn.is_some_and(|ended_turn| {
-            uuid::Uuid::parse_str(operation.as_str()).ok() == Some(ended_turn)
+            self.operations
+                .get(request.operation)
+                .is_some_and(|live| !live.is_notice())
+                && uuid::Uuid::parse_str(operation.as_str()).ok() == Some(ended_turn)
                 && request
                     .target
                     .is_some_and(|target| holder.is_turn_start_for(target))
