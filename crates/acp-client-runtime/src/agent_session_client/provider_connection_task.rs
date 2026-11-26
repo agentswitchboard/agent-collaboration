@@ -6,12 +6,12 @@ use super::{
     AcpRequestPayloads, AcpRequestPolicy, ActiveApprovalContext, AgentSessionClient, Arc,
     CancellationToken, Client, Duration, ExternalProviderApprovalRefusalReason,
     ExternalProviderLaunch, ExternalProviderRuntimeError, HashMap, Lines, MAX_ACP_FRAME_BYTES,
-    McpServer, Ordering, PermissionDispatchState, ProviderAuthStatusHandler, ProviderCommand,
-    ProviderCursorCreatePlanHandler, ProviderCursorQuestionHandler, ProviderCursorTodoHandler,
-    ProviderFormElicitationHandler, ProviderFrameObservation, ProviderRequestFallback,
-    ProviderRequestSessionGuard, RequestPermissionRequest, SessionEventSink,
-    initialize_provider_connection, provider_lifecycle_requests, record_permission_refusal,
-    spawn_external_approval_dispatch,
+    McpServer, Ordering, OwnerApprovalBindings, PermissionDispatchState, ProviderAuthStatusHandler,
+    ProviderCommand, ProviderCursorCreatePlanHandler, ProviderCursorQuestionHandler,
+    ProviderCursorTodoHandler, ProviderFormElicitationHandler, ProviderFrameObservation,
+    ProviderRequestFallback, ProviderRequestSessionGuard, RequestPermissionRequest,
+    SessionEventSink, initialize_provider_connection, provider_lifecycle_requests,
+    record_permission_refusal, spawn_external_approval_dispatch,
 };
 impl<P: AcpRequestPayloads> AgentSessionClient<P> {
     #[expect(
@@ -120,12 +120,17 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
             String,
             ActiveApprovalContext<P>,
         >::new()));
-        let callback_approval_contexts = Arc::clone(&approval_contexts);
-        let callback_question_contexts = Arc::clone(&approval_contexts);
+        let approval_bindings = OwnerApprovalBindings::new(
+            approval_contexts,
+            Arc::clone(&request_policy),
+            retirement.clone(),
+        );
+        let callback_approval_bindings = approval_bindings.clone();
+        let callback_question_bindings = approval_bindings.clone();
         let callback_question_port = Arc::clone(&request_policy);
-        let callback_plan_contexts = Arc::clone(&approval_contexts);
+        let callback_plan_bindings = approval_bindings.clone();
         let callback_plan_port = Arc::clone(&request_policy);
-        let callback_elicitation_contexts = Arc::clone(&approval_contexts);
+        let callback_elicitation_bindings = approval_bindings.clone();
         let callback_elicitation_port = Arc::clone(&request_policy);
         let permission_refusal_reasons = Arc::new(std::sync::Mutex::new(HashMap::new()));
         let callback_permission_refusal_reasons = Arc::clone(&permission_refusal_reasons);
@@ -143,6 +148,7 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
         let observed_tool_calls = Arc::clone(&test_tool_calls);
         let client_clock = Arc::clone(&clock);
         let provider_behavior = Arc::clone(&behavior);
+        let connection_approval_bindings = approval_bindings.clone();
         #[cfg(feature = "test-observation")]
         let connection_settled = CancellationToken::new();
         #[cfg(feature = "test-observation")]
@@ -170,9 +176,13 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
                 Arc::clone(&callback_claims),
             );
             let incoming_frame_observation = Arc::clone(&task_frame_observation);
+            #[cfg(feature = "test-observation")]
+            let callback_frame_observation = Arc::clone(&task_frame_observation);
             let input_ended = CancellationToken::new();
             let input_error = input_ended.clone();
             let input_eof = input_ended.clone();
+            let error_approvals = connection_approval_bindings.clone();
+            let eof_approvals = connection_approval_bindings.clone();
             let incoming =
                 FramedRead::new(reader, LinesCodec::new_with_max_length(MAX_ACP_FRAME_BYTES))
                     .map(move |line| {
@@ -180,6 +190,7 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
                             crate::provider_transport_diagnostics::record_incoming_frame(frame);
                         }
                         line.map_err(|error| {
+                            error_approvals.stop_connection();
                             input_error.cancel();
                             crate::provider_transport_diagnostics::record_incoming_error();
                             if matches!(
@@ -198,6 +209,7 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
                         })
                     })
                     .chain(futures_util::stream::once(async move {
+                        eof_approvals.stop_connection();
                         input_eof.cancel();
                         Err(std::io::Error::new(
                             std::io::ErrorKind::UnexpectedEof,
@@ -230,7 +242,7 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
                             return result;
                         }
                         let scope = permission_callbacks.current_scope(request.session_id.0.as_ref());
-                        let context = callback_approval_contexts.lock().ok().and_then(|contexts| {
+                        let context = callback_approval_bindings.active.lock().ok().and_then(|contexts| {
                             contexts.get(request.session_id.0.as_ref()).filter(|context| {
                                 scope.is_some_and(|(run, turn)| {
                                     context.incarnation == run.incarnation
@@ -240,7 +252,7 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
                             }).cloned()
                         });
                         // A scoped grant can answer without sending the request to a person.
-                        if context.is_some()
+                        if let Some(context) = context.as_ref()
                             && let Some(scope) = scope
                             && let Some(permission) = crate::in_folder_allowance::InFolderPermission::from_offer(
                                 &request.tool_call, &request.options, &|action, title| {
@@ -254,16 +266,22 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
                                 permission,
                             )
                         {
-                            return responder.respond(
-                                agent_client_protocol::schema::v1::RequestPermissionResponse::new(
-                                    agent_client_protocol::schema::v1::RequestPermissionOutcome::Selected(
-                                        agent_client_protocol::schema::v1::SelectedPermissionOutcome::new(option),
-                                    ),
-                                ),
-                            );
+                            use agent_client_protocol::schema::v1::{
+                                RequestPermissionOutcome, RequestPermissionResponse, SelectedPermissionOutcome,
+                            };
+                            if let Some(guard) = context.track_response("session/request_permission", responder.id()) {
+                                return guard.commit(|open| responder.respond(RequestPermissionResponse::new(
+                                    if open { RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(option)) }
+                                    else { RequestPermissionOutcome::Cancelled },
+                                )));
+                            }
+                            return responder.respond(RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled));
                         }
                         let dispatch_state = PermissionDispatchState {
                             request_policy: Arc::clone(&callback_interaction_port),
+                            approval_bindings: callback_approval_bindings.clone(),
+                            #[cfg(feature = "test-observation")]
+                            frame_observation: Arc::clone(&callback_frame_observation),
                             #[cfg(any(test, feature = "test-support"))]
                             malformed_approval_observer: Arc::clone(&callback_malformed_approval_observer),
                             refusal_reasons: Arc::clone(&callback_permission_refusal_reasons),
@@ -300,20 +318,20 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
                 ))
                 .with_handler(ProviderCursorQuestionHandler::new(
                     Arc::clone(&callbacks),
-                    callback_question_contexts,
+                    callback_question_bindings,
                     callback_question_port,
                 ))
                 .with_handler(ProviderCursorCreatePlanHandler::new(
                     Arc::clone(&callbacks),
                     Arc::clone(&todo_state),
                     Arc::clone(&task_event_sink),
-                    callback_plan_contexts,
+                    callback_plan_bindings,
                     callback_plan_port,
                     task_shutdown.clone(),
                     sink_closed.clone(),
                 ))
                 .with_handler(ProviderFormElicitationHandler::new(
-                    callback_elicitation_contexts,
+                    callback_elicitation_bindings,
                     callback_elicitation_port,
                 ))
                 .with_handler(ProviderCursorTodoHandler::new(
@@ -413,11 +431,13 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
                     true
                 },
             };
+            connection_approval_bindings.stop_connection();
             connection_retirement.cancel();
 
             if !child_exited {
                 lifetime.end().await;
             }
+            connection_approval_bindings.drain_connection().await;
             #[cfg(feature = "test-observation")]
             mark_provider_reaping_finished.cancel();
             if let Some(stderr_task) = stderr_task {
@@ -470,11 +490,10 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
             permission_request_count,
             #[cfg(any(test, feature = "test-observation"))]
             permission_outcome,
-            request_policy,
             #[cfg(any(test, feature = "test-support"))]
             malformed_approval_observer,
             _event_sink: event_sink,
-            approval_contexts,
+            approval_bindings,
             permission_refusal_reasons,
             endpoint_id,
             #[cfg(any(test, feature = "test-observation"))]

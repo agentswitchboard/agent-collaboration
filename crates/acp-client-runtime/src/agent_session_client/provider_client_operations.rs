@@ -1,4 +1,7 @@
 //! Connection-level queries and shutdown for one ACP provider.
+#[cfg(feature = "test-observation")]
+use std::future::Future;
+
 use super::{
     AcpRequestPayloads, AgentSessionClient, CancellationToken, ExternalProviderAdmission,
     ExternalProviderRuntimeError, Ordering, PathBuf, ProviderCapabilityReport, ProviderCommand,
@@ -87,16 +90,21 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
 
     #[cfg(any(test, feature = "test-observation"))]
     pub fn active_approval_operation(&self, provider_session_id: &str) -> Option<P::OperationId> {
-        self.approval_contexts.lock().ok().and_then(|contexts| {
-            contexts
-                .get(provider_session_id)
-                .map(|context| context.operation_id.clone())
-        })
+        self.approval_bindings
+            .active
+            .lock()
+            .ok()
+            .and_then(|contexts| {
+                contexts
+                    .get(provider_session_id)
+                    .map(|context| context.operation_id.clone())
+            })
     }
 
     #[cfg(any(test, feature = "test-observation"))]
     pub fn active_approval_count(&self) -> usize {
-        self.approval_contexts
+        self.approval_bindings
+            .active
             .lock()
             .map_or(0, |contexts| contexts.len())
     }
@@ -138,5 +146,35 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
     #[must_use]
     pub fn shutdown_failed(&self) -> bool {
         self.shutdown_failed.load(Ordering::Relaxed)
+    }
+
+    #[cfg(feature = "test-observation")]
+    pub fn observe_approval_scope_drain_for_test(
+        &self,
+        session: &str,
+    ) -> Option<(
+        Vec<provider_session_machines::session_owner::PendingTurnResponse>,
+        impl Future<Output = ()> + use<P>,
+    )> {
+        self.approval_bindings.observe_scope_drain(session)
+    }
+
+    #[cfg(feature = "test-observation")]
+    pub fn managed_permission_enqueued_for_test(
+        &self,
+    ) -> Option<agent_client_protocol::schema::v1::RequestId> {
+        self.frame_observation.managed_permission_enqueued()
+    }
+
+    #[cfg(feature = "test-observation")]
+    pub fn retire_approval_run_for_test(
+        &self,
+        session: &str,
+        run: switchboard_harness_contracts::TransportRun,
+    ) {
+        let change = switchboard_harness_contracts::TurnMembership::Retire(run.generation);
+        self.approval_bindings
+            .apply_membership(session, run.incarnation, change);
+        self.owner_wire.apply_membership(run.incarnation, change);
     }
 }

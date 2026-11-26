@@ -354,6 +354,8 @@ async fn duplicate_callback_in_a_batch_invokes_the_neutral_policy_once_per_reque
     .await
     .expect("fixture initializes with the neutral policy");
     run_permission_prompts(&client, root.path(), &[1]).await;
+    // The first batch contributes IDs 91 and 92. The outstanding copy of 91
+    // gets no call. After that batch is flushed, the new 91 gets the third call.
     assert_eq!(
         policy.calls.load(Ordering::Relaxed),
         3,

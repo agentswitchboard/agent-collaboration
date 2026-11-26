@@ -91,8 +91,12 @@ impl<Port: InteractionPort> RequestPolicy<FixturePayloads<Port>> for FixturePoli
         _turn: ExactTurn,
         cause: StopRequestsCause,
     ) -> RequestFuture<'_, ()> {
-        match cause {
-            StopRequestsCause::TurnCancelled => self.0.cancel_all(context, "turnCancelled"),
-        }
+        let reason = match cause {
+            StopRequestsCause::TurnCancelled => "turnCancelled",
+            StopRequestsCause::TurnEnded => "turnEnded",
+            StopRequestsCause::GenerationRetired => "generationRetired",
+            StopRequestsCause::ConnectionLost => "connectionLost",
+        };
+        self.0.cancel_all(context, reason)
     }
 }

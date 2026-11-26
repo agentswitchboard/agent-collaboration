@@ -8,6 +8,8 @@ mod acp_wire_capture;
 
 mod approval_dispatch_node_tap;
 mod approval_offer_cutover;
+#[cfg(feature = "test-observation")]
+mod approval_request_lifetime;
 mod create_settings_order;
 mod cursor_model_settings;
 mod cursor_plan_approval;

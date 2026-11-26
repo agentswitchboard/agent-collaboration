@@ -1,9 +1,6 @@
 //! Turn Cursor's blocking ask_question extension into a canonical Question.
 
-use std::{
-    collections::{BTreeMap, HashMap},
-    sync::{Arc, Mutex},
-};
+use std::{collections::BTreeMap, sync::Arc};
 
 use agent_client_protocol::{Agent, ConnectionTo, Dispatch, Error, HandleDispatchFrom, Handled};
 use serde::Deserialize;
@@ -12,9 +9,8 @@ use session_event_model::{
     ChoiceOption, QuestionAnswerValue, QuestionField, QuestionFields, QuestionRequest,
     QuestionResponse,
 };
-use tokio_util::sync::CancellationToken;
 
-use super::ActiveApprovalContext;
+use super::OwnerApprovalBindings;
 use crate::{AcpRequestPayloads, AcpRequestPolicy, owner_callback_routing::OwnerCallbackRouting};
 
 #[derive(Deserialize)]
@@ -43,19 +39,19 @@ struct CursorChoice {
 
 pub(super) struct ProviderCursorQuestionHandler<P: AcpRequestPayloads> {
     tool_registry: Arc<OwnerCallbackRouting>,
-    approval_contexts: Arc<Mutex<HashMap<String, ActiveApprovalContext<P>>>>,
+    approval_bindings: OwnerApprovalBindings<P>,
     request_policy: Arc<AcpRequestPolicy<P>>,
 }
 
 impl<P: AcpRequestPayloads> ProviderCursorQuestionHandler<P> {
     pub(super) fn new(
         tool_registry: Arc<OwnerCallbackRouting>,
-        approval_contexts: Arc<Mutex<HashMap<String, ActiveApprovalContext<P>>>>,
+        approval_bindings: OwnerApprovalBindings<P>,
         request_policy: Arc<AcpRequestPolicy<P>>,
     ) -> Self {
         Self {
             tool_registry,
-            approval_contexts,
+            approval_bindings,
             request_policy,
         }
     }
@@ -179,38 +175,63 @@ impl<P: AcpRequestPayloads> HandleDispatchFrom<Agent> for ProviderCursorQuestion
             responder.respond(json!({"outcome":{"outcome":"cancelled"}}))?;
             return Ok(Handled::Yes);
         };
-        let context = self.approval_contexts.lock().ok().and_then(|contexts| {
-            contexts
-                .get(&session_id)
-                .filter(|context| {
-                    context.incarnation == run.incarnation
-                        && context.generation == run.generation
-                        && context.turn == Some(turn)
-                })
-                .cloned()
-        });
+        let context = self
+            .approval_bindings
+            .active
+            .lock()
+            .ok()
+            .and_then(|contexts| {
+                contexts
+                    .get(&session_id)
+                    .filter(|context| {
+                        context.incarnation == run.incarnation
+                            && context.generation == run.generation
+                            && context.turn == Some(turn)
+                    })
+                    .cloned()
+            });
         let Some(context) = context else {
             tracing::warn!("Cursor question has no active Turn context");
             responder.respond(json!({"outcome":{"outcome":"cancelled"}}))?;
             return Ok(Handled::Yes);
         };
+        let Some(response_guard) = context.track_response("cursor/ask_question", responder.id())
+        else {
+            responder.respond(json!({"outcome":{"outcome":"cancelled"}}))?;
+            return Ok(Handled::Yes);
+        };
         let port = Arc::clone(&self.request_policy);
-        if let Some(refusal) = port.managed_refusal() {
-            let response_guard = context
-                .responses
-                .track("cursor/ask_question", responder.id());
-            connection.spawn(async move {
-                let queued = responder.respond(refusal.acp_question());
-                drop(response_guard);
-                context.cancel_after_refusal(port, refusal).await;
-                queued
-            })?;
+        if let Some(refusal) = context.managed_refusal(port.as_ref()) {
+            self.approval_bindings
+                .spawn_callback(&connection, async move {
+                    let (open, queued) = response_guard.commit(|open| {
+                        (
+                            open,
+                            responder.respond(if open {
+                                refusal.acp_question()
+                            } else {
+                                json!({"outcome":{"outcome":"cancelled"}})
+                            }),
+                        )
+                    });
+                    drop(response_guard);
+                    if open && queued.is_ok() {
+                        context.cancel_after_refusal(port, refusal).await;
+                    }
+                    queued
+                })?;
             return Ok(Handled::Yes);
         }
         let canonical = match Self::request_from_cursor(&session_id, responder.id(), cursor) {
             Ok(canonical) => canonical,
             Err(error) => {
-                responder.respond_with_error(error)?;
+                response_guard.commit(|open| {
+                    if open {
+                        responder.respond_with_error(error)
+                    } else {
+                        responder.respond(json!({"outcome":{"outcome":"cancelled"}}))
+                    }
+                })?;
                 return Ok(Handled::Yes);
             }
         };
@@ -226,26 +247,22 @@ impl<P: AcpRequestPayloads> HandleDispatchFrom<Agent> for ProviderCursorQuestion
             })
             .collect::<Vec<_>>();
         let request_cancellation = responder.cancellation();
-        let response_guard = context
-            .responses
-            .track("cursor/ask_question", responder.id());
-        connection.spawn(async move {
-            let agent_cancellation = CancellationToken::new();
-            let answer =
-                context.decide_question(port.as_ref(), canonical, agent_cancellation.clone());
-            tokio::pin!(answer);
-            let response = tokio::select! {
-                biased;
-                () = request_cancellation.cancelled() => {
-                    agent_cancellation.cancel();
-                    answer.await
-                }
-                response = &mut answer => response,
-            };
-            let queued = responder.respond(cursor_answer(response, &field_order));
-            drop(response_guard);
-            queued
-        })?;
+        self.approval_bindings
+            .spawn_callback(&connection, async move {
+                let response = context
+                    .decide_question(port.as_ref(), canonical, request_cancellation)
+                    .await;
+                response_guard.commit(|open| {
+                    responder.respond(cursor_answer(
+                        if open {
+                            response
+                        } else {
+                            QuestionResponse::Cancelled
+                        },
+                        &field_order,
+                    ))
+                })
+            })?;
         Ok(Handled::Yes)
     }
 

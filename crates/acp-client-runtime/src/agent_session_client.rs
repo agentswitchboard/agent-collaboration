@@ -90,11 +90,10 @@ pub struct AgentSessionClient<P: AcpRequestPayloads> {
     permission_request_count: Arc<AtomicU64>,
     #[cfg(any(test, feature = "test-observation"))]
     permission_outcome: Arc<std::sync::atomic::AtomicU8>,
-    request_policy: Arc<AcpRequestPolicy<P>>,
     #[cfg(any(test, feature = "test-support"))]
     malformed_approval_observer: external_approval_dispatch::MalformedApprovalObserver<P>,
     _event_sink: Arc<dyn SessionEventSink>,
-    approval_contexts: Arc<std::sync::Mutex<HashMap<String, ActiveApprovalContext<P>>>>,
+    approval_bindings: OwnerApprovalBindings<P>,
     permission_refusal_reasons:
         Arc<std::sync::Mutex<HashMap<P::OperationId, ExternalProviderApprovalRefusalReason>>>,
     endpoint_id: Arc<tokio::sync::RwLock<Option<String>>>,
@@ -107,7 +106,7 @@ pub struct AgentSessionClient<P: AcpRequestPayloads> {
 impl<P: AcpRequestPayloads> AgentSessionClient<P> {
     #[cfg(feature = "test-support")]
     pub(crate) fn policy_operation_id(&self, context: &P::Context) -> P::OperationId {
-        self.request_policy.operation_id(context)
+        self.approval_bindings.policy_operation_id(context)
     }
 
     #[cfg(feature = "test-support")]
@@ -137,10 +136,7 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
 
     #[must_use]
     pub fn owner_approval_bindings(&self) -> OwnerApprovalBindings<P> {
-        OwnerApprovalBindings::new(
-            Arc::clone(&self.approval_contexts),
-            Arc::clone(&self.request_policy),
-        )
+        self.approval_bindings.clone()
     }
 
     #[must_use]

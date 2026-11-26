@@ -71,6 +71,7 @@ impl CancelFixture {
         let approvals = OwnerApprovalBindings::new(
             Arc::clone(&active),
             Arc::new(FixturePolicy(Arc::clone(&port))),
+            CancellationToken::new(),
         );
         let run = TransportRun {
             incarnation: OwnerIncarnation(Uuid::now_v7()),
