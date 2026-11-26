@@ -397,6 +397,8 @@ async fn a_restore_completing_after_a_native_close_registers_nothing() {
     );
 }
 
+#[path = "create_activation_recovery_test.rs"]
+mod create_activation_recovery;
 #[path = "lifecycle_attempt_test.rs"]
 mod lifecycle_attempts;
 #[path = "lifecycle_ending_test.rs"]

@@ -58,7 +58,7 @@ fn provider_created_setup(report: OwnerCreateReport) -> ProviderCreatedOwnerSetu
 fn provider_create_failure(failure: OwnerCreateFailure) -> ExternalProviderRuntimeError {
     match failure {
         OwnerCreateFailure::TransportUnavailable => ExternalProviderRuntimeError::TransportFailure,
-        OwnerCreateFailure::Activation(reason) => {
+        OwnerCreateFailure::Activation { reason, .. } => {
             tracing::debug!(?reason, "session harness refused create activation");
             ExternalProviderRuntimeError::Operation(
                 "the provider created the session but could not activate it".to_owned(),

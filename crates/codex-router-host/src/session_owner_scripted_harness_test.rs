@@ -39,6 +39,16 @@ use script::{
     LIVE_TEXT, REPLAY_TEXTS, ReplayCapture, SCRIPTED_SESSION, ScriptObservation, ScriptedHarness,
 };
 
+pub(crate) fn harness_refusing_first_activation(
+    tasks: TaskTracker,
+) -> Arc<crate::session_owner_lifecycle_reports::SessionHarnessProvider> {
+    let controls = script::ScriptControls {
+        refuse_next_activation: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        ..Default::default()
+    };
+    ScriptedHarness::with_controls(tasks, ReplayCapture::Complete, controls).0
+}
+
 #[tokio::test]
 async fn scripted_create_adopts_the_same_binding_through_the_production_door() {
     let fixture = StoreFixture::new().await;

@@ -48,7 +48,11 @@ pub(crate) enum OwnerCreateFailure {
     TransportUnavailable,
     Operation(String),
     Opening(OpeningFailure),
-    Activation(ActivationRefusal),
+    Activation {
+        reason: ActivationRefusal,
+        session: HarnessSessionId,
+        permission_mode: PermissionModeReport,
+    },
     ClosedAfterInvalidSetting(InvalidRequestedSetting),
 }
 
@@ -464,7 +468,11 @@ impl SessionOwnerPorts for ProvisionalCreate {
                     Err(reason) => {
                         save(
                             &self.prepared,
-                            Some(Err(OwnerCreateFailure::Activation(reason))),
+                            Some(Err(OwnerCreateFailure::Activation {
+                                reason,
+                                session: settings.session,
+                                permission_mode: settings.permission_mode,
+                            })),
                         );
                         CreateProgress::Failed {
                             operation,
