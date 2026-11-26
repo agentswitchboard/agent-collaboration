@@ -301,20 +301,20 @@ impl OwnerAcpWire {
         via: RestoreVia,
         setup: OwnerSessionOpenSetup,
     ) -> Result<OwnerSessionOpenReceipt, TransportRefusal> {
-        let updates = self.restore_updates.open(run, session.clone());
+        let (tap, updates) = self.restore_updates.open(run, session.clone());
         let reply = self.enqueue_open(
             run,
             OpenRequest::Restore {
                 provider_id: session,
                 attempt,
+                tap: tap.clone(),
                 updates,
                 via,
                 setup,
             },
         );
         if reply.is_err() {
-            self.restore_updates.retire(run);
-            self.restore_updates.reply_settled(run);
+            self.restore_updates.discard_unoffered(run, &tap);
         }
         reply
     }
@@ -348,6 +348,10 @@ impl OwnerAcpWire {
 
     pub fn activate_route(&self, run: TransportRun) -> bool {
         self.transport.activate_route(run)
+    }
+
+    pub(crate) fn writer_has_stopped(&self) -> bool {
+        self.transport.writer_has_stopped()
     }
 
     #[must_use]

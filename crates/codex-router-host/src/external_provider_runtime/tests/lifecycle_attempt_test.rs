@@ -4,6 +4,8 @@
 mod activation_handoff;
 #[path = "opening_wait_test.rs"]
 mod opening_wait;
+#[path = "restore_opening_state_test.rs"]
+mod restore_opening_state;
 
 use super::*;
 use crate::session_owner_lifecycle_reports::SessionHarnessBinding;
@@ -477,7 +479,7 @@ async fn acp_activation_preserves_the_exact_held_and_active_attempts() {
         if run == second {
             assert_eq!(
                 activate(&binding, first),
-                Err(ActivationRefusal::OpeningNotHeld)
+                Err(ActivationRefusal::AttemptMismatch)
             );
         }
         assert_eq!(

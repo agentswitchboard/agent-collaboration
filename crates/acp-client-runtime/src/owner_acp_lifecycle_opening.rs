@@ -2,6 +2,8 @@
 
 #[path = "owner_acp_lifecycle_activation.rs"]
 mod activation;
+#[path = "owner_acp_opening_guidance.rs"]
+mod guidance;
 
 use super::{lifecycle_transport_refusal, transport_run};
 use crate::{
@@ -10,6 +12,9 @@ use crate::{
     owner_session_open::OwnerOpenedSession,
     owner_session_setting::{OwnerSettingWirePlan, RestoreSettingPlan},
     owner_wire::OwnerAcpWire,
+};
+use guidance::{
+    AttemptRelation, OpeningPhase, OpeningRefusal, WriterAvailability, classify_refusal,
 };
 use provider_session_machines::{
     ProviderSettingsCatalog, SessionGeneration,
@@ -30,7 +35,7 @@ use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex, MutexGuard, OnceLock},
 };
-use switchboard_harness_contracts::{ReplyAdmission, WorkOfferRefusal};
+use switchboard_harness_contracts::{HeldOpeningKind, ReplyAdmission, WorkOfferRefusal};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use uuid::Uuid;
 
@@ -41,6 +46,7 @@ pub(super) struct OwnerOpenings {
     clock: Arc<dyn RuntimeClock>,
     tasks: TaskTracker,
     stopped: CancellationToken,
+    connection_retired: CancellationToken,
     attempts: Arc<Mutex<OpeningAttempts>>,
 }
 
@@ -51,39 +57,35 @@ struct OpeningAttempts {
 }
 
 impl OpeningAttempts {
-    fn create_refusal_without_hold(&self, attempt: CreateAttempt) -> LifecycleRefusal {
-        match self.creates.get(&attempt.0) {
-            Some(CreateOpening::Opening | CreateOpening::Held(_) | CreateOpening::Configuring) => {
-                LifecycleRefusal::OpeningInProgress
+    fn describe(&self, attempt: OpenAttempt) -> (OpeningPhase, AttemptRelation) {
+        match attempt {
+            OpenAttempt::Create(create) => {
+                if let Some(opening) = self.creates.get(&create.0) {
+                    return (opening.phase(), AttemptRelation::Same);
+                }
+                if self.runs.values().any(|run| run.attempt == attempt) {
+                    return (OpeningPhase::Consumed, AttemptRelation::Same);
+                }
             }
-            Some(CreateOpening::Configured(_)) => LifecycleRefusal::OperationNotOffered,
-            None if self
-                .runs
-                .values()
-                .any(|run| run.attempt == OpenAttempt::Create(attempt)) =>
-            {
-                LifecycleRefusal::OperationNotOffered
+            OpenAttempt::Restore(restore) => {
+                if let Some(opening) = self.runs.get(&restore.generation) {
+                    let relation = if opening.attempt == attempt {
+                        AttemptRelation::Same
+                    } else {
+                        AttemptRelation::Different
+                    };
+                    return (opening.phase(), relation);
+                }
             }
-            None if !self.creates.is_empty() || !self.runs.is_empty() => {
-                LifecycleRefusal::AttemptMismatch
-            }
-            None => LifecycleRefusal::OpeningNotHeld,
         }
-    }
-
-    fn restore_refusal_without_hold(&self, restore: RunAttempt<LoadAttempt>) -> LifecycleRefusal {
-        match self.runs.get(&restore.generation) {
-            Some(run) if run.attempt != OpenAttempt::Restore(restore) => {
-                LifecycleRefusal::AttemptMismatch
-            }
-            Some(run) if run.stopped.is_cancelled() => LifecycleRefusal::OpeningNotHeld,
-            Some(run) if matches!(run.phase, RunOpening::Opening) => {
-                LifecycleRefusal::OpeningInProgress
-            }
-            Some(_) => LifecycleRefusal::OperationNotOffered,
-            None if !self.creates.is_empty() => LifecycleRefusal::OpeningInProgress,
-            None if !self.runs.is_empty() => LifecycleRefusal::AttemptMismatch,
-            None => LifecycleRefusal::OpeningNotHeld,
+        // One provisional create can block a competing open. Other generations
+        // need not share a phase, so do not select one of them.
+        if let Some(opening) = self.creates.values().next() {
+            (opening.phase(), AttemptRelation::Different)
+        } else if self.runs.is_empty() {
+            (OpeningPhase::None, AttemptRelation::NoStoredMatch)
+        } else {
+            (OpeningPhase::None, AttemptRelation::Different)
         }
     }
 }
@@ -93,6 +95,17 @@ enum CreateOpening {
     Held(Box<HeldCreate>),
     Configuring,
     Configured(Box<OwnerOpenedSession>),
+}
+
+impl CreateOpening {
+    fn phase(&self) -> OpeningPhase {
+        match self {
+            Self::Opening => OpeningPhase::Opening,
+            Self::Held(_) => OpeningPhase::Held(HeldOpeningKind::Create),
+            Self::Configuring => OpeningPhase::Configuring,
+            Self::Configured(_) => OpeningPhase::Configured,
+        }
+    }
 }
 
 struct HeldCreate {
@@ -106,8 +119,21 @@ struct OpenedRun {
     phase: RunOpening,
 }
 
+impl OpenedRun {
+    fn phase(&self) -> OpeningPhase {
+        if self.stopped.is_cancelled() {
+            return OpeningPhase::Consumed;
+        }
+        match &self.phase {
+            RunOpening::Opening(_) => OpeningPhase::Opening,
+            RunOpening::Held(_) => OpeningPhase::Held(HeldOpeningKind::Restore),
+            RunOpening::Active => OpeningPhase::Consumed,
+        }
+    }
+}
+
 enum RunOpening {
-    Opening,
+    Opening(Arc<()>),
     Held(Box<HeldRestore>),
     Active,
 }
@@ -133,6 +159,7 @@ impl OwnerOpenings {
         session: Arc<OnceLock<String>>,
         clock: Arc<dyn RuntimeClock>,
         tasks: TaskTracker,
+        connection_retired: CancellationToken,
     ) -> Self {
         Self {
             owner,
@@ -141,12 +168,46 @@ impl OwnerOpenings {
             clock,
             tasks,
             stopped: CancellationToken::new(),
+            connection_retired,
             attempts: Arc::default(),
         }
     }
 
     pub(super) fn owner(&self) -> OwnerAddress {
         self.owner
+    }
+
+    fn writer_availability(&self) -> WriterAvailability {
+        if self.connection_retired.is_cancelled() {
+            WriterAvailability::ConnectionRetired
+        } else if self.wire.writer_has_stopped() {
+            WriterAvailability::Stopped
+        } else {
+            WriterAvailability::Live
+        }
+    }
+
+    fn stopped_writer_refusal(&self) -> Option<OpeningRefusal> {
+        let writer = self.writer_availability();
+        (writer != WriterAvailability::Live)
+            .then(|| classify_refusal(writer, OpeningPhase::None, AttemptRelation::Unnamed))
+    }
+
+    pub(super) fn writer_refusal(&self) -> Option<LifecycleRefusal> {
+        self.stopped_writer_refusal().map(OpeningRefusal::lifecycle)
+    }
+
+    fn opening_refusal(&self, attempts: &OpeningAttempts, attempt: OpenAttempt) -> OpeningRefusal {
+        let (phase, caller) = attempts.describe(attempt);
+        classify_refusal(self.writer_availability(), phase, caller)
+    }
+
+    fn mismatched_call(&self) -> OpeningRefusal {
+        classify_refusal(
+            self.writer_availability(),
+            OpeningPhase::None,
+            AttemptRelation::Different,
+        )
     }
 
     pub(super) fn open(
@@ -156,6 +217,9 @@ impl OwnerOpenings {
         events: SessionLifecyclePort,
         retired: RunRetirement,
     ) -> Result<(), LifecycleRefusal> {
+        if let Some(refusal) = self.writer_refusal() {
+            return Err(refusal);
+        }
         match request {
             OpenRequest::Create {
                 owner,
@@ -182,7 +246,7 @@ impl OwnerOpenings {
                 events,
                 retired,
             ),
-            _ => Err(LifecycleRefusal::AttemptMismatch),
+            _ => Err(self.mismatched_call().lifecycle()),
         }
     }
 
@@ -195,11 +259,13 @@ impl OwnerOpenings {
         retired: RunRetirement,
     ) -> Result<(), LifecycleRefusal> {
         let mut attempts = lock(&self.attempts);
-        if !attempts.creates.is_empty() {
-            return Err(LifecycleRefusal::OpeningInProgress);
+        if !attempts.creates.is_empty() || !attempts.runs.is_empty() {
+            return Err(self
+                .opening_refusal(&attempts, OpenAttempt::Create(attempt))
+                .lifecycle());
         }
         if self.session.get().is_some() {
-            return Err(LifecycleRefusal::AttemptMismatch);
+            return Err(self.mismatched_call().lifecycle());
         }
         let receipt = self
             .wire
@@ -282,19 +348,13 @@ impl OwnerOpenings {
             requested_mode,
         } = opening;
         let mut attempts = lock(&self.attempts);
-        if !attempts.creates.is_empty() {
-            return Err(LifecycleRefusal::OpeningInProgress);
-        }
-        if let Some(opening) = attempts.runs.get(&run.generation) {
-            if opening.attempt == OpenAttempt::Restore(run)
-                && !matches!(opening.phase, RunOpening::Active)
-            {
-                return Err(LifecycleRefusal::OpeningInProgress);
-            }
-            return Err(LifecycleRefusal::AttemptMismatch);
+        if !attempts.creates.is_empty() || attempts.runs.contains_key(&run.generation) {
+            return Err(self
+                .opening_refusal(&attempts, OpenAttempt::Restore(run))
+                .lifecycle());
         }
         if self.session.get_or_init(|| session.0.clone()) != &session.0 {
-            return Err(LifecycleRefusal::AttemptMismatch);
+            return Err(self.mismatched_call().lifecycle());
         }
         let transport = transport_run(self.owner, run.generation);
         self.wire.open_route(transport, session.0.clone());
@@ -306,17 +366,20 @@ impl OwnerOpenings {
             .fence_dispatch_for_test(transport, crate::owner_wire::FixtureDispatchPoint::Restore);
         let receipt = receipt.map_err(lifecycle_transport_refusal)?;
         let stopped = self.stopped.child_token();
+        let instance = Arc::new(());
         attempts.runs.insert(
             run.generation,
             OpenedRun {
                 attempt: OpenAttempt::Restore(run),
                 stopped: stopped.clone(),
-                phase: RunOpening::Opening,
+                phase: RunOpening::Opening(instance.clone()),
             },
         );
         drop(attempts);
 
         let attempts = Arc::clone(&self.attempts);
+        let wire = Arc::clone(&self.wire);
+        let owner = self.owner;
         self.tasks.spawn(async move {
             let open = async {
                 let mut session = match receipt.await {
@@ -359,7 +422,7 @@ impl OwnerOpenings {
                 let Some(entry) = attempts.runs.get_mut(&run.generation).filter(|entry| {
                     entry.attempt == OpenAttempt::Restore(run)
                         && !entry.stopped.is_cancelled()
-                        && matches!(entry.phase, RunOpening::Opening)
+                        && matches!(&entry.phase, RunOpening::Opening(current) if Arc::ptr_eq(current, &instance))
                 }) else {
                     return Ok(None);
                 };
@@ -381,15 +444,21 @@ impl OwnerOpenings {
                 };
                 Ok(Some(opening))
             };
-            tokio::select! {
+            let answer = tokio::select! {
                 biased;
-                () = stopped.cancelled() => {}
-                () = retired => stopped.cancel(),
-                result = open => match result {
-                    Ok(Some(opening)) => reply.send(OpeningFact::Restored { run, opening }),
-                    Ok(None) => {}
-                    Err(failure) => reply.send(OpeningFact::RestoreFailed { run, failure }),
-                },
+                () = stopped.cancelled() => None,
+                () = retired => None,
+                result = open => Some(result),
+            };
+            match answer {
+                Some(Ok(Some(opening))) => reply.send(OpeningFact::Restored { run, opening }),
+                other => {
+                    discard_restore_opening(&attempts, &wire, owner, run, &instance);
+                    stopped.cancel();
+                    if let Some(Err(failure)) = other {
+                        reply.send(OpeningFact::RestoreFailed { run, failure });
+                    }
+                }
             }
         });
         Ok(())
@@ -401,12 +470,19 @@ impl OwnerOpenings {
         reply: LifecycleReply<SessionCreatedSetupFact>,
         retired: RunRetirement,
     ) -> Result<(), LifecycleRefusal> {
+        if let Some(refusal) = self.writer_refusal() {
+            return Err(refusal);
+        }
         let mut attempts = lock(&self.attempts);
         let Some(held @ CreateOpening::Held(_)) = attempts.creates.get_mut(&attempt.0) else {
-            return Err(attempts.create_refusal_without_hold(attempt));
+            return Err(self
+                .opening_refusal(&attempts, OpenAttempt::Create(attempt))
+                .lifecycle());
         };
         let CreateOpening::Held(held) = std::mem::replace(held, CreateOpening::Configuring) else {
-            return Err(LifecycleRefusal::OpeningNotHeld);
+            return Err(self
+                .opening_refusal(&attempts, OpenAttempt::Create(attempt))
+                .lifecycle());
         };
         drop(attempts);
 
@@ -444,20 +520,21 @@ impl OwnerOpenings {
     }
 
     pub(super) fn opening_is_held(&self, attempt: OpenAttempt) -> Held {
+        if let Some(refusal) = self.writer_refusal() {
+            return Held::NotHeld(refusal);
+        }
         let attempts = lock(&self.attempts);
-        match attempt {
-            OpenAttempt::Create(attempt)
-                if !matches!(
-                    attempts.creates.get(&attempt.0),
-                    Some(CreateOpening::Held(_) | CreateOpening::Configured(_))
-                ) =>
-            {
-                Held::NotHeld(attempts.create_refusal_without_hold(attempt))
-            }
-            OpenAttempt::Restore(run) if held_restore(&attempts, run).is_none() => {
-                Held::NotHeld(attempts.restore_refusal_without_hold(run))
-            }
-            _ => Held::Held,
+        let held = match attempt {
+            OpenAttempt::Create(attempt) => matches!(
+                attempts.creates.get(&attempt.0),
+                Some(CreateOpening::Held(_) | CreateOpening::Configured(_))
+            ),
+            OpenAttempt::Restore(run) => held_restore(&attempts, run).is_some(),
+        };
+        if held {
+            Held::Held
+        } else {
+            Held::NotHeld(self.opening_refusal(&attempts, attempt).lifecycle())
         }
     }
 
@@ -466,17 +543,21 @@ impl OwnerOpenings {
         attempt: OpenAttempt,
         accepted: &AcceptedRunSettings,
     ) -> Result<SetupReport<CapabilityReport, SessionSettings>, LifecycleRefusal> {
+        if let Some(refusal) = self.writer_refusal() {
+            return Err(refusal);
+        }
         let mut attempts = lock(&self.attempts);
         let session = match attempt {
             OpenAttempt::Create(attempt) => match attempts.creates.get_mut(&attempt.0) {
                 Some(CreateOpening::Configured(session)) => session.as_mut(),
-                _ => return Err(attempts.create_refusal_without_hold(attempt)),
+                _ => {
+                    return Err(self
+                        .opening_refusal(&attempts, OpenAttempt::Create(attempt))
+                        .lifecycle());
+                }
             },
             OpenAttempt::Restore(run) => {
-                if held_restore(&attempts, run).is_none() {
-                    return Err(attempts.restore_refusal_without_hold(run));
-                }
-                attempts
+                let Some(session) = attempts
                     .runs
                     .get_mut(&run.generation)
                     .filter(|entry| {
@@ -484,9 +565,14 @@ impl OwnerOpenings {
                     })
                     .and_then(|entry| match &mut entry.phase {
                         RunOpening::Held(held) => Some(&mut held.session),
-                        RunOpening::Opening | RunOpening::Active => None,
+                        RunOpening::Opening(_) | RunOpening::Active => None,
                     })
-                    .ok_or(LifecycleRefusal::OpeningNotHeld)?
+                else {
+                    return Err(self
+                        .opening_refusal(&attempts, OpenAttempt::Restore(run))
+                        .lifecycle());
+                };
+                session
             }
         };
         session.accept_restore_catalogue(&ProviderSettingsCatalog::from_record(Arc::clone(
@@ -505,11 +591,18 @@ impl OwnerOpenings {
         reserve_reply: &mut dyn FnMut() -> ReplyAdmission<SettingFact>,
     ) -> Result<(), RestoreSettingRefusal> {
         let refusal = RestoreSettingRefusal::Harness;
+        if let Some(reason) = self.writer_refusal() {
+            return Err(refusal(reason));
+        }
         let attempts = lock(&self.attempts);
-        let held = held_restore(&attempts, attempt.restore)
-            .ok_or_else(|| refusal(attempts.restore_refusal_without_hold(attempt.restore)))?;
+        let held = held_restore(&attempts, attempt.restore).ok_or_else(|| {
+            refusal(
+                self.opening_refusal(&attempts, OpenAttempt::Restore(attempt.restore))
+                    .lifecycle(),
+            )
+        })?;
         if attempt.setting.change.generation != attempt.restore.generation {
-            return Err(refusal(LifecycleRefusal::AttemptMismatch));
+            return Err(refusal(self.mismatched_call().lifecycle()));
         }
         let session = self
             .session
@@ -551,11 +644,33 @@ impl OwnerOpenings {
     }
 
     pub(super) fn retire(&self, generation: SessionGeneration) {
-        if let Some(run) = lock(&self.attempts).runs.remove(&generation) {
+        let retired = {
+            let mut attempts = lock(&self.attempts);
+            let retired = attempts.runs.remove(&generation);
+            self.wire
+                .apply_membership(self.owner.incarnation, TurnMembership::Retire(generation));
+            retired
+        };
+        if let Some(run) = retired {
             run.stopped.cancel();
         }
-        self.wire
-            .apply_membership(self.owner.incarnation, TurnMembership::Retire(generation));
+    }
+}
+
+fn discard_restore_opening(
+    attempts: &Mutex<OpeningAttempts>,
+    wire: &OwnerAcpWire,
+    owner: OwnerAddress,
+    run: RunAttempt<LoadAttempt>,
+    instance: &Arc<()>,
+) {
+    let mut attempts = lock(attempts);
+    if attempts.runs.get(&run.generation).is_some_and(|entry| {
+        entry.attempt == OpenAttempt::Restore(run)
+            && matches!(&entry.phase, RunOpening::Opening(current) if Arc::ptr_eq(current, instance))
+    }) {
+        wire.apply_membership(owner.incarnation, TurnMembership::Retire(run.generation));
+        attempts.runs.remove(&run.generation);
     }
 }
 
@@ -575,7 +690,7 @@ fn held_restore(
         .filter(|run| run.attempt == OpenAttempt::Restore(restore) && !run.stopped.is_cancelled())
         .and_then(|run| match &run.phase {
             RunOpening::Held(held) => Some(held.as_ref()),
-            RunOpening::Opening | RunOpening::Active => None,
+            RunOpening::Opening(_) | RunOpening::Active => None,
         })
 }
 

@@ -1,7 +1,7 @@
 //! An outstanding ACP opening and a genuinely missing hold have different moves.
 
 use super::*;
-use provider_session_machines::harness_lifecycle::LifecycleRefusal;
+use provider_session_machines::harness_lifecycle::{HeldOpeningKind, LifecycleRefusal};
 
 #[tokio::test]
 async fn acp_duplicate_configure_waits_while_a_missing_hold_can_reopen() {
@@ -56,6 +56,22 @@ async fn acp_duplicate_configure_waits_while_a_missing_hold_can_reopen() {
         panic!("expected a held ACP creation");
     };
     assert_eq!(exact, attempt);
+
+    let Err(held) = binding.accept_settings(
+        OpenAttempt::Create(attempt),
+        &AcceptedRunSettings {
+            catalogue: Default::default(),
+            router_auto_requested: false,
+        },
+    ) else {
+        panic!("accepting settings is premature while the exact create is held");
+    };
+    assert_eq!(
+        held,
+        LifecycleRefusal::OpeningAlreadyHeld(HeldOpeningKind::Create),
+        "a held create needs its owner's configure call before it can progress"
+    );
+    assert_eq!(held.valid_moves(), &[LifecycleMove::ContinueHeldOpening]);
 
     let (reply, mut configured) = oneshot::channel();
     binding
@@ -116,7 +132,7 @@ async fn acp_duplicate_configure_waits_while_a_missing_hold_can_reopen() {
             Arc::new(AcceptEvents),
             Box::pin(stop.clone().cancelled_owned()),
         ),
-        Err(LifecycleRefusal::OpeningInProgress)
+        Err(LifecycleRefusal::AttemptMismatch)
     );
 
     let CreatedSetupFact::Configured {

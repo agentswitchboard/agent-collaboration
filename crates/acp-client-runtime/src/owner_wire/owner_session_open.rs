@@ -113,6 +113,7 @@ pub(crate) enum OpenRequest {
     Restore {
         provider_id: String,
         attempt: LoadAttempt,
+        tap: crate::owner_restore_updates::RestoreTapStamp,
         updates: mpsc::UnboundedReceiver<Dispatch>,
         via: RestoreVia,
         setup: OwnerSessionOpenSetup,
@@ -217,6 +218,7 @@ impl OpenFrame {
             OpenRequest::Restore {
                 provider_id,
                 attempt,
+                tap,
                 updates,
                 via,
                 setup,
@@ -287,7 +289,7 @@ impl OpenFrame {
                 // enqueues load/resume before the next writer entry.
                 if let Some(ready) = start.as_mut().now_or_never() {
                     let _owner_retired = self.respond.send(ready);
-                    restore_updates.reply_settled(run);
+                    restore_updates.reply_settled(run, &tap);
                 } else {
                     tasks.spawn(async move {
                         // Keep this SDK request and its replay tap correlated until
@@ -299,7 +301,7 @@ impl OpenFrame {
                         if self.respond.send(result).is_err() {
                             tracing::debug!(?run, ?attempt, "settled retired ACP restore");
                         }
-                        restore_updates.reply_settled(run);
+                        restore_updates.reply_settled(run, &tap);
                     });
                 }
             }

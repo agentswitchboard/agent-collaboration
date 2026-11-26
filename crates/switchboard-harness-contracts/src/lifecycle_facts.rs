@@ -120,6 +120,8 @@ pub enum LifecycleMove {
     CorrectRequest,
     WaitForWriter,
     WaitForOpening,
+    /// Continue the exact held opening using its existing setup path.
+    ContinueHeldOpening,
     /// Start a new opening attempt through the owner binding.
     Reopen,
     CreateFromSavedSetup,
@@ -135,10 +137,20 @@ pub enum LifecycleMove {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HeldOpeningKind {
+    Create,
+    Restore,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ActivationRefusal {
     ConnectionRetired,
+    WriterStopped,
     AttemptMismatch,
     OpeningNotHeld,
+    OpeningInProgress,
+    OpeningAlreadyHeld(HeldOpeningKind),
+    OperationNotOffered,
     AlreadyActive,
     RouteUnavailable,
     ReaderUnavailable,
@@ -148,9 +160,12 @@ impl ActivationRefusal {
     #[must_use]
     pub const fn valid_moves(self) -> &'static [LifecycleMove] {
         match self {
-            Self::ConnectionRetired => &[LifecycleMove::StopOwner],
+            Self::ConnectionRetired | Self::WriterStopped => &[LifecycleMove::StopOwner],
             Self::AttemptMismatch => &[LifecycleMove::CorrectRequest],
-            Self::OpeningNotHeld | Self::RouteUnavailable | Self::ReaderUnavailable => {
+            Self::OpeningNotHeld => &[LifecycleMove::Reopen],
+            Self::OpeningInProgress => &[LifecycleMove::WaitForOpening],
+            Self::OpeningAlreadyHeld(_) => &[LifecycleMove::ContinueHeldOpening],
+            Self::OperationNotOffered | Self::RouteUnavailable | Self::ReaderUnavailable => {
                 &[LifecycleMove::ReportUnavailable]
             }
             Self::AlreadyActive => &[LifecycleMove::KeepActiveRun, LifecycleMove::Retire],
@@ -162,11 +177,13 @@ impl ActivationRefusal {
 pub enum LifecycleRefusal {
     Encoding,
     Writer(WriterState),
+    ConnectionRetired,
     RouteUnavailable,
     RouteClosing,
     AttemptMismatch,
     /// An existing opening still owns this attempt.
     OpeningInProgress,
+    OpeningAlreadyHeld(HeldOpeningKind),
     OpeningNotHeld,
     SettingValueNotOffered,
     SettingSetterUnavailable,
@@ -183,8 +200,11 @@ impl LifecycleRefusal {
                 &[LifecycleMove::CorrectRequest]
             }
             Self::Writer(WriterState::Full) => &[LifecycleMove::WaitForWriter],
-            Self::Writer(WriterState::Stopped) => &[LifecycleMove::StopOwner],
+            Self::Writer(WriterState::Stopped) | Self::ConnectionRetired => {
+                &[LifecycleMove::StopOwner]
+            }
             Self::OpeningInProgress => &[LifecycleMove::WaitForOpening],
+            Self::OpeningAlreadyHeld(_) => &[LifecycleMove::ContinueHeldOpening],
             Self::RouteUnavailable | Self::OpeningNotHeld => &[LifecycleMove::Reopen],
             Self::RouteClosing => &[LifecycleMove::WaitForClose],
             Self::CatalogueUnavailable | Self::InvalidCatalogueReply => &[

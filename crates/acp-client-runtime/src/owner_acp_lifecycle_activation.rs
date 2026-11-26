@@ -17,38 +17,39 @@ impl OwnerOpenings {
         events: SessionLifecyclePort,
         retired: RunRetirement,
     ) -> Result<(), ActivationRefusal> {
+        if let Some(refusal) = self.stopped_writer_refusal() {
+            return Err(refusal.activation());
+        }
         let mut attempts = lock(&self.attempts);
         let (generation, mut session, skills, stopped) = match setup {
             ActivationSetup::Created {
                 attempt,
                 generation,
             } => {
+                let identity = OpenAttempt::Create(attempt);
                 if generation == SessionGeneration::UNTRACKED {
-                    return Err(ActivationRefusal::AttemptMismatch);
+                    return Err(self.mismatched_call().activation());
                 }
                 if let Some(entry) = attempts.runs.get(&generation) {
-                    return Err(if entry.attempt == OpenAttempt::Create(attempt) {
+                    return Err(if entry.attempt == identity {
                         ActivationRefusal::AlreadyActive
                     } else {
-                        ActivationRefusal::AttemptMismatch
+                        self.mismatched_call().activation()
                     });
                 }
-                if !attempts.creates.is_empty() && !attempts.creates.contains_key(&attempt.0) {
-                    return Err(ActivationRefusal::AttemptMismatch);
-                }
-                let session_id = self
-                    .session
-                    .get()
-                    .ok_or(ActivationRefusal::OpeningNotHeld)?;
                 if !matches!(
                     attempts.creates.get(&attempt.0),
                     Some(CreateOpening::Configured(_))
                 ) {
-                    return Err(ActivationRefusal::OpeningNotHeld);
+                    return Err(self.opening_refusal(&attempts, identity).activation());
                 }
+                let session_id = self
+                    .session
+                    .get()
+                    .ok_or_else(|| self.mismatched_call().activation())?;
                 let Some(CreateOpening::Configured(session)) = attempts.creates.remove(&attempt.0)
                 else {
-                    return Err(ActivationRefusal::OpeningNotHeld);
+                    return Err(self.opening_refusal(&attempts, identity).activation());
                 };
                 let route = transport_run(self.owner, generation);
                 self.wire.open_route(route, session_id.clone());
@@ -63,7 +64,7 @@ impl OwnerOpenings {
                 attempts.runs.insert(
                     generation,
                     OpenedRun {
-                        attempt: OpenAttempt::Create(attempt),
+                        attempt: identity,
                         stopped: stopped.clone(),
                         phase: RunOpening::Active,
                     },
@@ -71,18 +72,20 @@ impl OwnerOpenings {
                 (generation, *session, None, stopped)
             }
             ActivationSetup::Restored(run) => {
-                let entry = attempts
-                    .runs
-                    .get_mut(&run.generation)
-                    .ok_or(ActivationRefusal::OpeningNotHeld)?;
-                if entry.attempt != OpenAttempt::Restore(run) {
-                    return Err(ActivationRefusal::AttemptMismatch);
+                let identity = OpenAttempt::Restore(run);
+                let Some(entry) = attempts.runs.get_mut(&run.generation) else {
+                    return Err(self.opening_refusal(&attempts, identity).activation());
+                };
+                if entry.attempt != identity {
+                    return Err(self.mismatched_call().activation());
                 }
                 if entry.stopped.is_cancelled() {
-                    return Err(ActivationRefusal::OpeningNotHeld);
+                    return Err(self.opening_refusal(&attempts, identity).activation());
                 }
                 match entry.phase {
-                    RunOpening::Opening => return Err(ActivationRefusal::OpeningNotHeld),
+                    RunOpening::Opening(_) => {
+                        return Err(self.opening_refusal(&attempts, identity).activation());
+                    }
                     RunOpening::Active => return Err(ActivationRefusal::AlreadyActive),
                     RunOpening::Held(_) => {}
                 }
@@ -95,7 +98,7 @@ impl OwnerOpenings {
                 let RunOpening::Held(held) =
                     std::mem::replace(&mut entry.phase, RunOpening::Active)
                 else {
-                    return Err(ActivationRefusal::OpeningNotHeld);
+                    return Err(self.opening_refusal(&attempts, identity).activation());
                 };
                 (
                     run.generation,

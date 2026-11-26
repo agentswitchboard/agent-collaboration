@@ -12,7 +12,11 @@ use tokio::sync::mpsc;
 #[derive(Default)]
 pub(crate) struct RestoreUpdates(Mutex<BTreeMap<TransportRun, RestoreUpdateTap>>);
 
+#[derive(Clone)]
+pub(crate) struct RestoreTapStamp(Arc<()>);
+
 struct RestoreUpdateTap {
+    stamp: RestoreTapStamp,
     session: String,
     updates: Option<mpsc::UnboundedSender<Dispatch>>,
     awaiting_reply: bool,
@@ -23,20 +27,22 @@ impl RestoreUpdates {
         &self,
         run: TransportRun,
         session: String,
-    ) -> mpsc::UnboundedReceiver<Dispatch> {
+    ) -> (RestoreTapStamp, mpsc::UnboundedReceiver<Dispatch>) {
         let (send, receive) = mpsc::unbounded_channel();
+        let stamp = RestoreTapStamp(Arc::default());
         self.0
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .insert(
                 run,
                 RestoreUpdateTap {
+                    stamp: stamp.clone(),
                     session,
                     updates: Some(send),
                     awaiting_reply: true,
                 },
             );
-        receive
+        (stamp, receive)
     }
 
     pub(crate) fn retire(&self, run: TransportRun) {
@@ -49,9 +55,22 @@ impl RestoreUpdates {
         }
     }
 
-    pub(crate) fn reply_settled(&self, run: TransportRun) {
+    pub(crate) fn discard_unoffered(&self, run: TransportRun, stamp: &RestoreTapStamp) {
         let mut taps = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(tap) = taps.get_mut(&run) {
+        if taps
+            .get(&run)
+            .is_some_and(|tap| Arc::ptr_eq(&tap.stamp.0, &stamp.0))
+        {
+            taps.remove(&run);
+        }
+    }
+
+    pub(crate) fn reply_settled(&self, run: TransportRun, stamp: &RestoreTapStamp) {
+        let mut taps = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(tap) = taps
+            .get_mut(&run)
+            .filter(|tap| Arc::ptr_eq(&tap.stamp.0, &stamp.0))
+        {
             tap.awaiting_reply = false;
             if tap.updates.is_none() {
                 taps.remove(&run);
@@ -127,3 +146,7 @@ impl HandleDispatchFrom<Agent> for OwnerRestoreUpdateRouter {
         "OwnerRestoreUpdateRouter"
     }
 }
+
+#[cfg(test)]
+#[path = "owner_restore_updates_test.rs"]
+mod tests;

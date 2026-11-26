@@ -169,6 +169,10 @@ impl<Frame> AcpTransport<Frame> {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    pub(crate) fn writer_has_stopped(&self) -> bool {
+        self.ordered.is_closed()
+    }
+
     pub fn open_route(&self, run: TransportRun, session: String) {
         let mut state = self.state();
         state.routes.entry(run).or_insert(ConnectionRoute {

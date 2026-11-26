@@ -3,8 +3,8 @@
 use crate::LifecycleMove::*;
 use crate::{
     ActivationRefusal, CloseAttempt, CloseFact, CloseUncertainty, CreatedSettingsFailure,
-    FailedProviderSetting, HarnessSessionId, InvalidRequestedSetting, LifecycleMove,
-    LifecycleRefusal, OpeningFailure, ProviderSettingKind, ProviderWireFailure,
+    FailedProviderSetting, HarnessSessionId, HeldOpeningKind, InvalidRequestedSetting,
+    LifecycleMove, LifecycleRefusal, OpeningFailure, ProviderSettingKind, ProviderWireFailure,
     ProviderWireFailureKind, RestoreModeOutcome, RestoreSettingRefusal, RunAttempt,
     SessionGeneration, SettingValueId, WriterState,
 };
@@ -17,10 +17,13 @@ fn immediate_refusals_name_only_the_moves_available_from_their_state() {
         Encoding,
         Writer(WriterState::Full),
         Writer(WriterState::Stopped),
+        ConnectionRetired,
         RouteUnavailable,
         RouteClosing,
         AttemptMismatch,
         OpeningInProgress,
+        OpeningAlreadyHeld(HeldOpeningKind::Create),
+        OpeningAlreadyHeld(HeldOpeningKind::Restore),
         OpeningNotHeld,
         SettingValueNotOffered,
         SettingSetterUnavailable,
@@ -31,11 +34,12 @@ fn immediate_refusals_name_only_the_moves_available_from_their_state() {
         let moves: &[LifecycleMove] = match refusal {
             Encoding => &[CorrectRequest],
             Writer(WriterState::Full) => &[WaitForWriter],
-            Writer(WriterState::Stopped) => &[StopOwner],
+            Writer(WriterState::Stopped) | ConnectionRetired => &[StopOwner],
             RouteUnavailable => &[Reopen],
             RouteClosing => &[WaitForClose],
             AttemptMismatch => &[CorrectRequest],
             OpeningInProgress => &[WaitForOpening],
+            OpeningAlreadyHeld(_) => &[ContinueHeldOpening],
             OpeningNotHeld => &[Reopen],
             SettingValueNotOffered => &[CorrectRequest],
             SettingSetterUnavailable => &[ReportUnavailable],
@@ -108,20 +112,27 @@ fn opening_and_activation_refusals_name_only_reachable_moves() {
     }
     for refusal in [
         ActivationRefusal::ConnectionRetired,
+        ActivationRefusal::WriterStopped,
         ActivationRefusal::AttemptMismatch,
         ActivationRefusal::OpeningNotHeld,
+        ActivationRefusal::OpeningInProgress,
+        ActivationRefusal::OpeningAlreadyHeld(HeldOpeningKind::Create),
+        ActivationRefusal::OpeningAlreadyHeld(HeldOpeningKind::Restore),
+        ActivationRefusal::OperationNotOffered,
         ActivationRefusal::AlreadyActive,
         ActivationRefusal::RouteUnavailable,
         ActivationRefusal::ReaderUnavailable,
     ] {
         let moves: &[LifecycleMove] = match refusal {
-            ActivationRefusal::ConnectionRetired => &[StopOwner],
+            ActivationRefusal::ConnectionRetired | ActivationRefusal::WriterStopped => &[StopOwner],
             ActivationRefusal::AttemptMismatch => &[CorrectRequest],
-            ActivationRefusal::OpeningNotHeld => &[ReportUnavailable],
+            ActivationRefusal::OpeningNotHeld => &[Reopen],
+            ActivationRefusal::OpeningInProgress => &[WaitForOpening],
+            ActivationRefusal::OpeningAlreadyHeld(_) => &[ContinueHeldOpening],
             ActivationRefusal::AlreadyActive => &[KeepActiveRun, Retire],
-            ActivationRefusal::RouteUnavailable | ActivationRefusal::ReaderUnavailable => {
-                &[ReportUnavailable]
-            }
+            ActivationRefusal::OperationNotOffered
+            | ActivationRefusal::RouteUnavailable
+            | ActivationRefusal::ReaderUnavailable => &[ReportUnavailable],
         };
         assert_eq!(
             refusal.valid_moves(),

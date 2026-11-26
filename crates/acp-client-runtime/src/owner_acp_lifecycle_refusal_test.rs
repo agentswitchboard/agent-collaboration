@@ -1,10 +1,16 @@
 //! Reachable opening refusals at ACP's ordered writer.
 
 use super::*;
-use crate::owner_session_setting::tests::ConnectionCatalogueBehavior;
-use provider_session_machines::harness_lifecycle::{
-    EventPort, EventSendFuture, SessionLifecycleFact,
+use crate::{
+    OwnerApprovalBindings,
+    fixture_policy::{FixturePayloads, FixturePolicy},
+    owner_session_setting::tests::ConnectionCatalogueBehavior,
 };
+use provider_session_machines::harness_lifecycle::{
+    CallbackAdmission, EventPort, EventSendFuture, HarnessOwnerEvents, HarnessProvider,
+    SessionLifecycleFact,
+};
+use session_event_model::ProviderAuthStatus;
 use std::num::NonZeroUsize;
 use switchboard_harness_contracts::{
     ConnectionEpoch, LifecycleMove, OwnerIncarnation, ReservedReply, WriterState,
@@ -12,6 +18,16 @@ use switchboard_harness_contracts::{
 use tokio::sync::oneshot;
 
 struct IgnoreObservations;
+
+impl HarnessOwnerEvents<ProviderAuthStatus> for IgnoreObservations {
+    fn report_harness_gone(&self) -> EventSendFuture<'_> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn report_connection_auth(&self, _: ProviderAuthStatus) -> CallbackAdmission {
+        CallbackAdmission::Admitted
+    }
+}
 
 impl EventPort<SessionLifecycleFact> for IgnoreObservations {
     fn send<'a>(&'a self, _: SessionLifecycleFact) -> EventSendFuture<'a>
@@ -33,6 +49,81 @@ impl<Fact: Send> ReservedReply<Fact> for Reply<Fact> {
     }
 }
 
+struct NoInteractions;
+
+impl crate::InteractionPort for NoInteractions {
+    type Context = CancellationToken;
+    type OperationId = ();
+
+    fn operation_id(_: &Self::Context) -> Self::OperationId {}
+
+    fn binding_retirement(context: &Self::Context) -> CancellationToken {
+        context.clone()
+    }
+}
+
+#[tokio::test]
+async fn an_empty_bound_opening_on_a_stopped_writer_offers_only_stop_owner() {
+    let owner = OwnerAddress {
+        incarnation: OwnerIncarnation(Uuid::now_v7()),
+        connection_epoch: ConnectionEpoch(Uuid::now_v7()),
+    };
+    let (wire, output) =
+        OwnerAcpWire::new(NonZeroUsize::MIN, Arc::new(ConnectionCatalogueBehavior));
+    let connection_retired = CancellationToken::new();
+    let tasks = TaskTracker::new();
+    let approvals = OwnerApprovalBindings::<FixturePayloads<NoInteractions>>::new(
+        Arc::default(),
+        Arc::new(FixturePolicy(Arc::new(NoInteractions))),
+        connection_retired.clone(),
+    );
+    let provider = super::super::OwnerAcpProvider::new(
+        Arc::new(wire),
+        approvals,
+        Arc::new(router_clock::ManualClock::new(chrono::DateTime::UNIX_EPOCH)),
+        tasks.clone(),
+        connection_retired.clone(),
+    );
+    let mut binding = provider.bind(owner, Arc::new(IgnoreObservations));
+    drop(output);
+    assert!(
+        !connection_retired.is_cancelled(),
+        "only the real ordered writer has stopped"
+    );
+    let absent = CreateAttempt(Uuid::now_v7());
+    let Held::NotHeld(refusal) = binding.opening_is_held(OpenAttempt::Create(absent)) else {
+        panic!("empty binding unexpectedly holds a create");
+    };
+    assert_eq!(
+        refusal,
+        LifecycleRefusal::Writer(WriterState::Stopped),
+        "an empty bound opening on a stopped writer must not advertise reopen"
+    );
+    assert_eq!(refusal.valid_moves(), &[LifecycleMove::StopOwner]);
+    let (reply, _answer) = oneshot::channel();
+    assert_eq!(
+        binding.open(
+            OpenRequest::Create {
+                owner,
+                attempt: CreateAttempt(Uuid::now_v7()),
+                setup: OpenSetup {
+                    cwd: std::path::PathBuf::from("/"),
+                    work_roots: Default::default(),
+                    scratch_folder: None
+                },
+                requested: Default::default(),
+            },
+            Box::new(Reply(reply)),
+            Arc::new(IgnoreObservations),
+            Box::pin(std::future::pending()),
+        ),
+        Err(refusal)
+    );
+    drop(binding);
+    tasks.close();
+    tasks.wait().await;
+}
+
 #[tokio::test]
 async fn a_lost_receipt_and_a_stopped_writer_do_not_offer_same_binding_reopen() {
     let owner = OwnerAddress {
@@ -48,6 +139,7 @@ async fn a_lost_receipt_and_a_stopped_writer_do_not_offer_same_binding_reopen() 
         Arc::new(OnceLock::new()),
         Arc::new(router_clock::ManualClock::new(chrono::DateTime::UNIX_EPOCH)),
         tasks.clone(),
+        CancellationToken::new(),
     );
     let open = |generation, reply| {
         let run = RunAttempt {
@@ -105,8 +197,15 @@ async fn a_lost_receipt_and_a_stopped_writer_do_not_offer_same_binding_reopen() 
     assert_eq!(run, first);
     assert_eq!(failure, OpeningFailure::OutcomeUnknown);
     assert_eq!(failure.valid_moves(), &[LifecycleMove::KeepOutcomeUnknown]);
-
-    openings.retire(first.generation);
+    assert!(
+        lock(&openings.attempts).runs.is_empty(),
+        "a failed receipt leaves no opening that could still answer"
+    );
+    assert_eq!(
+        openings.opening_is_held(OpenAttempt::Restore(first)),
+        Held::NotHeld(LifecycleRefusal::Writer(WriterState::Stopped)),
+        "an empty table on a closed writer must direct the owner to stop"
+    );
     for generation in [2, 3] {
         let (reply, _received) = oneshot::channel();
         let (_, offered) = open(generation, reply);
@@ -114,6 +213,87 @@ async fn a_lost_receipt_and_a_stopped_writer_do_not_offer_same_binding_reopen() 
         assert_eq!(refusal, LifecycleRefusal::Writer(WriterState::Stopped));
         assert_eq!(refusal.valid_moves(), &[LifecycleMove::StopOwner]);
     }
+    drop(openings);
+    tasks.close();
+    tasks.wait().await;
+}
+
+#[tokio::test]
+async fn the_retired_task_cannot_clean_up_a_reused_opening_stamp() {
+    let owner = OwnerAddress {
+        incarnation: OwnerIncarnation(Uuid::now_v7()),
+        connection_epoch: ConnectionEpoch(Uuid::now_v7()),
+    };
+    let (wire, _output) = OwnerAcpWire::new(
+        NonZeroUsize::new(2).expect("two possible wire frames"),
+        Arc::new(ConnectionCatalogueBehavior),
+    );
+    let tasks = TaskTracker::new();
+    let openings = OwnerOpenings::new(
+        owner,
+        Arc::new(wire),
+        Arc::new(OnceLock::new()),
+        Arc::new(router_clock::ManualClock::new(chrono::DateTime::UNIX_EPOCH)),
+        tasks.clone(),
+        CancellationToken::new(),
+    );
+    let run = RunAttempt {
+        generation: SessionGeneration::from_number(1),
+        attempt: LoadAttempt(Uuid::now_v7()),
+    };
+    let open = || {
+        let (reply, answer) = oneshot::channel();
+        openings
+            .open(
+                OpenRequest::Restore {
+                    owner,
+                    run,
+                    session: HarnessSessionId("saved-session".into()),
+                    via: RestoreVia::Load,
+                    setup: OpenSetup {
+                        cwd: std::path::PathBuf::from("/"),
+                        work_roots: Default::default(),
+                        scratch_folder: None,
+                    },
+                    requested_mode: None,
+                },
+                Box::new(Reply(reply)),
+                Arc::new(IgnoreObservations),
+                Box::pin(std::future::pending()),
+            )
+            .expect("enqueue the exact restore");
+        answer
+    };
+    let old = open();
+    openings.retire(run.generation);
+    let replacement = open();
+    // The retired task could not run until the current-thread caller yielded.
+    assert!(old.await.is_err());
+    assert_eq!(
+        openings.opening_is_held(OpenAttempt::Restore(run)),
+        Held::NotHeld(LifecycleRefusal::OpeningInProgress),
+        "the stale task must not remove the replacement with the same generation and attempt"
+    );
+    let (close_reply, _close) = oneshot::channel();
+    let close = RunAttempt {
+        generation: run.generation,
+        attempt: provider_session_machines::session_lifecycle_machine::CloseAttempt(Uuid::now_v7()),
+    };
+    assert_eq!(
+        openings
+            .wire
+            .enqueue_lifecycle_close(
+                owner.incarnation,
+                close,
+                "saved-session".into(),
+                Box::new(Reply(close_reply)),
+            )
+            .map_err(super::super::lifecycle_wire_refusal),
+        Err(LifecycleRefusal::Writer(WriterState::Full)),
+        "the replacement route still exists, even though its writer has no spare slot"
+    );
+    openings.retire(run.generation);
+    assert!(replacement.await.is_err());
     drop(openings);
     tasks.close();
     tasks.wait().await;
