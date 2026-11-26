@@ -1,4 +1,4 @@
-//! Deterministic test pauses for the ordered writer's last question and publication.
+//! Deterministic test pauses for offers, the ordered writer's last question and publication.
 
 use std::sync::{Mutex, PoisonError, mpsc};
 use switchboard_harness_contracts::{DispatchAuthorization, InputId};
@@ -7,6 +7,7 @@ use tokio::sync::oneshot;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HandoverPausePoint {
     BeforeOffer,
+    AfterOffer,
     BeforeQuestion,
     BeforePublication,
 }

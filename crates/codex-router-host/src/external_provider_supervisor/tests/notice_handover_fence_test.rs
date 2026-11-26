@@ -54,7 +54,7 @@ impl NoticePath {
             (Self::Direct, false) => {
                 rig.supervisor.shutdown().await.expect("shutdown");
                 assert!(!rig.receipt.with_extension("prompt").is_file());
-                assert!(!rig.receipt.exists(), "expired notice reached the peer");
+                assert!(!rig.receipt.exists(), "unexpected notice reached the peer");
             }
             _ => {
                 finish_notice_turn(rig).await;
@@ -120,6 +120,50 @@ async fn direct_notice_at_its_exact_cutoff_is_refused_inside_real_acp_handover()
 #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
 async fn steered_notice_at_its_exact_cutoff_is_refused_inside_real_acp_handover() {
     notice_cutoff_case(NoticePath::ExactSteer).await;
+}
+
+async fn withdrawn_notice_after_offer_case(path: NoticePath) {
+    use switchboard_message_custody::handover::NoticePreTakeRefusal;
+
+    let clock = Arc::new(ManualClock::new(chrono::DateTime::UNIX_EPOCH));
+    let rig = managed_notice_fixture(
+        Arc::clone(&clock),
+        path.script(false),
+        collaboration_protocol::ProviderKind::ClaudeCode,
+    )
+    .await;
+    let authority = Arc::new(NoticeAuthority::new());
+    let (adapter, recipient, notice) = path.claim(&rig, &clock, Arc::clone(&authority)).await;
+    let writer = adapter.ready(&recipient).await.expect("ready notice");
+    let pause = pause(&rig, &notice, HandoverPausePoint::AfterOffer);
+    let offer = tokio::spawn(writer.offer(notice));
+
+    let authorization = pause.reached.await.expect("ACP recorded the offer");
+    path.assert_authorization(authorization.target);
+    assert!(
+        !authority.read_guard_held_for_test(),
+        "the claim guard must be free for withdrawal to win"
+    );
+    authority.close();
+    pause.release.send(()).expect("resume after withdrawal");
+
+    // The notice adapter reports RejectedBeforeTake only if its take timestamp is absent.
+    assert_eq!(
+        offer.await.expect("offer settled"),
+        NoticeWriteOutcome::DefinitelyNotWritten(NoticePreTakeRefusal::RejectedBeforeTake),
+        "{path:?}: a notice withdrawn after offer cannot be taken"
+    );
+    path.finish(&rig, false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+async fn direct_notice_withdrawn_after_offer_is_not_taken() {
+    withdrawn_notice_after_offer_case(NoticePath::Direct).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+async fn steered_notice_withdrawn_after_offer_is_not_taken() {
+    withdrawn_notice_after_offer_case(NoticePath::ExactSteer).await;
 }
 
 async fn notice_withdrawal_case(path: NoticePath) {

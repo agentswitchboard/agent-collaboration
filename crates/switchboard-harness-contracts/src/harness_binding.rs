@@ -1,4 +1,4 @@
-//! The controller's work calls for one harness attachment.
+//! The controller's work calls for one harness connection.
 
 use std::{future::Future, pin::Pin};
 

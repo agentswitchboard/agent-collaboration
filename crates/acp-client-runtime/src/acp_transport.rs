@@ -415,10 +415,20 @@ impl<Frame> AcpTransport<Frame> {
         if other_offer_stands {
             return Err(TransportOfferRefusal::OtherAuthorizationOffered);
         }
+        #[cfg(all(debug_assertions, feature = "test-observation"))]
+        let recorded_authorization = authorization.clone();
         state.slot.insert(
             authorization,
             AuthorizationSlot::Offered { frame, new_turn },
         );
+        #[cfg(all(debug_assertions, feature = "test-observation"))]
+        {
+            drop(state);
+            self.handover_test.reach(
+                crate::handover_test_control::HandoverPausePoint::AfterOffer,
+                &recorded_authorization,
+            );
+        }
         Ok(())
     }
 
