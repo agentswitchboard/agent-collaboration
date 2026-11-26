@@ -167,6 +167,7 @@ impl CommandFailure {
             Kind::InvalidRequest => Self::InvalidSelection,
             Kind::NotFound | Kind::ProviderSessionNotFound => Self::SessionNotFound,
             Kind::Busy => Self::Busy,
+            Kind::NoActiveTurn => Self::NoActiveTurn,
             Kind::UnsupportedCapability => Self::Unsupported,
             Kind::SettingsUnresolved => Self::SettingsUnresolved,
             Kind::InvalidSetting => match &failure.invalid_setting {

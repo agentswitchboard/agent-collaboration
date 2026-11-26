@@ -21,6 +21,8 @@ pub(super) enum SteerPeerAction {
     PassedLimit,
     MalformedReply,
     PromptRequired,
+    PromptRequiredRefused,
+    EndBeforeMarkReceipt,
 }
 
 pub(super) fn steer_script(
@@ -28,25 +30,32 @@ pub(super) fn steer_script(
     receipt: &Path,
     action: SteerPeerAction,
 ) -> AcpFixtureScript {
-    let script = script
-        .expect_request(
-            "foreground",
-            "session/prompt",
-            json!({"prompt": [{"type":"text","text":FOREGROUND}]}),
-        )
-        .expect_recorded_request(
+    let script = script.expect_request(
+        "foreground",
+        "session/prompt",
+        json!({"prompt": [{"type":"text","text":FOREGROUND}]}),
+    );
+    let script = if matches!(action, SteerPeerAction::EndBeforeMarkReceipt) {
+        script.wait_for_socket_signal(&receipt.with_extension("steer.sock"))
+    } else {
+        script.expect_recorded_request(
             "steer",
             "_session/steering",
             json!({"prompt": [{"type":"text","text":STEER}]}),
             &receipt.with_extension("ordinary-steer"),
         )
-        .respond("foreground", json!({"stopReason":"end_turn"}));
+    };
+    let script = script.respond("foreground", json!({"stopReason":"end_turn"}));
     match action {
         SteerPeerAction::LostReply | SteerPeerAction::PassedLimit => script
             .wait_for_socket_signal(&receipt.with_extension("steer.sock"))
             .exit(),
         SteerPeerAction::MalformedReply => {
             script.respond("steer", json!({"outcome":"invalidFixtureOutcome"}))
+        }
+        SteerPeerAction::EndBeforeMarkReceipt => script,
+        SteerPeerAction::PromptRequiredRefused => {
+            script.respond("steer", json!({"outcome":"promptRequired"}))
         }
         SteerPeerAction::PromptRequired => script
             .respond("steer", json!({"outcome":"promptRequired"}))
@@ -268,7 +277,7 @@ async fn prompt_required_does_not_offer_the_replacement_until_the_undo_receipt()
     let supervisor = Arc::clone(&rig.supervisor);
     let attempt = tokio::spawn(async move {
         supervisor
-            .submit_owned_delivery(request, MessageDelivery::Steer)
+            .submit_owned_delivery(request, MessageDelivery::Auto)
             .await
     });
     let original = first.reached.await.expect("original steer");
@@ -336,5 +345,100 @@ async fn prompt_required_does_not_offer_the_replacement_until_the_undo_receipt()
         "_session/steering",
     );
     assert_one_request(&rig.receipt.with_extension("replacement"), "session/prompt");
+    assert!(!rig.receipt.exists(), "the peer saw unexpected traffic");
+}
+
+async fn assert_named_steer_refusal(rig: &SteeringSession, operation_id: OperationId) {
+    use collaboration_contracts::ProviderConversationBackend as _;
+    use collaboration_protocol::{
+        ConversationOperationFailureKind, ConversationOperationFailureStage,
+        ConversationOperationWaitRequest, PositiveSeconds, ProviderOperationEffect,
+    };
+
+    let failure = rig
+        .supervisor
+        .wait(ConversationOperationWaitRequest {
+            operation_id,
+            timeout_seconds: PositiveSeconds::try_from(2).expect("fixture wait budget"),
+        })
+        .await
+        .expect_err("named steer refuses once the turn is gone");
+    assert_eq!(failure.kind, ConversationOperationFailureKind::NoActiveTurn);
+    assert_eq!(failure.stage, ConversationOperationFailureStage::Dispatch);
+    assert_eq!(failure.effect, ProviderOperationEffect::None);
+    assert_eq!(
+        String::from(failure.message),
+        "no running turn; send a prompt, or use auto"
+    );
+}
+
+#[tokio::test]
+async fn named_steer_is_refused_without_replacement_when_the_harness_requires_a_prompt() {
+    let rig = managed_notice_fixture(
+        Arc::new(ManualClock::new(chrono::DateTime::UNIX_EPOCH)),
+        NoticeScript::OrdinarySteer(SteerPeerAction::PromptRequiredRefused),
+        collaboration_protocol::ProviderKind::ClaudeCode,
+    )
+    .await;
+    take_foreground(&rig).await;
+    let request = request(&rig, STEER);
+    let operation = request.operation_id.clone();
+
+    rig.supervisor
+        .prompt_contents(request)
+        .await
+        .expect("named steer admitted while running");
+    assert_named_steer_refusal(&rig, operation).await;
+
+    rig.supervisor.shutdown().await.expect("fixture shutdown");
+    assert_one_request(
+        &rig.receipt.with_extension("ordinary-steer"),
+        "_session/steering",
+    );
+    assert!(!rig.receipt.exists(), "the peer saw unexpected traffic");
+}
+
+#[tokio::test]
+async fn named_steer_is_refused_when_the_turn_ends_before_its_mark_returns() {
+    let rig = managed_notice_fixture(
+        Arc::new(ManualClock::new(chrono::DateTime::UNIX_EPOCH)),
+        NoticeScript::OrdinarySteer(SteerPeerAction::EndBeforeMarkReceipt),
+        collaboration_protocol::ProviderKind::ClaudeCode,
+    )
+    .await;
+    let listener = tokio::net::UnixListener::bind(rig.receipt.with_extension("steer.sock"))
+        .expect("foreground release socket");
+    take_foreground(&rig).await;
+    let request = request(&rig, STEER);
+    let operation = request.operation_id.clone();
+    let (saved, release) = rig
+        .supervisor
+        .pause_steer_mark_receipt_for_test(&rig.target, operation.clone());
+    let supervisor = Arc::clone(&rig.supervisor);
+    let admitted = tokio::spawn(async move { supervisor.prompt_contents(request).await });
+    let (peer, _) = listener
+        .accept()
+        .await
+        .expect("peer waiting to end the foreground");
+
+    saved.await.expect("steer mark saved before release");
+    drop(peer);
+    let owner = rig
+        .supervisor
+        .session_owner_for(&rig.target)
+        .expect("session owner");
+    owner
+        .snapshots()
+        .wait_for(|snapshot| snapshot.turn == SessionTurn::Idle)
+        .await
+        .expect("foreground ended before the mark returned");
+    release.send(()).expect("return the saved mark");
+    admitted
+        .await
+        .expect("submission task")
+        .expect("started with a running turn");
+    assert_named_steer_refusal(&rig, operation).await;
+
+    rig.supervisor.shutdown().await.expect("fixture shutdown");
     assert!(!rig.receipt.exists(), "the peer saw unexpected traffic");
 }

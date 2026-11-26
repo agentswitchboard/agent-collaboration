@@ -32,7 +32,7 @@ use provider_session_machines::{
         PublicationFact, RefusedWorkMove, ReplyAdmission, ReservedWorkReply, RestoreFailure,
         RestoreLoadReadback, RestoreModeOutcome, RestorePreparation, RunAttempt, SessionOwnerReply,
         SessionPublication, SessionWireRequest, SessionWireResult, SettingEvidence, SettingOffer,
-        SteerIdlePolicy, TurnMembership, WireOutcome, WorkOfferRefusal, WriterState,
+        SteerIdlePolicy, SteerOrigin, TurnMembership, WireOutcome, WorkOfferRefusal, WriterState,
     },
     session_setting_machine::SettingValueId,
 };
@@ -348,7 +348,7 @@ impl SessionOwnerExecution {
         completions: &OwnerCompletionPort,
     ) -> Result<Option<OwnerEvent>, OwnerTaskError> {
         let notice = match &work {
-            AuthorizedWork::Prompt(input) | AuthorizedWork::Steer(input) => {
+            AuthorizedWork::Prompt(input) | AuthorizedWork::Steer { input, .. } => {
                 self.calls.notice(&input.input)
             }
             AuthorizedWork::Cancel(_) | AuthorizedWork::Setting { .. } => None,
@@ -388,7 +388,7 @@ impl SessionOwnerExecution {
                 }
                 offered
             }
-            AuthorizedWork::Steer(input) => {
+            AuthorizedWork::Steer { input, origin } => {
                 let approver = self
                     .routes
                     .get(&input.generation)
@@ -400,10 +400,9 @@ impl SessionOwnerExecution {
                     return Ok(Some(definitely_unsent(authorization)));
                 };
                 let completion = reserve_work_reply(completions, owner)?;
-                let idle = if notice.is_some() {
-                    SteerIdlePolicy::Refuse
-                } else {
-                    SteerIdlePolicy::AllowOwnerPrompt
+                let idle = match origin {
+                    SteerOrigin::Auto => SteerIdlePolicy::AllowOwnerPrompt,
+                    SteerOrigin::Named | SteerOrigin::Notice => SteerIdlePolicy::Refuse,
                 };
                 self.work_binding.offer_steer(
                     authorization.clone(),

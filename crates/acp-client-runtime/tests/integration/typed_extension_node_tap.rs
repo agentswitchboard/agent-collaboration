@@ -111,6 +111,7 @@ async fn steer_while_idle(scenario: &str) -> SteerRun {
             SESSION_ID.to_owned(),
             InputId::new("tap-steer").expect("input id"),
             submission("steer text"),
+            provider_session_machines::session_owner::SteerOrigin::Named,
         )
         .await;
     let events = drain_events(&mut wire.events);
@@ -159,6 +160,7 @@ async fn steer_while_running(scenario: &str) -> SteerRun {
             SESSION_ID.to_owned(),
             InputId::new("tap-steer").expect("input id"),
             submission("steer text"),
+            provider_session_machines::session_owner::SteerOrigin::Auto,
         )
         .await;
     let events = drain_events(&mut wire.events);
@@ -356,22 +358,18 @@ async fn node_tap_steering_injected_while_running() {
     case.finish(&row).assert_settled();
 }
 
-/// An explicit steer while idle uses the normal prompt command and the same input ID.
+/// An explicit steer while idle never reaches the ACP peer.
 #[tokio::test]
-async fn node_tap_idle_steering_uses_one_normal_prompt() {
+async fn node_tap_idle_steering_is_refused_before_the_wire() {
     let run = steer_while_idle("steer-idle-prompt").await;
     assert!(matches!(
         run.result,
-        Ok(ProviderSteeringOutcome::StartedNewTurn)
+        Err(ExternalProviderRuntimeError::LocalBusy { answer })
+            if answer == "no running turn; send a prompt, or use auto"
     ));
     assert!(frames_of(&run.capture, AgentSide::Received, "_session/steering").is_empty());
-    let prompts = frames_of(&run.capture, AgentSide::Received, "session/prompt");
-    assert_eq!(prompts.len(), 1);
-    assert_eq!(
-        prompts[0]["params"],
-        serde_json::json!({ "sessionId":SESSION_ID, "prompt":[{"type":"text", "text":"steer text"}] })
-    );
-    assert!(run.events.iter().any(|event| matches!(event, SessionEvent::TurnStarted { input_id, .. } if input_id.as_str() == "tap-steer")));
+    assert!(frames_of(&run.capture, AgentSide::Received, "session/prompt").is_empty());
+    assert!(!run.events.iter().any(|event| matches!(event, SessionEvent::TurnStarted { input_id, .. } if input_id.as_str() == "tap-steer")));
 }
 
 /// The definite promptRequired extension reply leads to one ordinary prompt.

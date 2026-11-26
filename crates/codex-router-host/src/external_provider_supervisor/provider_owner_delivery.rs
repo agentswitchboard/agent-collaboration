@@ -172,7 +172,7 @@ impl ExternalProviderSupervisor {
     ) -> Result<crate::session_owner_calls::InputAcceptance, super::ConversationOperationFailure>
     {
         use crate::session_owner_calls::InputAcceptance;
-        use provider_session_machines::session_owner::SessionOwnerCommand;
+        use provider_session_machines::session_owner::{SessionOwnerCommand, SteerOrigin};
 
         let deadline = self.admission_deadline();
         let target = request.target.clone();
@@ -350,10 +350,12 @@ impl ExternalProviderSupervisor {
             DeliveryAdmission::Requested(MessageDelivery::Steer) => SessionOwnerCommand::Steer {
                 input: input.clone(),
                 supported: steering_supported,
+                origin: SteerOrigin::Named,
             },
             DeliveryAdmission::SteerExisting(_) => SessionOwnerCommand::SteerExisting {
                 input: input.clone(),
                 supported: steering_supported,
+                origin: SteerOrigin::Auto,
             },
             #[cfg(test)]
             DeliveryAdmission::Direct => SessionOwnerCommand::Prompt {
@@ -369,6 +371,7 @@ impl ExternalProviderSupervisor {
                 NoticePlacement::Steer(_) => SessionOwnerCommand::SteerExisting {
                     input: input.clone(),
                     supported: steering_supported,
+                    origin: SteerOrigin::Notice,
                 },
             },
         };

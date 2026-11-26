@@ -249,6 +249,12 @@ pub(super) fn owner_failure(
         Some(SessionOwnerRefusal::CannotSteer) => {
             Some((ConversationOperationFailureKind::CannotSteer, None))
         }
+        Some(SessionOwnerRefusal::NoActiveTurn) => Some((
+            ConversationOperationFailureKind::NoActiveTurn,
+            Some(
+                provider_session_machines::session_owner::RevokeReason::NoActiveTurn.human_phrase(),
+            ),
+        )),
         Some(SessionOwnerRefusal::SettingsUnresolved) => {
             Some((ConversationOperationFailureKind::SettingsUnresolved, None))
         }

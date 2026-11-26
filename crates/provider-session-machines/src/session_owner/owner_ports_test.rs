@@ -705,9 +705,11 @@ fn t2_definite_prompt_required_can_replace_the_steer_once_after_durable_unmark()
     };
     command(
         &mut state,
-        SessionOwnerCommand::Steer {
+        SessionOwnerCommand::Prompt {
             input: steering.clone(),
-            supported: true,
+            admission: PromptAdmission::Auto {
+                steering_supported: true,
+            },
         },
     );
     let marked = apply(
@@ -758,6 +760,65 @@ fn t2_definite_prompt_required_can_replace_the_steer_once_after_durable_unmark()
             replacement_turn,
         }),
     );
+}
+
+#[test]
+fn t2_named_steer_does_not_prompt_after_the_harness_requires_a_prompt() {
+    let mut state = fresh();
+    let run = restore_live(&mut state, 1);
+    let foreground = input(run.generation, 2);
+    let foreground_key = send_prompt(&mut state, &foreground);
+    let steering = OwnerInput {
+        turn: foreground.turn,
+        ..input(run.generation, 3)
+    };
+    command(
+        &mut state,
+        SessionOwnerCommand::Steer {
+            input: steering.clone(),
+            supported: true,
+            origin: SteerOrigin::Named,
+        },
+    );
+    let marked = apply(
+        &mut state,
+        OwnerEvent::Store(SessionStoreResult::SteerDispatch {
+            input: steering.clone(),
+            outcome: EffectOutcome::Applied,
+        }),
+    );
+    let old = authorization(&marked);
+    assert!(marked.contains(&OwnerEffect::Authorize {
+        authorization: old.clone(),
+        work: AuthorizedWork::Steer {
+            input: steering.clone(),
+            origin: SteerOrigin::Named
+        },
+    }));
+    apply(
+        &mut state,
+        OwnerEvent::Dispatch(DispatchResult::Taken(old.clone())),
+    );
+    end_turn(&mut state, foreground_key);
+
+    let settled = apply(
+        &mut state,
+        OwnerEvent::Dispatch(DispatchResult::SteerNeedsPrompt(old)),
+    );
+
+    assert!(
+        settled.contains(&OwnerEffect::Reply(SessionOwnerReply::InputUnsent {
+            input: steering,
+            reason: RevokeReason::NoActiveTurn,
+        }))
+    );
+    assert!(!settled.iter().any(|effect| matches!(
+        effect,
+        OwnerEffect::Authorize { .. }
+            | OwnerEffect::Store(
+                SessionStoreRequest::MarkDispatch(_) | SessionStoreRequest::MarkQueuedDispatch(_)
+            )
+    )));
 }
 
 #[test]

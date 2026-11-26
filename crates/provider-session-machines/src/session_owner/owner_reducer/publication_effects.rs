@@ -65,7 +65,7 @@ impl SessionOwnerState {
             OwnerDeadline::SteerResult(key) => {
                 self.ports.authorizations.get(key).is_some_and(|pending| {
                     pending.status == AuthorizationStatus::Taken
-                        && matches!(pending.work, AuthorizedWork::Steer(_))
+                        && matches!(pending.work, AuthorizedWork::Steer { .. })
                 })
             }
             OwnerDeadline::Publication(id) => self.ports.awaiting_apply.contains(id),
@@ -77,8 +77,13 @@ impl SessionOwnerState {
     fn waiting_for_input(&self, input: &OwnerInput, wait: InputWait) -> bool {
         self.prompts
             .values()
-            .chain(self.steer.iter())
-            .any(|pending| &pending.input == input && pending.wait == wait)
+            .map(|pending| (&pending.input, pending.wait))
+            .chain(
+                self.steer
+                    .iter()
+                    .map(|pending| (&pending.input, pending.wait)),
+            )
+            .any(|(pending, pending_wait)| pending == input && pending_wait == wait)
     }
 
     fn waiting_for_restore(

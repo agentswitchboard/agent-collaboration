@@ -537,6 +537,7 @@ impl CollaborationRejection for ConversationFailure {
             | ConversationOperationFailureKind::ProviderRejected
             | ConversationOperationFailureKind::ProtocolViolation
             | ConversationOperationFailureKind::OutcomeUnknown
+            | ConversationOperationFailureKind::NoActiveTurn
             | ConversationOperationFailureKind::CannotSteer => None,
         }
     }

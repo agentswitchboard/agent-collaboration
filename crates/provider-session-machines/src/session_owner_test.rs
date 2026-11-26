@@ -291,7 +291,10 @@ fn auto_queued_during_restore_steers_when_the_first_prompt_takes_wire() {
     );
     assert!(steer_mark.contains(&OwnerEffect::Authorize {
         authorization: authorization(&steer_mark),
-        work: AuthorizedWork::Steer(exact_steer),
+        work: AuthorizedWork::Steer {
+            input: exact_steer,
+            origin: SteerOrigin::Auto
+        },
     }));
 }
 

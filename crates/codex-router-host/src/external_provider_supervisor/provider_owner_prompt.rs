@@ -272,6 +272,7 @@ impl ExternalProviderSupervisor {
             PromptBusyPolicy::Send(MessageDelivery::Steer) => SessionOwnerCommand::Steer {
                 input: input.clone(),
                 supported: supports_steer,
+                origin: provider_session_machines::session_owner::SteerOrigin::Named,
             },
         };
         owner.remember_approval(
@@ -455,6 +456,8 @@ pub(super) fn retained_prompt(
                     ConversationOperationFailureKind::SettingsUnresolved
                 }
                 RevokeReason::EarlierSendInFlight { .. } => ConversationOperationFailureKind::Busy,
+                RevokeReason::NoActiveTurn => ConversationOperationFailureKind::NoActiveTurn,
+                RevokeReason::RunReplaced => ConversationOperationFailureKind::StaleGeneration,
                 _ => ConversationOperationFailureKind::Unavailable,
             },
             ConversationOperationFailureStage::Dispatch,

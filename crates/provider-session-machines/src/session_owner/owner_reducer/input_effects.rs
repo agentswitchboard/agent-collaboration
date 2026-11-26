@@ -7,9 +7,10 @@ use crate::session_owner::{
     TurnMembership,
 };
 use crate::session_owner::{
-    EffectOutcome, InputWait, LastLiveTurn, OwnerInput, PendingPrompt, PromptAdmission,
-    PromptCompletion, RemoteEffect, SessionDeadline, SessionOwnerEffect, SessionOwnerRefusal,
-    SessionOwnerReply, SessionPublication, SessionStoreRequest, WireOutcome,
+    EffectOutcome, InputWait, LastLiveTurn, OwnerInput, PendingPrompt, PendingSteer,
+    PromptAdmission, PromptCompletion, RemoteEffect, SessionDeadline, SessionOwnerEffect,
+    SessionOwnerRefusal, SessionOwnerReply, SessionPublication, SessionStoreRequest, SteerOrigin,
+    WireOutcome,
 };
 use crate::session_turn_machine::{SessionTurn, TurnId};
 use crate::{SessionGeneration, session_turn_machine::SessionTurnEffect};
@@ -88,13 +89,20 @@ impl OwnerTransition {
         if let SessionTurn::Running { turn } = self.next.turn() {
             match admission {
                 PromptAdmission::Auto { steering_supported } => {
-                    return self
-                        .admit_existing_steer(OwnerInput { turn, ..input }, steering_supported);
+                    return self.admit_existing_steer(
+                        OwnerInput { turn, ..input },
+                        steering_supported,
+                        SteerOrigin::Auto,
+                    );
                 }
                 PromptAdmission::DeliveryAuto {
                     steering_supported: true,
                 } => {
-                    return self.admit_existing_steer(OwnerInput { turn, ..input }, true);
+                    return self.admit_existing_steer(
+                        OwnerInput { turn, ..input },
+                        true,
+                        SteerOrigin::Auto,
+                    );
                 }
                 _ => {}
             }
@@ -157,8 +165,9 @@ impl OwnerTransition {
             .next
             .prompts
             .values()
-            .chain(self.next.steer.iter())
-            .any(|pending| &pending.input.input == input);
+            .map(|pending| &pending.input.input)
+            .chain(self.next.steer.iter().map(|pending| &pending.input.input))
+            .any(|pending| pending == input);
         if known || self.next.ports.admitted_inputs.contains(input) {
             Err(SessionOwnerRefusal::InputAlreadyAdmitted.into())
         } else {
@@ -206,7 +215,7 @@ impl OwnerTransition {
         }
         self.next.prompts.remove(&sequence);
         self.next.ports.admitted_inputs.remove(&input.input);
-        self.admit_existing_steer(input, true)
+        self.admit_existing_steer(input, true, SteerOrigin::Auto)
     }
 
     pub(super) fn selected_skills_current(&self, input: &InputId) -> bool {
@@ -783,18 +792,24 @@ impl OwnerTransition {
             .any(|pending| pending.wait == InputWait::Enqueue && pending.input.turn == turn)
     }
 
-    pub(super) fn admit_steer(&mut self, input: OwnerInput, supported: bool) -> OwnerResult {
-        self.require_live(input.generation)?;
+    pub(super) fn admit_steer(
+        &mut self,
+        input: OwnerInput,
+        supported: bool,
+        origin: SteerOrigin,
+    ) -> OwnerResult {
         if self.next.turn() == SessionTurn::Idle {
+            self.require_live(input.generation)?;
             return Err(SessionOwnerRefusal::NoActiveTurn.into());
         }
-        self.admit_existing_steer(input, supported)
+        self.admit_existing_steer(input, supported, origin)
     }
 
     pub(super) fn admit_existing_steer(
         &mut self,
         input: OwnerInput,
         supported: bool,
+        origin: SteerOrigin,
     ) -> OwnerResult {
         self.require_live(input.generation)?;
         if self.next.turn() != (SessionTurn::Running { turn: input.turn }) {
@@ -816,15 +831,12 @@ impl OwnerTransition {
             return Err(SessionOwnerRefusal::GenerationChanged.into());
         }
         self.next.ports.admitted_inputs.insert(input.input.clone());
-        if self.await_delivery_evidence(&input, DeliveryPlacementKind::Steer) {
-            self.next.steer = Some(PendingPrompt {
-                input,
-                wait: InputWait::Admission,
-                choose_steer_if_a_turn_starts: false,
-                queued: false,
-                parked_mark: None,
-            });
-        } else {
+        self.next.steer = Some(PendingSteer {
+            input: input.clone(),
+            wait: InputWait::Admission,
+            origin,
+        });
+        if !self.await_delivery_evidence(&input, DeliveryPlacementKind::Steer) {
             self.start_steer_mark(input);
         }
         Ok(())
@@ -842,9 +854,13 @@ impl OwnerTransition {
         input: &OwnerInput,
         outcome: EffectOutcome,
     ) -> OwnerResult {
-        if !self.steer_is_pending(input, InputWait::DispatchStore) {
-            return Err(OwnerRejection::IgnoredLate);
-        }
+        let origin = self
+            .next
+            .steer
+            .as_ref()
+            .filter(|pending| &pending.input == input && pending.wait == InputWait::DispatchStore)
+            .map(|pending| pending.origin)
+            .ok_or(OwnerRejection::IgnoredLate)?;
         if outcome != EffectOutcome::Applied {
             // The terminal offer follows any accepted mark in the lane.
             self.next.steer = None;
@@ -852,19 +868,21 @@ impl OwnerTransition {
         } else if self.is_live(input.generation)
             && self.next.turn() == (SessionTurn::Running { turn: input.turn })
         {
-            self.next.steer = Some(PendingPrompt {
+            self.next.steer = Some(PendingSteer {
                 input: input.clone(),
                 wait: InputWait::Enqueue,
-                choose_steer_if_a_turn_starts: false,
-                queued: false,
-                parked_mark: None,
+                origin,
             });
-            self.issue_authorization(AuthorizedWork::Steer(input.clone()))?;
+            self.issue_authorization(AuthorizedWork::Steer {
+                input: input.clone(),
+                origin,
+            })?;
+        } else if origin == SteerOrigin::Named
+            && let Some(reason) = self.named_steer_target_loss(input)
+        {
+            self.unmark_steer_unsent(input, reason);
         } else {
-            self.release(SessionOwnerEffect::Store(
-                SessionStoreRequest::UndoDispatch(input.clone()),
-            ));
-            self.wait_for_steer(input.clone(), InputWait::UndoStore);
+            self.unmark_steer(input);
         }
         Ok(())
     }
@@ -918,13 +936,14 @@ impl OwnerTransition {
     }
 
     fn wait_for_steer(&mut self, input: OwnerInput, wait: InputWait) {
-        self.next.steer = Some(PendingPrompt {
-            input: input.clone(),
-            wait,
-            choose_steer_if_a_turn_starts: false,
-            queued: false,
-            parked_mark: None,
-        });
+        if let Some(pending) = self
+            .next
+            .steer
+            .as_mut()
+            .filter(|pending| pending.input == input)
+        {
+            pending.wait = wait;
+        }
         self.release(SessionOwnerEffect::ArmDeadline(SessionDeadline::Steer {
             input,
             wait,

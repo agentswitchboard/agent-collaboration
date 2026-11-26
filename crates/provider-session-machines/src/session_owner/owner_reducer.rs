@@ -158,10 +158,16 @@ impl OwnerTransition {
                 admission,
                 selected,
             } => self.admit_selected_prompt(input, admission, selected),
-            SessionOwnerCommand::Steer { input, supported } => self.admit_steer(input, supported),
-            SessionOwnerCommand::SteerExisting { input, supported } => {
-                self.admit_existing_steer(input, supported)
-            }
+            SessionOwnerCommand::Steer {
+                input,
+                supported,
+                origin,
+            } => self.admit_steer(input, supported, origin),
+            SessionOwnerCommand::SteerExisting {
+                input,
+                supported,
+                origin,
+            } => self.admit_existing_steer(input, supported, origin),
             SessionOwnerCommand::PlaceDelivery { input, delivery } => {
                 self.place_delivery(input, delivery)
             }
