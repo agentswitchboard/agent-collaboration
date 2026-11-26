@@ -59,7 +59,7 @@ use super::{
 mod status_probe;
 
 use self::status_probe::{
-    CapabilityHold, ScriptedDiscovery, collect_status, discovered_address,
+    RegistrationTransport, ScriptedDiscovery, collect_status, discovered_address,
     exercise_failed_metadata_read, exercise_refusal_through_renewal, run_loopback,
 };
 
@@ -82,14 +82,14 @@ async fn changed_native_schema_closes_the_old_socket_and_registers_a_new_run_in_
     );
     let (status_publication, mut systems) = mpsc::unbounded_channel();
     let clock = Arc::new(ManualClock::new("2030-01-01T00:00:00Z".parse()?));
-    let (capabilities, held, release) = CapabilityHold::new();
+    let (transport, held, release) = RegistrationTransport::new();
     let (discovery, unavailable, available) = ScriptedDiscovery::held_then_retry();
     let fixture = system_fixture(
         root.path().to_owned(),
         address,
         central_address,
         clock.clone(),
-        capabilities,
+        transport.clone(),
         status_publication,
         discovery,
     );
@@ -194,8 +194,15 @@ async fn changed_native_schema_closes_the_old_socket_and_registers_a_new_run_in_
             .status;
         assert_eq!(sampled, MessageSystemStatus::Registering);
         assert_operator_status(&paths, MessageSystemStatus::Registering).await?;
-        exercise_refusal_through_renewal(&mut first_socket, &first, &paths, &clock, &mut status)
-            .await?;
+        exercise_refusal_through_renewal(
+            &mut first_socket,
+            &first,
+            &paths,
+            &clock,
+            &mut status,
+            &transport,
+        )
+        .await?;
         stop_history
             .send(())
             .map_err(|_| "early status collector ended unexpectedly")?;
@@ -455,7 +462,7 @@ fn system_fixture(
     address: String,
     socket: SocketAddr,
     clock: Arc<ManualClock>,
-    capabilities: CapabilityHold,
+    transport: RegistrationTransport,
     systems: mpsc::UnboundedSender<SystemSamples>,
     discovery: ScriptedDiscovery,
 ) -> HostMessageSystemFixture {
@@ -464,7 +471,7 @@ fn system_fixture(
         let address = address.clone();
         let systems = systems.clone();
         let clock = clock.clone();
-        let capabilities = capabilities.clone();
+        let transport = transport.clone();
         let discovery = discovery.clone();
         Box::pin(async move {
             let machine = load_or_create_machine_id(&root, clock.utc_now().timestamp_millis())
@@ -485,10 +492,10 @@ fn system_fixture(
                     refresh: ScriptedSignIn,
                     run_driver: move |driver: LinkDriver<EnrollmentKey, EnrollmentLeaseSource>| {
                         assert!(driver_samples.send(driver.status.subscribe()).is_ok());
-                        let (address, capabilities, mut held) =
-                            (address.clone(), capabilities.clone(), held_driver.clone());
+                        let (address, transport, mut held) =
+                            (address.clone(), transport.clone(), held_driver.clone());
                         async move {
-                            run_loopback(driver, address, socket, capabilities).await;
+                            run_loopback(driver, address, socket, transport).await;
                             let _ = held.wait_for(|hold| !*hold).await;
                         }
                     },
