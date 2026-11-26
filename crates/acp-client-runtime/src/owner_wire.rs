@@ -301,6 +301,24 @@ impl OwnerAcpWire {
         via: RestoreVia,
         setup: OwnerSessionOpenSetup,
     ) -> Result<OwnerSessionOpenReceipt, TransportRefusal> {
+        self.restore_opening(run, attempt, session, via, setup)
+            .map(|(_instance, receipt)| receipt)
+    }
+
+    pub(crate) fn restore_opening(
+        &self,
+        run: TransportRun,
+        attempt: LoadAttempt,
+        session: String,
+        via: RestoreVia,
+        setup: OwnerSessionOpenSetup,
+    ) -> Result<
+        (
+            crate::owner_restore_updates::OpeningInstance,
+            OwnerSessionOpenReceipt,
+        ),
+        TransportRefusal,
+    > {
         let (tap, updates) = self.restore_updates.open(run, session.clone());
         let reply = self.enqueue_open(
             run,
@@ -316,7 +334,7 @@ impl OwnerAcpWire {
         if reply.is_err() {
             self.restore_updates.discard_unoffered(run, &tap);
         }
-        reply
+        reply.map(|receipt| (tap, receipt))
     }
 
     fn enqueue_open(

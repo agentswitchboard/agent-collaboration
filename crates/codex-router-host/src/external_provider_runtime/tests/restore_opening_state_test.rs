@@ -1,7 +1,11 @@
 //! Run-only cleanup and held-restore guidance on the actual ACP binding.
 
 use super::*;
-use provider_session_machines::harness_lifecycle::{HeldOpeningKind, LifecycleRefusal};
+use provider_session_machines::{
+    harness_lifecycle::{CloseFact, HeldOpeningKind, LifecycleRefusal},
+    session_lifecycle_machine::CloseAttempt,
+    session_owner::WriterState,
+};
 use std::sync::Mutex;
 
 fn restore_request(
@@ -80,6 +84,33 @@ async fn a_pending_restore_waits_and_a_held_restore_needs_its_owner_to_continue(
         "a held restore must continue its setup, not wait for a second opening reply"
     );
     assert_eq!(held.valid_moves(), &[LifecycleMove::ContinueHeldOpening]);
+    let load_with_wrong_session = OpenRequest::Restore {
+        owner,
+        run,
+        session: HarnessSessionId("other-session".into()),
+        via: RestoreVia::Load,
+        setup: OpenSetup {
+            cwd: fixture._root.path().to_owned(),
+            work_roots: Default::default(),
+            scratch_folder: None,
+        },
+        requested_mode: None,
+    };
+    let (wrong, _no_wrong_answer) = oneshot::channel();
+    let mismatch = binding
+        .open(
+            load_with_wrong_session,
+            Box::new(Reply(wrong)),
+            Arc::new(AcceptEvents),
+            Box::pin(stop.clone().cancelled_owned()),
+        )
+        .expect_err("same generation and attempt do not excuse the wrong session ID");
+    assert_eq!(mismatch, LifecycleRefusal::AttemptMismatch);
+    assert_eq!(
+        mismatch.valid_moves(),
+        &[LifecycleMove::CorrectRequest],
+        "wrong-session guidance must never offer to continue another session's setup"
+    );
     let accepted = AcceptedRunSettings {
         catalogue: readback.catalogue,
         router_auto_requested: readback.router_auto_requested,
@@ -176,10 +207,10 @@ async fn run_retirement_exits_the_real_replay_and_leaves_a_reopenable_slot() {
     };
     assert_eq!(
         missing,
-        LifecycleRefusal::OpeningNotHeld,
+        LifecycleRefusal::BoundSessionNotLoaded,
         "a retired task must not retain a pending opening"
     );
-    assert_eq!(missing.valid_moves(), &[LifecycleMove::Reopen]);
+    assert_eq!(missing.valid_moves(), &[LifecycleMove::LoadBoundSession]);
     let replacement = RunAttempt {
         attempt: LoadAttempt(Uuid::now_v7()),
         ..run
@@ -258,6 +289,142 @@ async fn a_retired_connection_overrides_a_still_held_restore() {
         Err(LifecycleRefusal::ConnectionRetired)
     );
     assert_eq!(recorded_requests(&fixture.receipt, "session/load"), 1);
+    drop(binding);
+    fixture.runtime.shutdown().await;
+    tasks.close();
+    tasks.wait().await;
+}
+
+#[tokio::test]
+async fn a_refused_live_close_reopens_only_for_its_exact_attempt() {
+    let fixture = hub_runtime_with_launch(|receipt| {
+        crate::external_provider_runtime::acp_scripted_fixture::launch_fixture_agent(
+            "permission-mode-agent.ts",
+            [
+                receipt.display().to_string(),
+                "cursor".into(),
+                "no-directories".into(),
+                "advertise-restore".into(),
+                "advertise-close".into(),
+                "hold-close-refusal".into(),
+            ]
+            .into(),
+        )
+    })
+    .await;
+    let close_count = || {
+        std::fs::read(&fixture.receipt)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .and_then(|receipt| receipt["closes"].as_array().map(Vec::len))
+    };
+    let tasks = TaskTracker::new();
+    let (owner, mut binding) = bind_fixture(&fixture.runtime, &tasks);
+    let run = RunAttempt {
+        generation: SessionGeneration::from_number(1),
+        attempt: LoadAttempt(Uuid::now_v7()),
+    };
+    let stop = CancellationToken::new();
+    let (readback, _) =
+        load_fixture_binding(&fixture, &mut binding, owner, run, stop.clone()).await;
+    let settings = AcceptedRunSettings {
+        catalogue: readback.catalogue,
+        router_auto_requested: readback.router_auto_requested,
+    };
+    binding
+        .accept_settings(OpenAttempt::Restore(run), &settings)
+        .expect("prepare the exact restore");
+    binding
+        .activate(
+            ActivationSetup::Restored(run),
+            settings,
+            Arc::new(AcceptEvents),
+            Box::pin(stop.clone().cancelled_owned()),
+        )
+        .expect("activate the live run");
+
+    let close = RunAttempt {
+        generation: run.generation,
+        attempt: CloseAttempt(Uuid::now_v7()),
+    };
+    let wire = fixture.runtime.client.owner_wire();
+    let capacity = wire.hold_writer_capacity_for_test();
+    let (reply, unused) = oneshot::channel();
+    assert_eq!(
+        binding.close(close, Box::new(Reply(reply))),
+        Err(LifecycleRefusal::Writer(WriterState::Full))
+    );
+    assert!(unused.await.is_err());
+    assert_eq!(
+        binding.opening_is_held(OpenAttempt::Restore(run)),
+        Held::NotHeld(LifecycleRefusal::OpeningActive),
+        "failed close admission must preserve the active opening"
+    );
+    drop(capacity);
+
+    let (reply, refusal) = oneshot::channel();
+    binding
+        .close(close, Box::new(Reply(reply)))
+        .expect("queue real close");
+    while close_count() != Some(1) {
+        tokio::task::yield_now().await;
+    }
+    let next_close = RunAttempt {
+        attempt: CloseAttempt(Uuid::now_v7()),
+        ..close
+    };
+    let (reply, _unused) = oneshot::channel();
+    assert_eq!(
+        binding.close(next_close, Box::new(Reply(reply))),
+        Err(LifecycleRefusal::RouteClosing)
+    );
+    node_test_fixture::release_fixture(&fixture.receipt, ".release-close")
+        .expect("let the provider refuse the close");
+    assert_eq!(
+        refusal.await.expect("exact reply"),
+        CloseFact::RefusedStillLive { run: close }
+    );
+    for wrong in [
+        next_close,
+        RunAttempt {
+            generation: SessionGeneration::from_number(2),
+            ..close
+        },
+    ] {
+        binding.admit_again(wrong);
+        let (reply, _unused) = oneshot::channel();
+        assert_eq!(
+            binding.close(next_close, Box::new(Reply(reply))),
+            Err(LifecycleRefusal::CloseAlreadyRefused),
+            "a wrong close identity cleared the original route marker"
+        );
+    }
+    binding.admit_again(close);
+    assert_eq!(
+        binding.opening_is_held(OpenAttempt::Restore(run)),
+        Held::NotHeld(LifecycleRefusal::OpeningActive)
+    );
+    let (reply, refusal) = oneshot::channel();
+    binding
+        .close(next_close, Box::new(Reply(reply)))
+        .expect("exact admit-again releases the real writer route");
+    assert_eq!(
+        refusal.await.expect("next real close reached the provider"),
+        CloseFact::RefusedStillLive { run: next_close }
+    );
+    assert_eq!(close_count(), Some(2));
+    binding.admit_again(next_close);
+    fixture
+        .runtime
+        .retire_provider_route_for_test(owner.incarnation, run.generation);
+    let (reply, _unused) = oneshot::channel();
+    let no_route = binding
+        .close(close, Box::new(Reply(reply)))
+        .expect_err("the exact wire route is gone");
+    assert_eq!(no_route, LifecycleRefusal::BoundRouteUnavailable);
+    assert_eq!(no_route.valid_moves(), &[LifecycleMove::Retire]);
+    binding.retire(run.generation);
+    assert_eq!(close_count(), Some(2));
     drop(binding);
     fixture.runtime.shutdown().await;
     tasks.close();

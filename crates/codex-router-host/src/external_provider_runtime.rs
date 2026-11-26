@@ -138,15 +138,15 @@ impl ExternalProviderRuntime {
     }
 
     #[cfg(all(debug_assertions, test))]
-    pub(crate) fn retire_work_route_for_test(
+    pub(crate) fn retire_provider_route_for_test(
         &self,
-        authorization: &provider_session_machines::session_owner::DispatchAuthorization,
+        incarnation: provider_session_machines::session_owner::OwnerIncarnation,
+        generation: provider_session_machines::SessionGeneration,
     ) {
         use provider_session_machines::session_owner::TurnMembership;
-        self.client.owner_wire().apply_membership(
-            authorization.incarnation,
-            TurnMembership::Retire(authorization.run),
-        );
+        self.client
+            .owner_wire()
+            .apply_membership(incarnation, TurnMembership::Retire(generation));
     }
 
     pub(crate) fn owner_clock(&self) -> Arc<dyn router_clock::RuntimeClock> {

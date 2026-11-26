@@ -1,6 +1,7 @@
 //! Activate ACP routes and drain their owned SDK readers.
 
-use super::{CreateOpening, OpenedRun, OwnerOpenings, RunOpening, lock, transport_run};
+use super::policy::activation_refusal;
+use super::{OpenedRun, OpeningEvent, OpeningPhase, OwnerOpenings, lock, transport_run};
 use crate::owner_session_stream::OwnerStreamTarget;
 use provider_session_machines::SessionGeneration;
 use provider_session_machines::harness_lifecycle::{
@@ -17,8 +18,8 @@ impl OwnerOpenings {
         events: SessionLifecyclePort,
         retired: RunRetirement,
     ) -> Result<(), ActivationRefusal> {
-        if let Some(refusal) = self.stopped_writer_refusal() {
-            return Err(refusal.activation());
+        if let Some(refusal) = self.writer_refusal() {
+            return Err(activation_refusal(refusal));
         }
         let mut attempts = lock(&self.attempts);
         let (generation, mut session, skills, stopped) = match setup {
@@ -28,29 +29,30 @@ impl OwnerOpenings {
             } => {
                 let identity = OpenAttempt::Create(attempt);
                 if generation == SessionGeneration::UNTRACKED {
-                    return Err(self.mismatched_call().activation());
+                    return Err(activation_refusal(self.mismatched_call()));
                 }
                 if let Some(entry) = attempts.runs.get(&generation) {
-                    return Err(if entry.attempt == identity {
+                    return Err(if entry.attempt != identity {
+                        activation_refusal(self.mismatched_call())
+                    } else if entry.phase == OpeningPhase::Active {
                         ActivationRefusal::AlreadyActive
                     } else {
-                        self.mismatched_call().activation()
+                        activation_refusal(entry.phase.refusal())
                     });
                 }
-                if !matches!(
-                    attempts.creates.get(&attempt.0),
-                    Some(CreateOpening::Configured(_))
-                ) {
-                    return Err(self.opening_refusal(&attempts, identity).activation());
+                if !attempts
+                    .creates
+                    .get(&attempt.0)
+                    .is_some_and(|entry| entry.phase.accepts(OpeningEvent::Activate))
+                {
+                    return Err(activation_refusal(
+                        self.opening_refusal(&attempts, identity),
+                    ));
                 }
                 let session_id = self
                     .session
                     .get()
-                    .ok_or_else(|| self.mismatched_call().activation())?;
-                let Some(CreateOpening::Configured(session)) = attempts.creates.remove(&attempt.0)
-                else {
-                    return Err(self.opening_refusal(&attempts, identity).activation());
-                };
+                    .ok_or_else(|| activation_refusal(self.mismatched_call()))?;
                 let route = transport_run(self.owner, generation);
                 self.wire.open_route(route, session_id.clone());
                 if !self.wire.activate_route(route) {
@@ -60,13 +62,27 @@ impl OwnerOpenings {
                     );
                     return Err(ActivationRefusal::RouteUnavailable);
                 }
+                let Some(mut opening) = attempts.creates.remove(&attempt.0) else {
+                    return Err(activation_refusal(self.mismatched_call()));
+                };
+                let Some(session) = opening.configured.take() else {
+                    opening.phase.advance(OpeningEvent::ActivationFailed);
+                    self.wire.apply_membership(
+                        self.owner.incarnation,
+                        TurnMembership::Retire(generation),
+                    );
+                    return Err(ActivationRefusal::ReaderUnavailable);
+                };
                 let stopped = self.stopped.child_token();
                 attempts.runs.insert(
                     generation,
                     OpenedRun {
                         attempt: identity,
                         stopped: stopped.clone(),
-                        phase: RunOpening::Active,
+                        phase: opening.phase,
+                        instance: opening.instance,
+                        held: None,
+                        close_attempt: None,
                     },
                 );
                 (generation, *session, None, stopped)
@@ -74,20 +90,21 @@ impl OwnerOpenings {
             ActivationSetup::Restored(run) => {
                 let identity = OpenAttempt::Restore(run);
                 let Some(entry) = attempts.runs.get_mut(&run.generation) else {
-                    return Err(self.opening_refusal(&attempts, identity).activation());
+                    return Err(activation_refusal(
+                        self.opening_refusal(&attempts, identity),
+                    ));
                 };
                 if entry.attempt != identity {
-                    return Err(self.mismatched_call().activation());
+                    return Err(activation_refusal(self.mismatched_call()));
                 }
                 if entry.stopped.is_cancelled() {
-                    return Err(self.opening_refusal(&attempts, identity).activation());
+                    return Err(ActivationRefusal::RouteUnavailable);
                 }
-                match entry.phase {
-                    RunOpening::Opening(_) => {
-                        return Err(self.opening_refusal(&attempts, identity).activation());
-                    }
-                    RunOpening::Active => return Err(ActivationRefusal::AlreadyActive),
-                    RunOpening::Held(_) => {}
+                if entry.phase == OpeningPhase::Active {
+                    return Err(ActivationRefusal::AlreadyActive);
+                }
+                if !entry.phase.accepts(OpeningEvent::Activate) {
+                    return Err(activation_refusal(entry.phase.refusal()));
                 }
                 if !self
                     .wire
@@ -95,10 +112,8 @@ impl OwnerOpenings {
                 {
                     return Err(ActivationRefusal::RouteUnavailable);
                 }
-                let RunOpening::Held(held) =
-                    std::mem::replace(&mut entry.phase, RunOpening::Active)
-                else {
-                    return Err(self.opening_refusal(&attempts, identity).activation());
+                let Some(held) = entry.held.take() else {
+                    return Err(ActivationRefusal::ReaderUnavailable);
                 };
                 (
                     run.generation,
@@ -108,7 +123,6 @@ impl OwnerOpenings {
                 )
             }
         };
-        drop(attempts);
         let route = transport_run(self.owner, generation);
         session.register_in_folder_scope(&self.wire, route);
         let stream = OwnerStreamTarget::for_lifecycle(
@@ -120,10 +134,22 @@ impl OwnerOpenings {
         let reader = match session.start_stream(stream) {
             Ok(reader) => reader,
             Err(_) => {
-                self.retire(generation);
+                if let Some(mut entry) = attempts.runs.remove(&generation) {
+                    entry.phase.advance(OpeningEvent::ActivationFailed);
+                }
+                self.wire
+                    .apply_membership(self.owner.incarnation, TurnMembership::Retire(generation));
+                stopped.cancel();
                 return Err(ActivationRefusal::ReaderUnavailable);
             }
         };
+        let Some(entry) = attempts.runs.get_mut(&generation) else {
+            return Err(ActivationRefusal::RouteUnavailable);
+        };
+        if !entry.phase.advance(OpeningEvent::Activate) {
+            return Err(activation_refusal(entry.phase.refusal()));
+        }
+        drop(attempts);
         self.tasks.spawn(async move {
             let read = async {
                 if let Some(view) = skills {

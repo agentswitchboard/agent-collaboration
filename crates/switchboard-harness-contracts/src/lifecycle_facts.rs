@@ -122,6 +122,12 @@ pub enum LifecycleMove {
     WaitForOpening,
     /// Continue the exact held opening using its existing setup path.
     ContinueHeldOpening,
+    /// Load the session already bound to this owner.
+    LoadBoundSession,
+    /// Activate the exact configured or prepared opening.
+    ActivateOpening,
+    /// Close the exact currently active run.
+    CloseActiveRun,
     /// Start a new opening attempt through the owner binding.
     Reopen,
     CreateFromSavedSetup,
@@ -154,6 +160,7 @@ pub enum ActivationRefusal {
     AlreadyActive,
     RouteUnavailable,
     ReaderUnavailable,
+    OpeningState(LifecycleRefusal),
 }
 
 impl ActivationRefusal {
@@ -169,6 +176,7 @@ impl ActivationRefusal {
                 &[LifecycleMove::ReportUnavailable]
             }
             Self::AlreadyActive => &[LifecycleMove::KeepActiveRun, LifecycleMove::Retire],
+            Self::OpeningState(reason) => reason.valid_moves(),
         }
     }
 }
@@ -179,12 +187,18 @@ pub enum LifecycleRefusal {
     Writer(WriterState),
     ConnectionRetired,
     RouteUnavailable,
+    BoundRouteUnavailable,
     RouteClosing,
     AttemptMismatch,
     /// An existing opening still owns this attempt.
     OpeningInProgress,
     OpeningAlreadyHeld(HeldOpeningKind),
     OpeningNotHeld,
+    BoundSessionNotLoaded,
+    OpeningPrepared,
+    OpeningActive,
+    CloseAlreadyRefused,
+    OpeningEnded,
     SettingValueNotOffered,
     SettingSetterUnavailable,
     CatalogueUnavailable,
@@ -205,6 +219,16 @@ impl LifecycleRefusal {
             }
             Self::OpeningInProgress => &[LifecycleMove::WaitForOpening],
             Self::OpeningAlreadyHeld(_) => &[LifecycleMove::ContinueHeldOpening],
+            Self::BoundSessionNotLoaded => &[LifecycleMove::LoadBoundSession],
+            Self::OpeningPrepared => &[LifecycleMove::ActivateOpening],
+            Self::OpeningActive => &[
+                LifecycleMove::KeepActiveRun,
+                LifecycleMove::CloseActiveRun,
+                LifecycleMove::Retire,
+            ],
+            Self::CloseAlreadyRefused => &[LifecycleMove::AdmitAgain, LifecycleMove::Retire],
+            Self::OpeningEnded => &[],
+            Self::BoundRouteUnavailable => &[LifecycleMove::Retire],
             Self::RouteUnavailable | Self::OpeningNotHeld => &[LifecycleMove::Reopen],
             Self::RouteClosing => &[LifecycleMove::WaitForClose],
             Self::CatalogueUnavailable | Self::InvalidCatalogueReply => &[

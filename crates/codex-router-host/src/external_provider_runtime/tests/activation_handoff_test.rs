@@ -88,7 +88,7 @@ async fn acp_create_refuses_activation_when_its_reader_handoff_was_closed() {
             },
             Box::new(Reply(reply)),
         ),
-        Err(LifecycleRefusal::RouteUnavailable),
+        Err(LifecycleRefusal::BoundSessionNotLoaded),
         "the failed handoff must clear the staged live route and its grant",
     );
     assert_eq!(recorded_requests(&fixture.receipt, "session/close"), 0);

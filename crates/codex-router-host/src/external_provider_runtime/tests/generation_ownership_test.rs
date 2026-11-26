@@ -34,6 +34,21 @@ async fn hub_runtime() -> HubRuntime {
 
 /// The Cursor fixture with these behaviours, on a real hub.
 async fn hub_runtime_with(behaviours: &[&str]) -> HubRuntime {
+    hub_runtime_with_launch(|receipt| {
+        super::acp_scripted_fixture::launch_fixture_agent(
+            "cursor-settings-agent.ts",
+            ["reactive".to_owned(), receipt.display().to_string()]
+                .into_iter()
+                .chain(behaviours.iter().map(|behaviour| (*behaviour).to_owned()))
+                .collect(),
+        )
+    })
+    .await
+}
+
+async fn hub_runtime_with_launch(
+    launch: impl FnOnce(&std::path::Path) -> crate::ExternalProviderLaunch,
+) -> HubRuntime {
     let root = tempfile::tempdir().expect("fixture root");
     let receipt = root.path().join("wire.json");
     let store = Arc::new(tokio::sync::Mutex::new(
@@ -57,13 +72,7 @@ async fn hub_runtime_with(behaviours: &[&str]) -> HubRuntime {
     }))
     .expect("hub target");
     let runtime = ExternalProviderRuntime::initialize_with_mcp_http_and_hub(
-        super::acp_scripted_fixture::launch_fixture_agent(
-            "cursor-settings-agent.ts",
-            ["reactive".to_owned(), receipt.display().to_string()]
-                .into_iter()
-                .chain(behaviours.iter().map(|behaviour| (*behaviour).to_owned()))
-                .collect(),
-        ),
+        launch(&receipt),
         acp_client_runtime::ProviderModelPicker::Standard,
         "fixture",
         "http://127.0.0.1:1/mcp",

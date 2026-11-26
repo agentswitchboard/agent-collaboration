@@ -50,6 +50,85 @@ use restore_recovery_fixture::{
 use router_clock::{ClockInstant, ManualClock, RuntimeClock as _};
 
 #[tokio::test]
+async fn host_close_without_a_wire_route_retires_the_exact_opening_as_not_enqueued() {
+    use provider_session_machines::session_lifecycle_machine::SessionLifecycle;
+
+    let rig = RestoreRig::new();
+    rig.seed_session().await;
+    let host = rig.open_host_with(&["advertise-close"]).await;
+    let runtime = host.runtime_for(&rig.target.endpoint).expect("runtime");
+    let (reached, release) = runtime.preparation_fixture.pause_restore();
+    let restoring = OperationId::generate();
+    host.load(rig.load_request(restoring.clone()))
+        .await
+        .expect("restore admitted");
+    reached.await.expect("ACP prepared the exact opening");
+    let owner = host.session_owner_for(&rig.target).expect("session owner");
+    let mut snapshots = owner.snapshots();
+    let SessionLifecycle::Loading {
+        generation: opening,
+        ..
+    } = snapshots.borrow().lifecycle
+    else {
+        panic!("the original restore must still be logically loading");
+    };
+    let incarnation = snapshots.borrow().owner.incarnation;
+    runtime.retire_provider_route_for_test(incarnation, opening);
+
+    let closing = OperationId::generate();
+    host.close(ConversationCloseRequest {
+        operation_id: closing.clone(),
+        target: rig.target.clone(),
+        generation: Some(generation()),
+        requested_by: rig.target.clone().into(),
+        approver: rig.target.clone().into(),
+    })
+    .await
+    .expect("the Host accepts the logical close");
+    let close_failure = host
+        .wait(wait_request(closing))
+        .await
+        .expect_err("no physical route can send the close");
+    assert_eq!(
+        close_failure.kind,
+        collaboration_protocol::ConversationOperationFailureKind::Unavailable
+    );
+    assert_eq!(
+        close_failure.stage,
+        collaboration_protocol::ConversationOperationFailureStage::Settlement
+    );
+    assert_eq!(close_failure.effect, ProviderOperationEffect::None);
+    assert_eq!(
+        String::from(close_failure.message),
+        crate::session_close_evidence::classify_close(
+            provider_session_machines::session_owner::CloseOutcome::NotEnqueued
+        )
+        .summary
+    );
+    snapshots
+        .wait_for(|snapshot| snapshot.lifecycle == SessionLifecycle::NotLoaded { last: opening })
+        .await
+        .expect("the Host locally retires this exact generation");
+    assert_eq!(rig.wire_receipt()["closes"], serde_json::json!([]));
+
+    release
+        .send(())
+        .expect("release the stale Host preparation");
+    let restore_failure = host
+        .wait(wait_request(restoring))
+        .await
+        .expect_err("the original restore was closed before commit");
+    assert_eq!(restore_failure.effect, ProviderOperationEffect::Applied);
+    assert_eq!(
+        host.owner_session_activity(&rig.target),
+        crate::ProviderSessionActivity::NotLoaded
+    );
+    rig.assert_loads(&host).await;
+    assert_eq!(rig.wire_receipt()["closes"], serde_json::json!([]));
+    host.shutdown().await.expect("stop Host");
+}
+
+#[tokio::test]
 async fn a_refused_close_cannot_revive_a_restore_retired_before_commit() {
     let rig = RestoreRig::new();
     rig.seed_session().await;

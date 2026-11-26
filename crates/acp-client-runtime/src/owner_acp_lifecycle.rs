@@ -188,22 +188,7 @@ impl<Port: AcpRequestPayloads> OwnerHarnessBinding<SessionHarnessPayloads<Port::
         attempt: RunAttempt<CloseAttempt>,
         reply: LifecycleReply<CloseFact>,
     ) -> Result<(), LifecycleRefusal> {
-        if let Some(refusal) = self.openings.writer_refusal() {
-            return Err(refusal);
-        }
-        let session = self
-            .work
-            .session()
-            .map_err(|_| LifecycleRefusal::RouteUnavailable)?;
-        self.work
-            .wire
-            .enqueue_lifecycle_close(
-                self.openings.owner().incarnation,
-                attempt,
-                session.clone(),
-                reply,
-            )
-            .map_err(lifecycle_wire_refusal)
+        self.openings.close(attempt, reply)
     }
 
     fn opening_is_held(&self, attempt: OpenAttempt) -> Held {
@@ -239,10 +224,7 @@ impl<Port: AcpRequestPayloads> OwnerHarnessBinding<SessionHarnessPayloads<Port::
     }
 
     fn admit_again(&self, refused: RunAttempt<CloseAttempt>) {
-        self.work.wire.reopen_route(
-            transport_run(self.openings.owner(), refused.generation),
-            refused.attempt,
-        );
+        self.openings.admit_again(refused);
     }
 
     fn retire(&self, generation: SessionGeneration) {

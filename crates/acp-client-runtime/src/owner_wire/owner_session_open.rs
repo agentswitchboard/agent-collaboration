@@ -113,7 +113,7 @@ pub(crate) enum OpenRequest {
     Restore {
         provider_id: String,
         attempt: LoadAttempt,
-        tap: crate::owner_restore_updates::RestoreTapStamp,
+        tap: crate::owner_restore_updates::OpeningInstance,
         updates: mpsc::UnboundedReceiver<Dispatch>,
         via: RestoreVia,
         setup: OwnerSessionOpenSetup,

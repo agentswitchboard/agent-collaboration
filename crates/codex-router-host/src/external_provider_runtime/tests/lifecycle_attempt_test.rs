@@ -433,6 +433,8 @@ async fn load_fixture_binding(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn acp_activation_preserves_the_exact_held_and_active_attempts() {
+    use provider_session_machines::harness_lifecycle::{HeldOpeningKind, LifecycleRefusal};
+
     let fixture = hub_runtime().await;
     let tasks = TaskTracker::new();
     let (owner, mut binding) = bind_fixture(&fixture.runtime, &tasks);
@@ -462,12 +464,9 @@ async fn acp_activation_preserves_the_exact_held_and_active_attempts() {
         Err(ActivationRefusal::OpeningNotHeld)
     );
     for run in [first, second] {
-        assert_eq!(
-            load_fixture_binding(&fixture, &mut binding, owner, run, stop.clone())
-                .await
-                .1,
-            ReplayCompleteness::Complete
-        );
+        let (readback, replay) =
+            load_fixture_binding(&fixture, &mut binding, owner, run, stop.clone()).await;
+        assert_eq!(replay, ReplayCompleteness::Complete);
         let wrong = RunAttempt {
             attempt: LoadAttempt(Uuid::now_v7()),
             ..run
@@ -486,6 +485,21 @@ async fn acp_activation_preserves_the_exact_held_and_active_attempts() {
             binding.opening_is_held(OpenAttempt::Restore(run)),
             Held::Held
         );
+        assert_eq!(
+            activate(&binding, run),
+            Err(ActivationRefusal::OpeningAlreadyHeld(
+                HeldOpeningKind::Restore
+            ))
+        );
+        binding
+            .accept_settings(
+                OpenAttempt::Restore(run),
+                &AcceptedRunSettings {
+                    catalogue: readback.catalogue,
+                    router_auto_requested: readback.router_auto_requested,
+                },
+            )
+            .expect("prepare the exact held restore");
         assert_eq!(activate(&binding, run), Ok(()));
         assert_eq!(
             activate(&binding, wrong),
@@ -498,7 +512,9 @@ async fn acp_activation_preserves_the_exact_held_and_active_attempts() {
         binding.retire(run.generation);
         assert_eq!(
             activate(&binding, run),
-            Err(ActivationRefusal::OpeningNotHeld)
+            Err(ActivationRefusal::OpeningState(
+                LifecycleRefusal::BoundSessionNotLoaded
+            ))
         );
     }
     drop(binding);

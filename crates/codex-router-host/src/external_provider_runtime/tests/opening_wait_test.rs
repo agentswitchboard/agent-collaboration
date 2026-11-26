@@ -1,13 +1,27 @@
 //! An outstanding ACP opening and a genuinely missing hold have different moves.
 
 use super::*;
-use provider_session_machines::harness_lifecycle::{HeldOpeningKind, LifecycleRefusal};
+use provider_session_machines::{
+    harness_lifecycle::{HeldOpeningKind, LifecycleRefusal},
+    session_lifecycle_machine::CloseAttempt,
+};
 
 #[tokio::test]
 async fn acp_duplicate_configure_waits_while_a_missing_hold_can_reopen() {
     let fixture = hub_runtime().await;
     let tasks = TaskTracker::new();
     let (owner, mut binding) = bind_fixture(&fixture.runtime, &tasks);
+    let generation = SessionGeneration::from_number(1);
+    let close_without_route = |binding: &SessionHarnessBinding| {
+        let (reply, _no_answer) = oneshot::channel();
+        binding.close(
+            RunAttempt {
+                generation,
+                attempt: CloseAttempt(Uuid::now_v7()),
+            },
+            Box::new(Reply(reply)),
+        )
+    };
     let stop = CancellationToken::new();
     let missing = CreateAttempt(Uuid::now_v7());
     let (unused_reply, _unused_answer) = oneshot::channel();
@@ -20,6 +34,7 @@ async fn acp_duplicate_configure_waits_while_a_missing_hold_can_reopen() {
         .expect_err("the live binding has no held opening");
     assert_eq!(not_held, LifecycleRefusal::OpeningNotHeld);
     assert_eq!(not_held.valid_moves(), &[LifecycleMove::Reopen]);
+    assert_eq!(close_without_route(&binding), Err(not_held));
 
     let attempt = CreateAttempt(Uuid::now_v7());
     let setup = OpenSetup {
@@ -48,6 +63,10 @@ async fn acp_duplicate_configure_waits_while_a_missing_hold_can_reopen() {
         binding.opening_is_held(OpenAttempt::Create(attempt)),
         Held::NotHeld(LifecycleRefusal::OpeningInProgress)
     );
+    assert_eq!(
+        close_without_route(&binding),
+        Err(LifecycleRefusal::OpeningInProgress)
+    );
     let OpeningFact::Created {
         attempt: exact,
         session,
@@ -72,6 +91,7 @@ async fn acp_duplicate_configure_waits_while_a_missing_hold_can_reopen() {
         "a held create needs its owner's configure call before it can progress"
     );
     assert_eq!(held.valid_moves(), &[LifecycleMove::ContinueHeldOpening]);
+    assert_eq!(close_without_route(&binding), Err(held));
 
     let (reply, mut configured) = oneshot::channel();
     binding
@@ -97,6 +117,7 @@ async fn acp_duplicate_configure_waits_while_a_missing_hold_can_reopen() {
         "a duplicate configure must wait for the exact opening already in progress"
     );
     assert_eq!(pending.valid_moves(), &[LifecycleMove::WaitForOpening]);
+    assert_eq!(close_without_route(&binding), Err(pending));
     assert_eq!(
         binding.opening_is_held(OpenAttempt::Create(attempt)),
         Held::NotHeld(pending)
@@ -125,7 +146,7 @@ async fn acp_duplicate_configure_waits_while_a_missing_hold_can_reopen() {
                 },
                 session,
                 via: RestoreVia::Load,
-                setup,
+                setup: setup.clone(),
                 requested_mode: None,
             },
             Box::new(Reply(competing_reply)),
@@ -157,13 +178,17 @@ async fn acp_duplicate_configure_waits_while_a_missing_hold_can_reopen() {
             Box::new(Reply(already_configured)),
             Box::pin(stop.clone().cancelled_owned()),
         ),
-        Err(LifecycleRefusal::OperationNotOffered)
+        Err(LifecycleRefusal::OpeningPrepared)
+    );
+    assert_eq!(
+        close_without_route(&binding),
+        Err(LifecycleRefusal::OpeningPrepared)
     );
     binding
         .activate(
             ActivationSetup::Created {
                 attempt,
-                generation: SessionGeneration::from_number(1),
+                generation,
             },
             AcceptedRunSettings {
                 catalogue: Default::default(),
@@ -180,8 +205,31 @@ async fn acp_duplicate_configure_waits_while_a_missing_hold_can_reopen() {
             Box::new(Reply(consumed)),
             Box::pin(stop.clone().cancelled_owned()),
         ),
-        Err(LifecycleRefusal::OperationNotOffered)
+        Err(LifecycleRefusal::OpeningActive)
     );
+    binding.retire(generation);
+    let (new_reply, _no_second_create) = oneshot::channel();
+    let bound = binding
+        .open(
+            OpenRequest::Create {
+                owner,
+                attempt: CreateAttempt(Uuid::now_v7()),
+                setup,
+                requested: Default::default(),
+            },
+            Box::new(Reply(new_reply)),
+            Arc::new(AcceptEvents),
+            Box::pin(stop.clone().cancelled_owned()),
+        )
+        .expect_err("a vacant bound slot must never offer another create");
+    assert_eq!(bound, LifecycleRefusal::BoundSessionNotLoaded);
+    assert_eq!(
+        bound.valid_moves(),
+        &[LifecycleMove::LoadBoundSession],
+        "advertise-create-when-bound"
+    );
+    assert_eq!(close_without_route(&binding), Err(bound));
+    assert_eq!(recorded_requests(&fixture.receipt, "session/close"), 0);
     assert_eq!(recorded_requests(&fixture.receipt, "session/new"), 1);
     assert_eq!(recorded_requests(&fixture.receipt, "session/load"), 0);
     assert_eq!(
