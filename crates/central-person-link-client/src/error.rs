@@ -105,6 +105,8 @@ pub enum PersonLinkError {
     CallEncoding,
     #[error("Central refused the person call ({0:?})")]
     CallRefused(LinkCallRefusal),
+    #[error("refused on replay: {0:?}")]
+    ReplayRefused(LinkCallRefusal),
     #[error("Central returned an invalid workspace page cursor")]
     WorkspaceCursor,
     #[error("Central returned a person approval cursor that did not advance")]

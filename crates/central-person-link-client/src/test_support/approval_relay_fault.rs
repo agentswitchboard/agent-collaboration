@@ -1,8 +1,8 @@
 use std::sync::Mutex;
 
 use central_link_protocol::{
-    CentralCall, CentralCallReply, CentralLinkRpc, DataFrame, FrameDirection, LinkFrame,
-    TypedCallResult, decode_text, encode_text,
+    CentralCall, CentralCallReply, CentralLinkRpc, DataFrame, FrameDirection, LinkCallRefusal,
+    LinkFrame, TypedCallResult, decode_text, encode_text,
     person_link_rpc::{
         ListOrganizationWorkspacesRpc, ListPersonApprovalsRpc, OrganizationWorkspacePage,
     },
@@ -15,6 +15,7 @@ pub enum ApprovalRelayFault {
     WrongDecideReply,
     MalformedDecideReply,
     DropSavedDecision,
+    RefuseSavedDecisionOnSocket { socket: usize },
 }
 
 pub(super) fn scripted_approval_reply(
@@ -40,12 +41,18 @@ pub(super) fn scripted_approval_reply(
 
 pub(super) fn approval_reply_with_fault(
     fault: &Mutex<Option<ApprovalRelayFault>>,
+    socket: usize,
     mut text: String,
 ) -> Option<String> {
     let mut fault = fault.lock().unwrap();
     let Some(requested) = *fault else {
         return Some(text);
     };
+    if let ApprovalRelayFault::RefuseSavedDecisionOnSocket { socket: expected } = requested
+        && socket != expected
+    {
+        return Some(text);
+    }
     let Ok(LinkFrame::Data(DataFrame::CentralCallReply {
         correlation_id,
         result,
@@ -76,6 +83,15 @@ pub(super) fn approval_reply_with_fault(
             Some(text)
         }
         ApprovalRelayFault::DropSavedDecision => None,
+        ApprovalRelayFault::RefuseSavedDecisionOnSocket { .. } => {
+            let frame = LinkFrame::Data(DataFrame::CentralCallReply {
+                correlation_id,
+                result: Box::new(TypedCallResult::Refused {
+                    reason: LinkCallRefusal::CentralFault,
+                }),
+            });
+            Some(encode_text(&frame, FrameDirection::ToRouter).unwrap())
+        }
         ApprovalRelayFault::WrongDecideReply => {
             let wrong = ListOrganizationWorkspacesRpc::reply(Envelope {
                 target: reply.target,

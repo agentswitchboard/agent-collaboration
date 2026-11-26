@@ -3,8 +3,9 @@
 pub use approval_request_protocol::{
     Answer, ApprovalDecideReply, ApprovalInvalidReason, ApprovalListFilter, ApprovalListReply,
     ApprovalReadReply, ApprovalRequestId, ApprovalSummaryEnding, ApprovalSummaryState, DecidedBy,
-    InvalidAnswer, OfferedOptionId, RequestKind, RequestSummary, RequestView, SessionCallDecision,
-    SessionCallOperation,
+    InvalidAnswer, OfferedOptionId, OptionEffect, OptionLifetime, RequestKind, RequestSummary,
+    RequestView, RetainedOptionStorage, SessionCallDecision, SessionCallOperation,
+    TransientOptionStorage,
 };
 pub use central_link_protocol::LinkCallRefusal;
 pub use workspace_ids::RequestId;

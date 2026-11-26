@@ -60,7 +60,7 @@ impl Fixture {
         Self::with_person_claims(|_| {}).await
     }
 
-    async fn with_person_claims(configure: fn(&mut Person)) -> Self {
+    async fn with_person_claims(configure: impl Fn(&mut Person) + Send + Sync + 'static) -> Self {
         let clock = Arc::new(ManualClock::new(
             chrono::DateTime::from_timestamp(INITIAL_SECONDS, 0).unwrap(),
         ));
@@ -123,9 +123,12 @@ impl Fixture {
             .pointer_mut("/offer/options")
             .and_then(Value::as_array_mut)
             .unwrap()
-            .push(json!({
-                "id": 3, "label": "Decline", "effect": "decline", "lasts": {"kind": "thisRequest"},
-            }));
+            .extend([
+                json!({"id":3, "label":"Allow", "effect":"allow", "lasts":{"kind":"keptUntilChanged", "kept":"agentRulesFile"}}),
+                json!({"id":4, "label":"Decline", "effect":"decline", "lasts":{"kind":"thisTurn", "kept":"agentMemory"}}),
+                json!({"id":5, "label":"Abort", "effect":"abort", "lasts":{"kind":"thisSession", "kept":"nowhere"}}),
+                json!({"id":6, "label":"Allow", "effect":"allow", "lasts":{"kind":"notVerified"}}),
+            ]);
         let approval = serde_json::from_value(approval).unwrap();
         let question = provider_raise(&target, &session, 3, ProviderAsk::Question).unwrap();
         let held = held_start(&target.router_run, 4).unwrap();
@@ -237,8 +240,19 @@ async fn commands_list_and_read_options_questions_and_held_calls_on_real_central
 
     let read = capture(&fixture, &mut client, &["read", offers.approval.as_str()]).await;
     assert_eq!(read.status, ApprovalExit::Success);
-    assert!(read.text().lines().any(|line| line == "Option 1  Allow"));
-    assert!(read.text().lines().any(|line| line == "Option 3  Decline"));
+    assert_eq!(
+        read.text()
+            .lines()
+            .filter(|line| line.starts_with("Option "))
+            .collect::<Vec<_>>(),
+        [
+            "Option 1  Allow  (effect allow, this request, kept nowhere)",
+            "Option 3  Allow  (effect allow, kept until changed in the agent's rules file)",
+            "Option 4  Decline  (effect decline, this turn, kept in agent memory)",
+            "Option 5  Abort  (effect abort, this session, kept nowhere)",
+            "Option 6  Allow  (effect allow, lifetime and storage not verified)",
+        ]
+    );
     let wire = capture(
         &fixture,
         &mut client,

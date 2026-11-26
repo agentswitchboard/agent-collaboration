@@ -5,6 +5,84 @@ use fleet_contracts::{DeviceLoginDecision, MachineTokenDecision, ProvisionOrgani
 use reqwest_websocket::RequestBuilderExt;
 
 #[tokio::test]
+async fn refused_replay_preserves_the_first_commit_and_holder_ending() {
+    let fixture = ApprovalFixture::start().await;
+    let (target, mut holder) = fixture.holder().await;
+    let request = seed(
+        &mut holder,
+        &target,
+        held_start(&target.router_run, 1).unwrap(),
+    )
+    .await;
+    let operation_id = operation(&fixture);
+    let expected_rows = [vec![SqlValue::Text(operation_id.to_string())]];
+    let runtime = fixture
+        .central
+        .host
+        .central(&fixture.central.organization_id)
+        .await
+        .unwrap();
+    let mut pause = runtime
+        .runtime()
+        .pause_points()
+        .hold_central(PausePoint::AfterPersonApprovalCommit);
+    let mut client = fixture.signin.client();
+
+    let decide =
+        client.decide_approval(request.request_id().clone(), operation_id.clone(), allow());
+    let revise = async {
+        pause.until_held().await;
+        assert_eq!(fixture.operation_rows().await, expected_rows);
+        fixture
+            .signin
+            .relay
+            .script_once(ApprovalRelayFault::RefuseSavedDecisionOnSocket { socket: 2 });
+        fixture.publish_person_revision(5).await;
+        pause.release();
+    };
+    let (outcome, ()) = tokio::join!(decide, revise);
+
+    assert_eq!(
+        outcome.unwrap(),
+        ApprovalDecisionOutcome::Unknown {
+            operation_id: operation_id.clone(),
+            cause: PersonLinkError::ReplayRefused(
+                central_link_protocol::LinkCallRefusal::CentralFault
+            ),
+        }
+    );
+    assert_eq!(fixture.operation_rows().await, expected_rows);
+    fixture
+        .ending(&mut holder, &target, &request, held_ending())
+        .await;
+    {
+        let evidence = fixture.signin.relay.evidence.lock().unwrap();
+        let [first, replay] = evidence.approval_calls.as_slice() else {
+            panic!("expected exactly two decide attempts");
+        };
+        assert_eq!(evidence.closes, [PersonLinkCloseCode::Reconnect.code()]);
+        assert_eq!((first.socket, replay.socket), (1, 2));
+        assert_ne!(first.correlation, replay.correlation);
+        assert_eq!(first.request, replay.request);
+    }
+
+    drop(client);
+    let mut reopened = fixture.signin.client();
+    assert_eq!(
+        reopened
+            .decide_approval(request.request_id().clone(), operation_id, allow())
+            .await
+            .unwrap(),
+        saved(allow())
+    );
+    assert_eq!(fixture.operation_rows().await, expected_rows);
+    heartbeat(&mut holder).await.unwrap();
+    drop(reopened);
+    drop(holder);
+    fixture.close().await;
+}
+
+#[tokio::test]
 async fn typed_refusal_keeps_the_waiting_request_and_operation_log_unchanged() {
     let fixture = ApprovalFixture::with_person_claims(300, |person| {
         person

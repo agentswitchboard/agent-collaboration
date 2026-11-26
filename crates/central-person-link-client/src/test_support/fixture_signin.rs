@@ -501,7 +501,7 @@ async fn relay(
             incoming = central.next() => {
                 match incoming {
                     Some(Ok(CentralMessage::Text(text))) => {
-                        let Some(text) = approval_reply_with_fault(&signin.approval_fault, text) else {
+                        let Some(text) = approval_reply_with_fault(&signin.approval_fault, socket, text) else {
                             signin.evidence.lock().unwrap().dropped_decisions += 1;
                             return;
                         };

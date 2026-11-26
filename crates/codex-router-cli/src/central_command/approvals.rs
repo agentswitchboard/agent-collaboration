@@ -5,7 +5,8 @@ use central_person_link_client::{
     approvals::{
         ApprovalDecideReply, ApprovalDecisionOutcome, ApprovalInvalidReason, ApprovalListReply,
         ApprovalReadReply, ApprovalSummaryEnding, ApprovalSummaryState, DecidedBy, InvalidAnswer,
-        LinkCallRefusal, RequestId, RequestKind, RequestSummary, RequestView, SessionCallOperation,
+        LinkCallRefusal, OptionEffect, OptionLifetime, RequestId, RequestKind, RequestSummary,
+        RequestView, RetainedOptionStorage, SessionCallOperation, TransientOptionStorage,
     },
 };
 use router_clock::RuntimeClock;
@@ -318,9 +319,15 @@ fn write_request(stdout: &mut impl Write, view: &RequestView) -> std::io::Result
             writeln!(stdout, "{}", description.as_str().escape_debug())?;
         }
         for option in offer.options.as_slice() {
+            let effect = match option.effect {
+                OptionEffect::Allow => "allow",
+                OptionEffect::Decline => "decline",
+                OptionEffect::Abort => "abort",
+            };
+            let lifetime = option_lifetime_text(option.lasts);
             writeln!(
                 stdout,
-                "Option {}  {}",
+                "Option {}  {}  (effect {effect}, {lifetime})",
                 option.id.get(),
                 option.label.as_str().escape_debug()
             )?;
@@ -356,6 +363,31 @@ fn write_request(stdout: &mut impl Write, view: &RequestView) -> std::io::Result
         }
     }
     Ok(())
+}
+
+fn option_lifetime_text(lifetime: OptionLifetime) -> &'static str {
+    match lifetime {
+        OptionLifetime::ThisRequest {} => "this request, kept nowhere",
+        OptionLifetime::ThisTurn {
+            kept: TransientOptionStorage::Nowhere,
+        } => "this turn, kept nowhere",
+        OptionLifetime::ThisTurn {
+            kept: TransientOptionStorage::AgentMemory,
+        } => "this turn, kept in agent memory",
+        OptionLifetime::ThisSession {
+            kept: TransientOptionStorage::Nowhere,
+        } => "this session, kept nowhere",
+        OptionLifetime::ThisSession {
+            kept: TransientOptionStorage::AgentMemory,
+        } => "this session, kept in agent memory",
+        OptionLifetime::KeptUntilChanged {
+            kept: RetainedOptionStorage::AgentSettingsFile,
+        } => "kept until changed in the agent's settings file",
+        OptionLifetime::KeptUntilChanged {
+            kept: RetainedOptionStorage::AgentRulesFile,
+        } => "kept until changed in the agent's rules file",
+        OptionLifetime::NotVerified {} => "lifetime and storage not verified",
+    }
 }
 
 #[cfg(test)]
