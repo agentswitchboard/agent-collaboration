@@ -28,6 +28,7 @@ use tokio_tungstenite::{
 use super::{HeartbeatFixture, NoLeaseSource, WelcomedDriver, elapsed_tick, test_settings};
 use crate::{
     lane_writer::tests::BufferedFixture,
+    lease_source::LeaseSource,
     link_driver::{Control, DriverSettings, Interrupted, SocketAttemptTiming},
     link_lane::link_lane_channel,
     link_policy::{LeaseVersion, LeaseWindow, LinkInput},
@@ -116,7 +117,15 @@ pub(super) fn fresh_driver(
     fixture: &HeartbeatFixture,
     binding: u8,
 ) -> WelcomedDriver<'_, NoLeaseSource> {
-    let (mut driver, _) = fixture.welcomed_driver(&NoLeaseSource);
+    fresh_driver_with_lease(fixture, binding, &NoLeaseSource)
+}
+
+pub(super) fn fresh_driver_with_lease<'fixture, Source: LeaseSource<u8>>(
+    fixture: &'fixture HeartbeatFixture,
+    binding: u8,
+    source: &'fixture Source,
+) -> WelcomedDriver<'fixture, Source> {
+    let (mut driver, _) = fixture.welcomed_driver(source);
     driver.client = LinkClient::new(fixture.machine.clone(), fixture.clock.clone());
     driver.registration = crate::run_registration::RunRegistration::new(
         binding,
@@ -126,8 +135,8 @@ pub(super) fn fresh_driver(
     driver
 }
 
-pub(super) fn start_attempt(
-    driver: &mut WelcomedDriver<'_, NoLeaseSource>,
+pub(super) fn start_attempt<Source: LeaseSource<u8>>(
+    driver: &mut WelcomedDriver<'_, Source>,
     binding: u8,
 ) -> ConnectionAttempt {
     let Some(ClientAction::Connect { attempt }) = driver.client.poll_time() else {

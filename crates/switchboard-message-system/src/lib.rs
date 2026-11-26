@@ -1,5 +1,6 @@
 //! Supervision and composition for one Router's message system.
 
+mod central_work_port;
 mod interpreter;
 mod machine;
 mod message_front;
@@ -16,6 +17,10 @@ mod transition_table;
 #[cfg(all(feature = "test-support", debug_assertions))]
 pub mod test_support;
 
+pub use central_work_port::{
+    CallEnding, CallNotReached, CentralWorkNextMove, CentralWorkOutcome, CentralWorkPort,
+    CentralWorkRefusal, CentralWorkRefusalStatus,
+};
 pub use interpreter::{CloseReport, MessageRoots, MessageSystemEvents};
 pub use machine::{ObservationPhase, State, Supervisor, SupervisorError};
 pub use message_front::MessageFront;

@@ -28,6 +28,7 @@ use crate::{
     Supervisor, UnitPiece,
 };
 use crate::{
+    central_work_port::{CentralWorkPort, WorkCallContext},
     message_front::{ForwardingMessageFront, FrontPublication},
     message_unit::{MessageUnit, MessageUnitBuildError, OwnedLinkTask, UnitBuildInputs},
     stop_part::stop_part,
@@ -53,6 +54,8 @@ type ManagedNoticeForMachine = dyn Fn(&MachineId) -> Arc<dyn ManagedNoticePort> 
 pub struct MessageSystemEvents {
     custody: Arc<dyn CustodyEventSink>,
     notice_for_machine: Option<Box<ManagedNoticeForMachine>>,
+    #[cfg(all(feature = "test-support", debug_assertions))]
+    pub(crate) status_publication_hold: Option<crate::status::StatusPublicationHold>,
 }
 
 impl MessageSystemEvents {
@@ -61,6 +64,8 @@ impl MessageSystemEvents {
         Self {
             custody,
             notice_for_machine: None,
+            #[cfg(all(feature = "test-support", debug_assertions))]
+            status_publication_hold: None,
         }
     }
 
@@ -118,6 +123,7 @@ pub(crate) struct Interpreter {
     pub(crate) inputs: MessageInputs,
     pub(crate) front: FrontPublication,
     pub(crate) status: watch::Sender<MessageSystemObservation>,
+    work_context: watch::Sender<WorkCallContext>,
     pub(crate) events: mpsc::UnboundedSender<Event>,
     pub(crate) queue: mpsc::UnboundedReceiver<Event>,
     link_publication: watch::Sender<LinkStatus>,
@@ -138,12 +144,20 @@ impl Interpreter {
         events: mpsc::UnboundedSender<Event>,
         queue: mpsc::UnboundedReceiver<Event>,
         enrollment: Option<OpenedEnrollment>,
-    ) -> Self {
+        initial: &State,
+    ) -> (Self, CentralWorkPort) {
         let (link_publication, link_status) = watch::channel(LinkStatus::NotEnrolled);
+        let (work_context, work_updates) = watch::channel(WorkCallContext {
+            supervisor: initial.clone(),
+            lane: None,
+            stored_ending: None,
+        });
+        let central_calls = CentralWorkPort::new(work_updates, link_status.clone());
         let interpreter = Self {
             inputs,
             front,
             status,
+            work_context,
             events,
             queue,
             link_publication,
@@ -158,7 +172,7 @@ impl Interpreter {
         if let Some(enrollment) = &interpreter.enrollment {
             interpreter.observe_store_exit(enrollment.store.clone());
         }
-        interpreter
+        (interpreter, central_calls)
     }
 
     pub(crate) async fn run<Build: Future<Output = Result<MessageUnit, MessageUnitBuildError>>>(
@@ -224,6 +238,7 @@ impl Interpreter {
                                 self.stored_ending = ending;
                             }
                             supervisor = next;
+                            self.publish_work_context(supervisor.state());
                             break effects;
                         }
                         Err(refused) => tracing::debug!(
@@ -340,12 +355,36 @@ impl Interpreter {
             &self.link_status.borrow(),
             self.stored_ending.as_ref().map(|(_, cause)| *cause),
         );
+        #[cfg(all(feature = "test-support", debug_assertions))]
+        if self
+            .inputs
+            .events
+            .status_publication_hold
+            .as_ref()
+            .is_some_and(|hold| hold.withhold(status))
+        {
+            return;
+        }
         self.status.send_if_modified(|published| {
             if *published == status {
                 return false;
             }
             *published = status;
             true
+        });
+    }
+
+    fn publish_work_context(&self, state: &State) {
+        let lane = match (state.front(), self.unit.as_ref()) {
+            (Front::Forwarding(requested), Some((held, unit))) if requested == *held => {
+                Some(unit.central_calls.clone())
+            }
+            _ => None,
+        };
+        self.work_context.send_replace(WorkCallContext {
+            supervisor: state.clone(),
+            lane,
+            stored_ending: self.stored_ending.as_ref().map(|(_, cause)| *cause),
         });
     }
 

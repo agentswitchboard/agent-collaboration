@@ -108,6 +108,51 @@ impl MessageSystemObservation {
     }
 }
 
+#[cfg(all(feature = "test-support", debug_assertions))]
+mod publication_fixture {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    use tokio::sync::watch;
+
+    use super::MessageSystemObservation;
+
+    /// Holds the real operator publication while the Interpreter keeps applying events.
+    #[derive(Clone, Default)]
+    pub struct StatusPublicationHold {
+        frozen: Arc<AtomicBool>,
+        held: watch::Sender<Option<MessageSystemObservation>>,
+    }
+
+    impl StatusPublicationHold {
+        pub fn freeze(&self) {
+            self.frozen.store(true, Ordering::Relaxed);
+            self.held.send_replace(None);
+        }
+
+        pub fn release(&self) {
+            self.frozen.store(false, Ordering::Relaxed);
+        }
+
+        pub fn held_observations(&self) -> watch::Receiver<Option<MessageSystemObservation>> {
+            self.held.subscribe()
+        }
+
+        pub(crate) fn withhold(&self, observation: MessageSystemObservation) -> bool {
+            let frozen = self.frozen.load(Ordering::Relaxed);
+            if frozen {
+                self.held.send_replace(Some(observation));
+            }
+            frozen
+        }
+    }
+}
+
+#[cfg(all(feature = "test-support", debug_assertions))]
+pub use publication_fixture::StatusPublicationHold;
+
 #[cfg(test)]
 #[path = "status_test.rs"]
 mod tests;

@@ -23,6 +23,7 @@ use workspace_ids::MachineId;
 use crate::{
     AddressError, DialAddress,
     admitted_lane_socket::{AdmittedSocketLane, FrameOffer},
+    central_call_lane::CallEnding,
     lane_writer::{FrameWrite, SendFence, write_fenced_frame},
     lease_source::{LeaseFailure, LeaseFuture, LeaseSource},
     link_lane::LinkLaneOwner,
@@ -33,6 +34,8 @@ use crate::{
     wire_write_fence::{LinkConnector, WireWriteFence, default_http_connector},
 };
 
+#[path = "link_driver_calls.rs"]
+mod calls;
 #[path = "link_driver_receive.rs"]
 mod receive;
 #[path = "link_driver_registration.rs"]
@@ -139,6 +142,22 @@ where
     }
 
     pub(super) async fn run_with_connector<Connector: LinkConnector>(
+        self,
+        make_connector: impl Fn() -> Connector + Sync,
+    ) {
+        let calls = self.lane.calls.clone();
+        let clock = self.clock.clone();
+        calls.attach_clock(clock.clone());
+        // The deadline worker shares the lifetime of the socket driver. It can
+        // retire queued or written calls even while another frame owns the writer.
+        tokio::select! {
+            biased;
+            () = calls.watch_deadlines(clock.as_ref()) => {},
+            () = self.run_bindings(make_connector) => {},
+        }
+    }
+
+    async fn run_bindings<Connector: LinkConnector>(
         mut self,
         make_connector: impl Fn() -> Connector + Sync,
     ) {
@@ -169,6 +188,7 @@ where
                 continue;
             }
             terminal_binding = None;
+            self.lane.calls.new_binding();
             let client = LinkClient::new(self.machine_id.clone(), self.clock.clone());
             let Ok(router_run) = client.mint_router_run() else {
                 self.status.send_replace(LinkStatus::Fault {
@@ -290,6 +310,7 @@ where
     ) -> Result<OpenExit<Binding>, Interrupted> {
         loop {
             if let Some(cause) = self.state.ending() {
+                lane_owner.calls.enrollment_ended();
                 self.registration.enrollment_ended(binding.clone());
                 return Ok(OpenExit::Final {
                     binding: binding.clone(),
@@ -483,10 +504,48 @@ where
         control: &mut Control<'_, Binding>,
         lane_owner: &mut LinkLaneOwner,
     ) -> Result<(), Interrupted> {
+        let mut admitted_lane = AdmittedSocketLane::new(lane_owner, timing.writes);
+        let result = self
+            .serve_socket(
+                socket,
+                attempt,
+                binding,
+                timing,
+                control,
+                lane_owner,
+                &mut admitted_lane,
+            )
+            .await;
+        let ending = match result {
+            Ok(()) => self.state.ending().map(CallEnding::EnrollmentEnded),
+            Err(Interrupted::SettingsChanged) => Some(CallEnding::SettingsChanged),
+            Err(Interrupted::Stopped) => Some(CallEnding::Shutdown),
+        };
+        admitted_lane.finish_call_attempt(ending);
+        result
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Reuse this socket's custody lane and exact driver attempt."
+    )]
+    async fn serve_socket(
+        &mut self,
+        socket: &mut (
+                 impl Stream<Item = Result<Message, WebSocketError>>
+                 + Sink<Message, Error = WebSocketError>
+                 + Unpin
+             ),
+        attempt: &ConnectionAttempt,
+        binding: &Binding,
+        timing: SocketAttemptTiming<'_>,
+        control: &mut Control<'_, Binding>,
+        lane_owner: &mut LinkLaneOwner,
+        admitted_lane: &mut AdmittedSocketLane<'_>,
+    ) -> Result<(), Interrupted> {
         let mut acquiring: Option<LeaseFuture<'_, Binding>> = None;
         let mut renewal_sent_at = None;
         let mut priority = SocketPriority::ReadFrame;
-        let mut admitted_lane = AdmittedSocketLane::new(lane_owner, timing.writes);
         let mut read_paused_at = None;
         let mut delivery_stall_at = None;
         let clock = self.clock.clone();
@@ -543,7 +602,7 @@ where
                         attempt,
                         binding,
                         control,
-                        &mut admitted_lane,
+                        admitted_lane,
                         timing.writes,
                         delivery_stall_at,
                     )
@@ -597,22 +656,27 @@ where
                 .chain(self.registration.next_deadline())
                 .chain(delivery_stall_at)
                 .min();
+            let calls = (acquiring.is_none()
+                && admitted_lane.is_registered(attempt)
+                && self.work_write_can_start(self.clock.monotonic_now()))
+            .then_some((&admitted_lane.calls, attempt));
             let input = control
                 .during(async {
                     tokio::select! {
                         biased;
                         () = sleep_if_due(self.clock.as_ref(), deadline) => SocketInput::Timer,
-                        input = next_socket_input(socket, &mut acquiring, &mut lane_owner.commands, admitted_lane.can_offer(), admitted_lane.read_admission(), priority) => input,
+                        input = next_socket_input(socket, &mut acquiring, &mut lane_owner.commands, admitted_lane.can_offer(), admitted_lane.read_admission(), priority, calls) => input,
                     }
                 })
                 .await?;
-            // Rotate first poll across the three effect lanes. A Close already
+            // Rotate first poll across the effect lanes. A Close already
             // read below ends the attempt before another lane can run.
             priority = match &input {
                 SocketInput::Timer | SocketInput::EventSpace => priority,
                 SocketInput::Frame(..) => SocketPriority::AcquireLease,
                 SocketInput::Lease(_) => SocketPriority::AcceptCommand,
-                SocketInput::Command(_) => SocketPriority::ReadFrame,
+                SocketInput::Command(_) => SocketPriority::AcceptCall,
+                SocketInput::Call => SocketPriority::ReadFrame,
             };
             match input {
                 SocketInput::Timer => {}
@@ -630,6 +694,7 @@ where
                     let code = frame
                         .and_then(|frame| MachineLinkCloseCode::from_code(u16::from(frame.code)));
                     log::trace!("Central link received a close classified as {code:?}");
+                    admitted_lane.observed_carrier_close(code);
                     self.close(attempt, code);
                     return Ok(());
                 }
@@ -639,17 +704,11 @@ where
                         text.as_str(),
                         timing.started,
                         renewal_sent_at,
-                        &mut admitted_lane,
+                        admitted_lane,
                         permit,
                     );
                     if !self
-                        .complete_receive(
-                            received,
-                            socket,
-                            control,
-                            &mut admitted_lane,
-                            timing.writes,
-                        )
+                        .complete_receive(received, socket, control, admitted_lane, timing.writes)
                         .await?
                     {
                         self.close(attempt, None);
@@ -729,6 +788,22 @@ where
                                 }
                             }
                         }
+                    }
+                }
+                SocketInput::Call => {
+                    if !self
+                        .write_work_call(
+                            socket,
+                            attempt,
+                            control,
+                            admitted_lane,
+                            timing.writes,
+                            delivery_stall_at,
+                        )
+                        .await?
+                    {
+                        self.close(attempt, None);
+                        return Ok(());
                     }
                 }
                 SocketInput::Lease(result) => {

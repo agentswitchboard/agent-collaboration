@@ -21,14 +21,14 @@ use tungstenite::{
 };
 
 #[derive(Clone, Debug)]
-pub(super) struct ObservedSocketFrame {
-    pub(super) port: u16,
+pub(crate) struct ObservedSocketFrame {
+    pub(crate) port: u16,
     pub(super) at: ClockInstant,
-    pub(super) message: Message,
+    pub(crate) message: Message,
 }
 
 #[derive(Clone, Default)]
-pub(super) struct SocketFrameTrace(watch::Sender<SocketFrames>);
+pub(crate) struct SocketFrameTrace(watch::Sender<SocketFrames>);
 
 #[derive(Default)]
 struct SocketFrames {
@@ -37,7 +37,7 @@ struct SocketFrames {
 }
 
 impl SocketFrameTrace {
-    pub(super) fn snapshot(&self) -> Vec<ObservedSocketFrame> {
+    pub(crate) fn snapshot(&self) -> Vec<ObservedSocketFrame> {
         self.0.borrow().frames.clone()
     }
 
@@ -45,7 +45,7 @@ impl SocketFrameTrace {
         !self.0.borrow().incomplete.contains(&port)
     }
 
-    pub(super) async fn wait_for(&self, matches: impl Fn(&[ObservedSocketFrame]) -> bool) {
+    pub(crate) async fn wait_for(&self, matches: impl Fn(&[ObservedSocketFrame]) -> bool) {
         self.0
             .subscribe()
             .wait_for(|observed| matches(&observed.frames))
@@ -81,7 +81,7 @@ pub(super) struct ObservedCentralStream<Stream> {
     observer: Option<SocketObserver>,
 }
 
-pub(super) struct SocketObserver {
+pub(crate) struct SocketObserver {
     trace: SocketFrameTrace,
     port: u16,
     clock: std::sync::Arc<router_clock::ManualClock>,
@@ -111,6 +111,15 @@ impl SocketObserver {
         port: u16,
         clock: std::sync::Arc<router_clock::ManualClock>,
     ) -> Self {
+        Self::with_role(trace, port, clock, Role::Server)
+    }
+
+    pub(crate) fn with_role(
+        trace: SocketFrameTrace,
+        port: u16,
+        clock: std::sync::Arc<router_clock::ManualClock>,
+        role: Role,
+    ) -> Self {
         Self {
             trace,
             port,
@@ -118,11 +127,11 @@ impl SocketObserver {
             upgrade_prefix: Some(Vec::new()),
             frame_bytes: Vec::new(),
             fragmented: false,
-            socket: WebSocket::from_raw_socket(ReceiveBuffer(VecDeque::new()), Role::Server, None),
+            socket: WebSocket::from_raw_socket(ReceiveBuffer(VecDeque::new()), role, None),
         }
     }
 
-    pub(super) fn observe(&mut self, bytes: &[u8]) {
+    pub(crate) fn observe(&mut self, bytes: &[u8]) {
         let payload = if let Some(prefix) = &mut self.upgrade_prefix {
             prefix.extend_from_slice(bytes);
             let Some(end) = prefix.windows(4).position(|window| window == b"\r\n\r\n") else {

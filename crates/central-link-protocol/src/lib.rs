@@ -13,6 +13,7 @@ mod link_size;
 mod link_typed_calls;
 mod mac_call_address;
 mod mac_call_capabilities;
+mod mac_work_call;
 #[cfg(test)]
 mod parent_session_rpc_test;
 pub mod person_link_rpc;
@@ -50,6 +51,9 @@ pub use link_size::{LINK_MAX_EGRESS_TEXT_BYTES, LINK_MAX_TEXT_BYTES, LinkSizeRef
 pub use mac_call_address::MacCallAddress;
 pub use mac_call_capabilities::{
     DuplicateMacCallKind, HandledMacCalls, MacCallKind, MacCapabilities,
+};
+pub use mac_work_call::{
+    MacReplyExpectation, MacReplyMismatch, MacWorkCall, MacWorkReply, MacWorkRpc, NonMacWorkCall,
 };
 pub use socket_direct_mail::{
     LiveOfferOutcome, NotOffered, SOCKET_DIRECT_MAIL_LIMIT, SocketDirectMailOffers,

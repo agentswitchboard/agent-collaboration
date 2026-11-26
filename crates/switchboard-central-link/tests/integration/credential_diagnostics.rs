@@ -11,12 +11,16 @@ use std::{
 use super::{REFRESHED, TOKEN};
 
 const DRIVER_TARGET: &str = "switchboard_central_link";
+pub(super) const REPLY_SECRET_MARKER: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 static HEX_MARKERS: OnceLock<[String; 2]> = OnceLock::new();
 
 static LOG_CAPTURE: LogCapture = LogCapture {
     saw_inactive_close: AtomicBool::new(false),
     driver_exposed_marker: AtomicBool::new(false),
     registration_mismatches: AtomicUsize::new(0),
+    work_wrong_kinds: AtomicUsize::new(0),
+    work_invalid_replies: AtomicUsize::new(0),
+    work_reply_secret_exposed: AtomicBool::new(false),
     dependency_targets: Mutex::new(BTreeSet::new()),
 };
 
@@ -24,6 +28,9 @@ struct LogCapture {
     saw_inactive_close: AtomicBool,
     driver_exposed_marker: AtomicBool,
     registration_mismatches: AtomicUsize,
+    work_wrong_kinds: AtomicUsize,
+    work_invalid_replies: AtomicUsize,
+    work_reply_secret_exposed: AtomicBool,
     dependency_targets: Mutex<BTreeSet<(String, log::Level)>>,
 }
 
@@ -48,6 +55,18 @@ impl log::Log for LogCapture {
             if message == "Central run registration reply did not match the pending attempt" {
                 self.registration_mismatches.fetch_add(1, Ordering::Relaxed);
             }
+            if message
+                == "ignored mismatched Central work reply: reply kind does not match the call"
+            {
+                self.work_wrong_kinds.fetch_add(1, Ordering::Relaxed);
+            }
+            if message
+                == "ignored mismatched Central work reply: reply is invalid for the originating request"
+            {
+                self.work_invalid_replies.fetch_add(1, Ordering::Relaxed);
+            }
+            self.work_reply_secret_exposed
+                .fetch_or(message.contains(REPLY_SECRET_MARKER), Ordering::Relaxed);
         } else if contains_marker {
             self.dependency_targets
                 .lock()
@@ -61,6 +80,14 @@ impl log::Log for LogCapture {
 
 pub(super) fn registration_mismatches() -> usize {
     LOG_CAPTURE.registration_mismatches.load(Ordering::Relaxed)
+}
+
+pub(super) fn work_wrong_kinds() -> usize {
+    LOG_CAPTURE.work_wrong_kinds.load(Ordering::Relaxed)
+}
+
+pub(super) fn work_invalid_replies() -> usize {
+    LOG_CAPTURE.work_invalid_replies.load(Ordering::Relaxed)
 }
 
 fn contains_credential_marker(message: &str) -> bool {
@@ -112,6 +139,18 @@ pub(super) fn capture_trace() -> TraceCapture {
 }
 
 impl TraceCapture {
+    pub(super) fn assert_no_session_secret_in_driver_diagnostics(&self) {
+        let bytes = self.0.lock().unwrap();
+        let traces = String::from_utf8_lossy(&bytes);
+        assert!(
+            !LOG_CAPTURE
+                .work_reply_secret_exposed
+                .load(Ordering::Relaxed)
+                && !traces.contains(REPLY_SECRET_MARKER),
+            "the invalid Create reply must keep its secret out of driver diagnostics"
+        );
+    }
+
     pub(super) fn assert_credentials_absent(&self) {
         let bytes = self.0.lock().unwrap();
         let traces = String::from_utf8_lossy(&bytes);

@@ -18,7 +18,10 @@ use central_link_protocol::{DataFrame, LinkRequestBatch};
 use router_clock::ClockInstant;
 use tokio::sync::{Mutex as AsyncMutex, mpsc, oneshot, watch};
 
-use crate::admitted_lane_policy::{ExpectedReply, LaneAnswer, LaneResult};
+use crate::{
+    admitted_lane_policy::{ExpectedReply, LaneAnswer, LaneResult},
+    central_call_lane::CentralCallHandle,
+};
 
 const OPERATION_CAPACITY: usize = 16;
 const EVENT_CAPACITY: usize = 64;
@@ -28,6 +31,7 @@ type LaneFuture<'handle, Answer> = Pin<Box<dyn Future<Output = Answer> + Send + 
 /// The user-side handle created by `link_lane_channel` for one driver lifetime.
 #[derive(Clone)]
 pub struct LinkLaneHandle {
+    calls: CentralCallHandle,
     commands: mpsc::Sender<LaneRequest>,
     intake: Arc<CommandIntake>,
     events: Arc<AsyncMutex<mpsc::Receiver<LinkLaneEvent>>>,
@@ -37,6 +41,7 @@ pub struct LinkLaneHandle {
 
 /// The socket-side endpoint created by `link_lane_channel` for one running driver.
 pub struct LinkLaneOwner {
+    pub(super) calls: CentralCallHandle,
     pub(super) commands: mpsc::Receiver<LaneRequest>,
     pub(super) intake: Arc<CommandIntake>,
     pub(super) events: mpsc::Sender<LinkLaneEvent>,
@@ -51,8 +56,10 @@ pub fn link_lane_channel() -> (LinkLaneHandle, LinkLaneOwner) {
     let (admitted, watch_admitted) = watch::channel(None);
     let (registered, watch_registered) = watch::channel(None);
     let intake = Arc::new(CommandIntake::default());
+    let calls = CentralCallHandle::default();
     (
         LinkLaneHandle {
+            calls: calls.clone(),
             commands: commands_out,
             intake: intake.clone(),
             events: Arc::new(AsyncMutex::new(events_in)),
@@ -60,6 +67,7 @@ pub fn link_lane_channel() -> (LinkLaneHandle, LinkLaneOwner) {
             registered: watch_registered,
         },
         LinkLaneOwner {
+            calls,
             commands,
             intake,
             events,
@@ -202,6 +210,10 @@ fn check_batch_budget(requests: &LinkRequestBatch) -> Result<(), UntouchedComman
 }
 
 impl LinkLaneHandle {
+    pub fn central_calls(&self) -> CentralCallHandle {
+        self.calls.clone()
+    }
+
     fn is_admitted(&self, connection: &ConnectionAttempt) -> bool {
         self.admitted
             .borrow()

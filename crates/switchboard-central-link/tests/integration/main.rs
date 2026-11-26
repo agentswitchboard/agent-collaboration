@@ -41,6 +41,7 @@ use tokio_tungstenite::{
 use workspace_ids::MachineId;
 
 mod admitted_commands;
+mod central_calls;
 mod credential_diagnostics;
 mod lease_boundaries;
 mod mac_capabilities;
