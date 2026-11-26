@@ -42,6 +42,10 @@ mod managed_prompt_fixture;
 mod message_unit_fixture;
 #[cfg(debug_assertions)]
 mod message_unit_journey;
+#[cfg(debug_assertions)]
+mod native_central_calls;
+#[cfg(debug_assertions)]
+mod native_work_carrier;
 mod simulated_link;
 
 struct RealLeases {

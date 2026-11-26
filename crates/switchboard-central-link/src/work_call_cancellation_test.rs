@@ -1,5 +1,10 @@
+use central_link_client::{
+    LinkLaneDisposition, SubmitReceiptsCommand, WriteBatchDisposition, WriteBatchMemberDisposition,
+};
 use central_link_protocol::{
-    MacWorkCall, MacWorkRpc, MachineLinkCloseCode, session_lifecycle_rpc::EndFleetSessionRpc,
+    FrameDirection, MacWorkCall, MacWorkRpc, MachineLinkCloseCode, Receipt, ReceiptBatch,
+    ReceiptKind, ReceiptResult, ReplyPayload, encode_text,
+    session_lifecycle_rpc::EndFleetSessionRpc,
 };
 use router_clock::{ClockInstant, ManualClock};
 use serde_json::json;
@@ -20,12 +25,13 @@ use super::{
     test_settings, watch,
 };
 use futures_util::FutureExt;
-use futures_util::SinkExt;
+use futures_util::{SinkExt, StreamExt};
 use std::{
     pin::pin,
     sync::atomic::{AtomicBool, AtomicUsize},
 };
 use tokio_tungstenite::tungstenite::{Message, protocol::CloseFrame};
+use workspace_model::central_mail::{CentralMailAnswer, CentralMailResult, NoticeCadence};
 
 struct WorkSocket {
     clock: Arc<ManualClock>,
@@ -231,7 +237,7 @@ async fn work_cancellation_preserves_the_first_byte_observation() {
 
 #[tokio::test]
 async fn queued_work_frees_its_slots_while_custody_still_holds_the_writer() {
-    let fixture = WorkSocket::registered().await;
+    let mut fixture = WorkSocket::registered().await;
     let admitted = fixture
         .lane
         .watch_admitted()
@@ -271,13 +277,45 @@ async fn queued_work_frees_its_slots_while_custody_still_holds_the_writer() {
             )))
         ));
     }
-    let replacement = submit(&fixture.lane, elapsed_tick(15));
+    let CentralCallSubmission::Accepted(replacement) = fixture.lane.central_calls().submit(
+        EndFleetSessionRpc::work_request(
+            serde_json::from_value(json!("019f0000-0000-7000-8000-000000000001")).unwrap(),
+            serde_json::from_value(json!({
+                "target":{"kind":"centralId","sessionId":"019f0000-0000-7000-8000-000000000003"},
+                "cause":{"kind":"givenUp"}
+            }))
+            .unwrap(),
+        ),
+        elapsed_tick(15),
+    ) else {
+        panic!("a slot must be available before the writer is released");
+    };
     assert_eq!(fixture.crossed.load(Ordering::Relaxed), 0);
+    fixture.write_budget.store(4096, Ordering::Relaxed);
+    fixture.gate.released.store(true, Ordering::Relaxed);
+    assert!(poll_driver(&fixture.turns).await);
+    assert!(matches!(
+        read_frame(&mut fixture.peer).await,
+        LinkFrame::Data(DataFrame::Batch { .. })
+    ));
+    let LinkFrame::Data(DataFrame::CallCentral { request, .. }) =
+        read_frame(&mut fixture.peer).await
+    else {
+        panic!("the replacement must cross the wire after custody");
+    };
+    let central_link_protocol::CentralCall::EndFleetSession(request) = *request else {
+        panic!("the replacement is the only End operation that can be sent");
+    };
+    assert_eq!(
+        serde_json::to_value(request.body).unwrap()["target"]["sessionId"],
+        "019f0000-0000-7000-8000-000000000003"
+    );
+    assert!(fixture.peer.next().now_or_never().is_none());
     drop(custody);
     fixture.stop().await;
     assert!(matches!(
         replacement.resolve().await,
-        CallSettlement::NotReached(CallNotReached::Ended(CallEnding::DriverDropped))
+        CallSettlement::AnswerLost(CallEnding::DriverDropped)
     ));
 }
 
@@ -311,5 +349,136 @@ async fn close_retires_unwritten_and_written_work_with_the_same_owning_cause() {
             matches!(queued.resolve().await, CallSettlement::NotReached(CallNotReached::Ended(actual)) if actual == cause)
         );
         fixture.stop().await;
+    }
+}
+
+#[tokio::test]
+async fn eight_written_work_calls_and_custody_batch_and_receipts_make_independent_progress() {
+    let mut fixture = WorkSocket::registered().await;
+    fixture.write_budget.store(4096, Ordering::Relaxed);
+    let calls: Vec<_> = (0..8)
+        .map(|_| submit(&fixture.lane, elapsed_tick(15)))
+        .collect();
+    let mut work_correlations = Vec::new();
+    for _ in &calls {
+        assert!(poll_driver(&fixture.turns).await);
+        let Some(LinkFrame::Data(DataFrame::CallCentral { correlation_id, .. })) =
+            read_frame(&mut fixture.peer).now_or_never()
+        else {
+            panic!("all eight work calls must be written and awaiting replies");
+        };
+        work_correlations.push(correlation_id);
+    }
+    let connection = calls.first().unwrap().connection().clone();
+    let requests = batch();
+    let mut custody = fixture.lane.submit_write_batch(WriteBatchCommand {
+        connection: connection.clone(),
+        send_before: elapsed_tick(15),
+        requests: requests.clone(),
+    });
+    assert!(custody.as_mut().now_or_never().is_none());
+    assert!(poll_driver(&fixture.turns).await);
+    assert!(matches!(read_frame(&mut fixture.peer).await,
+        LinkFrame::Data(DataFrame::Batch { requests: actual }) if actual == requests));
+
+    let mut calls = calls.into_iter();
+    let first = calls.next().unwrap();
+    let answer = LinkFrame::Data(DataFrame::CentralCallReply {
+        correlation_id: work_correlations.first().unwrap().clone(),
+        result: Box::new(central_link_protocol::TypedCallResult::Answered {
+            reply: serde_json::from_value(json!({
+                "call":"endFleetSession",
+                "envelope":{"target":"019f0000-0000-7000-8000-000000000001","body":{"result":"noSuchStart"}}
+            })).unwrap(),
+        }),
+    });
+    fixture
+        .peer
+        .send(Message::Text(
+            encode_text(&answer, FrameDirection::ToRouter)
+                .unwrap()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    assert!(poll_driver(&fixture.turns).await);
+    assert!(matches!(
+        first.resolve().now_or_never(),
+        Some(CallSettlement::Answered(_))
+    ));
+    assert!(custody.as_mut().now_or_never().is_none());
+    let replacement = submit(&fixture.lane, elapsed_tick(15));
+    assert!(poll_driver(&fixture.turns).await);
+    assert!(matches!(
+        read_frame(&mut fixture.peer).await,
+        LinkFrame::Data(DataFrame::CallCentral { .. })
+    ));
+
+    for request in requests.requests() {
+        let answer = LinkFrame::Data(DataFrame::Reply {
+            correlation_id: request.correlation_id().clone(),
+            result: Box::new(ReplyPayload::Mail(CentralMailResult::Done(
+                CentralMailAnswer::NoticeCadenceSet {
+                    cadence: NoticeCadence::M25,
+                },
+            ))),
+        });
+        fixture
+            .peer
+            .send(Message::Text(
+                encode_text(&answer, FrameDirection::ToRouter)
+                    .unwrap()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+    }
+    assert!(poll_driver(&fixture.turns).await);
+    assert!(
+        matches!(custody.now_or_never(), Some(WriteBatchDisposition::MemberResults(results))
+        if results.members().iter().all(|member| matches!(member.disposition, WriteBatchMemberDisposition::Answered { .. })))
+    );
+
+    let correlation: central_link_protocol::CorrelationId =
+        "019f0000-0000-7000-8000-000000000015".parse().unwrap();
+    let mut custody_receipt = fixture.lane.submit_receipts(SubmitReceiptsCommand {
+        connection,
+        send_before: elapsed_tick(15),
+        correlation_id: correlation.clone(),
+        receipts: ReceiptBatch::new(vec![Receipt {
+            message_id: "019f0000-0000-7000-8000-000000000016".parse().unwrap(),
+            kind: ReceiptKind::Seen {
+                completed_at: "2030-01-01T00:00:00Z".parse().unwrap(),
+            },
+        }])
+        .unwrap(),
+    });
+    assert!(custody_receipt.as_mut().now_or_never().is_none());
+    assert!(poll_driver(&fixture.turns).await);
+    assert!(matches!(read_frame(&mut fixture.peer).await,
+        LinkFrame::Data(DataFrame::Receipts { correlation_id, .. }) if correlation_id == correlation));
+    let reply = LinkFrame::Data(DataFrame::ReceiptResults {
+        correlation_id: correlation,
+        results: vec![ReceiptResult::Recorded],
+    });
+    fixture
+        .peer
+        .send(Message::Text(
+            encode_text(&reply, FrameDirection::ToRouter)
+                .unwrap()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    assert!(poll_driver(&fixture.turns).await);
+    assert!(
+        matches!(custody_receipt.now_or_never(), Some(LinkLaneDisposition::Answered { reply, .. }) if reply.results == [ReceiptResult::Recorded])
+    );
+    fixture.stop().await;
+    for awaiting in calls.chain([replacement]) {
+        assert!(matches!(
+            awaiting.resolve().await,
+            CallSettlement::AnswerLost(CallEnding::DriverDropped)
+        ));
     }
 }

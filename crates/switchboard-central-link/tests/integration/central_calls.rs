@@ -4,8 +4,9 @@ use central_link_client::ReadyLinkLane;
 use central_link_protocol::{
     CentralCall, CentralCallReply, CorrelationId, DataFrame, FrameDirection, LinkCallRefusal,
     LinkFrame, MacWorkCall, MacWorkRpc, MachineLinkCloseCode, TokenRenewalResult, TypedCallResult,
-    approval_rpc::RegisterRunReply, decode_text, encode_text,
-    session_lifecycle_rpc::EndFleetSessionRpc,
+    approval_rpc::RegisterRunReply,
+    decode_text, encode_text,
+    session_lifecycle_rpc::{CreateFleetSessionRpc, EndFleetSessionRpc},
 };
 use futures_util::{FutureExt, SinkExt, StreamExt};
 use router_clock::RuntimeClock;
@@ -98,6 +99,7 @@ async fn observed_reads(socket: &mut WebSocketStream<TcpStream>) {
 
 #[tokio::test]
 async fn work_waits_for_registration_and_three_kinds_of_wrong_reply_leave_it_pending() {
+    let _diagnostics = super::credential_diagnostics::capture_trace();
     let fixture = Fixture::new().await;
     let lane = &fixture.inbox_events.lane;
     let work = lane.central_calls();
@@ -112,7 +114,7 @@ async fn work_waits_for_registration_and_three_kinds_of_wrong_reply_leave_it_pen
     reply_registration(
         &mut socket,
         registration_id.clone(),
-        target,
+        target.clone(),
         RegisterRunReply::Registered {},
     )
     .await;
@@ -126,6 +128,18 @@ async fn work_waits_for_registration_and_three_kinds_of_wrong_reply_leave_it_pen
     tokio::pin!(result);
     let correlation = work_frame(&mut socket).await;
     assert_ne!(registration_id, correlation);
+
+    reply_registration(
+        &mut socket,
+        correlation.clone(),
+        target,
+        RegisterRunReply::Registered {},
+    )
+    .await;
+    observed_reads(&mut socket).await;
+    assert_eq!(super::credential_diagnostics::work_wrong_kinds(), 1);
+    assert_eq!(super::credential_diagnostics::registration_mismatches(), 0);
+    assert!(result.as_mut().now_or_never().is_none());
 
     let wrong_kind = serde_json::from_value(json!({
         "call":"createFleetSession","envelope":{"target":ORGANIZATION,"body":{"result":"superseded"}}
@@ -144,11 +158,23 @@ async fn work_waits_for_registration_and_three_kinds_of_wrong_reply_leave_it_pen
         observed_reads(&mut socket).await;
         assert!(result.as_mut().now_or_never().is_none());
     }
+    assert_eq!(super::credential_diagnostics::work_invalid_replies(), 1);
     sent_reply(
         &mut socket,
         registration_id,
         TypedCallResult::Refused {
             reason: LinkCallRefusal::WrongTarget,
+        },
+    )
+    .await;
+    observed_reads(&mut socket).await;
+    assert!(result.as_mut().now_or_never().is_none());
+
+    sent_reply(
+        &mut socket,
+        OTHER.parse().unwrap(),
+        TypedCallResult::Answered {
+            reply: end_reply(ORGANIZATION, "noSuchStart"),
         },
     )
     .await;
@@ -172,6 +198,7 @@ async fn work_waits_for_registration_and_three_kinds_of_wrong_reply_leave_it_pen
 
 #[tokio::test]
 async fn written_calls_end_at_equality_and_do_not_replay_after_reconnect() {
+    let _diagnostics = super::credential_diagnostics::capture_trace();
     let fixture = Fixture::new().await;
     let lane = &fixture.inbox_events.lane;
     let work = lane.central_calls();
@@ -190,6 +217,7 @@ async fn written_calls_end_at_equality_and_do_not_replay_after_reconnect() {
     )
     .await;
     observed_reads(&mut socket).await;
+    assert_eq!(super::credential_diagnostics::work_invalid_replies(), 1);
     fixture.clock.advance(Duration::from_secs(2)).unwrap();
     assert_eq!(fixture.clock.monotonic_now(), tick(2));
     assert!(matches!(
@@ -213,6 +241,71 @@ async fn written_calls_end_at_equality_and_do_not_replay_after_reconnect() {
     registered.wait_for(Option::is_some).await.unwrap();
     observed_reads(&mut second).await;
     assert!(second.next().now_or_never().is_none());
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn an_invalid_create_with_a_secret_leaves_the_call_waiting_and_logs_no_secret() {
+    use super::credential_diagnostics::{REPLY_SECRET_MARKER, capture_trace, work_invalid_replies};
+
+    let diagnostics = capture_trace();
+    let fixture = Fixture::new().await;
+    let lane = &fixture.inbox_events.lane;
+    let work = lane.central_calls();
+    let mut socket = fixture.accept().await;
+    super::welcome(&mut socket).await;
+    lane.watch_registered()
+        .wait_for(Option::is_some)
+        .await
+        .unwrap();
+    let create = || {
+        CreateFleetSessionRpc::work_request(
+        serde_json::from_value(json!(ORGANIZATION)).unwrap(),
+        serde_json::from_value(json!({
+            "operationId": OTHER, "attempt": 1, "agentProgram":"codex", "sessionKind":{"kind":"ordinary"},
+            "creator":{"kind":"session","sessionId":OTHER,"presented":{"kind":"nothing"}},
+        })).unwrap(),
+    )
+    };
+    let answered = accepted(work.submit(create(), tick(1)));
+    let expiring = accepted(work.submit(create(), tick(2)));
+    let answered_result = answered.resolve();
+    let expiring_result = expiring.resolve();
+    tokio::pin!(answered_result, expiring_result);
+    let mut numbers = Vec::new();
+    for _ in 0..2 {
+        let LinkFrame::Data(DataFrame::CallCentral {
+            correlation_id,
+            request,
+        }) = decode_text(&text(&mut socket).await, FrameDirection::ToCentral).unwrap()
+        else {
+            panic!("expected a Create call");
+        };
+        assert!(matches!(*request, CentralCall::CreateFleetSession(_)));
+        sent_reply(&mut socket, correlation_id.clone(), TypedCallResult::Answered { reply: serde_json::from_value(json!({
+            "call":"createFleetSession", "envelope":{"target":ORGANIZATION,"body":{
+                "result":"reserved","sessionId":OTHER,"secret":REPLY_SECRET_MARKER,"reservedUntil":"2030-01-01T00:00:20.000Z"
+            }}
+        })).unwrap() }).await;
+        numbers.push(correlation_id);
+    }
+    observed_reads(&mut socket).await;
+    assert_eq!(work_invalid_replies(), 2);
+    diagnostics.assert_no_session_secret_in_driver_diagnostics();
+    assert!(answered_result.as_mut().now_or_never().is_none());
+    assert!(expiring_result.as_mut().now_or_never().is_none());
+    let [answered_id, _] = numbers.as_slice() else {
+        panic!("expected two distinct work replies")
+    };
+    sent_reply(&mut socket, answered_id.clone(), TypedCallResult::Answered { reply: serde_json::from_value(json!({
+        "call":"createFleetSession", "envelope":{"target":ORGANIZATION,"body":{"result":"noSecret"}}
+    })).unwrap() }).await;
+    assert!(matches!(answered_result.await, CallSettlement::Answered(_)));
+    fixture.clock.advance(Duration::from_secs(2)).unwrap();
+    assert!(matches!(
+        expiring_result.await,
+        CallSettlement::AnswerLost(CallEnding::Deadline)
+    ));
     fixture.stop().await;
 }
 

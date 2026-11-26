@@ -86,12 +86,6 @@ where
             } => {
                 if !admitted_lane.is_registered(&attempt)
                     || admitted_lane.registration_answered_as(&correlation_id)
-                    || matches!(
-                        result.as_ref(),
-                        TypedCallResult::Answered {
-                            reply: CentralCallReply::RegisterRun(_)
-                        }
-                    )
                 {
                     return Ok(self.settle_registration_reply(
                         &attempt,

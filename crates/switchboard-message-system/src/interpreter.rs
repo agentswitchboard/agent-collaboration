@@ -28,6 +28,7 @@ use crate::{
     Supervisor, UnitPiece,
 };
 use crate::{
+    central_work_port::{CentralWorkPort, WorkCallContext},
     message_front::{ForwardingMessageFront, FrontPublication},
     message_unit::{MessageUnit, MessageUnitBuildError, OwnedLinkTask, UnitBuildInputs},
     stop_part::stop_part,
@@ -118,6 +119,7 @@ pub(crate) struct Interpreter {
     pub(crate) inputs: MessageInputs,
     pub(crate) front: FrontPublication,
     pub(crate) status: watch::Sender<MessageSystemObservation>,
+    work_context: watch::Sender<WorkCallContext>,
     pub(crate) events: mpsc::UnboundedSender<Event>,
     pub(crate) queue: mpsc::UnboundedReceiver<Event>,
     link_publication: watch::Sender<LinkStatus>,
@@ -138,12 +140,20 @@ impl Interpreter {
         events: mpsc::UnboundedSender<Event>,
         queue: mpsc::UnboundedReceiver<Event>,
         enrollment: Option<OpenedEnrollment>,
-    ) -> Self {
+        initial: &State,
+    ) -> (Self, CentralWorkPort) {
         let (link_publication, link_status) = watch::channel(LinkStatus::NotEnrolled);
+        let (work_context, work_updates) = watch::channel(WorkCallContext {
+            supervisor: initial.clone(),
+            lane: None,
+            stored_ending: None,
+        });
+        let central_calls = CentralWorkPort::new(work_updates, link_status.clone());
         let interpreter = Self {
             inputs,
             front,
             status,
+            work_context,
             events,
             queue,
             link_publication,
@@ -158,7 +168,7 @@ impl Interpreter {
         if let Some(enrollment) = &interpreter.enrollment {
             interpreter.observe_store_exit(enrollment.store.clone());
         }
-        interpreter
+        (interpreter, central_calls)
     }
 
     pub(crate) async fn run<Build: Future<Output = Result<MessageUnit, MessageUnitBuildError>>>(
@@ -224,6 +234,7 @@ impl Interpreter {
                                 self.stored_ending = ending;
                             }
                             supervisor = next;
+                            self.publish_work_context(supervisor.state());
                             break effects;
                         }
                         Err(refused) => tracing::debug!(
@@ -346,6 +357,20 @@ impl Interpreter {
             }
             *published = status;
             true
+        });
+    }
+
+    fn publish_work_context(&self, state: &State) {
+        let lane = match (state.front(), self.unit.as_ref()) {
+            (Front::Forwarding(requested), Some((held, unit))) if requested == *held => {
+                Some(unit.central_calls.clone())
+            }
+            _ => None,
+        };
+        self.work_context.send_replace(WorkCallContext {
+            supervisor: state.clone(),
+            lane,
+            stored_ending: self.stored_ending.as_ref().map(|(_, cause)| *cause),
         });
     }
 

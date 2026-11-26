@@ -70,11 +70,12 @@ enum Termination {
 struct SinkGate {
     hold: OnceLock<WriteCheckpoint>,
     observed: AtomicBool,
+    released: AtomicBool,
 }
 
 impl SinkGate {
     fn held_at(&self, checkpoint: WriteCheckpoint) -> bool {
-        if self.hold.get() == Some(&checkpoint) {
+        if self.hold.get() == Some(&checkpoint) && !self.released.load(Ordering::Relaxed) {
             self.observed.store(true, Ordering::Relaxed);
             true
         } else {
