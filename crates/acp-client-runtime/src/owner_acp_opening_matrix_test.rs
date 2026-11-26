@@ -27,6 +27,8 @@ use uuid::Uuid;
 mod expectations;
 #[path = "owner_acp_opening_payloads_test.rs"]
 mod payloads;
+#[path = "owner_acp_opening_reply_envelopes_test.rs"]
+mod reply_envelopes;
 #[path = "owner_acp_opening_worker_receipts_test.rs"]
 mod worker_receipts;
 use expectations::{expected, expected_actions};

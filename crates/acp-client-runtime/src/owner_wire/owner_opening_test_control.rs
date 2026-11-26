@@ -16,6 +16,7 @@ pub enum OpeningPausePoint {
     BeforeCloseCommit,
     RestoreDeferred,
     RestoreReceiptBuffered,
+    ConfigureReceiptBuffered,
     ResumeReaderBeforeCommit,
     CloseReceiptPublished,
     ReaderHandoffAccepted,

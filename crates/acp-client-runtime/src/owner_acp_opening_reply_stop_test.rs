@@ -2,10 +2,10 @@
 
 use super::*;
 use crate::owner_wire::OpeningPausePoint;
+use codex_router_test_support::reply_ledger::{ReplyLedger as ExactReplyLedger, ReplySite};
 use provider_session_machines::{
     harness_lifecycle::CloseFact, session_lifecycle_machine::CloseAttempt,
 };
-use std::collections::BTreeMap;
 use switchboard_harness_contracts::CloseUncertainty;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -20,62 +20,8 @@ enum LiveOwner {
     CloseWorker,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Site {
-    Reserved,
-    Admitted(LiveOwner),
-    BufferedFromPeer(LiveOwner),
-    Delivered,
-    Unoffered,
-}
-
-#[derive(Default)]
-struct ReplyLedger(BTreeMap<ReplyId, Site>);
-
-impl ReplyLedger {
-    fn reserve(&mut self, id: ReplyId) {
-        assert_eq!(self.0.insert(id, Site::Reserved), None);
-    }
-
-    fn move_to(&mut self, id: ReplyId, before: Site, after: Site) {
-        assert_eq!(
-            self.0.insert(id, after),
-            Some(before),
-            "reply identity {id:?}"
-        );
-    }
-
-    fn owed(&self) -> BTreeMap<ReplyId, LiveOwner> {
-        self.0
-            .iter()
-            .filter_map(|(id, site)| match site {
-                Site::Admitted(owner) | Site::BufferedFromPeer(owner) => Some((*id, *owner)),
-                Site::Reserved | Site::Delivered | Site::Unoffered => None,
-            })
-            .collect()
-    }
-
-    fn assert_conserved(
-        &self,
-        owed_before: BTreeMap<ReplyId, LiveOwner>,
-        held: &[(ReplyId, LiveOwner)],
-        delivered: &[ReplyId],
-    ) {
-        assert_eq!(
-            self.owed(),
-            held.iter().copied().collect::<BTreeMap<_, _>>()
-        );
-        let mut accounted = self.owed();
-        for id in delivered {
-            assert_eq!(self.0.get(id), Some(&Site::Delivered));
-            assert!(
-                accounted.insert(*id, owed_before[id]).is_none(),
-                "reply counted twice"
-            );
-        }
-        assert_eq!(accounted, owed_before);
-    }
-}
+type Site = ReplySite<LiveOwner>;
+type ReplyLedger = ExactReplyLedger<ReplyId, LiveOwner>;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
 async fn writer_stop_does_not_lose_the_older_restore_under_an_untaken_close() {
@@ -138,6 +84,7 @@ async fn writer_stop_does_not_lose_the_older_restore_under_an_untaken_close() {
     ));
     ledger.assert_conserved(
         owed_before.clone(),
+        &[],
         &[(open_id, LiveOwner::RestoreWorker)],
         &[],
     );
@@ -154,6 +101,7 @@ async fn writer_stop_does_not_lose_the_older_restore_under_an_untaken_close() {
     );
     ledger.assert_conserved(
         owed_before.clone(),
+        &[],
         &[(open_id, LiveOwner::RestoreWorker)],
         &[],
     );
@@ -175,7 +123,7 @@ async fn writer_stop_does_not_lose_the_older_restore_under_an_untaken_close() {
         Site::Admitted(LiveOwner::RestoreWorker),
         Site::Delivered,
     );
-    ledger.assert_conserved(owed_before, &[], &[open_id]);
+    ledger.assert_conserved(owed_before, &[], &[], &[open_id]);
     assert!(lock(&opening.attempts).runs.is_empty());
     drop(opening);
     tasks.close();
@@ -273,7 +221,12 @@ async fn assert_exact_close_after_stop(peer: PeerClose) {
         answer.try_recv(),
         Err(oneshot::error::TryRecvError::Empty)
     ));
-    ledger.assert_conserved(owed_before.clone(), &[(id, LiveOwner::CloseWorker)], &[]);
+    ledger.assert_conserved(
+        owed_before.clone(),
+        &[],
+        &[(id, LiveOwner::CloseWorker)],
+        &[],
+    );
     stop.release.send(()).expect("finish the stop observer");
     commit
         .release
@@ -286,7 +239,7 @@ async fn assert_exact_close_after_stop(peer: PeerClose) {
         expected
     );
     ledger.move_to(id, custody, Site::Delivered);
-    ledger.assert_conserved(owed_before, &[], &[id]);
+    ledger.assert_conserved(owed_before, &[], &[], &[id]);
     assert!(lock(&opening.attempts).runs.is_empty());
     drop(old_frame);
     assert!(

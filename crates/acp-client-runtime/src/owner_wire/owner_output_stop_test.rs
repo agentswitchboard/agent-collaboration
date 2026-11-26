@@ -18,7 +18,7 @@ use switchboard_harness_contracts::{ReservedReply, WorkReply};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-pub(super) struct ReplyRecorder<Fact>(pub(super) oneshot::Sender<Fact>);
+pub(crate) struct ReplyRecorder<Fact>(pub(crate) oneshot::Sender<Fact>);
 
 impl<Fact: Send> ReservedReply<Fact> for ReplyRecorder<Fact> {
     fn send(self: Box<Self>, fact: Fact) {
@@ -29,7 +29,7 @@ impl<Fact: Send> ReservedReply<Fact> for ReplyRecorder<Fact> {
     }
 }
 
-pub(super) async fn inert_connection() -> ConnectionTo<Agent> {
+pub(crate) async fn inert_connection() -> ConnectionTo<Agent> {
     Client
         .builder()
         .connect_with(
@@ -43,7 +43,7 @@ pub(super) async fn inert_connection() -> ConnectionTo<Agent> {
         .expect("open an inert SDK connection for the stopped writer")
 }
 
-pub(super) fn configuration() -> OwnerOpenConfiguration {
+pub(crate) fn configuration() -> OwnerOpenConfiguration {
     OwnerOpenConfiguration {
         behavior: Arc::new(ConnectionCatalogueBehavior),
         capabilities: Default::default(),

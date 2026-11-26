@@ -692,7 +692,7 @@ impl OwnerAcpWire {
 
 #[cfg(test)]
 #[path = "owner_wire/owner_output_stop_test.rs"]
-mod output_stop_tests;
+pub(crate) mod output_stop_tests;
 #[cfg(test)]
 #[path = "owner_wire_test.rs"]
 mod tests;

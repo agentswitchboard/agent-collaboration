@@ -199,6 +199,8 @@ impl OwnerOpenings {
                 () = retired => None,
                 result = session.configure_lifecycle_create(attempt, &requested, clock.as_ref()) => Some(result),
             };
+            #[cfg(any(test, feature = "test-observation"))]
+            wire.at_opening_effect_for_test(crate::owner_wire::OpeningPausePoint::ConfigureReceiptBuffered);
             let (event, fact) = match fact {
                 Some(fact @ CreatedSetupFact::ClosedAfterInvalidSetting { .. }) => (Command::ConfigureClosed, Some(fact)),
                 Some(fact) => (Command::Configured(session), Some(fact)),
