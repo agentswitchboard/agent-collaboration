@@ -41,6 +41,7 @@ tagged_enum!(OpeningPhase,
     ClosingRestore => "closing_restore",
     ClosingLive => "closing_live",
     CloseRefusedLive => "close_refused_live",
+    Readmitting => "readmitting",
     RetiredAwaitingReply => "retired_awaiting_reply",
     RouteLost => "route_lost",
     StoppedAwaitingReply => "stopped_awaiting_reply",
@@ -90,6 +91,8 @@ tagged_enum!(OpeningEvent,
     CloseRefused => "close_refused",
     CloseUnknown => "close_unknown",
     AdmitAgain => "admit_again",
+    Readmitted => "readmitted",
+    ReadmitFailed => "readmit_failed",
     Retire => "retire",
     RouteRemoved => "route_removed",
     FinishOnStoppedWriter => "finish_on_stopped_writer",
@@ -230,7 +233,14 @@ impl StateMachine for OpeningPolicy {
         OfferingClose + CloseUnsentActive => Active;
         OfferingClose + Retire => Terminal;
         OfferingClose + WaitClose => OfferingClose;
-        CloseRefusedLive + AdmitAgain => Active;
+        CloseRefusedLive + AdmitAgain => Readmitting;
+        Readmitting + Readmitted => Active;
+        Readmitting + ReadmitFailed => CloseRefusedLive;
+        Readmitting + WaitClose => Readmitting;
+        Readmitting + Retire => Terminal;
+        Readmitting + ConnectionRetired => Terminal;
+        Readmitting + RouteRemoved => RouteLost;
+        Readmitting + WriterStopped => Terminal;
         CloseRefusedLive + Retire => Terminal;
         RetiredAwaitingReply + LateOpenReply => Terminal;
         RetiredAwaitingReply + ConnectionRetired => Terminal;

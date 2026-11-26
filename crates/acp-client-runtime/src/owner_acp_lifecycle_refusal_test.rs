@@ -446,11 +446,11 @@ async fn delayed_retirement_cleanup_cannot_take_a_replacement_route_at_the_same_
     };
     let old_answer = pending_load(&openings, run);
     let old_frame = output.hold_next_frame_for_test();
-    let (old_instance, old_row) = openings
+    let (_old_instance, old_row) = openings
         .take_retired(run.generation)
         .expect("release only the exact old row");
     let new_answer = pending_load(&openings, run);
-    dispose_old(&openings, &old_instance, old_row);
+    old_row.finish(&openings.wire);
     assert!(old_answer.await.is_err());
     drop(old_frame);
     assert_eq!(
@@ -472,8 +472,4 @@ async fn delayed_retirement_cleanup_cannot_take_a_replacement_route_at_the_same_
     drop(openings);
     tasks.close();
     tasks.wait().await;
-}
-
-fn dispose_old(openings: &OwnerOpenings, instance: &OpeningInstance, row: OpeningState) {
-    super::observations::dispose(&openings.wire, instance, row);
 }

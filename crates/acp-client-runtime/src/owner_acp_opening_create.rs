@@ -1,15 +1,12 @@
 //! Provisional creation and its separately admitted configuration worker.
 
-use super::row::{HeldCreate, PendingCreate};
+use super::row::HeldCreate;
 use super::{
-    Arc, CreateAttempt, HarnessSessionId, LifecycleRefusal, LifecycleReply, Mutex, OpenAttempt,
-    OpenSetup, OpeningAttempts, OpeningEvent, OpeningFact, OpeningFailure, OpeningInstance,
-    OpeningPhase, OpeningRow, OpeningSlot, OpeningState, OwnerOpenings, RequestedProviderSettings,
-    RunRetirement, Transition, lifecycle_transport_refusal, lock, opening_failure,
+    Arc, Command, CreateAttempt, Effect, HarnessSessionId, LifecycleRefusal, LifecycleReply, Mutex,
+    OpenAttempt, OpenSetup, OpeningAttempts, OpeningFact, OpeningFailure, OpeningInstance,
+    OpeningSlot, OwnerAcpWire, OwnerOpenings, RequestedProviderSettings, RunRetirement,
+    lifecycle_transport_refusal, lock, opening_failure,
 };
-use crate::owner_opening_instance::OpeningOffer;
-use crate::owner_session_open::OwnerOpenedSession;
-use provider_session_machines::ProviderSettingsCatalog;
 use provider_session_machines::harness_lifecycle::{
     AcceptedRunSettings, CreatedSetupFact, CreationEffect, SessionCreatedSetupFact, SetupReport,
 };
@@ -24,38 +21,9 @@ impl OwnerOpenings {
         reply: LifecycleReply<OpeningFact>,
         retired: RunRetirement,
     ) -> Result<(), LifecycleRefusal> {
-        let identity = OpenAttempt::Create(attempt);
         let slot = OpeningSlot::Create(attempt);
-        let instance = OpeningInstance::default();
-        let offer = OpeningOffer::default();
-        let stopped = self.stopped.child_token();
-        {
-            let mut attempts = lock(&self.attempts);
-            let phase = self.idle_phase();
-            if !attempts.creates.is_empty()
-                || !attempts.runs.is_empty()
-                || attempts.port_refusal.is_some()
-            {
-                return Err(self.opening_refusal(&attempts, identity));
-            }
-            if !phase.accepts(OpeningEvent::OpenCreate) {
-                return Err(phase.refusal());
-            }
-            attempts.insert(
-                slot,
-                OpeningRow {
-                    attempt: identity,
-                    instance: instance.clone(),
-                    state: OpeningState::OfferingCreate {
-                        offer: offer.clone(),
-                        pending: PendingCreate {
-                            requested: Box::new(requested),
-                            stopped: stopped.clone(),
-                        },
-                    },
-                },
-            );
-        }
+        let (instance, offer, stopped) =
+            lock(&self.attempts).begin_create(self, attempt, requested)?;
         let receipt = match self
             .wire
             .offer_create(self.owner.incarnation, setup, &offer)
@@ -72,34 +40,14 @@ impl OwnerOpenings {
                 return Err(lifecycle_transport_refusal(refusal));
             }
         };
-        let accepted = {
-            let mut attempts = lock(&self.attempts);
-            attempts.apply(
-                slot,
-                &instance,
-                OpeningEvent::WriterAccepted,
-                (),
-                |state, ()| match state {
-                    OpeningState::OfferingCreate { pending, .. } => {
-                        Ok(Transition::Store(OpeningState::AwaitingCreate(pending), ()))
-                    }
-                    state @ OpeningState::StoppedAwaitingReply(_) => {
-                        Ok(Transition::Store(state, ()))
-                    }
-                    other => Err((other, ())),
-                },
-            )
-        };
-        if let Err((reason, ())) = accepted {
-            tracing::debug!(
-                ?attempt,
-                ?reason,
-                "ACP had taken the create before the row was retired"
-            );
+        let accepted = lock(&self.attempts).apply(slot, &instance, Command::WriterAccepted);
+        if let Err(rejected) = accepted {
+            tracing::debug!(?attempt, reason=?rejected.reason, "ACP had taken the create before the row was retired");
             return Ok(());
         }
         let attempts = Arc::clone(&self.attempts);
         let session_id = Arc::clone(&self.session);
+        let wire = Arc::clone(&self.wire);
         self.tasks.spawn(async move {
             let result = tokio::select! {
                 biased;
@@ -110,30 +58,16 @@ impl OwnerOpenings {
             let fact = match result {
                 Some(Ok(Ok(session))) => {
                     let provider_id = session.provider_id();
-                    let result = {
+                    let accepted = {
                         let mut attempts = lock(&attempts);
-                        attempts.apply(
-                            slot,
-                            &instance,
-                            OpeningEvent::ProviderCreated,
-                            Box::new(session),
-                            |state, opened| match state {
-                                OpeningState::AwaitingCreate(pending)
-                                    if session_id.set(provider_id.clone()).is_ok() =>
-                                {
-                                    Ok(Transition::Store(
-                                        OpeningState::HeldCreate(HeldCreate {
-                                            session: opened,
-                                            requested: pending.requested,
-                                        }),
-                                        (),
-                                    ))
-                                }
-                                other => Err((other, opened)),
-                            },
-                        )
+                        let result =
+                            attempts.apply(slot, &instance, Command::Created(Box::new(session)));
+                        if result.is_ok() {
+                            session_id.get_or_init(|| provider_id.clone());
+                        }
+                        result
                     };
-                    if result.is_err() {
+                    if !accepted.is_ok_and(|effect| effect.finish(&wire)) {
                         return;
                     }
                     OpeningFact::Created {
@@ -150,7 +84,7 @@ impl OwnerOpenings {
                     } else {
                         CreationEffect::Unknown
                     };
-                    if !finish_create(&attempts, slot, &instance, OpeningEvent::OpenFailed) {
+                    if !finish_create(&attempts, &wire, slot, &instance, Command::OpenFailed) {
                         return;
                     }
                     OpeningFact::CreateFailed {
@@ -160,7 +94,7 @@ impl OwnerOpenings {
                     }
                 }
                 Some(Err(_)) => {
-                    if !finish_create(&attempts, slot, &instance, OpeningEvent::OpenFailed) {
+                    if !finish_create(&attempts, &wire, slot, &instance, Command::OpenFailed) {
                         return;
                     }
                     OpeningFact::CreateFailed {
@@ -171,7 +105,7 @@ impl OwnerOpenings {
                 }
                 None => {
                     let _finished =
-                        finish_create(&attempts, slot, &instance, OpeningEvent::WorkerExited);
+                        finish_create(&attempts, &wire, slot, &instance, Command::WorkerExited);
                     return;
                 }
             };
@@ -189,35 +123,25 @@ impl OwnerOpenings {
         self.observe_health()?;
         let slot = OpeningSlot::Create(attempt);
         let stopped = self.stopped.child_token();
-        let (instance, held) = {
+        let (instance, admitted) = {
             let mut attempts = lock(&self.attempts);
             let Some(row) = attempts.get(slot) else {
                 return Err(self.opening_refusal(&attempts, OpenAttempt::Create(attempt)));
             };
-            let instance = row.instance.clone();
-            let held = attempts
-                .apply(
-                    slot,
-                    &instance,
-                    OpeningEvent::Configure,
-                    (),
-                    |state, ()| match state {
-                        OpeningState::HeldCreate(held) => Ok(Transition::Store(
-                            OpeningState::ConfiguringCreate(stopped.clone()),
-                            held,
-                        )),
-                        other => Err((other, ())),
-                    },
-                )
-                .map_err(|(why, ())| why)?;
-            (instance, held)
+            let instance = row.instance().clone();
+            let admitted = attempts.apply(slot, &instance, Command::Configure(stopped.clone()));
+            (instance, admitted)
         };
-        let HeldCreate {
+        let Effect::Configure(HeldCreate {
             mut session,
             requested,
-        } = held;
+        }) = admitted.map_err(|rejected| rejected.reason)?
+        else {
+            return Err(LifecycleRefusal::OperationNotOffered);
+        };
         let attempts = Arc::clone(&self.attempts);
         let clock = Arc::clone(&self.clock);
+        let wire = Arc::clone(&self.wire);
         self.tasks.spawn(async move {
             let fact = tokio::select! {
                 biased;
@@ -225,24 +149,13 @@ impl OwnerOpenings {
                 () = retired => None,
                 result = session.configure_lifecycle_create(attempt, &requested, clock.as_ref()) => Some(result),
             };
-            match fact {
-                Some(fact @ CreatedSetupFact::ClosedAfterInvalidSetting { .. }) => {
-                    if finish_create(&attempts, slot, &instance, OpeningEvent::ClosedDuringConfigure) { reply.send(fact); }
-                }
-                Some(fact) => {
-                    let result = {
-                        let mut attempts = lock(&attempts);
-                        attempts.apply(slot, &instance, OpeningEvent::Configured, session, |state, session| match state {
-                            OpeningState::ConfiguringCreate(_) => Ok(Transition::Store(OpeningState::ConfiguredCreate(session), ())),
-                            other => Err((other, session)),
-                        })
-                    };
-                    if result.is_ok()
-                        || finish_create(&attempts, slot, &instance, OpeningEvent::FinishOnStoppedWriter) {
-                        reply.send(fact);
-                    }
-                }
-                None => { let _finished = finish_create(&attempts, slot, &instance, OpeningEvent::WorkerExited); }
+            let (event, fact) = match fact {
+                Some(fact @ CreatedSetupFact::ClosedAfterInvalidSetting { .. }) => (Command::ConfigureClosed, Some(fact)),
+                Some(fact) => (Command::Configured(session), Some(fact)),
+                None => (Command::WorkerExited, None),
+            };
+            if finish_create(&attempts, &wire, slot, &instance, event) && let Some(fact) = fact {
+                reply.send(fact);
             }
         });
         Ok(())
@@ -254,36 +167,22 @@ impl OwnerOpenings {
         accepted: &AcceptedRunSettings,
     ) -> Result<SetupReport<CapabilityReport, SessionSettings>, LifecycleRefusal> {
         self.observe_health()?;
-        let mut attempts = lock(&self.attempts);
-        let Some(row) = attempts.targeted(attempt) else {
-            return Err(self.opening_refusal(&attempts, attempt));
+        let accepted = {
+            let mut attempts = lock(&self.attempts);
+            let Some(row) = attempts.targeted(attempt) else {
+                return Err(self.opening_refusal(&attempts, attempt));
+            };
+            let instance = row.instance().clone();
+            attempts.apply(
+                OpeningSlot::for_attempt(attempt),
+                &instance,
+                Command::AcceptSettings(accepted.clone()),
+            )
         };
-        let instance = row.instance.clone();
-        let slot = OpeningSlot::for_attempt(attempt);
-        let catalogue = ProviderSettingsCatalog::from_record(Arc::clone(&accepted.catalogue));
-        let event = match attempt {
-            OpenAttempt::Create(_) => OpeningEvent::AcceptCreatedSettings,
-            OpenAttempt::Restore(_) => OpeningEvent::AcceptSettings,
+        let Effect::Settings(report) = accepted.map_err(|rejected| rejected.reason)? else {
+            return Err(LifecycleRefusal::OperationNotOffered);
         };
-        attempts
-            .apply(slot, &instance, event, (), |state, ()| match state {
-                OpeningState::ConfiguredCreate(mut session) => {
-                    let report = apply_catalogue(&mut session, &catalogue);
-                    Ok(Transition::Store(
-                        OpeningState::ConfiguredCreate(session),
-                        report,
-                    ))
-                }
-                OpeningState::HeldRestore(mut restore) => {
-                    let report = apply_catalogue(&mut restore.held.session, &catalogue);
-                    Ok(Transition::Store(
-                        OpeningState::PreparedRestore(restore),
-                        report,
-                    ))
-                }
-                other => Err((other, ())),
-            })
-            .map_err(|(why, ())| why)
+        Ok(*report)
     }
 
     pub(super) fn finish_unsent_open(
@@ -291,56 +190,21 @@ impl OwnerOpenings {
         slot: OpeningSlot,
         instance: &OpeningInstance,
     ) -> Result<(), LifecycleRefusal> {
-        let ended = {
-            lock(&self.attempts).apply(
-                slot,
-                instance,
-                OpeningEvent::WriterRefused,
-                (),
-                |state, ()| {
-                    state.mark_retired();
-                    Ok(Transition::Remove(state))
-                },
-            )
-        }
-        .map_err(|(why, ())| why)?;
-        super::observations::dispose(self.wire.as_ref(), instance, ended);
+        let ended = lock(&self.attempts).apply(slot, instance, Command::WriterRefused);
+        ended
+            .map_err(|rejected| rejected.reason)?
+            .finish(&self.wire);
         Ok(())
     }
 }
 
 fn finish_create(
     attempts: &Mutex<OpeningAttempts>,
+    wire: &OwnerAcpWire,
     slot: OpeningSlot,
     instance: &OpeningInstance,
-    event: OpeningEvent,
+    command: Command,
 ) -> bool {
-    let result = {
-        let mut attempts = lock(attempts);
-        let event = if attempts
-            .exact(slot, instance)
-            .is_some_and(|row| row.phase() == OpeningPhase::StoppedAwaitingReply)
-        {
-            OpeningEvent::FinishOnStoppedWriter
-        } else {
-            event
-        };
-        attempts.apply(slot, instance, event, (), |state, ()| {
-            state.mark_retired();
-            Ok(Transition::Remove(state))
-        })
-    };
-    result.is_ok()
-}
-
-fn apply_catalogue(
-    session: &mut OwnerOpenedSession,
-    catalogue: &ProviderSettingsCatalog,
-) -> SetupReport<CapabilityReport, SessionSettings> {
-    session.accept_restore_catalogue(catalogue);
-    SetupReport {
-        capabilities: session.capabilities().to_session_model(),
-        settings: session.settings(),
-        observed: crate::owner_session_creation::catalogue_evidence(session.catalog()),
-    }
+    let result = lock(attempts).apply(slot, instance, command);
+    result.is_ok_and(|effect| effect.finish(wire))
 }

@@ -29,7 +29,9 @@ fn owner_moves(phase: Phase) -> &'static [Move] {
         Phase::HeldCreate | Phase::HeldRestore => &[Move::ContinueHeldOpening],
         Phase::ConfiguredCreate | Phase::PreparedRestore => &[Move::ActivateOpening],
         Phase::Active => &[Move::KeepActiveRun, Move::CloseActiveRun, Move::Retire],
-        Phase::OfferingClose | Phase::ClosingRestore | Phase::ClosingLive => &[Move::WaitForClose],
+        Phase::OfferingClose | Phase::ClosingRestore | Phase::ClosingLive | Phase::Readmitting => {
+            &[Move::WaitForClose]
+        }
         Phase::CloseRefusedLive => &[Move::AdmitAgain, Move::Retire],
         Phase::RouteLost => &[Move::Retire],
         Phase::StoppedAwaitingReply => &[Move::StopOwner],
@@ -124,7 +126,7 @@ fn opening_guidance_matches_the_owner_menu_through_generated_calls_and_facts(
             }
             (Phase::CloseRefusedLive, Event::AdmitAgain) => {
                 assert!(advanced);
-                assert_eq!(phase, Phase::Active);
+                assert_eq!(phase, Phase::Readmitting);
             }
             _ => {}
         }

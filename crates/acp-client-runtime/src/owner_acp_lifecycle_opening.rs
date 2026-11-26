@@ -16,11 +16,13 @@ mod restore;
 mod row;
 
 use super::{lifecycle_transport_refusal, transport_run};
+use crate::owner_opening_instance::OpeningOffer;
 use crate::{
     ExternalProviderRuntimeError, RequestedProviderSettings,
     owner_opening_instance::OpeningInstance, owner_wire::OwnerAcpWire,
 };
 use policy::{OpeningEvent, OpeningPhase};
+use provider_session_machines::harness_lifecycle::{ActivationRefusal, ActivationSetup};
 use provider_session_machines::{
     SessionGeneration,
     harness_lifecycle::{
@@ -32,7 +34,9 @@ use provider_session_machines::{
     session_owner::{OwnerAddress, ProviderWireFailureKind, RunAttempt},
 };
 use router_clock::RuntimeClock;
-use row::{OpeningRow, OpeningState, Refused, Transition};
+use row::{
+    Command, Effect, OpeningRow, ReaderHandoff, Rejected, RunResources, Slot as OpeningSlot,
+};
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex, MutexGuard, OnceLock},
@@ -57,21 +61,6 @@ struct OpeningAttempts {
     creates: BTreeMap<Uuid, OpeningRow>,
     runs: BTreeMap<SessionGeneration, OpeningRow>,
     port_refusal: Option<LifecycleRefusal>,
-}
-
-#[derive(Clone, Copy)]
-enum OpeningSlot {
-    Create(CreateAttempt),
-    Run(SessionGeneration),
-}
-
-impl OpeningSlot {
-    fn for_attempt(attempt: OpenAttempt) -> Self {
-        match attempt {
-            OpenAttempt::Create(create) => Self::Create(create),
-            OpenAttempt::Restore(restore) => Self::Run(restore.generation),
-        }
-    }
 }
 
 impl OpeningAttempts {
@@ -102,49 +91,173 @@ impl OpeningAttempts {
 
     fn exact(&self, slot: OpeningSlot, instance: &OpeningInstance) -> Option<&OpeningRow> {
         self.get(slot)
-            .filter(|row| row.instance.is_same_as(instance))
+            .filter(|row| row.instance().is_same_as(instance))
     }
 
-    fn apply<Payload, Effects>(
+    fn apply(
         &mut self,
         slot: OpeningSlot,
         instance: &OpeningInstance,
-        event: OpeningEvent,
-        payload: Payload,
-        apply: impl FnOnce(
-            OpeningState,
-            Payload,
-        ) -> Result<Transition<Effects>, (OpeningState, Payload)>,
-    ) -> Result<Effects, (LifecycleRefusal, Payload)> {
+        command: Command,
+    ) -> Result<Effect, Rejected> {
         if self.exact(slot, instance).is_none() {
-            return Err((LifecycleRefusal::AttemptMismatch, payload));
+            return Err(Rejected {
+                reason: LifecycleRefusal::AttemptMismatch,
+                _command: Box::new(command),
+            });
         }
         let Some(row) = self.remove(slot) else {
-            return Err((LifecycleRefusal::AttemptMismatch, payload));
+            return Err(Rejected {
+                reason: LifecycleRefusal::AttemptMismatch,
+                _command: Box::new(command),
+            });
         };
-        match row.apply(event, payload, apply) {
-            Ok((next, effects)) => {
+        match row.apply(instance, command) {
+            Ok((next, effect)) => {
+                effect.fence();
                 if let Some(row) = next {
                     self.insert(slot, row);
                 }
-                Ok(effects)
+                Ok(effect)
             }
-            Err(Refused {
-                row,
-                reason,
-                payload,
-            }) => {
-                self.insert(slot, row);
-                Err((reason, payload))
+            Err(refused) => {
+                self.insert(slot, *refused.row);
+                Err(refused.rejection)
             }
         }
+    }
+
+    fn begin_create(
+        &mut self,
+        opening: &OwnerOpenings,
+        attempt: CreateAttempt,
+        requested: RequestedProviderSettings,
+    ) -> Result<(OpeningInstance, OpeningOffer, CancellationToken), LifecycleRefusal> {
+        let identity = OpenAttempt::Create(attempt);
+        let phase = opening.idle_phase();
+        if !self.creates.is_empty() || !self.runs.is_empty() || self.port_refusal.is_some() {
+            return Err(opening.opening_refusal(self, identity));
+        }
+        if !phase.accepts(OpeningEvent::OpenCreate) {
+            return Err(phase.refusal());
+        }
+        let instance = OpeningInstance::default();
+        let offer = OpeningOffer::default();
+        let stopped = opening.stopped.child_token();
+        self.insert(
+            OpeningSlot::Create(attempt),
+            OpeningRow::create(
+                identity,
+                instance.clone(),
+                offer.clone(),
+                requested,
+                stopped.clone(),
+            ),
+        );
+        Ok((instance, offer, stopped))
+    }
+
+    fn begin_restore(
+        &mut self,
+        opening: &OwnerOpenings,
+        run: RunAttempt<LoadAttempt>,
+        session: &HarnessSessionId,
+    ) -> Result<(OpeningInstance, OpeningOffer, RunResources), LifecycleRefusal> {
+        let identity = OpenAttempt::Restore(run);
+        let slot = OpeningSlot::Run(run.generation);
+        if let Some(refusal) = self.port_refusal {
+            return Err(refusal);
+        }
+        if opening
+            .session
+            .get()
+            .is_some_and(|bound| bound != &session.0)
+        {
+            return Err(LifecycleRefusal::AttemptMismatch);
+        }
+        if !self.creates.is_empty() || self.get(slot).is_some() {
+            return Err(opening.opening_refusal(self, identity));
+        }
+        let mut phase = opening.idle_phase();
+        if phase.advance(OpeningEvent::BindSavedSession)
+            && opening.session.set(session.0.clone()).is_err()
+        {
+            return Err(LifecycleRefusal::AttemptMismatch);
+        }
+        if !phase.accepts(OpeningEvent::OpenRestore) {
+            return Err(phase.refusal());
+        }
+        let instance = OpeningInstance::default();
+        let offer = OpeningOffer::default();
+        let resources = RunResources::new(opening.owner, run.generation, &opening.stopped);
+        self.insert(
+            slot,
+            OpeningRow::restore(identity, instance.clone(), offer.clone(), resources.clone()),
+        );
+        Ok((instance, offer, resources))
+    }
+
+    fn begin_reader(
+        &mut self,
+        opening: &OwnerOpenings,
+        setup: ActivationSetup,
+    ) -> Result<(OpeningInstance, SessionGeneration, ReaderHandoff), ActivationRefusal> {
+        use policy::activation_refusal;
+        if let Some(reason) = self.port_refusal {
+            return Err(activation_refusal(reason));
+        }
+        let (identity, generation) = match setup {
+            ActivationSetup::Created {
+                attempt,
+                generation,
+            } => (OpenAttempt::Create(attempt), generation),
+            ActivationSetup::Restored(run) => (OpenAttempt::Restore(run), run.generation),
+        };
+        let run_slot = OpeningSlot::Run(generation);
+        if generation == SessionGeneration::UNTRACKED {
+            return Err(ActivationRefusal::AttemptMismatch);
+        }
+        if let Some(row) = self.get(run_slot) {
+            if row.attempt() != identity {
+                return Err(ActivationRefusal::AttemptMismatch);
+            }
+            if row.phase() == OpeningPhase::Active {
+                return Err(ActivationRefusal::AlreadyActive);
+            }
+            if matches!(identity, OpenAttempt::Create(_)) {
+                return Err(activation_refusal(row.phase().refusal()));
+            }
+        }
+        let slot = OpeningSlot::for_attempt(identity);
+        let instance = self
+            .targeted(identity)
+            .map(|row| row.instance().clone())
+            .ok_or_else(|| activation_refusal(opening.opening_refusal(self, identity)))?;
+        let created = matches!(identity, OpenAttempt::Create(_));
+        let effect = self
+            .apply(
+                slot,
+                &instance,
+                Command::Activate {
+                    run: RunResources::new(opening.owner, generation, &opening.stopped),
+                    created,
+                },
+            )
+            .map_err(|rejected| activation_refusal(rejected.reason))?;
+        let Effect::StartReader(work) = effect else {
+            return Err(ActivationRefusal::ReaderUnavailable);
+        };
+        if created && let Some(row) = self.remove(slot) {
+            self.insert(run_slot, row);
+        }
+        Ok((instance, generation, work))
     }
 
     fn targeted(&self, attempt: OpenAttempt) -> Option<&OpeningRow> {
         self.get(OpeningSlot::for_attempt(attempt))
-            .filter(|row| row.attempt == attempt)
+            .filter(|row| row.attempt() == attempt)
             .or_else(|| match attempt {
-                OpenAttempt::Create(_) => self.runs.values().find(|row| row.attempt == attempt),
+                OpenAttempt::Create(_) => self.runs.values().find(|row| row.attempt() == attempt),
                 OpenAttempt::Restore(_) => None,
             })
     }
@@ -254,15 +367,7 @@ impl OwnerOpenings {
             return Held::NotHeld(refusal);
         }
         let attempts = lock(&self.attempts);
-        if attempts.targeted(attempt).is_some_and(|row| {
-            matches!(
-                row.state,
-                OpeningState::HeldCreate(_)
-                    | OpeningState::ConfiguredCreate(_)
-                    | OpeningState::HeldRestore(_)
-                    | OpeningState::PreparedRestore(_)
-            )
-        }) {
+        if attempts.targeted(attempt).is_some_and(OpeningRow::held) {
             Held::Held
         } else {
             Held::NotHeld(self.opening_refusal(&attempts, attempt))

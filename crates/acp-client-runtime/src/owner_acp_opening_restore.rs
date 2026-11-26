@@ -1,15 +1,12 @@
 //! Restore receipts, replay publication, and exact held settings.
 
-use super::observations::{dispose, remove_state, run_resources};
-use super::row::{DeferredRestore, HeldRestore, RestoreMilestone, RoutedRestore};
+use super::row::{HeldRestore, RestoreMilestone};
 use super::{
-    Arc, LifecycleRefusal, LifecycleReply, Mutex, OpenAttempt, OpeningAttempts, OpeningEvent,
-    OpeningFact, OpeningFailure, OpeningInstance, OpeningPhase, OpeningRow, OpeningSlot,
-    OpeningState, OwnerAcpWire, OwnerOpenings, RestoreOpening, RestoreVia, RunRetirement,
-    SessionLifecycleFact, SessionLifecyclePort, Transition, lifecycle_transport_refusal, lock,
-    opening_failure,
+    Arc, Command, Effect, LifecycleRefusal, LifecycleReply, Mutex, OpenAttempt, OpeningAttempts,
+    OpeningFact, OpeningFailure, OpeningInstance, OpeningSlot, OwnerAcpWire, OwnerOpenings,
+    RestoreOpening, RestoreVia, RunRetirement, SessionLifecycleFact, SessionLifecyclePort,
+    lifecycle_transport_refusal, lock, opening_failure,
 };
-use crate::owner_opening_instance::OpeningOffer;
 use crate::owner_session_setting::{OwnerSettingWirePlan, RestoreSettingPlan};
 use crate::owner_wire::RestoreOffer;
 use provider_session_machines::{
@@ -21,8 +18,6 @@ use provider_session_machines::{
 };
 use switchboard_harness_contracts::{ReplyAdmission, WorkOfferRefusal};
 use tokio::sync::oneshot;
-
-type AppliedRestore = Result<Option<OpeningState>, (LifecycleRefusal, RestoreMilestone)>;
 
 impl OwnerOpenings {
     pub(super) fn open_restore(
@@ -39,41 +34,9 @@ impl OwnerOpenings {
             setup,
             requested_mode,
         } = opening;
-        let identity = OpenAttempt::Restore(run);
         let slot = OpeningSlot::Run(run.generation);
-        let instance = OpeningInstance::default();
-        let offer = OpeningOffer::default();
-        let resources = run_resources(self.owner, run.generation, &self.stopped);
-        {
-            let mut attempts = lock(&self.attempts);
-            if let Some(refusal) = attempts.port_refusal {
-                return Err(refusal);
-            }
-            if self.session.get().is_some_and(|bound| bound != &session.0) {
-                return Err(LifecycleRefusal::AttemptMismatch);
-            }
-            if !attempts.creates.is_empty() || attempts.get(slot).is_some() {
-                return Err(self.opening_refusal(&attempts, identity));
-            }
-            let mut phase = self.idle_phase();
-            if phase.advance(OpeningEvent::BindSavedSession) {
-                let _bound = self.session.set(session.0.clone());
-            }
-            if !phase.accepts(OpeningEvent::OpenRestore) {
-                return Err(phase.refusal());
-            }
-            attempts.insert(
-                slot,
-                OpeningRow {
-                    attempt: identity,
-                    instance: instance.clone(),
-                    state: OpeningState::OfferingRestore {
-                        offer: offer.clone(),
-                        run: resources.clone(),
-                    },
-                },
-            );
-        }
+        let (instance, offer, resources) =
+            lock(&self.attempts).begin_restore(self, run, &session)?;
         let receipt = self.wire.offer_restore(
             RestoreOffer {
                 route: &resources.route,
@@ -103,30 +66,9 @@ impl OwnerOpenings {
                 return Err(lifecycle_transport_refusal(refusal));
             }
         };
-        let accepted = {
-            let mut attempts = lock(&self.attempts);
-            attempts.apply(
-                slot,
-                &instance,
-                OpeningEvent::WriterAccepted,
-                (),
-                |state, ()| match state {
-                    OpeningState::OfferingRestore { run, .. } => {
-                        Ok(Transition::Store(OpeningState::AwaitingRestore(run), ()))
-                    }
-                    state @ OpeningState::StoppedAwaitingReply(_) => {
-                        Ok(Transition::Store(state, ()))
-                    }
-                    other => Err((other, ())),
-                },
-            )
-        };
-        if let Err((reason, ())) = accepted {
-            tracing::debug!(
-                ?run,
-                ?reason,
-                "ACP had taken the restore before the row was retired"
-            );
+        let accepted = lock(&self.attempts).apply(slot, &instance, Command::WriterAccepted);
+        if let Err(rejected) = accepted {
+            tracing::debug!(?run, reason=?rejected.reason, "ACP had taken the restore before the row was retired");
             return Ok(());
         }
         self.watch_route(slot, instance.clone(), resources.route);
@@ -244,13 +186,8 @@ impl OwnerOpenings {
             let Some(row) = attempts.targeted(identity) else {
                 return Err(refusal(self.opening_refusal(&attempts, identity)));
             };
-            let OpeningState::HeldRestore(restore) = &row.state else {
-                return Err(refusal(row.phase().refusal()));
-            };
-            (
-                restore.run.route.clone(),
-                restore.held.accepted_mode_fallback.clone(),
-            )
+            row.held_restore_offer_data()
+                .ok_or_else(|| refusal(row.phase().refusal()))?
         };
         let session = self
             .session
@@ -293,146 +230,24 @@ struct RestoreWorker {
     instance: OpeningInstance,
 }
 
-enum RestoreProgress {
-    Applied(AppliedRestore),
-    Deferred,
-    Rejected(DeferredRestore),
-}
-
 impl RestoreWorker {
     async fn advance(&self, milestone: RestoreMilestone) -> bool {
         let (outcome, deferred) = oneshot::channel();
-        let admitted = {
-            let mut attempts = lock(&self.attempts);
-            match attempts
-                .exact(self.slot, &self.instance)
-                .map(OpeningRow::phase)
-            {
-                Some(OpeningPhase::OfferingClose) => {
-                    let event = DeferredRestore { milestone, outcome };
-                    let result = attempts.apply(
-                        self.slot,
-                        &self.instance,
-                        OpeningEvent::DeferRestore,
-                        event,
-                        |state, event| match state {
-                            OpeningState::OfferingClose {
-                                origin,
-                                attempt,
-                                offer,
-                                deferred: None,
-                            } => Ok(Transition::Store(
-                                OpeningState::OfferingClose {
-                                    origin,
-                                    attempt,
-                                    offer,
-                                    deferred: Some(event),
-                                },
-                                (),
-                            )),
-                            other => Err((other, event)),
-                        },
-                    );
-                    match result {
-                        Ok(()) => RestoreProgress::Deferred,
-                        Err((_, event)) => RestoreProgress::Rejected(event),
-                    }
-                }
-                _ => RestoreProgress::Applied(apply_milestone(
-                    &mut attempts,
-                    self.slot,
-                    &self.instance,
-                    milestone,
-                )),
-            }
-        };
+        let admitted = lock(&self.attempts).apply(
+            self.slot,
+            &self.instance,
+            Command::RestoreProgress(milestone, Some(outcome)),
+        );
         match admitted {
-            RestoreProgress::Deferred => {
+            Ok(Effect::Deferred) => {
                 #[cfg(any(test, feature = "test-observation"))]
                 self.wire.at_opening_effect_for_test(
                     crate::owner_wire::OpeningPausePoint::RestoreDeferred,
                 );
                 deferred.await.unwrap_or(false)
             }
-            RestoreProgress::Rejected(event) => {
-                drop(event);
-                false
-            }
-            RestoreProgress::Applied(Ok(ended)) => {
-                if let Some(ended) = ended {
-                    dispose(&self.wire, &self.instance, ended);
-                }
-                true
-            }
-            RestoreProgress::Applied(Err(_)) => false,
+            Ok(effect) => effect.finish(&self.wire),
+            Err(_) => false,
         }
     }
-}
-
-pub(super) fn apply_milestone(
-    attempts: &mut OpeningAttempts,
-    slot: OpeningSlot,
-    instance: &OpeningInstance,
-    milestone: RestoreMilestone,
-) -> AppliedRestore {
-    let phase = attempts.exact(slot, instance).map(OpeningRow::phase);
-    let event = match (&milestone, phase) {
-        (
-            RestoreMilestone::Failed | RestoreMilestone::WorkerExited,
-            Some(OpeningPhase::StoppedAwaitingReply),
-        ) => OpeningEvent::FinishOnStoppedWriter,
-        (
-            RestoreMilestone::Loaded(_) | RestoreMilestone::Resumed(_) | RestoreMilestone::Failed,
-            Some(OpeningPhase::ClosingRestore),
-        ) => {
-            // The physical SDK receipt already settled its exact tap claim.
-            // Retain the local close and discard only this worker's result.
-            return attempts
-                .apply(
-                    slot,
-                    instance,
-                    OpeningEvent::LateOpenReply,
-                    milestone,
-                    |state, milestone| {
-                        Ok(Transition::Store(
-                            state,
-                            (LifecycleRefusal::RouteClosing, milestone),
-                        ))
-                    },
-                )
-                .and_then(Err);
-        }
-        _ => milestone.event(),
-    };
-    attempts.apply(
-        slot,
-        instance,
-        event,
-        milestone,
-        |state, milestone| match (state, milestone) {
-            (OpeningState::AwaitingRestore(run), RestoreMilestone::Loaded(held)) => {
-                Ok(Transition::Store(
-                    OpeningState::PublishingReplay(RoutedRestore { run, held }),
-                    None,
-                ))
-            }
-            (OpeningState::AwaitingRestore(run), RestoreMilestone::Resumed(held)) => Ok(
-                Transition::Store(OpeningState::HeldRestore(RoutedRestore { run, held }), None),
-            ),
-            (OpeningState::PublishingReplay(restore), RestoreMilestone::ReplayAdmitted) => {
-                Ok(Transition::Store(OpeningState::HeldRestore(restore), None))
-            }
-            (state, RestoreMilestone::Failed | RestoreMilestone::WorkerExited) => {
-                remove_state(state, ())
-                    .map(|ending| match ending {
-                        Transition::Remove(state) => Transition::Remove(Some(state)),
-                        Transition::Store(state, effects) => {
-                            Transition::Store(state, Some(effects))
-                        }
-                    })
-                    .map_err(|(state, ())| (state, RestoreMilestone::WorkerExited))
-            }
-            (state, milestone) => Err((state, milestone)),
-        },
-    )
 }
