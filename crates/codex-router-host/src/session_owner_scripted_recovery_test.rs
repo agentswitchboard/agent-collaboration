@@ -275,7 +275,7 @@ async fn scripted_owner_replacement_keeps_no_evidence_unknown_at_both_callers_an
         .observe(|event| matches!(event, ScriptObservation::PromptHeld(_)))
         .await
     else {
-        unreachable!("prompt observation selected")
+        panic!("the script did not observe the exact held prompt")
     };
     assert_eq!(authorization.input_id, input.input);
     assert_eq!(authorization.incarnation, address.incarnation);
@@ -456,7 +456,7 @@ async fn refused_observed_turn_lease_keeps_the_provider_started_turn_without_a_n
         .observe(|event| matches!(event, ScriptObservation::SteerTaken(..)))
         .await
     else {
-        unreachable!("selected steer observation")
+        panic!("the script did not observe the exact steer take")
     };
     assert_eq!(authorization.input_id, steer.input);
     assert_ne!(observed_turn, original.turn);
@@ -510,7 +510,10 @@ async fn refused_observed_turn_lease_keeps_the_provider_started_turn_without_a_n
         }
     }
     assert!(
-        !setup.observations.try_recv().is_ok(),
+        matches!(
+            setup.observations.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ),
         "no second work offer followed the observed lease refusal"
     );
     assert!(setup.script.finish_prompt(address.incarnation).is_some());

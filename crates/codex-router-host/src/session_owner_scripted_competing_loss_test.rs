@@ -191,6 +191,15 @@ async fn competing_harness_loss_reports_settle_once_and_drain_pending_neutral_po
         loss.drained,
         Decision::Answer(ApprovalPortOutcome::Cancelled)
     ));
+    // All three sends have enqueued. The owner drains its completion queue
+    // before answering this command, even when the arrivals are already late.
+    let barrier = owner
+        .admit(SessionOwnerCommand::AcceptSettings {
+            generation: foreground.generation,
+        })
+        .await
+        .expect_err("the mailbox processed all three loss inputs before the command");
+    assert!(matches!(barrier, OwnerDoorError::Refused { .. }));
     assert_eq!(
         witnessed.recv().await,
         Some(RequestWitness::Stopped(expected_turn, operation.clone()))

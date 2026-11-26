@@ -59,13 +59,27 @@ async fn connection_loss_during_a_held_opening_refuses_queued_work_and_late_acti
         queued.expect_err("the queued prompt did not send").effect,
         ProviderOperationEffect::None
     );
+    let queued_completion = runtime
+        .preparation_fixture
+        .observe_restore_completion_queued();
     release
         .send(())
         .expect("release the old activation completion");
-    owner
+    queued_completion
+        .await
+        .expect("the old HostReady completion was enqueued");
+    // The owner consumes queued completions before admitting this command.
+    let barrier = owner
         .admit(SessionOwnerCommand::AcceptSettings { generation })
         .await
         .expect_err("the old activation did not reopen the unloaded session");
+    assert!(
+        matches!(
+            barrier,
+            crate::session_owner_door::OwnerDoorError::Refused { .. },
+        ),
+        "the owner processed the command after the queued completion"
+    );
     assert_lost_session_is_retained(&rig, &hub, &owner).await;
     assert_eq!(rig.wire_receipt()["prompts"], serde_json::json!([]));
     host.shutdown().await.expect("stop Host");

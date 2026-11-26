@@ -154,8 +154,7 @@ impl ScriptedHarness {
         owner: OwnerIncarnation,
     ) -> Option<Arc<dyn HarnessOwnerEvents<ProviderAuthStatus>>> {
         let state = lock(&self.owners).get(&owner)?.clone();
-        let events = lock(&state).owner_events.clone();
-        events
+        lock(&state).owner_events.clone()
     }
 
     pub(super) fn take_prompt_reply(
@@ -163,8 +162,7 @@ impl ScriptedHarness {
         owner: OwnerIncarnation,
     ) -> Option<(DispatchAuthorization, ReservedWorkReply)> {
         let state = lock(&self.owners).get(&owner)?.clone();
-        let reply = lock(&state).prompt_reply.take();
-        reply
+        lock(&state).prompt_reply.take()
     }
 
     pub(super) fn finish_prompt(&self, owner: OwnerIncarnation) -> Option<DispatchAuthorization> {
@@ -175,8 +173,7 @@ impl ScriptedHarness {
 
     pub(super) fn run_events(&self, owner: OwnerIncarnation) -> Option<SessionLifecyclePort> {
         let state = lock(&self.owners).get(&owner)?.clone();
-        let events = lock(&state).run_events.clone();
-        events
+        lock(&state).run_events.clone()
     }
 }
 
