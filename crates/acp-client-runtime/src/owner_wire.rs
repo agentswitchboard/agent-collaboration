@@ -3,7 +3,7 @@
 mod owner_opening_offers;
 pub(crate) use owner_opening_offers::RestoreOffer;
 mod owner_output;
-pub(crate) use owner_output::{OwnerAcpOutput, PromptTerminal};
+pub(crate) use owner_output::OwnerAcpOutput;
 #[cfg(any(test, feature = "test-observation"))]
 mod owner_opening_test_control;
 #[cfg(any(test, feature = "test-observation"))]
@@ -21,6 +21,11 @@ pub mod owner_session_open;
 pub mod owner_session_setting;
 pub mod owner_session_stream;
 mod owner_work_offers;
+mod prompt_terminal;
+pub(crate) use prompt_terminal::PromptTerminalReceiver;
+#[cfg(feature = "test-observation")]
+pub use prompt_terminal::TerminalAdmission;
+use prompt_terminal::{PromptTerminalSender, prompt_terminal_channel};
 mod writer_reply_signals;
 
 use crate::acp_transport::{
@@ -53,6 +58,7 @@ use std::{
 use switchboard_harness_contracts::{
     HandOverRefusal, HarnessOwnerEvents, InputId, OwnerEvidence, ReservedWorkReply, SteerIdlePolicy,
 };
+#[cfg(test)]
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 
@@ -90,7 +96,7 @@ enum ResponseKind {
         authorization: DispatchAuthorization,
         turn: TurnId,
         compact: bool,
-        reader: Option<mpsc::Sender<PromptTerminal>>,
+        reader: Option<PromptTerminalSender>,
         completion: ReservedWorkReply,
     },
     Steer {
@@ -120,7 +126,7 @@ pub struct OwnerAcpWire {
     route_edits: Mutex<()>,
     #[cfg(any(test, feature = "test-observation"))]
     opening_test: owner_opening_test_control::OpeningTestControls,
-    readers: Mutex<BTreeMap<TransportRun, mpsc::Sender<PromptTerminal>>>,
+    readers: Mutex<BTreeMap<TransportRun, PromptTerminalSender>>,
     restore_updates: Arc<crate::owner_restore_updates::RestoreUpdates>,
     cursor_plans: Arc<crate::provider_cursor_plan_items::CursorPlanItems>,
     behavior: Arc<dyn crate::ProviderBehavior>,
@@ -440,8 +446,10 @@ impl OwnerAcpWire {
         )
     }
 
-    pub(crate) fn register_reader(&self, run: TransportRun) -> mpsc::Receiver<PromptTerminal> {
-        let (send, receive) = mpsc::channel(1);
+    pub(crate) fn register_reader(&self, run: TransportRun) -> PromptTerminalReceiver {
+        let (send, receive) = prompt_terminal_channel();
+        #[cfg(feature = "test-observation")]
+        let send = send.with_observer(self.terminal_admission_observer_for_test());
         self.readers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

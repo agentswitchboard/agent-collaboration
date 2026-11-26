@@ -8,7 +8,7 @@ use crate::{
     acp_transport::TransportRun,
     owner_session_open::{CreatedStream, OpenedSessionRoute, OwnerOpenedSession},
     owner_session_replay::replay_queued_session_updates,
-    owner_wire::{OwnerAcpWire, PromptTerminal},
+    owner_wire::{OwnerAcpWire, PromptTerminalReceiver},
     provider_item_projection::ProviderItemProjection,
     provider_settings_catalog_codec::decode_settings_update,
     provider_update_kind::{is_known_update_kind, safe_update_kind},
@@ -85,7 +85,7 @@ pub struct OwnerStreamTarget {
     pub wire: Arc<OwnerAcpWire>,
     pub retired: CancellationToken,
     events: SessionLifecyclePort,
-    terminals: mpsc::Receiver<PromptTerminal>,
+    terminals: PromptTerminalReceiver,
 }
 
 impl OwnerStreamTarget {
@@ -461,6 +461,8 @@ impl OwnerOpenedSession {
             )
         });
         let mut captured = CapturedTurnResponses::default();
+        #[cfg(feature = "test-observation")]
+        target.wire.before_terminal_receive_for_test().await;
         loop {
             tokio::select! {
                 biased;
@@ -472,6 +474,8 @@ impl OwnerOpenedSession {
                     }
                 }
                 Some(terminal) = target.terminals.recv() => {
+                    #[cfg(feature = "test-observation")]
+                    target.wire.after_terminal_receive_for_test().await;
                     while let Some(ready) = updates.read().now_or_never() {
                         let update = ready?;
                         if !self.deliver_update(update, &target, &mut projection, &mut captured).await? {

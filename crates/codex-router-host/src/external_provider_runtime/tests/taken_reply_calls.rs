@@ -4,8 +4,8 @@ use super::*;
 use provider_session_machines::{
     ProviderSettingKind,
     harness_lifecycle::{
-        CloseUncertainty, CreationEffect, HarnessContent, OpeningFailure, SettingAttempt,
-        SettingFact, WorkReply,
+        CloseUncertainty, CreationEffect, HarnessContent, LifecycleReply, OpeningFailure,
+        SettingAttempt, SettingFact, WorkReply,
     },
     session_owner::{
         AuthorizationTarget, DispatchAuthorization, DispatchResult, ObservationCause,
@@ -461,6 +461,26 @@ pub(super) fn take_work(
     kind: TakenKind,
     turn: TurnId,
 ) -> TakenReply {
+    let (reply, receipt) = oneshot::channel();
+    let authorization = take_work_with_reply(
+        binding,
+        owner,
+        generation,
+        kind,
+        turn,
+        Box::new(Reply(reply)),
+    );
+    TakenReply::Work(authorization, receipt)
+}
+
+pub(super) fn take_work_with_reply(
+    binding: &SessionHarnessBinding,
+    owner: OwnerAddress,
+    generation: SessionGeneration,
+    kind: TakenKind,
+    turn: TurnId,
+    reply: LifecycleReply<WorkReply>,
+) -> DispatchAuthorization {
     let authorization = DispatchAuthorization {
         incarnation: owner.incarnation,
         run: generation,
@@ -473,7 +493,6 @@ pub(super) fn take_work(
             _ => panic!("request {kind:?} does not offer work"),
         },
     };
-    let (reply, receipt) = oneshot::channel();
     let content = [PromptContent::text("receipt proof".into()).expect("valid prompt")];
     match kind {
         TakenKind::Prompt => {
@@ -486,7 +505,7 @@ pub(super) fn take_work(
                     authorization.clone(),
                     turn,
                     HarnessContent::Input(&content),
-                    Box::new(Reply(reply)),
+                    reply,
                 )
                 .expect("offer actual prompt");
         }
@@ -495,7 +514,7 @@ pub(super) fn take_work(
                 authorization.clone(),
                 HarnessContent::Input(&content),
                 SteerIdlePolicy::Refuse,
-                Box::new(Reply(reply)),
+                reply,
             )
             .expect("offer actual steer to the live turn"),
         TakenKind::WorkSetting => assert_eq!(
@@ -504,7 +523,7 @@ pub(super) fn take_work(
                     authorization.clone(),
                     ProviderSettingKind::Mode,
                     SettingValueId("plan".into()),
-                    Box::new(Reply(reply))
+                    reply
                 )
                 .expect("offer actual work setting"),
             SettingOffer::Offered,
@@ -515,5 +534,5 @@ pub(super) fn take_work(
         binding.hand_over(&authorization, &mut || true),
         Ok(DispatchResult::Taken(authorization.clone()))
     );
-    TakenReply::Work(authorization, receipt)
+    authorization
 }

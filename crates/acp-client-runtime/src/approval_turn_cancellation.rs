@@ -641,6 +641,11 @@ pub(crate) struct OwnerCancelDrainExecutor<P: AcpRequestPayloads> {
     pending: BTreeMap<DispatchAuthorization, Arc<OwnerApprovalDrain<P>>>,
 }
 
+enum CancelDrainExit {
+    Finished,
+    Relinquished,
+}
+
 impl<P: AcpRequestPayloads> OwnerCancelDrainExecutor<P> {
     pub fn new(approvals: OwnerApprovalBindings<P>) -> Self {
         Self {
@@ -672,11 +677,16 @@ impl<P: AcpRequestPayloads> OwnerCancelDrainExecutor<P> {
         let drain = Arc::new(drain);
         self.pending.insert(authorization.clone(), drain.clone());
         tasks.spawn(async move {
-            tokio::select! {
-                () = retired => {}
-                () = drain.settle_pending_approvals() => completion.send(
-                    WorkReply::Dispatch(DispatchResult::CancelDrainFinished(authorization))
-                ),
+            let exit = tokio::select! {
+                biased;
+                () = drain.settle_pending_approvals() => CancelDrainExit::Finished,
+                () = retired => CancelDrainExit::Relinquished,
+            };
+            match exit {
+                CancelDrainExit::Finished => completion.send(WorkReply::Dispatch(
+                    DispatchResult::CancelDrainFinished(authorization),
+                )),
+                CancelDrainExit::Relinquished => drop(completion),
             }
         });
         CancelDrainStart::Waiting

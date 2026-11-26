@@ -160,17 +160,11 @@ async fn settle_prompt_error(provider_shutdown: CancellationToken) -> SessionSna
         matches!(reply, Some(Err(_))),
         "consume the ready reply first"
     );
-    let ResponseKind::Prompt { completion, .. } = correlation else {
-        panic!("prompt reply correlation");
-    };
-    PromptTerminal {
-        authorization,
-        turn,
-        compact: false,
+    correlation.complete(
         reply,
-        completion,
-    }
-    .route(None, connection_lost);
+        connection_lost,
+        &crate::owner_session_setting::tests::ConnectionCatalogueBehavior,
+    );
 
     let settled = snapshots
         .wait_for(|snapshot| {

@@ -70,7 +70,7 @@ impl OwnerAcpWire {
     pub(crate) fn register_opening_reader(
         &self,
         route: &LifecycleRoute,
-    ) -> Option<tokio::sync::mpsc::Receiver<super::PromptTerminal>> {
+    ) -> Option<super::PromptTerminalReceiver> {
         let _edit = self
             .route_edits
             .lock()

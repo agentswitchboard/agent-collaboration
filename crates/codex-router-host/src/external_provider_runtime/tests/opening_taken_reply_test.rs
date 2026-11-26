@@ -2,6 +2,8 @@
 
 #[path = "taken_reply_calls.rs"]
 mod calls;
+#[path = "prompt_terminal_custody_test.rs"]
+mod terminal_custody;
 
 use super::*;
 use acp_client_runtime::{
@@ -115,7 +117,7 @@ async fn notice(listener: &UnixListener) -> (String, UnixStream) {
     (line.trim_end().to_owned(), stream.into_inner())
 }
 
-async fn assert_taken_reply(kind: TakenKind, scenario: Scenario) {
+async fn taken_reply_fixture(kind: TakenKind) -> (HubRuntime, UnixListener) {
     let mut listener = None;
     let fixture = hub_runtime_with_launch(|receipt| {
         let socket = receipt.with_extension("ack.sock");
@@ -131,7 +133,14 @@ async fn assert_taken_reply(kind: TakenKind, scenario: Scenario) {
         )
     })
     .await;
-    let listener = listener.expect("the peer uses the exact notice socket");
+    (
+        fixture,
+        listener.expect("the peer uses the exact notice socket"),
+    )
+}
+
+async fn assert_taken_reply(kind: TakenKind, scenario: Scenario) {
+    let (fixture, listener) = taken_reply_fixture(kind).await;
     let tasks = TaskTracker::new();
     let (owner, mut binding) = bind_fixture(&fixture.runtime, &tasks);
     let run = RunAttempt {

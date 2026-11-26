@@ -2,89 +2,23 @@
 
 #[cfg(feature = "test-observation")]
 use super::FixtureDispatchPoint;
+use super::prompt_terminal::PromptTerminal;
 use super::writer_reply_signals::{WriterReplySignals, error_reply_lost};
 use super::{AcpFrame, ResponseKind};
-use crate::{
-    acp_transport::OrderedOutput, owner_session_open::OwnerOpenConfiguration,
-    provider_prompt_result_codec::decode_prompt_result,
-};
+use crate::{acp_transport::OrderedOutput, owner_session_open::OwnerOpenConfiguration};
 #[cfg(feature = "test-observation")]
 use agent_client_protocol::UntypedMessage;
 use agent_client_protocol::{Agent, ConnectionTo, Error, schema::v1::ErrorCode};
 use provider_session_machines::{
     harness_lifecycle::CloseFact,
-    session_owner::{DispatchAuthorization, DispatchResult, PromptCompletion, WireOutcome},
+    session_owner::{DispatchAuthorization, DispatchResult, WireOutcome},
     session_turn_machine::TurnId,
 };
 use std::sync::Arc;
-use switchboard_harness_contracts::{
-    CloseUncertainty, ReservedWorkReply, SteerIdlePolicy, WorkReply,
-};
+use switchboard_harness_contracts::{CloseUncertainty, SteerIdlePolicy, WorkReply};
 use tokio::sync::mpsc;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use uuid::Uuid;
-
-pub(crate) struct PromptTerminal {
-    pub(crate) turn: TurnId,
-    pub(crate) compact: bool,
-    pub(super) authorization: DispatchAuthorization,
-    pub(super) reply: Option<Result<serde_json::Value, Error>>,
-    pub(super) completion: ReservedWorkReply,
-}
-
-impl PromptTerminal {
-    pub(super) fn route(self, reader: Option<mpsc::Sender<Self>>, connection_lost: bool) {
-        if connection_lost {
-            self.completion.send(WorkReply::ConnectionLost);
-        } else if let Some(reader) = reader {
-            if let Err(undelivered) = reader.try_send(self) {
-                undelivered.into_inner().finish(String::new(), None);
-            }
-        } else {
-            self.finish(String::new(), None);
-        }
-    }
-
-    pub(crate) fn stop_reason(&self) -> Option<session_event_model::StopReason> {
-        decode_prompt_result(self.reply.as_ref()?.as_ref().ok()?).ok()
-    }
-
-    pub(crate) fn finish(
-        self,
-        response: String,
-        local_cause: Option<session_event_model::LocalCause>,
-    ) {
-        if let Some(Err(error)) = &self.reply
-            && let Some(failure) =
-                crate::provider_acp_error_mapping::acp_operation_error(error.clone())
-                    .coded_wire_failure()
-        {
-            self.completion
-                .send(WorkReply::Dispatch(DispatchResult::PromptFailed {
-                    authorization: self.authorization,
-                    failure,
-                }));
-            return;
-        }
-        let outcome = match self.reply {
-            Some(Ok(reply)) => {
-                decode_prompt_result(&reply).map_or(WireOutcome::Unknown, |stop_reason| {
-                    WireOutcome::Confirmed(PromptCompletion {
-                        stop_reason,
-                        local_cause,
-                        response,
-                    })
-                })
-            }
-            _ => WireOutcome::Unknown,
-        };
-        self.completion
-            .send(WorkReply::Dispatch(DispatchResult::PromptFinished {
-                authorization: self.authorization,
-                outcome,
-            }));
-    }
-}
 
 pub(crate) struct OwnerAcpOutput {
     pub(super) output: mpsc::Receiver<OrderedOutput<AcpFrame>>,
@@ -302,7 +236,7 @@ impl ResponseKind {
         (response, connection_lost)
     }
 
-    fn complete(
+    pub(super) fn complete(
         self,
         reply: Option<Result<serde_json::Value, Error>>,
         connection_lost: bool,
@@ -318,14 +252,14 @@ impl ResponseKind {
                 compact,
                 reader,
                 completion,
-            } => PromptTerminal {
-                turn,
-                compact,
-                authorization,
-                reply,
-                completion,
+            } => {
+                if connection_lost {
+                    completion.send(WorkReply::ConnectionLost);
+                } else {
+                    PromptTerminal::new(turn, compact, authorization, reply, completion)
+                        .route(reader);
+                }
             }
-            .route(reader, connection_lost),
             Self::Setting(setting) => {
                 setting.settle(reply, behavior);
             }

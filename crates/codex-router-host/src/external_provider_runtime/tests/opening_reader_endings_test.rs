@@ -235,7 +235,7 @@ async fn assert_live_writer_receives_the_exact_reader_end(expected: OpeningReade
     }
 }
 
-async fn prepare_created_reader(
+pub(super) async fn prepare_created_reader(
     fixture: &HubRuntime,
     owner: OwnerAddress,
     create: CreateAttempt,

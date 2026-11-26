@@ -148,6 +148,12 @@ pub(super) struct OpeningTestControls {
     transport_end: crate::provider_transport_diagnostics::TransportEndObserver,
     #[cfg(feature = "test-observation")]
     buffer_restore_success: AtomicBool,
+    #[cfg(feature = "test-observation")]
+    terminal_admission: super::prompt_terminal::TerminalAdmissionObserver,
+    #[cfg(feature = "test-observation")]
+    before_terminal_receive: Mutex<Option<AsyncBarrier>>,
+    #[cfg(feature = "test-observation")]
+    after_terminal_receive: Mutex<Option<AsyncBarrier>>,
 }
 
 struct Barrier {
@@ -156,6 +162,40 @@ struct Barrier {
 }
 
 impl OwnerAcpWire {
+    #[cfg(feature = "test-observation")]
+    pub(super) fn terminal_admission_observer_for_test(
+        &self,
+    ) -> super::prompt_terminal::TerminalAdmissionObserver {
+        self.opening_test.terminal_admission.clone()
+    }
+
+    #[cfg(feature = "test-observation")]
+    pub fn observe_terminal_admission_for_test(
+        &self,
+    ) -> oneshot::Receiver<(crate::owner_wire::TurnId, super::TerminalAdmission)> {
+        self.opening_test.terminal_admission.observe()
+    }
+
+    #[cfg(feature = "test-observation")]
+    pub fn hold_reader_before_terminal_receive_for_test(&self) -> OpeningAsyncPause {
+        arm_async_pause(&self.opening_test.before_terminal_receive)
+    }
+
+    #[cfg(feature = "test-observation")]
+    pub(super) async fn before_terminal_receive_for_test(&self) {
+        pause_async_gate(&self.opening_test.before_terminal_receive).await;
+    }
+
+    #[cfg(feature = "test-observation")]
+    pub fn hold_reader_with_terminal_in_hand_for_test(&self) -> OpeningAsyncPause {
+        arm_async_pause(&self.opening_test.after_terminal_receive)
+    }
+
+    #[cfg(feature = "test-observation")]
+    pub(super) async fn after_terminal_receive_for_test(&self) {
+        pause_async_gate(&self.opening_test.after_terminal_receive).await;
+    }
+
     #[cfg(feature = "test-observation")]
     pub fn buffer_next_restore_success_for_test(&self) {
         let already_armed = self

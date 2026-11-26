@@ -53,6 +53,7 @@ impl ReservedReply<WorkReply> for CapturedCancelReply {
 
 struct CancelFixture {
     binding: OwnerAcpBinding<FixturePayloads<WaitingInteractionPort>>,
+    approvals: OwnerApprovalBindings<FixturePayloads<WaitingInteractionPort>>,
     #[cfg(feature = "test-observation")]
     wire: Arc<OwnerAcpWire>,
     port: Arc<WaitingInteractionPort>,
@@ -105,9 +106,10 @@ impl CancelFixture {
             binding: OwnerAcpBinding::new(
                 Arc::clone(&wire),
                 SESSION.into(),
-                approvals,
+                approvals.clone(),
                 tasks.clone(),
             ),
+            approvals,
             #[cfg(feature = "test-observation")]
             wire,
             port,
@@ -187,6 +189,36 @@ async fn retired_cancel_wait_drops_the_reservation_without_an_event() {
         reply.try_recv(),
         Err(oneshot::error::TryRecvError::Closed)
     ));
+}
+
+#[tokio::test]
+async fn a_finished_cancel_drain_beats_ready_retirement() {
+    let mut fixture = CancelFixture::new();
+    let mut reply = fixture.begin_wait();
+    fixture.port.cancelling.notified().await;
+    assert!(matches!(
+        reply.try_recv(),
+        Err(oneshot::error::TryRecvError::Empty)
+    ));
+
+    // Closing the empty approval barrier and retiring before yielding makes
+    // both branches ready at the next poll of the actual reserved wait.
+    fixture.approvals.retire_run(
+        SESSION,
+        TransportRun {
+            incarnation: fixture.authorization.incarnation,
+            generation: fixture.authorization.run,
+        },
+    );
+    fixture.retire().await;
+
+    assert_eq!(
+        reply.try_recv(),
+        Ok(WorkReply::Dispatch(DispatchResult::CancelDrainFinished(
+            fixture.authorization
+        ))),
+        "the completed drain sends the original fact when retirement is also ready",
+    );
 }
 
 #[tokio::test]
