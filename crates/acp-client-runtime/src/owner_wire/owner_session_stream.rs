@@ -20,6 +20,10 @@ use agent_client_protocol::{
 };
 use futures_util::FutureExt as _;
 use provider_session_machines::ProviderSettingsCatalog;
+use provider_session_machines::harness_lifecycle::{
+    EventPort, EventRefusal, EventSendFuture, SessionLifecycleFact, SessionLifecyclePort,
+    StreamTurn,
+};
 use provider_session_machines::provider_settings_catalog::ProviderSettingsUpdate;
 use provider_session_machines::session_owner::{OwnerAddress, OwnerEvent};
 use provider_session_machines::session_turn_machine::TurnId;
@@ -76,11 +80,10 @@ pub struct ReplayedSessionFacts {
 }
 
 pub struct OwnerStreamTarget {
-    pub owner: OwnerAddress,
     pub run: TransportRun,
     pub wire: Arc<OwnerAcpWire>,
-    pub completions: OwnerCompletionPort,
     pub retired: CancellationToken,
+    events: SessionLifecyclePort,
     terminals: mpsc::Receiver<PromptTerminal>,
 }
 
@@ -92,44 +95,106 @@ impl OwnerStreamTarget {
         completions: OwnerCompletionPort,
         retired: CancellationToken,
     ) -> Self {
+        let events = Arc::new(OwnerStreamCompletions {
+            owner,
+            completions,
+            retired: retired.clone(),
+        });
+        Self::for_lifecycle(run, wire, retired, events)
+    }
+
+    pub(crate) fn for_lifecycle(
+        run: TransportRun,
+        wire: Arc<OwnerAcpWire>,
+        retired: CancellationToken,
+        events: SessionLifecyclePort,
+    ) -> Self {
         let terminals = wire.register_reader(run);
         Self {
-            owner,
             run,
             wire,
-            completions,
             retired,
+            events,
             terminals,
+        }
+    }
+
+    async fn report(&self, fact: SessionLifecycleFact) -> bool {
+        tokio::select! {
+            biased;
+            () = self.retired.cancelled() => false,
+            result = self.events.send(fact) => result.is_ok(),
         }
     }
 
     async fn flush_facts(&self, buffer: &ProjectionBuffer, turn: Option<TurnId>) -> bool {
         for fact in buffer.take() {
-            let event = match fact {
-                StreamFact::Event(event) => OwnerEvent::Stream {
+            let fact = match fact {
+                StreamFact::Event(event) => SessionLifecycleFact::Stream {
                     run: self.run.generation,
-                    expected_turn: turn,
+                    turn: StreamTurn::Observed(turn),
                     event,
                 },
-                StreamFact::Catalogue(update) => OwnerEvent::CatalogueObserved {
+                StreamFact::Catalogue(update) => SessionLifecycleFact::CatalogueObserved {
                     run: self.run.generation,
                     update,
                 },
-                StreamFact::Skills(view) => OwnerEvent::SkillView {
+                StreamFact::Skills(view) => SessionLifecycleFact::SkillView {
                     run: self.run.generation,
                     view,
                 },
             };
-            if self
-                .completions
-                .send_stream(self.owner, event, &self.retired)
-                .await
-                .is_err()
-            {
+            if !self.report(fact).await {
                 return false;
             }
         }
         true
+    }
+}
+
+struct OwnerStreamCompletions {
+    owner: OwnerAddress,
+    completions: OwnerCompletionPort,
+    retired: CancellationToken,
+}
+
+impl EventPort<SessionLifecycleFact> for OwnerStreamCompletions {
+    fn send<'port>(&'port self, fact: SessionLifecycleFact) -> EventSendFuture<'port>
+    where
+        SessionLifecycleFact: 'port,
+    {
+        Box::pin(async move {
+            let event = match fact {
+                SessionLifecycleFact::Replay { run, events } => OwnerEvent::Replay { run, events },
+                SessionLifecycleFact::Stream { run, turn, event } => {
+                    let StreamTurn::Observed(expected_turn) = turn else {
+                        return Err(EventRefusal::Stopped);
+                    };
+                    OwnerEvent::Stream {
+                        run,
+                        expected_turn,
+                        event,
+                    }
+                }
+                SessionLifecycleFact::CatalogueObserved { run, update } => {
+                    OwnerEvent::CatalogueObserved { run, update }
+                }
+                SessionLifecycleFact::SkillView { run, view } => {
+                    OwnerEvent::SkillView { run, view }
+                }
+                SessionLifecycleFact::ObservedTurnEnded { run, turn, outcome } => {
+                    OwnerEvent::ObservedTurnEnded { run, turn, outcome }
+                }
+                SessionLifecycleFact::OutputLimit { run, turn } => {
+                    OwnerEvent::OutputLimit { run, turn }
+                }
+                SessionLifecycleFact::RunObservationFailed { run } => OwnerEvent::RunLost(run),
+            };
+            self.completions
+                .send_stream(self.owner, event, &self.retired)
+                .await
+                .map_err(|_| EventRefusal::Stopped)
+        })
     }
 }
 
@@ -406,7 +471,7 @@ impl OwnerOpenedSession {
                 if !target.flush_facts(&self.buffer, Some(turn)).await {
                     return Ok(false);
                 }
-                let end_seen = OwnerEvent::ObservedTurnEnded {
+                let end_seen = SessionLifecycleFact::ObservedTurnEnded {
                     run: target.run.generation,
                     turn,
                     outcome: session_event_model::TurnOutcome::Ended {
@@ -416,11 +481,7 @@ impl OwnerOpenedSession {
                         local_cause: None,
                     },
                 };
-                return Ok(target
-                    .completions
-                    .send_stream(target.owner, end_seen, &target.retired)
-                    .await
-                    .is_ok());
+                return Ok(target.report(end_seen).await);
             }
             return Ok(true);
         }
@@ -447,18 +508,12 @@ impl OwnerOpenedSession {
         )?;
         if let (Some(turn), Some(text), Some(response)) = (turn, text, current.take())
             && response.append(&text)
-            && target
-                .completions
-                .send_stream(
-                    target.owner,
-                    OwnerEvent::OutputLimit {
-                        run: target.run.generation,
-                        turn,
-                    },
-                    &target.retired,
-                )
+            && !target
+                .report(SessionLifecycleFact::OutputLimit {
+                    run: target.run.generation,
+                    turn,
+                })
                 .await
-                .is_err()
         {
             return Ok(false);
         }

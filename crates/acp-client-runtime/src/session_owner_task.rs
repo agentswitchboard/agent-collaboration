@@ -122,16 +122,64 @@ impl OwnerCompletionPort {
         event: OwnerEvent,
         retired: &CancellationToken,
     ) -> Result<(), OwnerTaskError> {
+        self.send_lifecycle_observation(address, event, retired)
+            .await
+            .map_err(|_| OwnerTaskError::ExecutorStopped)
+    }
+
+    pub async fn send_lifecycle_observation(
+        &self,
+        address: OwnerAddress,
+        event: OwnerEvent,
+        retired: &CancellationToken,
+    ) -> Result<(), switchboard_harness_contracts::EventRefusal> {
         self.carrier
             .send_stream(address, event, retired, std::convert::identity)
             .await
-            .map_err(|_| OwnerTaskError::ExecutorStopped)
     }
 }
 
 impl OwnerCompletion {
     pub fn send(self, event: OwnerEvent) {
         self.reply.send(event);
+    }
+
+    pub fn map<Reply>(
+        self,
+        convert: impl FnOnce(Reply) -> OwnerEvent + Send + 'static,
+    ) -> switchboard_harness_contracts::LifecycleReply<Reply> {
+        self.map_if(move |reply| Some(convert(reply)))
+    }
+
+    pub fn map_if<Reply>(
+        self,
+        convert: impl FnOnce(Reply) -> Option<OwnerEvent> + Send + 'static,
+    ) -> switchboard_harness_contracts::LifecycleReply<Reply> {
+        Box::new(OwnerReplyMapping {
+            completion: self,
+            convert,
+        })
+    }
+}
+
+struct OwnerReplyMapping<Convert> {
+    completion: OwnerCompletion,
+    convert: Convert,
+}
+
+impl<Reply, Convert> switchboard_harness_contracts::ReservedReply<Reply>
+    for OwnerReplyMapping<Convert>
+where
+    Convert: FnOnce(Reply) -> Option<OwnerEvent> + Send,
+{
+    fn send(self: Box<Self>, reply: Reply) {
+        let Self {
+            completion,
+            convert,
+        } = *self;
+        if let Some(event) = convert(reply) {
+            completion.send(event);
+        }
     }
 }
 

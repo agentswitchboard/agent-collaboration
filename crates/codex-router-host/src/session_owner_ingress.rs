@@ -2,14 +2,18 @@
 
 use crate::{
     acp_interaction_port::RefusedTurnCancellation,
-    external_provider_approval_context::OwnerApprovalScope, session_owner_door::SessionOwnerDoor,
+    external_provider_approval_context::{ExternalProviderApprovalContext, OwnerApprovalScope},
+    session_owner_door::SessionOwnerDoor,
+    session_owner_lifecycle_reports::inline_admission,
 };
-use acp_client_runtime::{
-    EventSinkClosed, GenerationPublication, HistoryReplayFuture, InteractionFuture,
-    SessionEventSink,
-};
+use acp_client_runtime::InteractionFuture;
 use provider_session_machines::{
-    SessionGeneration, session_lifecycle_machine::SessionLifecycle, session_owner::OwnerEvent,
+    SessionGeneration,
+    harness_lifecycle::{
+        CallbackAdmission, HarnessCallbackIngress, HarnessSessionId, SessionHarnessPayloads,
+    },
+    session_lifecycle_machine::SessionLifecycle,
+    session_owner::OwnerEvent,
     session_turn_machine::SessionTurn,
 };
 use session_event_model::{SessionEvent, SkillView};
@@ -47,72 +51,43 @@ impl RefusedTurnCancellation for SessionOwnerIngress {
     }
 }
 
-impl SessionEventSink for SessionOwnerIngress {
-    fn publish_for_turn(
+impl HarnessCallbackIngress<SessionHarnessPayloads<ExternalProviderApprovalContext>>
+    for SessionOwnerIngress
+{
+    fn report_for_turn(
         &self,
-        session: &str,
+        session: &HarnessSessionId,
         generation: SessionGeneration,
         turn: provider_session_machines::session_turn_machine::TurnId,
         event: SessionEvent,
-    ) -> Result<GenerationPublication, EventSinkClosed> {
-        let Some(owner) = self.owner(session) else {
-            return Ok(GenerationPublication::Ended);
+    ) -> CallbackAdmission {
+        let Some(owner) = self.owner(&session.0) else {
+            return CallbackAdmission::Ended;
         };
         let snapshot = owner.snapshots().borrow().clone();
         if !matches!(snapshot.lifecycle,
             SessionLifecycle::Live { generation: live } | SessionLifecycle::Closing { generation: live, .. } if live == generation
         ) || !matches!(snapshot.turn, SessionTurn::Running { turn: active } | SessionTurn::Cancelling { turn: active } if active == turn)
         {
-            return Ok(GenerationPublication::Ended);
+            return CallbackAdmission::Ended;
         }
-        owner.report_event(OwnerEvent::Stream {
+        inline_admission(owner.report_event(OwnerEvent::Stream {
             run: generation,
             expected_turn: Some(turn),
             event,
-        })?;
-        Ok(GenerationPublication::Published)
+        }))
     }
 
-    fn publish_connection_auth(
-        &self,
-        session: &str,
-        status: session_event_model::ProviderAuthStatus,
-    ) -> Result<(), EventSinkClosed> {
-        let Some(owner) = self.owner(session) else {
-            return Ok(());
-        };
-        let snapshot = owner.snapshots().borrow().clone();
-        let (SessionLifecycle::Live { generation }, Some(mut capabilities)) =
-            (snapshot.lifecycle, snapshot.projection.capabilities)
-        else {
-            return Ok(());
-        };
-        capabilities.auth_status = status;
-        owner.report_event(OwnerEvent::Stream {
-            run: generation,
-            expected_turn: None,
-            event: SessionEvent::CapabilitiesChanged { capabilities },
-        })
-    }
-    fn publish_skill_view(&self, session: &str, view: SkillView) -> Result<(), EventSinkClosed> {
-        let Some(owner) = self.owner(session) else {
-            return Ok(());
+    fn report_skill_view(&self, session: &HarnessSessionId, view: SkillView) -> CallbackAdmission {
+        let Some(owner) = self.owner(&session.0) else {
+            return CallbackAdmission::Ended;
         };
         let run = self.current_generation(session);
-        owner.report_event(OwnerEvent::SkillView { run, view })
+        inline_admission(owner.report_event(OwnerEvent::SkillView { run, view }))
     }
 
-    fn begin_history_replay(&self, _: &str) -> HistoryReplayFuture<'_> {
-        Box::pin(std::future::ready(Ok(())))
-    }
-
-    fn publish(&self, session: &str, event: SessionEvent) -> Result<(), EventSinkClosed> {
-        self.publish_in(session, self.current_generation(session), event)
-            .map(|_| ())
-    }
-
-    fn current_generation(&self, session: &str) -> SessionGeneration {
-        let Some(owner) = self.owner(session) else {
+    fn current_generation(&self, session: &HarnessSessionId) -> SessionGeneration {
+        let Some(owner) = self.owner(&session.0) else {
             return SessionGeneration::UNTRACKED;
         };
         match owner.snapshots().borrow().lifecycle {
@@ -122,30 +97,29 @@ impl SessionEventSink for SessionOwnerIngress {
         }
     }
 
-    fn publish_in(
+    fn report_for_generation(
         &self,
-        session: &str,
+        session: &HarnessSessionId,
         generation: SessionGeneration,
         event: SessionEvent,
-    ) -> Result<GenerationPublication, EventSinkClosed> {
-        let Some(owner) = self.owner(session) else {
-            return Ok(GenerationPublication::Ended);
+    ) -> CallbackAdmission {
+        let Some(owner) = self.owner(&session.0) else {
+            return CallbackAdmission::Ended;
         };
         let snapshot = owner.snapshots().borrow().clone();
         if !matches!(snapshot.lifecycle,
             SessionLifecycle::Live { generation: live } | SessionLifecycle::Closing { generation: live, .. } if live == generation
         ) {
-            return Ok(GenerationPublication::Ended);
+            return CallbackAdmission::Ended;
         }
         let turn = match snapshot.turn {
             SessionTurn::Idle => None,
             SessionTurn::Running { turn } | SessionTurn::Cancelling { turn } => Some(turn),
         };
-        owner.report_event(OwnerEvent::Stream {
+        inline_admission(owner.report_event(OwnerEvent::Stream {
             run: generation,
             expected_turn: turn,
             event,
-        })?;
-        Ok(GenerationPublication::Published)
+        }))
     }
 }

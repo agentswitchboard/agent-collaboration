@@ -6,8 +6,9 @@ use crate::{
     AcceptedRunSettings, ActivationSetup, ApprovalLeaseBinding, CatalogueFact, CatalogueRequest,
     CloseAttempt, CloseFact, CreateAttempt, CreatedSetupFact, EventSendFuture, HarnessBinding,
     HarnessSessionId, Held, LifecycleEventPort, LifecycleRefusal, LifecycleReply, OpenAttempt,
-    OpenRequest, OpeningFact, OwnerAddress, RunAttempt, RunRetirement, SessionGeneration,
-    SettingAttempt, SettingFact, SetupReport, TurnId, TurnMembership,
+    OpenRequest, OpeningFact, OwnerAddress, ReplyAdmission, RestoreSettingRefusal, RunAttempt,
+    RunRetirement, SessionGeneration, SettingAttempt, SettingFact, SetupReport, TurnId,
+    TurnMembership,
 };
 
 #[cfg(test)]
@@ -132,12 +133,13 @@ pub trait OwnerHarnessBinding<Payloads: HarnessLifecyclePayloads>:
         retired: RunRetirement,
     ) -> Result<(), LifecycleRefusal>;
 
-    /// Reapply one setting for the exact restore attempt and return its own observation.
+    /// Validate the setter and held restore attempt before asking for one reply reservation.
+    /// A valid setter reaches the harness writer only after the reservation succeeds.
     fn put_setting_back(
         &self,
         attempt: SettingAttempt,
-        reply: LifecycleReply<SettingFact>,
-    ) -> Result<(), LifecycleRefusal>;
+        reserve_reply: &mut dyn FnMut() -> ReplyAdmission<SettingFact>,
+    ) -> Result<(), RestoreSettingRefusal>;
 
     /// Ask the harness to end the session. An immediate refusal does not mark the route closing.
     fn close(

@@ -8,6 +8,9 @@ use crate::{
     SettingApplication, SettingEvidence, SettingValueId,
 };
 
+/// The Router's requested name for the harness's auto realization.
+pub const AUTO_PERMISSION_MODE: &str = "auto";
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AcceptedRunSettings<Catalogue = ProviderSettingsCatalogRecord> {
     pub catalogue: Arc<Catalogue>,

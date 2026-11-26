@@ -242,16 +242,17 @@ impl ExternalProviderSupervisor {
         Some(snapshot)
     }
 
-    pub(crate) fn owner_session_catalog(
+    pub(crate) async fn owner_session_catalog(
         &self,
         target: &SessionRef,
     ) -> Option<provider_session_machines::ProviderSettingsCatalog> {
-        self.inner
+        let owner = self
+            .inner
             .bindings
             .get(&target.endpoint)?
             .owners
-            .existing(target)?
-            .catalog()
+            .existing(target)?;
+        owner.catalog().await
     }
 
     pub(crate) fn owner_session_activity(

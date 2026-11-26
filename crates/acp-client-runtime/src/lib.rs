@@ -117,8 +117,8 @@ pub use provider_session_settings::{
     RequestedProviderSettings,
 };
 pub use session_event_sink::{
-    EventSinkClosed, GenerationPublication, HistoryReplayFuture, HistoryReplayUnavailable,
-    SessionEventSink,
+    EventSinkClosed, GenerationPublication, HarnessCallbackEventSink, HistoryReplayFuture,
+    HistoryReplayUnavailable, SessionEventSink,
 };
 
 #[cfg(feature = "test-observation")]

@@ -134,6 +134,7 @@ pub(super) async fn apply(
             && request.value == acp_client_runtime::AUTO_PERMISSION_MODE)
         && let Some(advertised) = owner
             .catalog()
+            .await
             .and_then(|catalog| catalog.unavailable_selection(kind, &request.value))
     {
         return Err(ProviderSettingsFailure {

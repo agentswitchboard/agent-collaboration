@@ -125,6 +125,8 @@ pub enum LifecycleMove {
     WaitForClose,
     UseSavedCatalogue,
     ReportUnavailable,
+    /// The controller cannot reserve a completion and must stop executing this owner.
+    StopOwner,
     KeepOutcomeUnknown,
     AdmitAgain,
     Retire,
@@ -138,6 +140,8 @@ pub enum LifecycleRefusal {
     RouteClosing,
     AttemptMismatch,
     OpeningNotHeld,
+    SettingValueNotOffered,
+    SettingSetterUnavailable,
     CatalogueUnavailable,
     InvalidCatalogueReply,
     OperationNotOffered,
@@ -147,7 +151,9 @@ impl LifecycleRefusal {
     #[must_use]
     pub const fn valid_moves(self) -> &'static [LifecycleMove] {
         match self {
-            Self::Encoding | Self::AttemptMismatch => &[LifecycleMove::CorrectRequest],
+            Self::Encoding | Self::AttemptMismatch | Self::SettingValueNotOffered => {
+                &[LifecycleMove::CorrectRequest]
+            }
             Self::Writer(WriterState::Full) => &[LifecycleMove::WaitForWriter],
             Self::Writer(WriterState::Stopped) | Self::RouteUnavailable | Self::OpeningNotHeld => {
                 &[LifecycleMove::Reopen]
@@ -157,7 +163,25 @@ impl LifecycleRefusal {
                 LifecycleMove::UseSavedCatalogue,
                 LifecycleMove::ReportUnavailable,
             ],
-            Self::OperationNotOffered => &[LifecycleMove::ReportUnavailable],
+            Self::OperationNotOffered | Self::SettingSetterUnavailable => {
+                &[LifecycleMove::ReportUnavailable]
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RestoreSettingRefusal {
+    Harness(LifecycleRefusal),
+    ReplyReservation(WriterState),
+}
+
+impl RestoreSettingRefusal {
+    #[must_use]
+    pub const fn valid_moves(self) -> &'static [LifecycleMove] {
+        match self {
+            Self::Harness(refusal) => refusal.valid_moves(),
+            Self::ReplyReservation(_) => &[LifecycleMove::StopOwner],
         }
     }
 }
