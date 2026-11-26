@@ -1,5 +1,6 @@
 //! ACP frames submitted through the session owner's ordered writer.
 
+pub(crate) mod owner_restore_update_router;
 pub mod owner_session_open;
 pub mod owner_session_setting;
 pub mod owner_session_stream;

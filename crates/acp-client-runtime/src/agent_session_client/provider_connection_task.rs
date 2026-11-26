@@ -224,7 +224,7 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
             let connection = Client.builder().name("codex-router-host")
                 .with_handler(ProviderRequestSessionGuard::new(request_routes))
                 .with_handler(crate::owner_callback_routing::OwnerToolCallHandler::new(Arc::clone(&callbacks)))
-                .with_handler(crate::owner_restore_updates::OwnerRestoreUpdateRouter(restore_routes))
+                .with_handler(crate::owner_wire::owner_restore_update_router::OwnerRestoreUpdateRouter(restore_routes))
                 .on_receive_request(
                     async move |request: RequestPermissionRequest, responder, connection| {
                         crate::provider_transport_diagnostics::record_callback_entered(crate::provider_transport_diagnostics::ProviderFrameKind::Permission);
