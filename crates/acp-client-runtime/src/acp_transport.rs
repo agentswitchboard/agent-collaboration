@@ -180,8 +180,13 @@ impl<Frame> AcpTransport<Frame> {
         state.callbacks.open(run);
     }
 
-    pub fn activate_route(&self, run: TransportRun) {
-        self.state().callbacks.activate(run);
+    pub fn activate_route(&self, run: TransportRun) -> bool {
+        let mut state = self.state();
+        state
+            .routes
+            .get(&run)
+            .is_some_and(|route| route.closing.is_none())
+            && state.callbacks.activate(run)
     }
 
     #[must_use]

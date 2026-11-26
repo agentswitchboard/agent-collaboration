@@ -612,12 +612,14 @@ pub(in crate::session_owner) enum PendingRestore {
         run: RunAttempt<LoadAttempt>,
         setting: OwnerSetting,
         via: RestoreVia,
-        mode_confirmed: bool,
     },
     Preparing {
         run: RunAttempt<LoadAttempt>,
         via: RestoreVia,
-        mode_confirmed: bool,
+    },
+    Activating {
+        run: RunAttempt<LoadAttempt>,
+        via: RestoreVia,
     },
 }
 

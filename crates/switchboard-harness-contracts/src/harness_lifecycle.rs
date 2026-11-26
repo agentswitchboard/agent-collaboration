@@ -3,12 +3,12 @@
 use std::sync::Arc;
 
 use crate::{
-    AcceptedRunSettings, ActivationSetup, ApprovalLeaseBinding, CatalogueFact, CatalogueRequest,
-    CloseAttempt, CloseFact, CreateAttempt, CreatedSetupFact, EventSendFuture, HarnessBinding,
-    HarnessOwnerRecovery, HarnessSessionId, Held, LifecycleEventPort, LifecycleRefusal,
-    LifecycleReply, OpenAttempt, OpenRequest, OpeningFact, OwnerAddress, ReplyAdmission,
-    RestoreSettingRefusal, RunAttempt, RunRetirement, SessionGeneration, SettingAttempt,
-    SettingFact, SetupReport, TurnId, TurnMembership,
+    AcceptedRunSettings, ActivationRefusal, ActivationSetup, ApprovalLeaseBinding, CatalogueFact,
+    CatalogueRequest, CloseAttempt, CloseFact, CreateAttempt, CreatedSetupFact, EventSendFuture,
+    HarnessBinding, HarnessOwnerRecovery, HarnessSessionId, Held, LifecycleEventPort,
+    LifecycleRefusal, LifecycleReply, OpenAttempt, OpenRequest, OpeningFact, OwnerAddress,
+    ReplyAdmission, RestoreSettingRefusal, RunAttempt, RunRetirement, SessionGeneration,
+    SettingAttempt, SettingFact, SetupReport, TurnId, TurnMembership,
 };
 #[cfg(feature = "test-support")]
 use crate::{DispatchAuthorization, DispatchResult, HandOverRefusal};
@@ -167,13 +167,14 @@ pub trait OwnerHarnessBinding<Payloads: HarnessLifecyclePayloads>:
     /// Admit callbacks and install the folder grant before publishing the held skill view or
     /// draining live events. The caller binds `events` and `retired` to this attempt. The harness
     /// owns the reader task, stops it on retirement and joins it under the harness task owner.
+    /// A refusal starts no reader and leaves any already active run intact.
     fn activate(
         &self,
         setup: ActivationSetup,
         accepted: AcceptedRunSettings,
         events: LifecycleEventPort<Payloads::Event, Payloads::SkillView, Payloads::TurnOutcome>,
         retired: RunRetirement,
-    );
+    ) -> Result<(), ActivationRefusal>;
 
     /// Publish an accepted setting snapshot for this generation only.
     fn use_settings(&self, generation: SessionGeneration, accepted: AcceptedRunSettings);

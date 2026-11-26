@@ -1,10 +1,10 @@
 use super::publication_effects::WIRE_BUDGET;
 use super::{OwnerRejection, OwnerResult, OwnerTransition};
-use crate::session_lifecycle_machine::{LoadAttempt, SessionLifecycle};
+use crate::session_lifecycle_machine::{LoadAttempt, SessionLifecycle, next_generation};
 use crate::session_owner::{
-    CreateOutcome, CreateProgress, EffectInProgress, OwnerDeadline, OwnerEffect, RemoteEffect,
-    RestoreFailure, RestoreResult, RunAttempt, SessionOwnerEffect, SessionOwnerRefusal,
-    SessionPublication, SessionWireRequest,
+    CreateOutcome, CreateProgress, EffectInProgress, OwnerDeadline, OwnerEffect, PendingCreate,
+    RemoteEffect, RestoreFailure, RestoreResult, RunAttempt, SessionOwnerEffect,
+    SessionOwnerRefusal, SessionPublication, SessionWireRequest,
 };
 use crate::{SessionGeneration, session_cell_machine::SessionCellEvent};
 use uuid::Uuid;
@@ -28,7 +28,7 @@ impl OwnerTransition {
         if self.next.ports.create.is_some() {
             return Err(SessionOwnerRefusal::EffectInProgress(EffectInProgress::Create).into());
         }
-        self.next.ports.create = Some(operation);
+        self.next.ports.create = Some(PendingCreate::Opening(operation));
         self.effects
             .push(OwnerEffect::Wire(SessionWireRequest::Create { operation }));
         self.arm(OwnerDeadline::Create(operation), WIRE_BUDGET);
@@ -38,23 +38,47 @@ impl OwnerTransition {
     pub(super) fn create_progress(&mut self, progress: CreateProgress) -> OwnerResult {
         let operation = match &progress {
             CreateProgress::ProviderId { operation, .. }
-            | CreateProgress::Adopted { operation, .. }
+            | CreateProgress::Configured { operation, .. }
+            | CreateProgress::Activated { operation, .. }
             | CreateProgress::AlreadyOwned { operation }
             | CreateProgress::Failed { operation, .. } => *operation,
         };
-        if self.next.ports.create != Some(operation) {
+        let Some(pending) = self
+            .next
+            .ports
+            .create
+            .filter(|pending| pending.operation() == operation)
+        else {
             return Err(OwnerRejection::IgnoredLate);
-        }
+        };
         let outcome = match progress {
-            CreateProgress::ProviderId { provider_id, .. } if !self.next.ports.adopting => {
-                self.next.ports.adopting = true;
+            CreateProgress::ProviderId { provider_id, .. }
+                if matches!(pending, PendingCreate::Opening(_)) =>
+            {
+                self.next.ports.create = Some(PendingCreate::Adopting(operation));
                 self.effects.push(OwnerEffect::AdoptProviderId {
                     operation,
                     provider_id,
                 });
                 return Ok(());
             }
-            CreateProgress::Adopted { facts, .. } if self.next.ports.adopting => {
+            CreateProgress::Configured { facts, .. }
+                if matches!(pending, PendingCreate::Adopting(_)) =>
+            {
+                let SessionLifecycle::NotLoaded { last } = self.next.lifecycle() else {
+                    return Err(OwnerRejection::IgnoredLate);
+                };
+                self.next.ports.create = Some(PendingCreate::Activating(operation));
+                self.effects.push(OwnerEffect::ActivateCreated {
+                    operation,
+                    generation: next_generation(last),
+                    facts,
+                });
+                return Ok(());
+            }
+            CreateProgress::Activated { facts, .. }
+                if matches!(pending, PendingCreate::Activating(_)) =>
+            {
                 self.cell_move(SessionCellEvent::CreateAdmitted)?;
                 let Some(run) = self.next.cell.run_generation() else {
                     return Err(OwnerRejection::IgnoredLate);
@@ -114,14 +138,15 @@ impl OwnerTransition {
                 )));
                 CreateOutcome::Adopted(run)
             }
-            CreateProgress::AlreadyOwned { .. } if self.next.ports.adopting => {
+            CreateProgress::AlreadyOwned { .. }
+                if matches!(pending, PendingCreate::Adopting(_)) =>
+            {
                 CreateOutcome::SessionIdInUse
             }
             CreateProgress::Failed { remote, .. } => CreateOutcome::Failed(remote),
             _ => return Err(OwnerRejection::IgnoredLate),
         };
         self.next.ports.create = None;
-        self.next.ports.adopting = false;
         self.effects
             .push(OwnerEffect::CreateSettled { operation, outcome });
         Ok(())
@@ -177,8 +202,8 @@ impl OwnerTransition {
         }
         self.next.ports.connection_alive = false;
         self.lose_transport_authorizations()?;
-        if let Some(operation) = self.next.ports.create {
-            self.expire_create(operation)?;
+        if let Some(pending) = self.next.ports.create {
+            self.expire_create(pending.operation())?;
         }
         if let Some(pending) = self.next.restore {
             self.fail_restore(

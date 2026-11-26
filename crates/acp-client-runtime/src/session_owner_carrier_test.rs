@@ -65,11 +65,17 @@ impl SessionOwnerPorts for TracingPorts {
                 }))
             }
             OwnerEffect::AdoptProviderId { operation, .. } => {
-                Some(OwnerEvent::Create(CreateProgress::Adopted {
+                Some(OwnerEvent::Create(CreateProgress::Configured {
                     operation,
                     facts: Box::default(),
                 }))
             }
+            OwnerEffect::ActivateCreated {
+                operation, facts, ..
+            } => Some(OwnerEvent::Create(CreateProgress::Activated {
+                operation,
+                facts,
+            })),
             OwnerEffect::Publish(PublicationBatch::Rebase { id, .. }) => {
                 self.trace.borrow_mut().push(ObservedIngress::Rebase);
                 Some(OwnerEvent::Publication(PublicationResult::Applied(id)))

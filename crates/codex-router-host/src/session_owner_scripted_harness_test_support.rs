@@ -14,15 +14,15 @@ use crate::{
 use provider_session_machines::{
     SessionGeneration,
     harness_lifecycle::{
-        AcceptedRunSettings, ActivationSetup, ApprovalLease, ApprovalLeaseBinding,
-        ApprovalLeaseRefusalReason, BeforeOfferApprovalLeaseRefusal, CatalogueFact,
-        CatalogueRequest, CloseFact, CreateAttempt, CreatedSetupFact, CreatedSetupReport,
-        ExactTurn, HarnessOwnerEvents, HarnessOwnerRecovery, HarnessProvider, HarnessSessionId,
-        Held, LifecycleRefusal, LifecycleReply, ObservedTurnApprovalLeaseRefusal, OpenAttempt,
-        OpenRequest, OpeningFact, OpeningFailure, OwnerHarnessBinding, PermissionModeReport,
-        RestoreLoadReadback, RestoreSettingRefusal, RestoredOpening, RunRetirement,
-        SessionCreatedSetupFact, SessionLifecycleFact, SessionLifecyclePort, SettingAttempt,
-        SettingFact, SetupReport, SlotEvidence, StreamTurn,
+        AcceptedRunSettings, ActivationRefusal, ActivationSetup, ApprovalLease,
+        ApprovalLeaseBinding, ApprovalLeaseRefusalReason, BeforeOfferApprovalLeaseRefusal,
+        CatalogueFact, CatalogueRequest, CloseFact, CreateAttempt, CreatedSetupFact,
+        CreatedSetupReport, ExactTurn, HarnessOwnerEvents, HarnessOwnerRecovery, HarnessProvider,
+        HarnessSessionId, Held, LifecycleRefusal, LifecycleReply, ObservedTurnApprovalLeaseRefusal,
+        OpenAttempt, OpenRequest, OpeningFact, OpeningFailure, OwnerHarnessBinding,
+        PermissionModeReport, RestoreLoadReadback, RestoreSettingRefusal, RestoredOpening,
+        RunRetirement, SessionCreatedSetupFact, SessionLifecycleFact, SessionLifecyclePort,
+        SettingAttempt, SettingFact, SetupReport, SlotEvidence, StreamTurn,
     },
     session_lifecycle_machine::{CloseAttempt, LoadAttempt, RestoreVia},
     session_owner::{
@@ -36,7 +36,10 @@ use session_event_model::{
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{
+        Arc, Mutex, MutexGuard,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 use tokio::sync::mpsc;
 use tokio_util::task::TaskTracker;
@@ -54,6 +57,7 @@ pub(super) enum ScriptObservation {
     Replayed(RunAttempt<LoadAttempt>),
     ReplayLost(RunAttempt<LoadAttempt>),
     Activated(ActivationSetup),
+    ActivationRefused(ActivationSetup, ActivationRefusal),
     SkillsReported,
     LiveReported,
     PromptOffered(DispatchAuthorization),
@@ -96,6 +100,7 @@ pub(super) enum ScriptedWork {
 #[derive(Clone, Default)]
 pub(super) struct ScriptControls {
     pub(super) work: ScriptedWork,
+    pub(super) refuse_next_activation: Arc<AtomicBool>,
     pub(super) policy: Option<
         Arc<dyn provider_session_machines::session_owner::RequestPolicy<HostRequestPayloads>>,
     >,
@@ -174,6 +179,14 @@ impl ScriptedHarness {
     pub(super) fn run_events(&self, owner: OwnerIncarnation) -> Option<SessionLifecyclePort> {
         let state = lock(&self.owners).get(&owner)?.clone();
         lock(&state).run_events.clone()
+    }
+
+    pub(super) fn settings_used(&self, owner: OwnerIncarnation) -> Vec<SessionGeneration> {
+        let state = lock(&self.owners)
+            .get(&owner)
+            .expect("fixture binding")
+            .clone();
+        lock(&state).settings_used.clone()
     }
 }
 
@@ -284,6 +297,7 @@ struct ScriptedBinding {
 struct BindingState {
     held: Option<OpenAttempt>,
     active: Option<SessionGeneration>,
+    settings_used: Vec<SessionGeneration>,
     offered: Option<(DispatchAuthorization, ReservedWorkReply)>,
     dispatches: Vec<(DispatchAuthorization, SlotEvidence)>,
     owner_events: Option<Arc<dyn HarnessOwnerEvents<ProviderAuthStatus>>>,
@@ -456,7 +470,7 @@ impl OwnerHarnessBinding<OwnerHarnessPayloads> for ScriptedBinding {
         _accepted: AcceptedRunSettings,
         events: SessionLifecyclePort,
         retired: RunRetirement,
-    ) {
+    ) -> Result<(), ActivationRefusal> {
         let (attempt, run) = match setup {
             ActivationSetup::Created {
                 attempt,
@@ -466,7 +480,22 @@ impl OwnerHarnessBinding<OwnerHarnessPayloads> for ScriptedBinding {
         };
         {
             let mut state = lock(&self.state);
-            assert_eq!(state.held.take(), Some(attempt));
+            if state.held != Some(attempt) {
+                return Err(ActivationRefusal::OpeningNotHeld);
+            }
+            state.held = None;
+            if self
+                .controls
+                .refuse_next_activation
+                .swap(false, Ordering::SeqCst)
+            {
+                let reason = ActivationRefusal::OpeningNotHeld;
+                record(
+                    &self.journal,
+                    ScriptObservation::ActivationRefused(setup, reason),
+                );
+                return Err(reason);
+            }
             state.active = Some(run);
             state.run_events = Some(events.clone());
         }
@@ -504,9 +533,12 @@ impl OwnerHarnessBinding<OwnerHarnessPayloads> for ScriptedBinding {
                 () = stream => {}
             }
         });
+        Ok(())
     }
 
-    fn use_settings(&self, _generation: SessionGeneration, _accepted: AcceptedRunSettings) {}
+    fn use_settings(&self, generation: SessionGeneration, _accepted: AcceptedRunSettings) {
+        lock(&self.state).settings_used.push(generation);
+    }
 
     fn admit_again(&self, _run: RunAttempt<CloseAttempt>) {}
 

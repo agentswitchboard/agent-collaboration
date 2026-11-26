@@ -34,11 +34,17 @@ impl SessionOwnerPorts for PromptPorts {
                 }))
             }
             OwnerEffect::AdoptProviderId { operation, .. } => {
-                Some(OwnerEvent::Create(CreateProgress::Adopted {
+                Some(OwnerEvent::Create(CreateProgress::Configured {
                     operation,
                     facts: Box::default(),
                 }))
             }
+            OwnerEffect::ActivateCreated {
+                operation, facts, ..
+            } => Some(OwnerEvent::Create(CreateProgress::Activated {
+                operation,
+                facts,
+            })),
             OwnerEffect::Publish(
                 PublicationBatch::Commit { id, .. } | PublicationBatch::Rebase { id, .. },
             ) => Some(OwnerEvent::Publication(PublicationResult::Applied(id))),

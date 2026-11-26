@@ -112,6 +112,7 @@ async fn competing_harness_loss_reports_settle_once_and_drain_pending_neutral_po
     let setup = ScriptedSession::load_saved(ScriptControls {
         work: ScriptedWork::HoldPromptReply,
         policy: Some(Arc::new(HeldPolicy(policy_events))),
+        ..Default::default()
     })
     .await;
     let owner = setup.owner();

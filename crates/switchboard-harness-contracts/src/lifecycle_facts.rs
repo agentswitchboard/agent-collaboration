@@ -128,8 +128,28 @@ pub enum LifecycleMove {
     /// The controller cannot reserve a completion and must stop executing this owner.
     StopOwner,
     KeepOutcomeUnknown,
+    KeepActiveRun,
     AdmitAgain,
     Retire,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ActivationRefusal {
+    AttemptMismatch,
+    OpeningNotHeld,
+    AlreadyActive,
+    RouteUnavailable,
+}
+
+impl ActivationRefusal {
+    #[must_use]
+    pub const fn valid_moves(self) -> &'static [LifecycleMove] {
+        match self {
+            Self::AttemptMismatch => &[LifecycleMove::CorrectRequest],
+            Self::OpeningNotHeld | Self::RouteUnavailable => &[LifecycleMove::ReportUnavailable],
+            Self::AlreadyActive => &[LifecycleMove::KeepActiveRun, LifecycleMove::Retire],
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

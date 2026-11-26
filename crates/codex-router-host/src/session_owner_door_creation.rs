@@ -13,14 +13,15 @@ use provider_session_machines::session_refusal_answers::effect_in_progress_answe
 use provider_session_machines::{
     EffectiveProviderSettings, ProviderSettingsCatalog,
     harness_lifecycle::{
-        CreateAttempt, CreatedSettingsFailure, CreatedSetupFact, CreationEffect, HarnessSessionId,
-        Held, InvalidRequestedSetting, OpenAttempt, OpenRequest, OpenSetup, OpeningFact,
-        OpeningFailure, PermissionModeReport, RequestedProviderSettings, ReservedReply,
+        AcceptedRunSettings, ActivationRefusal, ActivationSetup, CreateAttempt,
+        CreatedSettingsFailure, CreatedSetupFact, CreationEffect, HarnessSessionId, Held,
+        InvalidRequestedSetting, OpenAttempt, OpenRequest, OpenSetup, OpeningFact, OpeningFailure,
+        PermissionModeReport, RequestedProviderSettings, ReservedReply,
     },
     session_owner::{
         CreateOutcome, CreateProgress, CreatedSessionFacts, OwnerAddress, OwnerEffect, OwnerEvent,
-        PublicationBatch, PublicationFact, RemoteEffect, SessionOwnerCommand, SessionOwnerRefusal,
-        SessionOwnerRejection, SessionPublication, SessionWireRequest,
+        PublicationBatch, RemoteEffect, SessionOwnerCommand, SessionOwnerRefusal,
+        SessionOwnerRejection, SessionWireRequest,
     },
 };
 use session_event_model::ProviderSettingFailureReason;
@@ -37,7 +38,6 @@ enum CreatePreparation {
 }
 
 pub(crate) struct OwnerCreateReport {
-    attempt: CreateAttempt,
     pub(crate) session: HarnessSessionId,
     pub(crate) effective_settings: EffectiveProviderSettings,
     pub(crate) permission_mode: PermissionModeReport,
@@ -48,6 +48,7 @@ pub(crate) enum OwnerCreateFailure {
     TransportUnavailable,
     Operation(String),
     Opening(OpeningFailure),
+    Activation(ActivationRefusal),
     ClosedAfterInvalidSetting(InvalidRequestedSetting),
 }
 
@@ -350,7 +351,6 @@ impl ProvisionalCreate {
                 &prepared,
                 Some(Ok(CreatePreparation::Configured(Box::new(
                     OwnerCreateReport {
-                        attempt: CreateAttempt(operation),
                         session,
                         effective_settings: report.effective_settings,
                         permission_mode: report.permission_mode,
@@ -358,7 +358,7 @@ impl ProvisionalCreate {
                     },
                 )))),
             );
-            Some(OwnerEvent::Create(CreateProgress::Adopted {
+            Some(OwnerEvent::Create(CreateProgress::Configured {
                 operation,
                 facts,
             }))
@@ -436,27 +436,43 @@ impl SessionOwnerPorts for ProvisionalCreate {
                 self.rebase = Some(batch);
                 Ok(None)
             }
-            OwnerEffect::Publish(batch) => {
+            OwnerEffect::ActivateCreated {
+                operation,
+                generation,
+                facts,
+            } => {
                 let ports = self
                     .adopted
                     .as_mut()
                     .ok_or(OwnerTaskError::ExecutorStopped)?;
-                if matches!(&batch, PublicationBatch::Commit { facts, .. } if facts.iter().any(|fact| {
-                    matches!(fact, PublicationFact::Live(SessionPublication::Created(_)))
-                })) {
-                    let Some(Ok(CreatePreparation::Configured(settings))) = take(&self.prepared)
-                    else {
-                        return Err(OwnerTaskError::ExecutorStopped);
-                    };
-                    ports.prepare_created(settings.attempt);
-                    self.settings = Some(*settings);
-                }
-                ports.execute(
-                    address,
-                    OwnerEffect::Publish(batch),
-                    completions,
-                    caller_wakes,
-                )
+                let Some(Ok(CreatePreparation::Configured(settings))) = take(&self.prepared) else {
+                    return Err(OwnerTaskError::ExecutorStopped);
+                };
+                let setup = ActivationSetup::Created {
+                    attempt: CreateAttempt(operation),
+                    generation,
+                };
+                let accepted = AcceptedRunSettings {
+                    catalogue: facts.catalogue.as_ref().clone().into_record(),
+                    router_auto_requested: facts.router_auto_requested,
+                };
+                let progress = match ports.activate(setup, accepted) {
+                    Ok(()) => {
+                        self.settings = Some(*settings);
+                        CreateProgress::Activated { operation, facts }
+                    }
+                    Err(reason) => {
+                        save(
+                            &self.prepared,
+                            Some(Err(OwnerCreateFailure::Activation(reason))),
+                        );
+                        CreateProgress::Failed {
+                            operation,
+                            remote: RemoteEffect::Applied,
+                        }
+                    }
+                };
+                Ok(Some(OwnerEvent::Create(progress)))
             }
             other => self
                 .adopted

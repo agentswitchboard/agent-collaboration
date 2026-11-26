@@ -12,7 +12,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 pub use switchboard_harness_contracts::{
-    AUTO_PERMISSION_MODE, AcceptedRunSettings, ActivationSetup, ApprovalLease,
+    AUTO_PERMISSION_MODE, AcceptedRunSettings, ActivationRefusal, ActivationSetup, ApprovalLease,
     ApprovalLeaseBinding, ApprovalLeaseRefusalReason, BeforeOfferApprovalLeaseRefusal,
     CallbackAdmission, CatalogueFact, CatalogueRequest, CloseFact, CreateAttempt,
     CreatedSettingsFailure, CreatedSetupFact, CreatedSetupReport, CreationEffect, EventPort,

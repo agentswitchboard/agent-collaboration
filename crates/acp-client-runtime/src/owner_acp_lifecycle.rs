@@ -13,11 +13,11 @@ use opening::OwnerOpenings;
 use provider_session_machines::{
     ProviderSettingsCatalog, SessionGeneration,
     harness_lifecycle::{
-        AcceptedRunSettings, ActivationSetup, CatalogueFact, CatalogueRequest, CloseFact,
-        CreateAttempt, HarnessOwnerEvents, HarnessProvider, Held, LifecycleRefusal, LifecycleReply,
-        OpenAttempt, OpenRequest, OpeningFact, OwnerHarnessBinding, RestoreSettingRefusal,
-        RunRetirement, SessionCreatedSetupFact, SessionHarnessPayloads, SessionLifecyclePort,
-        SettingAttempt, SettingFact, SetupReport,
+        AcceptedRunSettings, ActivationRefusal, ActivationSetup, CatalogueFact, CatalogueRequest,
+        CloseFact, CreateAttempt, HarnessOwnerEvents, HarnessProvider, Held, LifecycleRefusal,
+        LifecycleReply, OpenAttempt, OpenRequest, OpeningFact, OwnerHarnessBinding,
+        RestoreSettingRefusal, RunRetirement, SessionCreatedSetupFact, SessionHarnessPayloads,
+        SessionLifecyclePort, SettingAttempt, SettingFact, SetupReport,
     },
     session_lifecycle_machine::CloseAttempt,
     session_owner::{OwnerAddress, RunAttempt},
@@ -220,8 +220,8 @@ impl<Port: AcpRequestPayloads> OwnerHarnessBinding<SessionHarnessPayloads<Port::
         _accepted: AcceptedRunSettings,
         events: SessionLifecyclePort,
         retired: RunRetirement,
-    ) {
-        self.openings.activate(setup, events, retired);
+    ) -> Result<(), ActivationRefusal> {
+        self.openings.activate(setup, events, retired)
     }
 
     fn use_settings(&self, generation: SessionGeneration, accepted: AcceptedRunSettings) {

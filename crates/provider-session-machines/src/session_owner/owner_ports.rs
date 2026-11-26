@@ -17,9 +17,9 @@ use std::time::Duration;
 use uuid::Uuid;
 
 pub use switchboard_harness_contracts::{
-    CancelDrainReport, ConnectionEpoch, DispatchResult, FastReadback, InitialSettingFailure,
-    InitialSettingObservation, OwnerAddress, OwnerIncarnation, ProviderWireFailure,
-    ProviderWireFailureKind, SettingReadback,
+    ActivationRefusal, CancelDrainReport, ConnectionEpoch, DispatchResult, FastReadback,
+    InitialSettingFailure, InitialSettingObservation, OwnerAddress, OwnerIncarnation,
+    ProviderWireFailure, ProviderWireFailureKind, SettingReadback,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -213,7 +213,11 @@ pub enum CreateProgress {
         operation: Uuid,
         provider_id: String,
     },
-    Adopted {
+    Configured {
+        operation: Uuid,
+        facts: Box<CreatedSessionFacts>,
+    },
+    Activated {
         operation: Uuid,
         facts: Box<CreatedSessionFacts>,
     },
@@ -224,6 +228,23 @@ pub enum CreateProgress {
         operation: Uuid,
         remote: super::RemoteEffect,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::session_owner) enum PendingCreate {
+    Opening(Uuid),
+    Adopting(Uuid),
+    Activating(Uuid),
+}
+
+impl PendingCreate {
+    pub const fn operation(self) -> Uuid {
+        match self {
+            Self::Opening(operation) | Self::Adopting(operation) | Self::Activating(operation) => {
+                operation
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -251,6 +272,10 @@ pub enum ModelFastOutcome {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RestorePreparation {
     RouteReady(RunAttempt<LoadAttempt>),
+    Activation {
+        run: RunAttempt<LoadAttempt>,
+        result: Result<(), ActivationRefusal>,
+    },
     HostReady {
         run: RunAttempt<LoadAttempt>,
         capabilities: CapabilityReport,
@@ -564,6 +589,15 @@ pub enum OwnerEffect {
         catalogue: Arc<ProviderSettingsCatalog>,
     },
     PrepareRoute(RunAttempt<LoadAttempt>),
+    ActivateRestored {
+        run: RunAttempt<LoadAttempt>,
+        accepted: AcceptedRunSettings,
+    },
+    ActivateCreated {
+        operation: Uuid,
+        generation: SessionGeneration,
+        facts: Box<CreatedSessionFacts>,
+    },
     Publish(PublicationBatch),
     Reply(SessionOwnerReply),
     ReplyUnsaved(SessionOwnerReply),
@@ -654,8 +688,7 @@ pub(in crate::session_owner) struct PendingPorts {
     pub last_live_turn: Option<LastLiveTurn>,
     pub projection: super::owner_reducer::OwnerProjection,
     pub restore_dependents: BTreeMap<Uuid, RunAttempt<LoadAttempt>>,
-    pub create: Option<Uuid>,
-    pub adopting: bool,
+    pub create: Option<PendingCreate>,
     pub setup: Option<PreparedSetup>,
     pub route_ready: bool,
     pub latest_setting: BTreeMap<ProviderSettingKind, OwnerSetting>,
@@ -701,7 +734,6 @@ impl PendingPorts {
             projection: super::owner_reducer::OwnerProjection::default(),
             restore_dependents: BTreeMap::new(),
             create: None,
-            adopting: false,
             setup: None,
             route_ready: false,
             latest_setting: BTreeMap::new(),

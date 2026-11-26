@@ -6,10 +6,10 @@ use acp_client_runtime::session_owner_task::{OwnerCompletionPort, OwnerTaskError
 use provider_session_machines::{
     ProviderSettingKind, ProviderSettingsCatalog,
     harness_lifecycle::{
-        AUTO_PERMISSION_MODE, AcceptedRunSettings, ActivationSetup, CreateAttempt,
-        HarnessSessionId, LifecycleRefusal, LifecycleReply, OpenAttempt, OpenRequest, OpeningFact,
-        OpeningFailure, RestoreSettingRefusal, RestoredOpening, RunRetirement,
-        SessionCreatedSetupFact, SettingAttempt, owner_event_for_restore_setting,
+        AUTO_PERMISSION_MODE, AcceptedRunSettings, ActivationRefusal, ActivationSetup,
+        CreateAttempt, HarnessSessionId, LifecycleRefusal, LifecycleReply, OpenAttempt,
+        OpenRequest, OpeningFact, OpeningFailure, RestoreSettingRefusal, RestoredOpening,
+        RunRetirement, SessionCreatedSetupFact, SettingAttempt, owner_event_for_restore_setting,
     },
     session_lifecycle_machine::{LoadAttempt, RestoreVia},
     session_owner::{
@@ -120,31 +120,44 @@ impl SessionOwnerExecution {
         }
     }
 
-    pub(super) fn activate(&mut self, setup: ActivationSetup, accepted: AcceptedRunSettings) {
-        let generation = match setup {
-            ActivationSetup::Created { generation, .. } => {
-                self.routes.insert(
-                    generation,
-                    OwnerRun {
-                        cancel: CancellationToken::new(),
-                        router_auto_requested: accepted.router_auto_requested,
-                        approval: None,
-                    },
-                );
-                generation
-            }
-            ActivationSetup::Restored(run) => run.generation,
+    pub(crate) fn activate(
+        &mut self,
+        setup: ActivationSetup,
+        accepted: AcceptedRunSettings,
+    ) -> Result<(), ActivationRefusal> {
+        let (generation, cancel) = match setup {
+            ActivationSetup::Created { generation, .. } => (generation, CancellationToken::new()),
+            ActivationSetup::Restored(run) => (
+                run.generation,
+                self.routes
+                    .get(&run.generation)
+                    .ok_or(ActivationRefusal::OpeningNotHeld)?
+                    .cancel
+                    .clone(),
+            ),
         };
-        let Some(held) = self.routes.get(&generation) else {
-            return;
-        };
-        let cancel = held.cancel.clone();
+        let router_auto_requested = accepted.router_auto_requested;
         let events = self.observations.observed_at(
             LifecycleObservationScope::Activated(generation),
             cancel.clone(),
         );
-        self.binding
-            .activate(setup, accepted, events, Box::pin(cancel.cancelled_owned()));
+        self.binding.activate(
+            setup,
+            accepted,
+            events,
+            Box::pin(cancel.clone().cancelled_owned()),
+        )?;
+        if matches!(setup, ActivationSetup::Created { .. }) {
+            self.routes.insert(
+                generation,
+                OwnerRun {
+                    cancel,
+                    router_auto_requested,
+                    approval: None,
+                },
+            );
+        }
+        Ok(())
     }
 
     pub(crate) fn configure_created(
@@ -156,9 +169,6 @@ impl SessionOwnerExecution {
         self.binding.configure_created(attempt, reply, retired)
     }
 
-    pub(crate) fn prepare_created(&mut self, attempt: CreateAttempt) {
-        self.created = Some(attempt);
-    }
     pub(super) fn prepare_harness_settings(
         &self,
         owner: OwnerAddress,

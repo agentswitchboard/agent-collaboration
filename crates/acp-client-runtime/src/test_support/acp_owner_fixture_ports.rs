@@ -14,11 +14,11 @@ use crate::{
 };
 use futures_util::FutureExt as _;
 use provider_session_machines::session_owner::{
-    AuthorizedWork, CreateProgress, CreatedSessionFacts, DispatchAuthorization, DispatchResult,
-    EffectOutcome, ObservationCause, ObservedSetting, OwnerAddress, OwnerEffect, OwnerEvent,
-    OwnerInput, OwnerSetting, PreparationStage, PublicationBatch, PublicationFact,
-    PublicationResult, RestoreFailure, RestoreLoadReadback, RestorePreparation, RunAttempt,
-    SessionOwnerReply, SessionPublication, SessionStoreRequest, SessionStoreResult,
+    ActivationRefusal, AuthorizedWork, CreateProgress, CreatedSessionFacts, DispatchAuthorization,
+    DispatchResult, EffectOutcome, ObservationCause, ObservedSetting, OwnerAddress, OwnerEffect,
+    OwnerEvent, OwnerInput, OwnerSetting, PreparationStage, PublicationBatch, PublicationFact,
+    PublicationResult, RemoteEffect, RestoreFailure, RestoreLoadReadback, RestorePreparation,
+    RunAttempt, SessionOwnerReply, SessionPublication, SessionStoreRequest, SessionStoreResult,
     SessionWireRequest, SessionWireResult, SettingEvidence, SteerOrigin, TurnMembership,
     WireOutcome,
 };
@@ -27,7 +27,7 @@ use provider_session_machines::{
     session_lifecycle_machine::{LoadAttempt, RestoreVia},
     session_turn_machine::TurnId,
 };
-use session_event_model::{SessionEvent, SessionItem, SessionItemKind, SessionState};
+use session_event_model::{SessionEvent, SessionItem, SessionItemKind, SessionState, SkillView};
 use std::{
     collections::{BTreeMap, HashMap},
     sync::{Arc, Mutex},
@@ -56,6 +56,7 @@ pub(super) struct FixturePorts<P: AcpRequestPayloads> {
     stop: CancellationToken,
     created: Option<(OwnerOpenedSession, CreatedSessionFacts)>,
     restores: Arc<Mutex<HashMap<LoadAttempt, OpenedRestore>>>,
+    restored_skills: Option<(RunAttempt<LoadAttempt>, SkillView)>,
     readers: HashMap<SessionGeneration, CancellationToken>,
     active_approval: Option<(TurnId, OwnerApprovalLease<P>)>,
 }
@@ -82,6 +83,7 @@ impl<P: AcpRequestPayloads> FixturePorts<P> {
             stop,
             created,
             restores: Arc::default(),
+            restored_skills: None,
             readers: HashMap::new(),
             active_approval: None,
         }
@@ -100,9 +102,11 @@ impl<P: AcpRequestPayloads> FixturePorts<P> {
         generation: SessionGeneration,
         mut opened: OwnerOpenedSession,
         completions: &OwnerCompletionPort,
-    ) {
+    ) -> Result<(), ActivationRefusal> {
         let run = Self::transport_run(address, generation);
-        self.wire.activate_route(run);
+        if !self.wire.activate_route(run) {
+            return Err(ActivationRefusal::RouteUnavailable);
+        }
         opened.register_in_folder_scope(&self.wire, run);
         {
             let mut shared = lock(&self.shared);
@@ -128,6 +132,7 @@ impl<P: AcpRequestPayloads> FixturePorts<P> {
                     .await;
             }
         });
+        Ok(())
     }
 
     fn restore(
@@ -429,38 +434,13 @@ impl<P: AcpRequestPayloads> FixturePorts<P> {
         self.sink.publish_in(&self.id, run, event).map(|_| ())
     }
 
-    fn publish(
-        &mut self,
-        address: OwnerAddress,
-        batch: PublicationBatch,
-        completions: &OwnerCompletionPort,
-    ) -> OwnerEvent {
+    fn publish(&mut self, address: OwnerAddress, batch: PublicationBatch) -> OwnerEvent {
         let (id, facts) = match batch {
             PublicationBatch::Commit { id, facts } => (id, facts),
             PublicationBatch::Rebase { id, .. } => {
                 return OwnerEvent::Publication(PublicationResult::Applied(id));
             }
         };
-        let mut restored_skills = None;
-        for fact in &facts {
-            match fact {
-                PublicationFact::Live(SessionPublication::Created(run)) => {
-                    if let Some((opened, _)) = self.created.take() {
-                        self.wire
-                            .open_route(Self::transport_run(address, *run), self.id.clone());
-                        self.attach_reader(address, *run, opened, completions);
-                    }
-                }
-                PublicationFact::Live(SessionPublication::Activated { run, .. }) => {
-                    let opened = lock(&self.restores).remove(&run.attempt);
-                    if let Some(opened) = opened {
-                        restored_skills = opened.replay.skills;
-                        self.attach_reader(address, run.generation, opened.opened, completions);
-                    }
-                }
-                _ => {}
-            }
-        }
         for fact in &facts {
             if let PublicationFact::Settings {
                 run,
@@ -503,8 +483,12 @@ impl<P: AcpRequestPayloads> FixturePorts<P> {
                 .map(|_| ()),
             PublicationFact::Skills { view, .. } => self.sink.publish_skill_view(&self.id, view),
             PublicationFact::Live(fact) => {
-                if matches!(fact, SessionPublication::Activated { .. })
-                    && let Some(skills) = restored_skills.take()
+                if let SessionPublication::Activated { run, .. } = &fact
+                    && self
+                        .restored_skills
+                        .as_ref()
+                        .is_some_and(|(attempt, _)| attempt == run)
+                    && let Some((_, skills)) = self.restored_skills.take()
                 {
                     self.sink.publish_skill_view(&self.id, skills)?;
                 }
@@ -557,10 +541,27 @@ impl<P: AcpRequestPayloads> SessionOwnerPorts for FixturePorts<P> {
                     .created
                     .as_ref()
                     .ok_or(OwnerTaskError::ExecutorStopped)?;
-                Ok(Some(OwnerEvent::Create(CreateProgress::Adopted {
+                Ok(Some(OwnerEvent::Create(CreateProgress::Configured {
                     operation,
                     facts: Box::new(facts.clone()),
                 })))
+            }
+            OwnerEffect::ActivateCreated {
+                operation,
+                generation,
+                facts,
+            } => {
+                let (opened, _) = self.created.take().ok_or(OwnerTaskError::ExecutorStopped)?;
+                self.wire
+                    .open_route(Self::transport_run(address, generation), self.id.clone());
+                let progress = match self.attach_reader(address, generation, opened, completions) {
+                    Ok(()) => CreateProgress::Activated { operation, facts },
+                    Err(_) => CreateProgress::Failed {
+                        operation,
+                        remote: RemoteEffect::Applied,
+                    },
+                };
+                Ok(Some(OwnerEvent::Create(progress)))
             }
             OwnerEffect::Wire(SessionWireRequest::Restore { run, via }) => {
                 self.restore(address, run, via, completions)
@@ -664,6 +665,21 @@ impl<P: AcpRequestPayloads> SessionOwnerPorts for FixturePorts<P> {
                     observed: BTreeMap::new(),
                 })))
             }
+            OwnerEffect::ActivateRestored { run, .. } => {
+                let opened = lock(&self.restores).remove(&run.attempt);
+                let result = match opened {
+                    Some(opened) => self
+                        .attach_reader(address, run.generation, opened.opened, completions)
+                        .map(|()| {
+                            self.restored_skills = opened.replay.skills.map(|skills| (run, skills))
+                        }),
+                    None => Err(ActivationRefusal::OpeningNotHeld),
+                };
+                Ok(Some(OwnerEvent::Prepare(RestorePreparation::Activation {
+                    run,
+                    result,
+                })))
+            }
             OwnerEffect::Authorize {
                 authorization,
                 work,
@@ -728,7 +744,7 @@ impl<P: AcpRequestPayloads> SessionOwnerPorts for FixturePorts<P> {
                     .reopen_route(Self::transport_run(address, run.generation), run.attempt);
                 Ok(None)
             }
-            OwnerEffect::Publish(batch) => Ok(Some(self.publish(address, batch, completions))),
+            OwnerEffect::Publish(batch) => Ok(Some(self.publish(address, batch))),
             OwnerEffect::Reply(reply) | OwnerEffect::ReplyUnsaved(reply) => {
                 let operation = match &reply {
                     SessionOwnerReply::RestoreFinished(result) => result.attempt.attempt.0,

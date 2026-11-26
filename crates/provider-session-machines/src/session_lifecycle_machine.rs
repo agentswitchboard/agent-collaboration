@@ -232,7 +232,7 @@ const TRANSITIONS: &[Transition] = &[
 
 pub struct SessionLifecycleMachine;
 
-fn next_generation(last: SessionGeneration) -> SessionGeneration {
+pub(crate) fn next_generation(last: SessionGeneration) -> SessionGeneration {
     SessionGeneration::from_number(last.number().wrapping_add(1))
 }
 

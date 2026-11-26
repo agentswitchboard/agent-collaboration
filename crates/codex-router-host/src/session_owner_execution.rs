@@ -16,16 +16,16 @@ use lifecycle::lifecycle_settings;
 use provider_session_machines::{
     SessionGeneration,
     harness_lifecycle::{
-        ActivationSetup, ApprovalLease, ApprovalLeaseRefusalReason, CreateAttempt, ExactTurn, Held,
-        OpenAttempt, TransportRun, owner_event_for_close,
+        ActivationSetup, ApprovalLease, ApprovalLeaseRefusalReason, ExactTurn, Held, OpenAttempt,
+        TransportRun, owner_event_for_close,
     },
     session_owner::{
         AuthorizedWork, CancelDrainStart, CancelDrainWait, CancelReservationRefusal,
         DispatchAuthorization, DispatchResult, OwnerAddress, OwnerEffect, OwnerEvent,
         PreparationStage, PublicationBatch, PublicationFact, RefusedWorkMove, ReplyAdmission,
-        ReservedWorkReply, RestorePreparation, SessionOwnerReply, SessionPublication,
-        SessionWireRequest, SessionWireResult, SettingOffer, SteerIdlePolicy, SteerOrigin,
-        TurnMembership, WorkOfferRefusal, WriterState,
+        ReservedWorkReply, RestorePreparation, SessionOwnerReply, SessionWireRequest,
+        SessionWireResult, SettingOffer, SteerIdlePolicy, SteerOrigin, TurnMembership,
+        WorkOfferRefusal, WriterState,
     },
     session_setting_machine::SettingValueId,
 };
@@ -48,7 +48,6 @@ pub struct SessionOwnerExecution {
     calls: Arc<SessionOwnerCalls>,
     tasks: TaskTracker,
     routes: BTreeMap<SessionGeneration, OwnerRun>,
-    created: Option<CreateAttempt>,
     work_roots: crate::provider_work_roots::ProviderWorkRoots,
     #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
     work_observer: Option<Arc<dyn WorkObservationSink>>,
@@ -94,7 +93,6 @@ impl SessionOwnerExecution {
             tasks,
             work_roots,
             routes: BTreeMap::new(),
-            created: None,
             #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
             work_observer: None,
             #[cfg(any(test, feature = "test-support"))]
@@ -364,8 +362,20 @@ impl SessionOwnerPorts for SessionOwnerExecution {
                 let unavailable = self.binding.close(run, completion).is_err();
                 Ok(unavailable.then_some(OwnerEvent::Wire(SessionWireResult::CloseNotSent(run))))
             }
-            OwnerEffect::Wire(SessionWireRequest::Create { .. }) => {
-                Err(OwnerTaskError::ExecutorStopped)
+            OwnerEffect::Wire(SessionWireRequest::Create { .. })
+            | OwnerEffect::ActivateCreated { .. } => Err(OwnerTaskError::ExecutorStopped),
+            OwnerEffect::ActivateRestored { run, accepted } => {
+                let result = self.activate(
+                    ActivationSetup::Restored(run),
+                    lifecycle_settings(&accepted),
+                );
+                if let Err(reason) = result {
+                    tracing::debug!(?run, ?reason, "session harness refused activation");
+                }
+                Ok(Some(OwnerEvent::Prepare(RestorePreparation::Activation {
+                    run,
+                    result,
+                })))
             }
             OwnerEffect::PrepareRoute(run) => Ok(Some(OwnerEvent::Prepare(
                 if self.binding.opening_is_held(OpenAttempt::Restore(run)) == Held::Held {
@@ -443,39 +453,6 @@ impl SessionOwnerPorts for SessionOwnerExecution {
             }
             OwnerEffect::Publish(batch) => {
                 if let PublicationBatch::Commit { facts, .. } = &batch {
-                    for fact in facts {
-                        let setup = match fact {
-                            PublicationFact::Live(SessionPublication::Activated {
-                                run, ..
-                            }) => ActivationSetup::Restored(*run),
-                            PublicationFact::Live(SessionPublication::Created(generation)) => {
-                                let Some(attempt) = self.created.take() else {
-                                    continue;
-                                };
-                                ActivationSetup::Created {
-                                    attempt,
-                                    generation: *generation,
-                                }
-                            }
-                            _ => continue,
-                        };
-                        let generation = match setup {
-                            ActivationSetup::Created { generation, .. } => generation,
-                            ActivationSetup::Restored(run) => run.generation,
-                        };
-                        let accepted = facts
-                            .iter()
-                            .find_map(|fact| match fact {
-                                PublicationFact::Settings { run, accepted, .. }
-                                    if *run == generation =>
-                                {
-                                    accepted.as_ref()
-                                }
-                                _ => None,
-                            })
-                            .ok_or(OwnerTaskError::ExecutorStopped)?;
-                        self.activate(setup, lifecycle_settings(accepted));
-                    }
                     for fact in facts {
                         if let PublicationFact::Settings {
                             run,

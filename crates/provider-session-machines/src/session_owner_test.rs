@@ -150,7 +150,15 @@ fn finish_preparation(
         state,
         OwnerEvent::Prepare(RestorePreparation::RouteReady(run)),
     );
-    apply(state, host_ready(run))
+    let ready = apply(state, host_ready(run));
+    assert!(ready.iter().any(
+        |effect| matches!(effect, OwnerEffect::ActivateRestored { run: exact, .. } if *exact == run)
+    ));
+    apply(state, activated(run, Ok(())))
+}
+
+fn activated(run: RunAttempt<LoadAttempt>, result: Result<(), ActivationRefusal>) -> OwnerEvent {
+    OwnerEvent::Prepare(RestorePreparation::Activation { run, result })
 }
 
 fn restore_live(state: &mut SessionOwnerState, number: u64) -> RunAttempt<LoadAttempt> {

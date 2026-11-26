@@ -63,9 +63,15 @@ struct HeldCreate {
 }
 
 struct OpenedRun {
-    attempt: Option<LoadAttempt>,
+    attempt: OpenAttempt,
     stopped: CancellationToken,
-    held: Option<HeldRestore>,
+    phase: RunOpening,
+}
+
+enum RunOpening {
+    Opening,
+    Held(Box<HeldRestore>),
+    Active,
 }
 
 struct HeldRestore {
@@ -254,9 +260,9 @@ impl OwnerOpenings {
         attempts.runs.insert(
             run.generation,
             OpenedRun {
-                attempt: Some(run.attempt),
+                attempt: OpenAttempt::Restore(run),
                 stopped: stopped.clone(),
-                held: None,
+                phase: RunOpening::Opening,
             },
         );
         drop(attempts);
@@ -302,15 +308,17 @@ impl OwnerOpenings {
                 let reported_fallback = accepted_mode_fallback.clone().map(SettingValueId);
                 let mut attempts = lock(&attempts);
                 let Some(entry) = attempts.runs.get_mut(&run.generation).filter(|entry| {
-                    entry.attempt == Some(run.attempt) && !entry.stopped.is_cancelled()
+                    entry.attempt == OpenAttempt::Restore(run)
+                        && !entry.stopped.is_cancelled()
+                        && matches!(entry.phase, RunOpening::Opening)
                 }) else {
                     return Ok(None);
                 };
-                entry.held = Some(HeldRestore {
+                entry.phase = RunOpening::Held(Box::new(HeldRestore {
                     session,
                     accepted_mode_fallback,
                     skills,
-                });
+                }));
                 let opening = match via {
                     RestoreVia::Load => RestoredOpening::Loaded {
                         readback,
@@ -415,9 +423,13 @@ impl OwnerOpenings {
             OpenAttempt::Restore(run) => attempts
                 .runs
                 .get_mut(&run.generation)
-                .filter(|entry| entry.attempt == Some(run.attempt) && !entry.stopped.is_cancelled())
-                .and_then(|entry| entry.held.as_mut())
-                .map(|held| &mut held.session)
+                .filter(|entry| {
+                    entry.attempt == OpenAttempt::Restore(run) && !entry.stopped.is_cancelled()
+                })
+                .and_then(|entry| match &mut entry.phase {
+                    RunOpening::Held(held) => Some(&mut held.session),
+                    RunOpening::Opening | RunOpening::Active => None,
+                })
                 .ok_or(LifecycleRefusal::OpeningNotHeld)?,
         };
         session.accept_restore_catalogue(&ProviderSettingsCatalog::from_record(Arc::clone(
@@ -503,8 +515,11 @@ fn held_restore(
     attempts
         .runs
         .get(&restore.generation)
-        .filter(|run| run.attempt == Some(restore.attempt) && !run.stopped.is_cancelled())
-        .and_then(|run| run.held.as_ref())
+        .filter(|run| run.attempt == OpenAttempt::Restore(restore) && !run.stopped.is_cancelled())
+        .and_then(|run| match &run.phase {
+            RunOpening::Held(held) => Some(held.as_ref()),
+            RunOpening::Opening | RunOpening::Active => None,
+        })
 }
 
 fn opening_failure(error: ExternalProviderRuntimeError) -> OpeningFailure {

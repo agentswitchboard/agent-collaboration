@@ -72,10 +72,12 @@ impl CallbackRouter {
         self.routes.entry(run).or_default();
     }
 
-    pub(crate) fn activate(&mut self, run: TransportRun) {
-        if let Some(route) = self.routes.get_mut(&run) {
-            route.live = true;
-        }
+    pub(crate) fn activate(&mut self, run: TransportRun) -> bool {
+        let Some(route) = self.routes.get_mut(&run) else {
+            return false;
+        };
+        route.live = true;
+        true
     }
 
     pub(crate) fn current_turn(&self, run: TransportRun) -> Option<TurnId> {

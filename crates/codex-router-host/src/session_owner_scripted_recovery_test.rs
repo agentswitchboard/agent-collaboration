@@ -22,6 +22,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use switchboard_session_store::ProviderOperationStore;
 use tokio::sync::{mpsc, oneshot};
 
+#[path = "session_owner_scripted_activation_test.rs"]
+mod activation;
 #[path = "session_owner_scripted_competing_loss_test.rs"]
 mod loss;
 
@@ -32,6 +34,7 @@ struct ScriptedSession {
     observations: mpsc::UnboundedReceiver<ScriptObservation>,
     target: SessionRef,
     hub: Arc<ProviderSessionEventHub>,
+    preparation: Arc<crate::session_owner_preparation_fixture::PreparationFixture>,
 }
 
 impl ScriptedSession {
@@ -43,6 +46,8 @@ impl ScriptedSession {
             fixture.clock.clone(),
         ));
         let mut harness = None;
+        let preparation =
+            Arc::new(crate::session_owner_preparation_fixture::PreparationFixture::default());
         let door = Arc::new(SessionOwnerDoor::new(
             None,
             |tasks| {
@@ -55,7 +60,7 @@ impl ScriptedSession {
             fixture.store.clone(),
             hub.clone(),
             CancellationToken::new(),
-            Default::default(),
+            preparation.clone(),
         ));
         let (script, observations) = harness.expect("the production door constructed its harness");
         Self {
@@ -65,6 +70,7 @@ impl ScriptedSession {
             observations,
             target,
             hub,
+            preparation,
         }
     }
 
@@ -97,6 +103,15 @@ impl ScriptedSession {
     }
 
     async fn restore(&self, owner: &SessionOwnerAddress) {
+        let restored = self.restore_settlement(owner).await;
+        assert!(
+            matches!(&restored.reply, SessionOwnerReply::RestoreFinished(result) if matches!(result.disposition, RestoreDisposition::Restored { .. })),
+            "exact restore reply was {:?}",
+            restored.reply
+        );
+    }
+
+    async fn restore_settlement(&self, owner: &SessionOwnerAddress) -> OwnedSettlement {
         let load = record_operation(
             &self.fixture,
             &self.target,
@@ -112,15 +127,10 @@ impl ScriptedSession {
             .await
             .expect("read the retained session")
             .expect("saved configuration");
-        let restored = owner
+        owner
             .restore_explicit(load, RestoreVia::Load, Box::new(persisted))
             .await
-            .expect("the owner returns a restore result");
-        assert!(
-            matches!(&restored.reply, SessionOwnerReply::RestoreFinished(result) if matches!(result.disposition, RestoreDisposition::Restored { .. })),
-            "exact restore reply was {:?}",
-            restored.reply
-        );
+            .expect("the owner returns a restore result")
     }
 
     async fn input(&self, owner: &SessionOwnerAddress, turn: TurnId) -> OwnerInput {

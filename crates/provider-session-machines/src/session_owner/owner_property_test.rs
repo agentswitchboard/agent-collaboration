@@ -148,6 +148,19 @@ impl Mailbox {
             OwnerEffect::PrepareRoute(run) => self
                 .arrivals
                 .push(OwnerEvent::Prepare(RestorePreparation::RouteReady(run))),
+            OwnerEffect::ActivateRestored { run, .. } => self.arrivals.extend([
+                activated(run, Ok(())),
+                activated(run, Err(ActivationRefusal::OpeningNotHeld)),
+            ]),
+            OwnerEffect::ActivateCreated {
+                operation, facts, ..
+            } => self.arrivals.extend([
+                OwnerEvent::Create(CreateProgress::Activated { operation, facts }),
+                OwnerEvent::Create(CreateProgress::Failed {
+                    operation,
+                    remote: RemoteEffect::Applied,
+                }),
+            ]),
             OwnerEffect::SettingQueued { input, setting } => {
                 self.arrivals
                     .push(OwnerEvent::Command(SessionOwnerCommand::CancelSetting {
@@ -315,7 +328,7 @@ fn assert_live_commit(before: SessionLifecycle, after: SessionLifecycle, event: 
             };
             loading == generation
                 && matches!(event, OwnerEvent::Prepare(
-                RestorePreparation::HostReady { run, .. } | RestorePreparation::RouteReady(run)
+                RestorePreparation::Activation { run, result: Ok(()) }
             ) if *run == expected)
         }
         SessionLifecycle::Closing {
@@ -329,7 +342,8 @@ fn assert_live_commit(before: SessionLifecycle, after: SessionLifecycle, event: 
                 if *run == RunAttempt { generation, attempt })
         }
         SessionLifecycle::NotLoaded { last } => {
-            generation > last && matches!(event, OwnerEvent::Create(CreateProgress::Adopted { .. }))
+            generation > last
+                && matches!(event, OwnerEvent::Create(CreateProgress::Activated { .. }))
         }
         SessionLifecycle::Live { .. } | SessionLifecycle::Closing { .. } => false,
     };
@@ -350,7 +364,9 @@ fn pending(
             PendingRestore::Wire { run, .. } => OwnerDeadline::RestoreWire(run),
             PendingRestore::Mode { run, .. } => OwnerDeadline::RestoreMode(run),
             PendingRestore::FastOff { run, .. } => OwnerDeadline::RestoreFastOff(run),
-            PendingRestore::Preparing { run, .. } => OwnerDeadline::HostPrepare(run),
+            PendingRestore::Preparing { run, .. } | PendingRestore::Activating { run, .. } => {
+                OwnerDeadline::HostPrepare(run)
+            }
         });
     }
     if let SessionLifecycle::Closing {
@@ -424,7 +440,12 @@ fn pending(
             .map(OwnerDeadline::Publication),
     );
     waits.extend(state.ports.rebase.map(OwnerDeadline::Rebase));
-    waits.extend(state.ports.create.map(OwnerDeadline::Create));
+    waits.extend(
+        state
+            .ports
+            .create
+            .map(|pending| OwnerDeadline::Create(pending.operation())),
+    );
     waits.extend(
         state
             .ports
@@ -768,6 +789,7 @@ fn generated_orders_check_i1_i3_i7_and_i8(case: hegel::TestCase) {
         "I7 old incarnation changed the current attempt"
     );
     mailbox.deliver(OwnerEvent::Prepare(RestorePreparation::RouteReady(first)));
+    mailbox.deliver(activated(first, Ok(())));
     exercise_cancel_confirmation(mailbox.clone(), &case, first.generation);
     let setting = OwnerSetting {
         change: RunAttempt {

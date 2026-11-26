@@ -229,6 +229,12 @@ impl SessionOwnerPorts for ScenarioPorts {
                     observed: BTreeMap::new(),
                 }))
             }
+            OwnerEffect::ActivateRestored { run, .. } => {
+                Some(OwnerEvent::Prepare(RestorePreparation::Activation {
+                    run,
+                    result: Ok(()),
+                }))
+            }
             OwnerEffect::Publish(batch) => {
                 let id = match batch {
                     PublicationBatch::Commit { id, facts } => {

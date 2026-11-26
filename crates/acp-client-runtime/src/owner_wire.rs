@@ -306,8 +306,8 @@ impl OwnerAcpWire {
         Ok(result)
     }
 
-    pub fn activate_route(&self, run: TransportRun) {
-        self.transport.activate_route(run);
+    pub fn activate_route(&self, run: TransportRun) -> bool {
+        self.transport.activate_route(run)
     }
 
     #[must_use]
