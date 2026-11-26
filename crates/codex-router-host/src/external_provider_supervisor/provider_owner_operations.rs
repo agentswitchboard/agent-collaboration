@@ -273,6 +273,27 @@ pub(super) fn owner_failure(
         _ => None,
     };
     if let Some((kind, message)) = public {
+        #[cfg(feature = "runtime-test-support")]
+        if matches!(
+            kind,
+            ConversationOperationFailureKind::Busy | ConversationOperationFailureKind::NoActiveTurn
+        ) && let OwnerDoorError::Refused { snapshot, .. } = &error
+        {
+            use collaboration_runtime::test_support::native_busy_diagnostic::record;
+            record("producer", || "owner_refusal".into());
+            record("owner_refusal", || format!("{refusal:?}"));
+            record("owner_at_refusal", || {
+                format!(
+                    "{:?}",
+                    snapshot.as_ref().map(|owner| (
+                        owner.lifecycle,
+                        owner.turn,
+                        &owner.foreground,
+                        &owner.provider_started_turn,
+                    ))
+                )
+            });
+        }
         let message = message
             .map(str::to_owned)
             .or_else(|| derived_owner_refusal(&error))

@@ -1,4 +1,6 @@
 //! Test-only hooks; the normal Host and CLI dependency graphs do not enable these.
+pub mod native_busy_diagnostic;
+
 /// Test-only native boundary inputs and observations.
 pub mod native_message_dispatch {
     pub use crate::native_message_dispatch::{

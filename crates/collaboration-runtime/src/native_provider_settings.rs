@@ -184,7 +184,13 @@ pub(super) async fn apply_native_settings(
                     actor: actor.clone(),
                 })
                 .await
-                .map_err(command_error)?;
+                .map_err(|error| {
+                    #[cfg(feature = "test-support")]
+                    crate::test_support::native_busy_diagnostic::record_command_failure(
+                        &error, "settings",
+                    );
+                    command_error(error)
+                })?;
         }
     }
     Ok(())

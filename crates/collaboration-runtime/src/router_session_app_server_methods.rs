@@ -492,23 +492,40 @@ pub(super) async fn handle_app_server_turn_request(
             Ok(json!({}))
         }
         "turn/start" => {
-            let settings =
-                parse_native_settings(&params, catalog, NativeSettingsSource::TurnStart)?;
-            let content = parse_turn_input(&params, &session).await?;
-            apply_native_settings(settings, commands.as_ref(), &session, &actor).await?;
-            let handle = commands
-                .prompt(PromptSessionCommand {
-                    target: session,
-                    input_id,
-                    submission: content,
-                    actor,
-                })
-                .await
-                .map_err(command_error)?;
-            Ok(json!({"turn":{
-                "id":handle.turn_id,"items":[],"status":"inProgress",
-                "error":null,"startedAt":null,"completedAt":null,"durationMs":null
-            }}))
+            #[cfg(feature = "test-support")]
+            let diagnostic_input = input_id.clone();
+            let request = async {
+                let settings =
+                    parse_native_settings(&params, catalog, NativeSettingsSource::TurnStart)?;
+                let content = parse_turn_input(&params, &session).await?;
+                apply_native_settings(settings, commands.as_ref(), &session, &actor).await?;
+                let handle = commands
+                    .prompt(PromptSessionCommand {
+                        target: session,
+                        input_id,
+                        submission: content,
+                        actor,
+                    })
+                    .await
+                    .map_err(|error| {
+                        #[cfg(feature = "test-support")]
+                        crate::test_support::native_busy_diagnostic::record_command_failure(
+                            &error, "prompt",
+                        );
+                        command_error(error)
+                    })?;
+                Ok(json!({"turn":{
+                    "id":handle.turn_id,"items":[],"status":"inProgress",
+                    "error":null,"startedAt":null,"completedAt":null,"durationMs":null
+                }}))
+            };
+            #[cfg(feature = "test-support")]
+            let request = crate::test_support::native_busy_diagnostic::observe(
+                diagnostic_input,
+                request,
+                |result| matches!(result, Err(ThreadMethodError::Busy)),
+            );
+            request.await
         }
         "turn/steer" => {
             let expected_turn_id = params

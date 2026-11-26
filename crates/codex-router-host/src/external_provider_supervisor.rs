@@ -774,6 +774,9 @@ impl ExternalProviderSupervisor {
         F: std::future::Future<Output = Result<T, ConversationOperationFailure>> + Send + 'static,
     {
         let (reply, result) = tokio::sync::oneshot::channel();
+        #[cfg(feature = "runtime-test-support")]
+        let operation =
+            collaboration_runtime::test_support::native_busy_diagnostic::carry(operation);
         self.inner.operation_tasks.spawn(async move {
             let _ = reply.send(operation.await);
         });

@@ -197,13 +197,20 @@ pub(super) async fn apply(
                 rejection: SessionOwnerRejection::Refused(SessionOwnerRefusal::SettingsUnresolved),
                 ..
             } => SettingControlFailure::Unresolved(request.target.clone()),
-            other => failure(
-                ProviderSettingsFailureKind::Busy,
-                &request.target,
-                &super::provider_owner_operations::derived_owner_refusal(&other)
-                    .unwrap_or_else(|| other.to_string()),
-            )
-            .into(),
+            other => {
+                #[cfg(feature = "runtime-test-support")]
+                collaboration_runtime::test_support::native_busy_diagnostic::record(
+                    "producer",
+                    || "settings_owner_settle".into(),
+                );
+                failure(
+                    ProviderSettingsFailureKind::Busy,
+                    &request.target,
+                    &super::provider_owner_operations::derived_owner_refusal(&other)
+                        .unwrap_or_else(|| other.to_string()),
+                )
+                .into()
+            }
         })?;
     let remote = match applied.reply {
         SessionOwnerReply::SettingKept { .. } => {
@@ -467,6 +474,10 @@ fn plain_error(
     let (kind, message) = match error {
         // The session's answer names its state and the valid next steps (D1 M8).
         ExternalProviderRuntimeError::LocalBusy { answer } => {
+            #[cfg(feature = "runtime-test-support")]
+            collaboration_runtime::test_support::native_busy_diagnostic::record("producer", || {
+                "settings_runtime_local_busy".into()
+            });
             busy_answer = answer;
             (ProviderSettingsFailureKind::Busy, busy_answer.as_str())
         }

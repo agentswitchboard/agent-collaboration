@@ -323,6 +323,26 @@ async fn native_selected_refusal_is_correlated_before_any_send_and_valid_input_k
     Ok(())
 }
 
+#[test]
+fn diagnose_native_turn_start_busy_after_completion() -> Result<(), Box<dyn std::error::Error>> {
+    const SAMPLES: usize = 60;
+    for sample in 1..=SAMPLES {
+        // The original Tokio test creates and shuts down its own runtime and fixture.
+        let result = std::panic::catch_unwind(
+            native_selected_refusal_is_correlated_before_any_send_and_valid_input_keeps_exact_wire_content,
+        );
+        match result {
+            Ok(result) => result
+                .map_err(|error| format!("native skills sample {sample}/{SAMPLES}: {error}"))?,
+            Err(panic) => {
+                eprintln!("native skills sample {sample}/{SAMPLES} panicked");
+                std::panic::resume_unwind(panic);
+            }
+        }
+    }
+    Ok(())
+}
+
 #[tokio::test]
 #[expect(
     clippy::panic_in_result_fn,

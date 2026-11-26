@@ -189,6 +189,12 @@ pub(super) fn runtime_failure(
     target: Option<SessionRef>,
     error: ExternalProviderRuntimeError,
 ) -> ConversationOperationFailure {
+    #[cfg(feature = "runtime-test-support")]
+    if matches!(error, ExternalProviderRuntimeError::LocalBusy { .. }) {
+        collaboration_runtime::test_support::native_busy_diagnostic::record("producer", || {
+            "provider_runtime_local_busy".into()
+        });
+    }
     match error {
         ExternalProviderRuntimeError::HistoryReplayAdmissionFailed => failure(
             ConversationOperationFailureKind::Unavailable,

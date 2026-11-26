@@ -106,7 +106,25 @@ impl ExternalProviderSupervisor {
                     Some(&target),
                     AdmissionMode::deferred(class),
                 )
-                .await?;
+                .await
+                .inspect_err(|_failure| {
+                    #[cfg(feature = "runtime-test-support")]
+                    {
+                        use collaboration_runtime::test_support::native_busy_diagnostic::record;
+                        record("admission_class", || format!("{class:?}"));
+                        record("owner_sampled_for_admission", || {
+                            format!(
+                                "{:?}",
+                                snapshot.as_ref().map(|owner| (
+                                    owner.lifecycle,
+                                    owner.turn,
+                                    &owner.foreground,
+                                    &owner.provider_started_turn,
+                                ))
+                            )
+                        });
+                    }
+                })?;
             match prepared {
                 PreparedOperation::Existing(operation) => Ok(existing_submission(operation)),
                 PreparedOperation::Admitted { mut snapshot, live } => {

@@ -41,6 +41,12 @@ fn admission_expired(
     operation: &OperationId,
     target: Option<&SessionRef>,
 ) -> ConversationOperationFailure {
+    #[cfg(feature = "runtime-test-support")]
+    {
+        use collaboration_runtime::test_support::native_busy_diagnostic::record;
+        record("producer", || "admission_deadline".into());
+        record("admission_deadline", || "expired".into());
+    }
     failure(
         ConversationOperationFailureKind::Busy,
         ConversationOperationFailureStage::Admission,
@@ -269,6 +275,12 @@ impl ExternalProviderSupervisor {
             let Some(answer) = blocking.answer() else {
                 return unavailable_failure(request.operation.clone(), request.target.cloned());
             };
+            #[cfg(feature = "runtime-test-support")]
+            {
+                use collaboration_runtime::test_support::native_busy_diagnostic::record;
+                record("producer", || "operation_index_reservation".into());
+                record("reservation_blockers", || format!("{blocking:?}"));
+            }
             failure(
                 ConversationOperationFailureKind::Busy,
                 ConversationOperationFailureStage::Validation,

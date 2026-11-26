@@ -328,11 +328,31 @@ impl SessionCommandPort for HostSessionCommandPort {
             let target = protocol_session(&command.target)?;
             let actor = provider_actor(&command.actor)?;
             let input_id = command.input_id;
+            #[cfg(feature = "runtime-test-support")]
+            let diagnostic_target = target.clone();
             let _submitted = self
                 .delivery
                 .prompt_contents(target, actor, input_id.clone(), command.submission)
                 .await
-                .map_err(map_prompt_failure)?;
+                .map_err(|error| {
+                    let failure = map_prompt_failure(error);
+                    #[cfg(feature = "runtime-test-support")]
+                    if matches!(
+                        failure.classification().as_ref(),
+                        CommandFailure::Busy | CommandFailure::NoActiveTurn
+                    ) {
+                        use collaboration_runtime::test_support::native_busy_diagnostic::record;
+                        record("attachment_active_turn", || {
+                            format!(
+                                "{:?}",
+                                active_turn_id(&attachment)
+                                    .and_then(|turn| uuid::Uuid::parse_str(turn).ok())
+                            )
+                        });
+                        self.record_owner_on_native_busy(&diagnostic_target);
+                    }
+                    failure
+                })?;
             let turn_id = wait_for_turn_start(
                 self.clock.as_ref(),
                 self.hub.as_ref(),
@@ -619,10 +639,13 @@ impl SessionCommandPort for HostSessionCommandPort {
                     });
                 }
             };
+            let target = protocol_session(&command.target)?;
+            #[cfg(feature = "runtime-test-support")]
+            let diagnostic_target = target.clone();
             self.supervisor
                 .apply_setting_command(
                     ProviderSettingsSetRequest {
-                        target: protocol_session(&command.target)?,
+                        target,
                         actor: provider_actor(&command.actor)?,
                         setting,
                         value: command.value,
@@ -630,9 +653,36 @@ impl SessionCommandPort for HostSessionCommandPort {
                     command.intent,
                     command.expected_model,
                 )
-                .await?;
+                .await
+                .inspect_err(|_failure| {
+                    #[cfg(feature = "runtime-test-support")]
+                    if matches!(_failure, CommandFailure::Busy) {
+                        self.record_owner_on_native_busy(&diagnostic_target);
+                    }
+                })?;
             Ok(())
         })
+    }
+}
+
+#[cfg(feature = "runtime-test-support")]
+impl HostSessionCommandPort {
+    fn record_owner_on_native_busy(&self, target: &SessionRef) {
+        use collaboration_runtime::test_support::native_busy_diagnostic::record;
+        record("owner_after_failure", || {
+            format!(
+                "{:?}",
+                self.supervisor.owner_session_snapshot(target).map(|owner| (
+                    owner.lifecycle,
+                    owner.turn,
+                    owner.foreground,
+                    owner.provider_started_turn,
+                    owner
+                        .last_live_turn
+                        .map(|previous| (previous.turn, previous.input)),
+                ))
+            )
+        });
     }
 }
 

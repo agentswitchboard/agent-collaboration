@@ -372,6 +372,28 @@ impl LiveOperations {
         });
         let in_flight = self.admission_blockers(binding, request);
         if !unknown.is_empty() || !in_flight.is_empty() {
+            #[cfg(feature = "runtime-test-support")]
+            collaboration_runtime::test_support::native_busy_diagnostic::record(
+                "live_holders",
+                || {
+                    let holders: Vec<_> = in_flight
+                        .iter()
+                        .filter_map(|id| {
+                            let holder = self.operations.get(id)?;
+                            let lifecycle = holder.lifecycle.state();
+                            Some((
+                                id,
+                                holder.kind,
+                                holder.class,
+                                lifecycle.admission_record(),
+                                lifecycle.custody.clone(),
+                                lifecycle.lane_marked(),
+                            ))
+                        })
+                        .collect();
+                    format!("{holders:?}")
+                },
+            );
             return Err(AdmissionBlockers { unknown, in_flight });
         }
         self.operations
