@@ -1,5 +1,11 @@
 //! ACP frames submitted through the session owner's ordered writer.
 
+mod owner_opening_offers;
+pub(crate) use owner_opening_offers::RestoreOffer;
+#[cfg(any(test, feature = "test-observation"))]
+mod owner_opening_test_control;
+#[cfg(any(test, feature = "test-observation"))]
+pub use owner_opening_test_control::{OpeningPause, OpeningPausePoint};
 pub(crate) mod owner_restore_update_router;
 pub mod owner_session_open;
 pub mod owner_session_setting;
@@ -98,6 +104,9 @@ pub(crate) type AcpOwnerEvents = dyn HarnessOwnerEvents<ProviderAuthStatus>;
 
 pub struct OwnerAcpWire {
     transport: AcpTransport<AcpFrame>,
+    route_edits: Mutex<()>,
+    #[cfg(any(test, feature = "test-observation"))]
+    opening_test: owner_opening_test_control::OpeningTestControls,
     readers: Mutex<BTreeMap<TransportRun, mpsc::Sender<PromptTerminal>>>,
     restore_updates: Arc<crate::owner_restore_updates::RestoreUpdates>,
     cursor_plans: Arc<crate::provider_cursor_plan_items::CursorPlanItems>,
@@ -203,6 +212,9 @@ impl OwnerAcpWire {
         (
             Self {
                 transport,
+                route_edits: Mutex::default(),
+                #[cfg(any(test, feature = "test-observation"))]
+                opening_test: Default::default(),
                 readers: Mutex::default(),
                 restore_updates: restore_updates.clone(),
                 cursor_plans: Arc::default(),
@@ -270,6 +282,10 @@ impl OwnerAcpWire {
     }
 
     pub fn open_route(&self, run: TransportRun, session: String) {
+        let _route_edit = self
+            .route_edits
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.transport.open_route(run, session);
     }
 
@@ -315,7 +331,7 @@ impl OwnerAcpWire {
         setup: OwnerSessionOpenSetup,
     ) -> Result<
         (
-            crate::owner_restore_updates::OpeningInstance,
+            crate::owner_opening_instance::OpeningInstance,
             OwnerSessionOpenReceipt,
         ),
         TransportRefusal,
@@ -343,6 +359,12 @@ impl OwnerAcpWire {
         run: TransportRun,
         request: OpenRequest,
     ) -> Result<OwnerSessionOpenReceipt, TransportRefusal> {
+        let (frame, result) = self.prepare_open(request);
+        self.transport.enqueue_control(run, frame)?;
+        Ok(result)
+    }
+
+    fn prepare_open(&self, request: OpenRequest) -> (AcpFrame, OwnerSessionOpenReceipt) {
         let (respond, result) = oneshot::channel();
         #[cfg(feature = "test-observation")]
         let created_handoff_fault = if matches!(&request, OpenRequest::New(_)) {
@@ -353,16 +375,15 @@ impl OwnerAcpWire {
         } else {
             None
         };
-        self.transport.enqueue_control(
-            run,
+        (
             AcpFrame::Open(OpenFrame {
                 request,
                 respond,
                 #[cfg(feature = "test-observation")]
                 created_handoff_fault,
             }),
-        )?;
-        Ok(result)
+            result,
+        )
     }
 
     pub fn activate_route(&self, run: TransportRun) -> bool {
@@ -387,6 +408,11 @@ impl OwnerAcpWire {
     }
 
     pub fn apply_membership(&self, owner: OwnerIncarnation, change: TurnMembership) {
+        let _route_edit = matches!(change, TurnMembership::Retire(_)).then(|| {
+            self.route_edits
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        });
         self.transport.apply_membership(owner, change);
         if let TurnMembership::End { run, turn } = change {
             self.cursor_plans.forget_turn(
@@ -403,12 +429,16 @@ impl OwnerAcpWire {
                 generation,
             };
             self.restore_updates.retire(run);
-            self.cursor_plans.forget_run(run);
-            self.readers
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .remove(&run);
+            self.clear_run_resources(run);
         }
+    }
+
+    fn clear_run_resources(&self, run: TransportRun) {
+        self.cursor_plans.forget_run(run);
+        self.readers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&run);
     }
 
     pub(crate) fn cursor_plan_items(
@@ -577,33 +607,56 @@ impl OwnerAcpWire {
         plan: OwnerSettingWirePlan,
         completion: LifecycleReply<SettingFact>,
     ) -> Result<(), TransportRefusal> {
-        let correlation = match setting.kind {
-            provider_session_machines::ProviderSettingKind::Fast => {
-                SettingCorrelation::RestoreFastOff {
-                    run,
-                    setting,
-                    completion,
-                }
-            }
-            _ => SettingCorrelation::RestoreMode {
-                run,
-                setting,
-                completion,
-            },
-        };
-        let (message, setting) = plan.correlate(correlation);
         self.transport.enqueue_request(
             TransportRun {
                 incarnation: owner,
                 generation: run.generation,
             },
-            AcpFrame::Request {
-                message,
-                correlation: ResponseKind::Setting(Box::new(setting)),
-            },
+            restore_setting_frame(run, setting, plan, completion),
         )
     }
 
+    pub(crate) fn reapply_exact_setting(
+        &self,
+        route: &crate::acp_transport::LifecycleRoute,
+        run: RunAttempt<LoadAttempt>,
+        setting: OwnerSetting,
+        plan: OwnerSettingWirePlan,
+        completion: LifecycleReply<SettingFact>,
+    ) -> Result<(), TransportRefusal> {
+        self.transport
+            .enqueue_lifecycle_request(route, restore_setting_frame(run, setting, plan, completion))
+    }
+}
+
+fn restore_setting_frame(
+    run: RunAttempt<LoadAttempt>,
+    setting: OwnerSetting,
+    plan: OwnerSettingWirePlan,
+    completion: LifecycleReply<SettingFact>,
+) -> AcpFrame {
+    let correlation = match setting.kind {
+        provider_session_machines::ProviderSettingKind::Fast => {
+            SettingCorrelation::RestoreFastOff {
+                run,
+                setting,
+                completion,
+            }
+        }
+        _ => SettingCorrelation::RestoreMode {
+            run,
+            setting,
+            completion,
+        },
+    };
+    let (message, setting) = plan.correlate(correlation);
+    AcpFrame::Request {
+        message,
+        correlation: ResponseKind::Setting(Box::new(setting)),
+    }
+}
+
+impl OwnerAcpWire {
     pub(crate) fn take(
         &self,
         authorization: &DispatchAuthorization,
@@ -694,6 +747,13 @@ impl OwnerAcpWire {
 }
 
 impl OwnerAcpOutput {
+    #[cfg(test)]
+    pub(crate) fn hold_next_frame_for_test(&mut self) -> impl Send + use<> {
+        self.output
+            .try_recv()
+            .expect("the exact offered frame remains in custody")
+    }
+
     pub(crate) async fn run(
         mut self,
         connection: ConnectionTo<Agent>,

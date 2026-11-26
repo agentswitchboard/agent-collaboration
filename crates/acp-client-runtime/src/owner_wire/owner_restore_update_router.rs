@@ -31,6 +31,9 @@ impl HandleDispatchFrom<Agent> for OwnerRestoreUpdateRouter {
                 retry: false,
             });
         };
+        #[cfg(any(test, feature = "test-observation"))]
+        self.0
+            .at_opening_effect_for_test(super::OpeningPausePoint::CreatedUpdateIngress);
         Ok(match self.0.forward_restored_update(&session, message) {
             None => Handled::Yes,
             Some(message) => Handled::No {

@@ -46,6 +46,7 @@ pub(crate) enum OpenedSessionRoute {
 pub(crate) struct CreatedStream {
     pub(crate) opened: OwnerOpenedSession,
     pub(crate) target: OwnerStreamTarget,
+    pub(crate) start: oneshot::Receiver<()>,
     pub(crate) finished: oneshot::Sender<Result<(), ExternalProviderRuntimeError>>,
 }
 
@@ -95,6 +96,16 @@ impl OwnerOpenedSession {
             wire.register_folders(run, grant);
         }
     }
+
+    pub(crate) fn register_in_folder_opening(
+        &mut self,
+        wire: &crate::owner_wire::OwnerAcpWire,
+        route: &crate::acp_transport::LifecycleRoute,
+    ) {
+        if let Some(grant) = self.in_folder.take() {
+            wire.register_opening_folders(route, grant);
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -113,7 +124,7 @@ pub(crate) enum OpenRequest {
     Restore {
         provider_id: String,
         attempt: LoadAttempt,
-        tap: crate::owner_restore_updates::OpeningInstance,
+        tap: crate::owner_opening_instance::OpeningInstance,
         updates: mpsc::UnboundedReceiver<Dispatch>,
         via: RestoreVia,
         setup: OwnerSessionOpenSetup,
@@ -186,6 +197,7 @@ impl OpenFrame {
                             if let Some(CreatedStream {
                                 opened,
                                 target,
+                                start,
                                 finished,
                             }) = receive_created_handoff(
                                 activation,
@@ -193,6 +205,7 @@ impl OpenFrame {
                                 created_handoff_fault,
                             )
                             .await
+                                && start.await.is_ok()
                             {
                                 let _owner_retired =
                                     finished.send(opened.read_sdk_stream(&mut sdk, target).await);

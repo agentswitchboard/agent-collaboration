@@ -56,6 +56,7 @@ mod in_folder_allowance;
 mod interaction_port;
 pub mod owner_acp_binding;
 mod owner_callback_routing;
+mod owner_opening_instance;
 mod owner_restore_updates;
 pub mod owner_session_creation;
 mod owner_session_replay;

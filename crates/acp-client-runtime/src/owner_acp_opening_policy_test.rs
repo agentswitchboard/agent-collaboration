@@ -24,12 +24,15 @@ fn owner_moves(phase: Phase) -> &'static [Move] {
         | Phase::AwaitingCreate
         | Phase::AwaitingRestore
         | Phase::ConfiguringCreate
+        | Phase::StartingReader
         | Phase::CapturingReplay => &[Move::WaitForOpening],
         Phase::HeldCreate | Phase::HeldRestore => &[Move::ContinueHeldOpening],
         Phase::ConfiguredCreate | Phase::PreparedRestore => &[Move::ActivateOpening],
         Phase::Active => &[Move::KeepActiveRun, Move::CloseActiveRun, Move::Retire],
-        Phase::ClosingRestore | Phase::ClosingLive => &[Move::WaitForClose],
+        Phase::OfferingClose | Phase::ClosingRestore | Phase::ClosingLive => &[Move::WaitForClose],
         Phase::CloseRefusedLive => &[Move::AdmitAgain, Move::Retire],
+        Phase::RouteLost => &[Move::Retire],
+        Phase::StoppedAwaitingReply => &[Move::StopOwner],
         Phase::RetiredAwaitingReply | Phase::Terminal => &[],
     }
 }
@@ -47,6 +50,7 @@ fn event_for(phase: Phase, action: Move) -> Event {
         Move::WaitForClose => Event::WaitClose,
         Move::AdmitAgain => Event::AdmitAgain,
         Move::Retire => Event::Retire,
+        Move::StopOwner => Event::StopOnWriterLoss,
         other => panic!("unexpected phase guidance: {other:?} for {phase:?}"),
     }
 }

@@ -3,6 +3,7 @@
 use crate::callback_router::CallbackRouter;
 pub use crate::callback_router::{CallbackKind, CallbackResolution};
 use crate::in_folder_allowance::{InFolderGrant, InFolderPermission};
+use crate::owner_opening_instance::OpeningOffer;
 pub use crate::transport_run::TransportRun;
 use crate::transport_run::authorization_run;
 use agent_client_protocol::schema::v1::PermissionOptionId;
@@ -19,9 +20,13 @@ use provider_session_machines::{
 use std::{
     collections::{BTreeMap, BTreeSet},
     num::NonZeroUsize,
-    sync::{Mutex, MutexGuard},
+    sync::{
+        Arc, Mutex, MutexGuard,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 pub use switchboard_harness_contracts::SlotEvidence;
 use switchboard_harness_contracts::{HandOverRefusal, InputId, OwnerEvidence, OwnerInputEvidence};
@@ -82,6 +87,68 @@ struct ConnectionRoute {
     closing: Option<CloseAttempt>,
     folders: Option<InFolderGrant>,
     settings: Option<AcceptedRunSettings>,
+    lifecycle: Option<LifecycleRoute>,
+}
+
+#[derive(Clone)]
+pub(crate) struct LifecycleRoute {
+    pub(crate) run: TransportRun,
+    lifetime: Arc<RouteLifetime>,
+}
+
+struct RouteLifetime {
+    removed: AtomicBool,
+    notify_removed: CancellationToken,
+}
+
+impl LifecycleRoute {
+    pub(crate) fn new(run: TransportRun) -> Self {
+        Self {
+            run,
+            lifetime: Arc::new(RouteLifetime {
+                removed: AtomicBool::new(false),
+                notify_removed: CancellationToken::new(),
+            }),
+        }
+    }
+
+    pub(crate) fn is_removed(&self) -> bool {
+        self.lifetime.removed.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn mark_removed(&self) {
+        self.lifetime.removed.store(true, Ordering::Release);
+    }
+
+    pub(crate) async fn removed(&self) {
+        self.lifetime.notify_removed.cancelled().await;
+    }
+
+    pub(crate) fn notify_removed(&self) {
+        self.lifetime.notify_removed.cancel();
+    }
+
+    pub(crate) fn is_same_as(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.lifetime, &other.lifetime)
+    }
+}
+
+impl ConnectionRoute {
+    fn new(session: String, lifecycle: Option<LifecycleRoute>) -> Self {
+        Self {
+            session,
+            closing: None,
+            folders: None,
+            settings: None,
+            lifecycle,
+        }
+    }
+
+    fn names(&self, route: &LifecycleRoute) -> bool {
+        self.lifecycle
+            .as_ref()
+            .is_some_and(|current| current.is_same_as(route))
+    }
 }
 
 enum AuthorizationSlot<Frame> {
@@ -121,10 +188,13 @@ struct TransportState<Frame> {
 
 impl<Frame> TransportState<Frame> {
     fn route_for_session(&self, session: &str) -> Option<TransportRun> {
-        let mut matches = self
-            .routes
-            .iter()
-            .filter(|(_, route)| route.session == session);
+        let mut matches = self.routes.iter().filter(|(_, route)| {
+            route.session == session
+                && !route
+                    .lifecycle
+                    .as_ref()
+                    .is_some_and(LifecycleRoute::is_removed)
+        });
         let (run, _) = matches.next()?;
         matches.next().is_none().then_some(*run)
     }
@@ -173,14 +243,16 @@ impl<Frame> AcpTransport<Frame> {
         self.ordered.is_closed()
     }
 
+    pub(crate) async fn writer_stopped(&self) {
+        self.ordered.closed().await;
+    }
+
     pub fn open_route(&self, run: TransportRun, session: String) {
         let mut state = self.state();
-        state.routes.entry(run).or_insert(ConnectionRoute {
-            session,
-            closing: None,
-            folders: None,
-            settings: None,
-        });
+        state
+            .routes
+            .entry(run)
+            .or_insert_with(|| ConnectionRoute::new(session, None));
         state.callbacks.open(run);
     }
 
@@ -191,6 +263,89 @@ impl<Frame> AcpTransport<Frame> {
             .get(&run)
             .is_some_and(|route| route.closing.is_none())
             && state.callbacks.activate(run)
+    }
+
+    pub(crate) fn activate_lifecycle_route(&self, route: &LifecycleRoute) -> bool {
+        let mut state = self.state();
+        !route.is_removed()
+            && state
+                .routes
+                .get(&route.run)
+                .is_some_and(|current| current.names(route) && current.closing.is_none())
+            && state.callbacks.activate(route.run)
+    }
+
+    pub(crate) fn has_lifecycle_route(&self, route: &LifecycleRoute) -> bool {
+        !route.is_removed()
+            && self
+                .state()
+                .routes
+                .get(&route.run)
+                .is_some_and(|current| current.names(route))
+    }
+
+    pub(crate) fn install_lifecycle_folders(&self, route: &LifecycleRoute, folders: InFolderGrant) {
+        if let Some(current) = self.state().routes.get_mut(&route.run)
+            && !route.is_removed()
+            && current.names(route)
+        {
+            current.folders = Some(folders);
+        }
+    }
+
+    pub(crate) fn install_lifecycle_route(
+        &self,
+        route: &LifecycleRoute,
+        session: String,
+    ) -> Result<bool, TransportRefusal> {
+        let previous = {
+            let mut state = self.state();
+            if route.is_removed()
+                || state.routes.get(&route.run).is_some_and(|current| {
+                    !current
+                        .lifecycle
+                        .as_ref()
+                        .is_some_and(LifecycleRoute::is_removed)
+                })
+            {
+                return Err(TransportRefusal::RouteUnavailable);
+            }
+            let previous = state.routes.insert(
+                route.run,
+                ConnectionRoute::new(session, Some(route.clone())),
+            );
+            if let Some(previous) = &previous {
+                state.callbacks.retire(&previous.session, route.run);
+            }
+            state.callbacks.open(route.run);
+            previous
+        };
+        let replaced = previous.is_some();
+        if let Some(previous) = previous.and_then(|previous| previous.lifecycle) {
+            previous.notify_removed();
+        }
+        Ok(replaced)
+    }
+
+    pub(crate) fn retire_lifecycle_route(&self, route: &LifecycleRoute) -> bool {
+        let retired = {
+            let mut state = self.state();
+            if !state
+                .routes
+                .get(&route.run)
+                .is_some_and(|current| current.names(route))
+            {
+                return false;
+            }
+            let retired = state.routes.remove(&route.run);
+            if let Some(retired) = &retired {
+                route.mark_removed();
+                state.callbacks.retire(&retired.session, route.run);
+            }
+            retired
+        };
+        route.notify_removed();
+        retired.is_some()
     }
 
     #[must_use]
@@ -303,6 +458,7 @@ impl<Frame> AcpTransport<Frame> {
 
     pub fn apply_membership(&self, incarnation: OwnerIncarnation, change: TurnMembership) {
         let mut state = self.state();
+        let mut retired = None;
         match change {
             TurnMembership::Provisional { run, turn } => {
                 state.callbacks.begin_turn(
@@ -347,8 +503,16 @@ impl<Frame> AcpTransport<Frame> {
                 };
                 if let Some(route) = state.routes.remove(&run) {
                     state.callbacks.retire(&route.session, run);
+                    if let Some(lifecycle) = &route.lifecycle {
+                        lifecycle.mark_removed();
+                    }
+                    retired = Some(route);
                 }
             }
+        }
+        drop(state);
+        if let Some(route) = retired.and_then(|route| route.lifecycle) {
+            route.notify_removed();
         }
     }
 
@@ -629,6 +793,93 @@ impl<Frame> AcpTransport<Frame> {
     ) -> Result<(), TransportRefusal> {
         let _ordered_with_authorizations = self.state();
         self.enqueue(run, frame)
+    }
+
+    pub(crate) fn offer_lifecycle_open(
+        &self,
+        run: TransportRun,
+        route: Option<&LifecycleRoute>,
+        offer: &OpeningOffer,
+        frame: Frame,
+    ) -> Result<(), TransportRefusal> {
+        let state = self.state();
+        if let Some(route) = route
+            && (route.is_removed()
+                || !state
+                    .routes
+                    .get(&run)
+                    .is_some_and(|current| current.names(route)))
+        {
+            return Err(TransportRefusal::RouteUnavailable);
+        }
+        self.enqueue_opening_claim(run, offer, frame)
+    }
+
+    pub(crate) fn offer_lifecycle_close(
+        &self,
+        route: &LifecycleRoute,
+        attempt: CloseAttempt,
+        offer: &OpeningOffer,
+        frame: Frame,
+    ) -> Result<(), TransportRefusal> {
+        let mut state = self.state();
+        let current = state
+            .routes
+            .get_mut(&route.run)
+            .filter(|current| !route.is_removed() && current.names(route))
+            .ok_or(TransportRefusal::RouteUnavailable)?;
+        if current.closing.is_some() {
+            return Err(TransportRefusal::Closing);
+        }
+        self.enqueue_opening_claim(route.run, offer, frame)?;
+        current.closing = Some(attempt);
+        Ok(())
+    }
+
+    pub(crate) fn enqueue_lifecycle_request(
+        &self,
+        route: &LifecycleRoute,
+        frame: Frame,
+    ) -> Result<(), TransportRefusal> {
+        let state = self.state();
+        let current = state
+            .routes
+            .get(&route.run)
+            .filter(|current| !route.is_removed() && current.names(route))
+            .ok_or(TransportRefusal::RouteUnavailable)?;
+        if current.closing.is_some() {
+            return Err(TransportRefusal::Closing);
+        }
+        self.enqueue(route.run, frame)
+    }
+
+    pub(crate) fn reopen_lifecycle_route(
+        &self,
+        route: &LifecycleRoute,
+        attempt: CloseAttempt,
+    ) -> bool {
+        let mut state = self.state();
+        let Some(entry) = state.routes.get_mut(&route.run).filter(|entry| {
+            !route.is_removed() && entry.names(route) && entry.closing == Some(attempt)
+        }) else {
+            return false;
+        };
+        entry.closing = None;
+        true
+    }
+
+    fn enqueue_opening_claim(
+        &self,
+        run: TransportRun,
+        offer: &OpeningOffer,
+        frame: Frame,
+    ) -> Result<(), TransportRefusal> {
+        let permit = self.ordered.try_reserve().map_err(writer_refusal)?;
+        if !offer.take() {
+            return Err(TransportRefusal::AuthorizationMismatch);
+        }
+        permit.send(OrderedOutput { run, frame });
+        Ok(())
     }
 
     pub fn enqueue_close(

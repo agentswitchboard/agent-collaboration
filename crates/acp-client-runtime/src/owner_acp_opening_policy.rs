@@ -35,11 +35,15 @@ tagged_enum!(OpeningPhase,
     CapturingReplay => "capturing_replay",
     HeldRestore => "held_restore",
     PreparedRestore => "prepared_restore",
+    StartingReader => "starting_reader",
     Active => "active",
+    OfferingClose => "offering_close",
     ClosingRestore => "closing_restore",
     ClosingLive => "closing_live",
     CloseRefusedLive => "close_refused_live",
     RetiredAwaitingReply => "retired_awaiting_reply",
+    RouteLost => "route_lost",
+    StoppedAwaitingReply => "stopped_awaiting_reply",
     Terminal => "terminal",
 );
 
@@ -71,20 +75,34 @@ tagged_enum!(OpeningEvent,
     AcceptSettings => "accept_settings",
     AcceptCreatedSettings => "accept_created_settings",
     Activate => "activate",
+    ReaderAccepted => "reader_accepted",
     ActivationFailed => "activation_failed",
     CloseAsked => "close_asked",
+    CloseAcceptedRestore => "close_accepted_restore",
+    CloseAcceptedLive => "close_accepted_live",
+    DeferRestore => "defer_restore",
+    CloseUnsentAwaiting => "close_unsent_awaiting",
+    CloseUnsentReplay => "close_unsent_replay",
+    CloseUnsentHeld => "close_unsent_held",
+    CloseUnsentPrepared => "close_unsent_prepared",
+    CloseUnsentActive => "close_unsent_active",
     CloseConfirmed => "close_confirmed",
     CloseRefused => "close_refused",
     CloseUnknown => "close_unknown",
     AdmitAgain => "admit_again",
     Retire => "retire",
+    RouteRemoved => "route_removed",
+    FinishOnStoppedWriter => "finish_on_stopped_writer",
     LateOpenReply => "late_open_reply",
     WorkerExited => "worker_exited",
     WriterStopped => "writer_stopped",
+    WriterStoppedAfterOffer => "writer_stopped_after_offer",
     ConnectionRetired => "connection_retired",
     WaitOpening => "wait_opening",
     WaitClose => "wait_close",
     KeepActive => "keep_active",
+    ReportRouteLost => "report_route_lost",
+    StopOnWriterLoss => "stop_on_writer_loss",
 );
 
 impl EventTag for OpeningEvent {
@@ -159,33 +177,37 @@ impl StateMachine for OpeningPolicy {
         ConfiguringCreate + Retire => Terminal;
         ConfiguringCreate + WorkerExited => Terminal;
         ConfiguringCreate + WaitOpening => ConfiguringCreate;
-        ConfiguredCreate + Activate => Active;
+        ConfiguredCreate + Activate => StartingReader;
         ConfiguredCreate + AcceptCreatedSettings => ConfiguredCreate;
         ConfiguredCreate + ActivationFailed => Terminal;
         ConfiguredCreate + Retire => Terminal;
         AwaitingRestore + RestoreLoadReply => CapturingReplay;
         AwaitingRestore + RestoreResumeReply => HeldRestore;
         AwaitingRestore + OpenFailed => Terminal;
-        AwaitingRestore + CloseAsked => ClosingRestore;
+        AwaitingRestore + CloseAsked => OfferingClose;
         AwaitingRestore + Retire => RetiredAwaitingReply;
         AwaitingRestore + WorkerExited => RetiredAwaitingReply;
         AwaitingRestore + WaitOpening => AwaitingRestore;
         CapturingReplay + ReplayAdmitted => HeldRestore;
         CapturingReplay + OpenFailed => Terminal;
-        CapturingReplay + CloseAsked => ClosingRestore;
+        CapturingReplay + CloseAsked => OfferingClose;
         CapturingReplay + Retire => Terminal;
         CapturingReplay + WorkerExited => Terminal;
         CapturingReplay + WaitOpening => CapturingReplay;
         HeldRestore + PutSettingBack => HeldRestore;
         HeldRestore + AcceptSettings => PreparedRestore;
-        HeldRestore + CloseAsked => ClosingRestore;
+        HeldRestore + CloseAsked => OfferingClose;
         HeldRestore + Retire => Terminal;
-        PreparedRestore + Activate => Active;
+        PreparedRestore + Activate => StartingReader;
         PreparedRestore + ActivationFailed => Terminal;
-        PreparedRestore + CloseAsked => ClosingRestore;
+        PreparedRestore + CloseAsked => OfferingClose;
         PreparedRestore + Retire => Terminal;
         Active + KeepActive => Active;
-        Active + CloseAsked => ClosingLive;
+        StartingReader + ReaderAccepted => Active;
+        StartingReader + ActivationFailed => Terminal;
+        StartingReader + Retire => Terminal;
+        StartingReader + WaitOpening => StartingReader;
+        Active + CloseAsked => OfferingClose;
         Active + Retire => Terminal;
         ClosingLive + CloseConfirmed => Terminal;
         ClosingLive + CloseRefused => CloseRefusedLive;
@@ -198,6 +220,16 @@ impl StateMachine for OpeningPolicy {
         ClosingRestore + CloseUnknown => Terminal;
         ClosingRestore + WaitClose => ClosingRestore;
         ClosingRestore + Retire => RetiredAwaitingReply;
+        OfferingClose + CloseAcceptedRestore => ClosingRestore;
+        OfferingClose + CloseAcceptedLive => ClosingLive;
+        OfferingClose + DeferRestore => OfferingClose;
+        OfferingClose + CloseUnsentAwaiting => AwaitingRestore;
+        OfferingClose + CloseUnsentReplay => CapturingReplay;
+        OfferingClose + CloseUnsentHeld => HeldRestore;
+        OfferingClose + CloseUnsentPrepared => PreparedRestore;
+        OfferingClose + CloseUnsentActive => Active;
+        OfferingClose + Retire => Terminal;
+        OfferingClose + WaitClose => OfferingClose;
         CloseRefusedLive + AdmitAgain => Active;
         CloseRefusedLive + Retire => Terminal;
         RetiredAwaitingReply + LateOpenReply => Terminal;
@@ -205,6 +237,8 @@ impl StateMachine for OpeningPolicy {
         RetiredAwaitingReply + WriterStopped => RetiredAwaitingReply;
         QueuedCreate + WriterStopped => Terminal;
         QueuedRestore + WriterStopped => Terminal;
+        QueuedCreate + WriterStoppedAfterOffer => StoppedAwaitingReply;
+        QueuedRestore + WriterStoppedAfterOffer => StoppedAwaitingReply;
         QueuedCreate + ConnectionRetired => Terminal;
         QueuedRestore + ConnectionRetired => Terminal;
         AwaitingCreate + ConnectionRetired => Terminal;
@@ -219,6 +253,46 @@ impl StateMachine for OpeningPolicy {
         ClosingRestore + ConnectionRetired => Terminal;
         ClosingLive + ConnectionRetired => Terminal;
         CloseRefusedLive + ConnectionRetired => Terminal;
+        StartingReader + ConnectionRetired => Terminal;
+        OfferingClose + ConnectionRetired => Terminal;
+        RouteLost + ConnectionRetired => Terminal;
+        StoppedAwaitingReply + ConnectionRetired => Terminal;
+        AwaitingRestore + RouteRemoved => RouteLost;
+        CapturingReplay + RouteRemoved => RouteLost;
+        HeldRestore + RouteRemoved => RouteLost;
+        PreparedRestore + RouteRemoved => RouteLost;
+        StartingReader + RouteRemoved => RouteLost;
+        Active + RouteRemoved => RouteLost;
+        OfferingClose + RouteRemoved => RouteLost;
+        QueuedRestore + RouteRemoved => RouteLost;
+        ClosingRestore + RouteRemoved => RouteLost;
+        ClosingLive + RouteRemoved => RouteLost;
+        CloseRefusedLive + RouteRemoved => RouteLost;
+        RouteLost + CloseConfirmed => Terminal;
+        RouteLost + CloseRefused => Terminal;
+        RouteLost + CloseUnknown => Terminal;
+        RouteLost + Retire => Terminal;
+        RouteLost + ReportRouteLost => RouteLost;
+        AwaitingCreate + WriterStopped => StoppedAwaitingReply;
+        AwaitingRestore + WriterStopped => StoppedAwaitingReply;
+        HeldCreate + WriterStopped => Terminal;
+        ConfiguringCreate + WriterStopped => StoppedAwaitingReply;
+        ConfiguredCreate + WriterStopped => Terminal;
+        CapturingReplay + WriterStopped => Terminal;
+        HeldRestore + WriterStopped => Terminal;
+        PreparedRestore + WriterStopped => Terminal;
+        StartingReader + WriterStopped => Terminal;
+        Active + WriterStopped => Terminal;
+        OfferingClose + WriterStopped => Terminal;
+        OfferingClose + WriterStoppedAfterOffer => StoppedAwaitingReply;
+        ClosingRestore + WriterStopped => StoppedAwaitingReply;
+        ClosingLive + WriterStopped => StoppedAwaitingReply;
+        CloseRefusedLive + WriterStopped => Terminal;
+        RouteLost + WriterStopped => StoppedAwaitingReply;
+        StoppedAwaitingReply + FinishOnStoppedWriter => Terminal;
+        StoppedAwaitingReply + WriterAccepted => StoppedAwaitingReply;
+        StoppedAwaitingReply + Retire => Terminal;
+        StoppedAwaitingReply + StopOnWriterLoss => StoppedAwaitingReply;
     }
 }
 
@@ -256,6 +330,10 @@ impl OpeningPhase {
             LifecycleRefusal::RouteClosing
         } else if self.accepts(Event::AdmitAgain) && self.accepts(Event::Retire) {
             LifecycleRefusal::CloseAlreadyRefused
+        } else if self.accepts(Event::ReportRouteLost) && self.accepts(Event::Retire) {
+            LifecycleRefusal::BoundRouteUnavailable
+        } else if self.accepts(Event::StopOnWriterLoss) {
+            LifecycleRefusal::Writer(WriterState::Stopped)
         } else if [Event::KeepActive, Event::CloseAsked, Event::Retire]
             .into_iter()
             .all(|event| self.accepts(event))

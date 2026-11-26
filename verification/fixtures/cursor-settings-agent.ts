@@ -161,6 +161,7 @@ async function serveSharedSettings(peer: {
 //   malformed-saved-update and opaque-saved-update: insert one such update between them.
 //   reader-projection-error: after the first load, wait for .release-reader-error
 //     and send one live update that exceeds the projection limit.
+//   hold-created-update: send a created-session update on .release-created-update.
 //   fast-on-only: the fast catalogue reads on and advertises no off value.
 const reactiveBehaviourNames = [
   "boolean-fast",
@@ -186,6 +187,7 @@ const reactiveBehaviourNames = [
   "malformed-saved-update",
   "opaque-saved-update",
   "reader-projection-error",
+  "hold-created-update",
   "fast-on-only",
 ] as const;
 type ReactiveBehaviour = (typeof reactiveBehaviourNames)[number];
@@ -243,6 +245,7 @@ interface ReactivePeer {
   readonly behaviours: ReadonlySet<ReactiveBehaviour>;
   /** The file whose appearance ends a held first prompt's turn. */
   readonly releasePath: string;
+  readonly sendCreatedUpdate: (sessionId: string) => void;
   /** The file whose appearance ends the agent (exit-on-stop-file). */
   readonly stopPath: string;
   readonly readRequest: () => Promise<Record<string, unknown> | undefined>;
@@ -514,6 +517,7 @@ async function serveReactiveSettings(peer: ReactivePeer): Promise<void> {
           sessionId,
           configOptions: reactiveOptions(session, peer.behaviours, true),
         });
+        if (peer.behaviours.has("hold-created-update")) peer.sendCreatedUpdate(sessionId);
         break;
       }
       case "session/load":
@@ -631,6 +635,21 @@ function reactivePeer(
     behaviours: reactiveBehaviours(process.argv.slice(4)),
     releasePath: `${requireArgument(3)}.release`,
     stopPath: `${requireArgument(3)}.stop`,
+    sendCreatedUpdate: (sessionId: string): void => {
+      void fileAppears(`${requireArgument(3)}.release-created-update`).then((): void => {
+        io.send({
+          jsonrpc: "2.0",
+          method: "session/update",
+          params: {
+            sessionId,
+            update: {
+              sessionUpdate: "current_mode_update",
+              currentModeId: "ask",
+            },
+          },
+        });
+      });
+    },
     readRequest,
     reply,
     refuse: (request: Record<string, unknown>, message: string): void => {

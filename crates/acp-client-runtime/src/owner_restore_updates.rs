@@ -1,22 +1,13 @@
 //! Route untagged ACP updates to the current restore's own stream.
 
-use crate::acp_transport::TransportRun;
+use crate::{acp_transport::TransportRun, owner_opening_instance::OpeningInstance};
 use agent_client_protocol::Dispatch;
 use session_event_model::session_profile_codec::STATE_METHOD;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Mutex, PoisonError};
 use tokio::sync::mpsc;
 
 #[derive(Default)]
 pub(crate) struct RestoreUpdates(Mutex<Vec<RestoreUpdateTap>>);
-
-#[derive(Clone, Default)]
-pub(crate) struct OpeningInstance(Arc<()>);
-
-impl OpeningInstance {
-    pub(crate) fn is_same_as(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
-    }
-}
 
 struct RestoreUpdateTap {
     run: TransportRun,
@@ -32,8 +23,18 @@ impl RestoreUpdates {
         run: TransportRun,
         session: String,
     ) -> (OpeningInstance, mpsc::UnboundedReceiver<Dispatch>) {
-        let (send, receive) = mpsc::unbounded_channel();
         let stamp = OpeningInstance::default();
+        let receive = self.open_instance(run, session, &stamp);
+        (stamp, receive)
+    }
+
+    pub(crate) fn open_instance(
+        &self,
+        run: TransportRun,
+        session: String,
+        stamp: &OpeningInstance,
+    ) -> mpsc::UnboundedReceiver<Dispatch> {
+        let (send, receive) = mpsc::unbounded_channel();
         let mut taps = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         for earlier in taps.iter_mut().filter(|tap| tap.run == run) {
             earlier.updates = None;
@@ -46,21 +47,27 @@ impl RestoreUpdates {
             updates: Some(send),
             awaiting_reply: true,
         });
-        (stamp, receive)
+        receive
     }
 
     pub(crate) fn retire(&self, run: TransportRun) {
         let mut taps = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(index) = taps
-            .iter()
-            .rposition(|tap| tap.run == run && tap.updates.is_some())
-            && let Some(tap) = taps.get_mut(index)
+        if let Some(tap) = taps
+            .iter_mut()
+            .rev()
+            .find(|tap| tap.run == run && tap.updates.is_some())
         {
             tap.updates = None;
-            if !tap.awaiting_reply {
-                taps.remove(index);
-            }
         }
+        taps.retain(|tap| tap.updates.is_some() || tap.awaiting_reply);
+    }
+
+    pub(crate) fn retire_instance(&self, run: TransportRun, stamp: &OpeningInstance) {
+        let mut taps = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(tap) = taps.iter_mut().find(|tap| tap.names(run, stamp)) {
+            tap.updates = None;
+        }
+        taps.retain(|tap| tap.updates.is_some() || tap.awaiting_reply);
     }
 
     pub(crate) fn discard_unoffered(&self, run: TransportRun, stamp: &OpeningInstance) {

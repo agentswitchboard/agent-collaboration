@@ -1,5 +1,10 @@
 //! Run-only cleanup and held-restore guidance on the actual ACP binding.
 
+#[path = "opening_close_race_test.rs"]
+mod close_race;
+#[path = "opening_binding_model_test.rs"]
+mod model;
+
 use super::*;
 use provider_session_machines::{
     harness_lifecycle::{CloseFact, HeldOpeningKind, LifecycleRefusal},
@@ -289,6 +294,68 @@ async fn a_retired_connection_overrides_a_still_held_restore() {
         Err(LifecycleRefusal::ConnectionRetired)
     );
     assert_eq!(recorded_requests(&fixture.receipt, "session/load"), 1);
+    drop(binding);
+    fixture.runtime.shutdown().await;
+    tasks.close();
+    tasks.wait().await;
+}
+
+#[tokio::test]
+async fn a_settled_close_releases_the_bound_slot_before_host_retirement() {
+    let fixture = hub_runtime_with(&["advertise-close"]).await;
+    let tasks = TaskTracker::new();
+    let (owner, mut binding) = bind_fixture(&fixture.runtime, &tasks);
+    let run = RunAttempt {
+        generation: SessionGeneration::from_number(1),
+        attempt: LoadAttempt(Uuid::now_v7()),
+    };
+    let stop = CancellationToken::new();
+    let (readback, _) =
+        load_fixture_binding(&fixture, &mut binding, owner, run, stop.clone()).await;
+    let settings = AcceptedRunSettings {
+        catalogue: readback.catalogue,
+        router_auto_requested: readback.router_auto_requested,
+    };
+    binding
+        .accept_settings(OpenAttempt::Restore(run), &settings)
+        .expect("prepare the exact restore");
+    binding
+        .activate(
+            ActivationSetup::Restored(run),
+            settings,
+            Arc::new(AcceptEvents),
+            Box::pin(stop.clone().cancelled_owned()),
+        )
+        .expect("activate the original run");
+
+    let close = RunAttempt {
+        generation: run.generation,
+        attempt: CloseAttempt(Uuid::now_v7()),
+    };
+    let (reply, settled) = oneshot::channel();
+    binding
+        .close(close, Box::new(Reply(reply)))
+        .expect("offer the exact close");
+    assert_eq!(
+        settled.await.expect("settled close"),
+        CloseFact::Closed { run: close }
+    );
+    assert_eq!(
+        binding.opening_is_held(OpenAttempt::Restore(run)),
+        Held::NotHeld(LifecycleRefusal::BoundSessionNotLoaded),
+        "the close result must release the terminal row before any Host retire"
+    );
+
+    let replacement = RunAttempt {
+        attempt: LoadAttempt(Uuid::now_v7()),
+        ..run
+    };
+    let (_, replay) =
+        load_fixture_binding(&fixture, &mut binding, owner, replacement, stop.clone()).await;
+    assert_eq!(replay, ReplayCompleteness::Complete);
+    assert_eq!(recorded_requests(&fixture.receipt, "session/load"), 2);
+    assert_eq!(recorded_requests(&fixture.receipt, "session/close"), 1);
+    binding.retire(replacement.generation);
     drop(binding);
     fixture.runtime.shutdown().await;
     tasks.close();

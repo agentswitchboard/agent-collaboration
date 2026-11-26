@@ -298,3 +298,182 @@ async fn the_retired_task_cannot_clean_up_a_reused_opening_stamp() {
     tasks.close();
     tasks.wait().await;
 }
+
+fn tracked_test_opening(
+    capacity: NonZeroUsize,
+) -> (
+    OwnerOpenings,
+    crate::owner_wire::OwnerAcpOutput,
+    TaskTracker,
+    CancellationToken,
+) {
+    let owner = OwnerAddress {
+        incarnation: OwnerIncarnation(Uuid::now_v7()),
+        connection_epoch: ConnectionEpoch(Uuid::now_v7()),
+    };
+    let (wire, output) = OwnerAcpWire::new(capacity, Arc::new(ConnectionCatalogueBehavior));
+    let tasks = TaskTracker::new();
+    let retirement = CancellationToken::new();
+    let openings = OwnerOpenings::new(
+        owner,
+        Arc::new(wire),
+        Arc::new(OnceLock::new()),
+        Arc::new(router_clock::ManualClock::new(chrono::DateTime::UNIX_EPOCH)),
+        tasks.clone(),
+        retirement.clone(),
+    );
+    (openings, output, tasks, retirement)
+}
+
+fn pending_load(
+    openings: &OwnerOpenings,
+    run: RunAttempt<LoadAttempt>,
+) -> oneshot::Receiver<OpeningFact> {
+    let (reply, result) = oneshot::channel();
+    openings
+        .open(
+            OpenRequest::Restore {
+                owner: openings.owner,
+                run,
+                session: HarnessSessionId("saved-session".into()),
+                via: RestoreVia::Load,
+                setup: OpenSetup {
+                    cwd: "/".into(),
+                    work_roots: Default::default(),
+                    scratch_folder: None,
+                },
+                requested_mode: None,
+            },
+            Box::new(Reply(reply)),
+            Arc::new(IgnoreObservations),
+            Box::pin(std::future::pending()),
+        )
+        .expect("the exact opening entered the real writer");
+    result
+}
+
+async fn wait_for_actual_row(
+    openings: &OwnerOpenings,
+    generation: SessionGeneration,
+    expected: Option<OpeningPhase>,
+) {
+    loop {
+        let observed = lock(&openings.attempts)
+            .runs
+            .get(&generation)
+            .map(OpeningRow::phase);
+        if observed == expected {
+            return;
+        }
+        tokio::task::yield_now().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn physical_writer_close_reaches_the_pending_row_without_a_followup_call() {
+    let (openings, mut output, tasks, _retirement) = tracked_test_opening(NonZeroUsize::MIN);
+    let run = RunAttempt {
+        generation: SessionGeneration::from_number(1),
+        attempt: LoadAttempt(Uuid::now_v7()),
+    };
+    let answer = pending_load(&openings, run);
+    let original_write = output.hold_next_frame_for_test();
+    let delivered = openings
+        .wire
+        .pause_opening_for_test(crate::owner_wire::OpeningPausePoint::WriterStopDelivered);
+    drop(output);
+    delivered
+        .reached
+        .await
+        .expect("the real stopped writer observation completed");
+    let phase = lock(&openings.attempts)
+        .runs
+        .get(&run.generation)
+        .map(OpeningRow::phase);
+    assert_eq!(
+        phase,
+        Some(OpeningPhase::StoppedAwaitingReply),
+        "skipped-writer-event: the pending row must change before any caller samples it"
+    );
+    delivered
+        .release
+        .send(())
+        .expect("the writer observer can continue");
+    // The row transition came from the writer closing. Its physically
+    // retained receipt can still resolve independently.
+    drop(original_write);
+    let fact = answer.await.expect("original receipt must be settled");
+    assert!(
+        matches!(fact, OpeningFact::RestoreFailed { run: exact, failure: OpeningFailure::OutcomeUnknown } if exact == run)
+    );
+    assert!(lock(&openings.attempts).runs.is_empty());
+    drop(openings);
+    tasks.close();
+    tasks.wait().await;
+}
+
+#[tokio::test]
+async fn physical_route_loss_and_connection_retirement_reach_the_row_without_a_call() {
+    let (openings, _output, tasks, retirement) = tracked_test_opening(NonZeroUsize::MIN);
+    let run = RunAttempt {
+        generation: SessionGeneration::from_number(1),
+        attempt: LoadAttempt(Uuid::now_v7()),
+    };
+    let answer = pending_load(&openings, run);
+    openings.wire.apply_membership(
+        openings.owner.incarnation,
+        provider_session_machines::session_owner::TurnMembership::Retire(run.generation),
+    );
+    wait_for_actual_row(&openings, run.generation, Some(OpeningPhase::RouteLost)).await;
+    retirement.cancel();
+    wait_for_actual_row(&openings, run.generation, None).await;
+    assert!(answer.await.is_err());
+    assert_eq!(
+        lock(&openings.attempts).port_refusal,
+        Some(LifecycleRefusal::ConnectionRetired)
+    );
+    drop(openings);
+    tasks.close();
+    tasks.wait().await;
+}
+
+#[tokio::test]
+async fn delayed_retirement_cleanup_cannot_take_a_replacement_route_at_the_same_generation() {
+    let (openings, mut output, tasks, _retirement) = tracked_test_opening(NonZeroUsize::MIN);
+    let run = RunAttempt {
+        generation: SessionGeneration::from_number(1),
+        attempt: LoadAttempt(Uuid::now_v7()),
+    };
+    let old_answer = pending_load(&openings, run);
+    let old_frame = output.hold_next_frame_for_test();
+    let (old_instance, old_row) = openings
+        .take_retired(run.generation)
+        .expect("release only the exact old row");
+    let new_answer = pending_load(&openings, run);
+    dispose_old(&openings, &old_instance, old_row);
+    assert!(old_answer.await.is_err());
+    drop(old_frame);
+    assert_eq!(
+        openings.opening_is_held(OpenAttempt::Restore(run)),
+        Held::NotHeld(LifecycleRefusal::OpeningInProgress)
+    );
+    let close = RunAttempt {
+        generation: run.generation,
+        attempt: provider_session_machines::session_lifecycle_machine::CloseAttempt(Uuid::now_v7()),
+    };
+    let (reply, _settled) = oneshot::channel();
+    assert_eq!(
+        openings.close(close, Box::new(Reply(reply))),
+        Err(LifecycleRefusal::Writer(WriterState::Full)),
+        "the replacement's real route still exists and reaches writer admission"
+    );
+    openings.retire(run.generation);
+    assert!(new_answer.await.is_err());
+    drop(openings);
+    tasks.close();
+    tasks.wait().await;
+}
+
+fn dispose_old(openings: &OwnerOpenings, instance: &OpeningInstance, row: OpeningState) {
+    super::observations::dispose(&openings.wire, instance, row);
+}

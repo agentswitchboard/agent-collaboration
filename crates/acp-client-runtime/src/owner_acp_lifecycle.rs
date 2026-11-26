@@ -100,12 +100,14 @@ impl<Port: AcpRequestPayloads> HarnessProvider<SessionHarnessPayloads<Port::Cont
         let stopped = owner_stopped.clone();
         let connection_retired = self.connection_retired.clone();
         let reports = Arc::clone(&events);
+        let retire_openings = openings.connection_retirement_observer();
         self.tasks.spawn(async move {
             tokio::select! {
                 biased;
                 () = stopped.cancelled() => {}
                 () = async {
                     connection_retired.cancelled().await;
+                    retire_openings();
                     let _owner_stopped = reports.report_harness_gone().await;
                 } => {}
             }

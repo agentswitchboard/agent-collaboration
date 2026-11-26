@@ -120,6 +120,22 @@ impl OwnerStreamTarget {
         }
     }
 
+    pub(crate) fn for_opening_route(
+        route: &crate::acp_transport::LifecycleRoute,
+        wire: Arc<OwnerAcpWire>,
+        retired: CancellationToken,
+        events: SessionLifecyclePort,
+    ) -> Option<Self> {
+        let terminals = wire.register_opening_reader(route)?;
+        Some(Self {
+            run: route.run,
+            wire,
+            retired,
+            events,
+            terminals,
+        })
+    }
+
     async fn report(&self, fact: SessionLifecycleFact) -> bool {
         tokio::select! {
             biased;
@@ -354,34 +370,62 @@ impl OwnerOpenedSession {
 
     /// Take a stream locally, including the actual SDK handoff for creates.
     pub(crate) fn start_stream(
-        mut self,
+        self,
         target: OwnerStreamTarget,
     ) -> Result<
         impl Future<Output = Result<(), ExternalProviderRuntimeError>> + Send,
         ExternalProviderRuntimeError,
     > {
+        let (start, reader) = self.prepare_stream(target)?;
+        let _reader_retired = start.send(());
+        Ok(reader)
+    }
+
+    /// Transfer the reader to its executor, withhold consumption until the
+    /// binding authorizes the exact accepted run.
+    pub(crate) fn prepare_stream(
+        mut self,
+        target: OwnerStreamTarget,
+    ) -> Result<
+        (
+            tokio::sync::oneshot::Sender<()>,
+            impl Future<Output = Result<(), ExternalProviderRuntimeError>> + Send,
+        ),
+        ExternalProviderRuntimeError,
+    > {
+        let (start, wait_for_start) = tokio::sync::oneshot::channel();
         match self.route.take() {
-            Some(OpenedSessionRoute::Restored { sdk, updates }) => Ok(Either::Left(async move {
-                let result = self
-                    .read_updates(SessionUpdates::Restored(updates), target)
-                    .await;
-                drop(sdk);
-                result
-            })),
+            Some(OpenedSessionRoute::Restored { sdk, updates }) => Ok((
+                start,
+                Either::Left(async move {
+                    wait_for_start
+                        .await
+                        .map_err(|_| ExternalProviderRuntimeError::SessionReleased)?;
+                    let result = self
+                        .read_updates(SessionUpdates::Restored(updates), target)
+                        .await;
+                    drop(sdk);
+                    result
+                }),
+            )),
             Some(OpenedSessionRoute::Created(activate)) => {
                 let (finished, result) = tokio::sync::oneshot::channel();
                 activate
                     .send(CreatedStream {
                         opened: self,
                         target,
+                        start: wait_for_start,
                         finished,
                     })
                     .map_err(|_| ExternalProviderRuntimeError::TransportFailure)?;
-                Ok(Either::Right(async move {
-                    result
-                        .await
-                        .map_err(|_| ExternalProviderRuntimeError::TransportFailure)?
-                }))
+                Ok((
+                    start,
+                    Either::Right(async move {
+                        result
+                            .await
+                            .map_err(|_| ExternalProviderRuntimeError::TransportFailure)?
+                    }),
+                ))
             }
             None => Err(ExternalProviderRuntimeError::TransportFailure),
         }
