@@ -4,8 +4,8 @@
 use super::ExternalProviderApprovalRefusalWarning;
 use super::{ActiveApprovalContext, ExternalProviderApprovalRefusalReason};
 use crate::{
-    ApprovalPortOutcome, InteractionPort, ProviderPersistenceTarget, RefusedApprovalOffer,
-    map_permission_options, reviewed_approval_fields,
+    AcpRequestPayloads, AcpRequestPolicy, ApprovalPortOutcome, OwnerApprovalBindings,
+    ProviderPersistenceTarget, map_permission_options, reviewed_approval_fields,
 };
 use agent_client_protocol::schema::v1::{
     RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
@@ -18,10 +18,32 @@ use std::{
     sync::{Arc, Mutex},
 };
 use tokio::sync::RwLock;
-use tokio_util::sync::CancellationToken;
 
-pub(super) struct PermissionDispatchState<P: InteractionPort> {
-    pub(super) interaction_port: Arc<P>,
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) type MalformedApprovalCallback<Context> = Arc<
+    dyn Fn(Context, crate::RefusedApprovalOffer) -> crate::InteractionFuture<'static, ()>
+        + Send
+        + Sync,
+>;
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) type MalformedApprovalObserver<P> = Arc<
+    Mutex<
+        Option<
+            MalformedApprovalCallback<
+                <P as switchboard_harness_contracts::RequestPolicyPayloads>::Context,
+            >,
+        >,
+    >,
+>;
+
+pub(super) struct PermissionDispatchState<P: AcpRequestPayloads> {
+    pub(super) request_policy: Arc<AcpRequestPolicy<P>>,
+    pub(super) approval_bindings: OwnerApprovalBindings<P>,
+    #[cfg(feature = "test-observation")]
+    pub(super) frame_observation: Arc<crate::provider_frame_observation::ProviderFrameObservation>,
+    #[cfg(any(test, feature = "test-support"))]
+    pub(super) malformed_approval_observer: MalformedApprovalObserver<P>,
     pub(super) refusal_reasons:
         Arc<Mutex<HashMap<P::OperationId, ExternalProviderApprovalRefusalReason>>>,
     pub(super) endpoint_id: Arc<RwLock<Option<String>>>,
@@ -32,10 +54,23 @@ pub(super) struct PermissionDispatchState<P: InteractionPort> {
     pub(super) permission_outcome: Arc<std::sync::atomic::AtomicU8>,
 }
 
-pub(super) async fn record_permission_refusal<P: InteractionPort>(
+pub(super) async fn record_permission_refusal<P: AcpRequestPayloads>(
     state: &PermissionDispatchState<P>,
     provider_session_id: &str,
     operation_id: Option<P::OperationId>,
+    reason: ExternalProviderApprovalRefusalReason,
+) {
+    report_permission_refusal(state, provider_session_id, reason).await;
+    if let Some(operation_id) = operation_id
+        && let Ok(mut reasons) = state.refusal_reasons.lock()
+    {
+        reasons.insert(operation_id, reason);
+    }
+}
+
+async fn report_permission_refusal<P: AcpRequestPayloads>(
+    state: &PermissionDispatchState<P>,
+    provider_session_id: &str,
     reason: ExternalProviderApprovalRefusalReason,
 ) {
     let endpoint = state
@@ -60,14 +95,9 @@ pub(super) async fn record_permission_refusal<P: InteractionPort>(
             reason_code: reason,
         });
     }
-    if let Some(operation_id) = operation_id
-        && let Ok(mut reasons) = state.refusal_reasons.lock()
-    {
-        reasons.insert(operation_id, reason);
-    }
 }
 
-pub(super) fn spawn_external_approval_dispatch<P: InteractionPort>(
+pub(super) fn spawn_external_approval_dispatch<P: AcpRequestPayloads>(
     request: RequestPermissionRequest,
     responder: Responder<RequestPermissionResponse>,
     connection: ConnectionTo<Agent>,
@@ -76,68 +106,123 @@ pub(super) fn spawn_external_approval_dispatch<P: InteractionPort>(
 ) -> Result<(), Error> {
     let request_id = serde_json::to_string(&(request.session_id.0.as_ref(), responder.id()))
         .map_err(|_| Error::internal_error())?;
+    let Some((context, response_guard)) = context.and_then(|context| {
+        let guard = context.track_response(
+            "session/request_permission",
+            responder.id(),
+            responder.cancellation(),
+        )?;
+        Some((context, guard))
+    }) else {
+        #[cfg(any(test, feature = "test-observation"))]
+        state
+            .permission_outcome
+            .store(1, std::sync::atomic::Ordering::Relaxed);
+        return responder.respond(RequestPermissionResponse::new(
+            RequestPermissionOutcome::Cancelled,
+        ));
+    };
     let request_cancellation = responder.cancellation();
-    let response_guard = context.as_ref().map(|context| {
-        context
-            .responses
-            .track("session/request_permission", responder.id())
-    });
-    connection.spawn(async move {
-        if let (Some(context), Some(refusal)) =
-            (context.as_ref(), state.interaction_port.managed_refusal())
-        {
+    let bindings = state.approval_bindings.clone();
+    bindings.spawn_callback(&connection, async move {
+        if let Some(refusal) = context.managed_refusal(state.request_policy.as_ref()) {
+            #[cfg(feature = "test-observation")]
+            let responder_id = responder.id().clone();
             let provider_session_id = request.session_id.0.to_string();
             let response: RequestPermissionResponse =
                 serde_json::from_value(refusal.acp_permission())
                     .map_err(|_| Error::internal_error())?;
-            record_permission_refusal(
-                &state,
-                &provider_session_id,
-                Some(P::operation_id(&context.approval)),
-                ExternalProviderApprovalRefusalReason::Managed(refusal),
-            )
-            .await;
+            let reason = ExternalProviderApprovalRefusalReason::Managed(refusal);
+            let operation_id = context.operation_id.as_ref().clone();
             #[cfg(any(test, feature = "test-observation"))]
             state
                 .permission_outcome
                 .store(1, std::sync::atomic::Ordering::Relaxed);
-            let queued = responder.respond(response);
-            drop(response_guard);
-            context
-                .clone()
-                .cancel_after_refusal(Arc::clone(&state.interaction_port), refusal)
+            #[cfg(feature = "test-observation")]
+            let queue_witness = state
+                .frame_observation
+                .before_permission_reply(responder.id(), request_cancellation.clone())
                 .await;
+            let declined = RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled);
+            let (committed, queued) = {
+                // Lock order is refusal reasons, then the response scope.
+                // The peer can finish the prompt as soon as its reply is
+                // queued. Keep the reader fenced through the record write,
+                // with hashing outside the scope lock.
+                let mut reasons = state.refusal_reasons.lock().ok();
+                let (open, queued) = response_guard.commit(|open| {
+                    (
+                        open,
+                        responder.respond(if open { response } else { declined }),
+                    )
+                });
+                let committed = open && queued.is_ok();
+                if committed && let Some(reasons) = reasons.as_mut() {
+                    reasons.insert(operation_id, reason);
+                }
+                (committed, queued)
+            };
+            drop(response_guard);
+            #[cfg(feature = "test-observation")]
+            if queued.is_ok()
+                && let Some(witness) = queue_witness
+            {
+                let _fixture = witness.send(());
+            }
+            if committed {
+                report_permission_refusal(&state, &provider_session_id, reason).await;
+                #[cfg(feature = "test-observation")]
+                state
+                    .frame_observation
+                    .record_managed_permission_enqueue(responder_id);
+                if !request_cancellation.is_cancelled() {
+                    context
+                        .cancel_after_refusal(Arc::clone(&state.request_policy), refusal)
+                        .await;
+                }
+            }
             return queued;
         }
-        let outcome = match context {
-            Some(context) => {
-                handle_contextual_permission_request(
-                    context,
-                    request,
-                    request_id,
-                    request_cancellation,
-                    &state,
-                )
-                .await
-            }
-            None => RequestPermissionOutcome::Cancelled,
-        };
+        let outcome = handle_contextual_permission_request(
+            context,
+            request,
+            request_id,
+            request_cancellation.clone(),
+            &state,
+        )
+        .await;
+        #[cfg(feature = "test-observation")]
+        let queue_witness = state
+            .frame_observation
+            .before_permission_reply(responder.id(), request_cancellation)
+            .await;
+        let selected = matches!(outcome, RequestPermissionOutcome::Selected(_));
+        let response = RequestPermissionResponse::new(outcome);
+        let declined = RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled);
+        let (open, queued) = response_guard.commit(|open| {
+            (
+                open,
+                responder.respond(if open { response } else { declined }),
+            )
+        });
         #[cfg(any(test, feature = "test-observation"))]
         state.permission_outcome.store(
-            if matches!(outcome, RequestPermissionOutcome::Selected(_)) {
-                2
-            } else {
-                1
-            },
+            if open && selected { 2 } else { 1 },
             std::sync::atomic::Ordering::Relaxed,
         );
-        let response = responder.respond(RequestPermissionResponse::new(outcome));
-        drop(response_guard);
-        response
+        #[cfg(not(any(test, feature = "test-observation")))]
+        let _observation = (open, selected);
+        #[cfg(feature = "test-observation")]
+        if queued.is_ok()
+            && let Some(witness) = queue_witness
+        {
+            let _fixture = witness.send(());
+        }
+        queued
     })
 }
 
-async fn handle_contextual_permission_request<P: InteractionPort>(
+async fn handle_contextual_permission_request<P: AcpRequestPayloads>(
     context: ActiveApprovalContext<P>,
     request: RequestPermissionRequest,
     request_id: String,
@@ -149,20 +234,33 @@ async fn handle_contextual_permission_request<P: InteractionPort>(
     let options = match map_permission_options(request.options, state.persistence_target) {
         Ok(options) => options,
         Err(refused) => {
-            state
-                .interaction_port
-                .record_refusal(
-                    context.approval,
-                    RefusedApprovalOffer {
-                        request_id,
-                        reason: refused.reason,
-                        title: reviewed.title,
-                        description: reviewed.description,
-                        subject: reviewed.subject,
-                        options: refused.options,
-                    },
-                )
-                .await;
+            tracing::warn!(
+                reason_code = refused.reason,
+                option_count = refused.options.len(),
+                "malformed ACP permission offer refused"
+            );
+            #[cfg(any(test, feature = "test-support"))]
+            {
+                let observer = state
+                    .malformed_approval_observer
+                    .lock()
+                    .ok()
+                    .and_then(|observer| observer.clone());
+                if let Some(observer) = observer {
+                    observer(
+                        context.approval.as_ref().clone(),
+                        crate::RefusedApprovalOffer {
+                            request_id,
+                            reason: refused.reason,
+                            title: reviewed.title,
+                            description: reviewed.description,
+                            subject: reviewed.subject,
+                            options: refused.options,
+                        },
+                    )
+                    .await;
+                }
+            }
             return RequestPermissionOutcome::Cancelled;
         }
     };
@@ -174,22 +272,13 @@ async fn handle_contextual_permission_request<P: InteractionPort>(
         options_origin: session_event_model::OptionsOrigin::AgentOffered,
         options,
     };
-    let agent_cancellation = CancellationToken::new();
-    let approval = state.interaction_port.request_approval(
-        context.approval.clone(),
-        canonical_request,
-        context.cancelling,
-        agent_cancellation.clone(),
-    );
-    tokio::pin!(approval);
-    let outcome = tokio::select! {
-        biased;
-        () = request_cancellation.cancelled() => {
-            agent_cancellation.cancel();
-            approval.await
-        }
-        outcome = &mut approval => outcome,
-    };
+    let outcome = context
+        .decide_approval(
+            state.request_policy.as_ref(),
+            canonical_request,
+            request_cancellation,
+        )
+        .await;
     match outcome {
         ApprovalPortOutcome::Selected { option_id, .. } => {
             RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(option_id))
@@ -199,7 +288,7 @@ async fn handle_contextual_permission_request<P: InteractionPort>(
             record_permission_refusal(
                 state,
                 &provider_session_id,
-                Some(P::operation_id(&context.approval)),
+                Some(context.operation_id.as_ref().clone()),
                 ExternalProviderApprovalRefusalReason::ApprovalBrokerUnavailable,
             )
             .await;

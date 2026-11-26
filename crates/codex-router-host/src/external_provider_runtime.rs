@@ -21,7 +21,8 @@ use tokio_util::sync::CancellationToken;
 #[cfg(test)]
 use crate::{ProviderSessionActivity, ProviderSteeringOutcome};
 use crate::{
-    acp_interaction_port::HostInteractionPort, session_owner_ingress::SessionOwnerIngress,
+    host_request_policy::{HostRequestPayloads, HostRequestPolicy},
+    session_owner_ingress::SessionOwnerIngress,
 };
 #[cfg(test)]
 use acp_client_runtime::{
@@ -91,7 +92,7 @@ mod prompt_projection_tests;
 mod initialization_authentication_tests;
 
 pub struct ExternalProviderRuntime {
-    client: AgentSessionClient<HostInteractionPort>,
+    client: AgentSessionClient<HostRequestPayloads>,
     owner_ingress: Arc<SessionOwnerIngress>,
     owner_door: std::sync::OnceLock<Arc<crate::session_owner_door::SessionOwnerDoor>>,
     #[cfg(any(test, feature = "test-support"))]
@@ -137,15 +138,15 @@ impl ExternalProviderRuntime {
     }
 
     #[cfg(all(debug_assertions, test))]
-    pub(crate) fn retire_work_route_for_test(
+    pub(crate) fn retire_provider_route_for_test(
         &self,
-        authorization: &provider_session_machines::session_owner::DispatchAuthorization,
+        incarnation: provider_session_machines::session_owner::OwnerIncarnation,
+        generation: provider_session_machines::SessionGeneration,
     ) {
         use provider_session_machines::session_owner::TurnMembership;
-        self.client.owner_wire().apply_membership(
-            authorization.incarnation,
-            TurnMembership::Retire(authorization.run),
-        );
+        self.client
+            .owner_wire()
+            .apply_membership(incarnation, TurnMembership::Retire(generation));
     }
 
     pub(crate) fn owner_clock(&self) -> Arc<dyn router_clock::RuntimeClock> {
@@ -163,7 +164,7 @@ impl ExternalProviderRuntime {
         &self,
         provider_id: &str,
         input: acp_client_runtime::ProviderTurnInput,
-    ) -> Result<acp_client_runtime::ProviderPromptContent, ExternalProviderRuntimeError> {
+    ) -> Result<session_event_model::PreparedPrompt, ExternalProviderRuntimeError> {
         let capabilities = self.capability_report(provider_id).await;
         self.client.prepare_owner_prompt(input, &capabilities)
     }
@@ -204,16 +205,47 @@ impl ExternalProviderRuntime {
     ) -> Arc<crate::session_owner_door::SessionOwnerDoor> {
         self.owner_door
             .get_or_init(|| {
-                let door = Arc::new(crate::session_owner_door::SessionOwnerDoor::new(
-                    self.client.owner_wire(),
-                    self.client.owner_approval_bindings(),
-                    self.client.runtime_clock(),
+                let wire = self.client.owner_wire();
+                let approvals = self.client.owner_approval_bindings();
+                let clock = self.client.runtime_clock();
+                let harness_clock = Arc::clone(&clock);
+                let retired = self.retirement();
+                let connection_retired = retired.clone();
+                #[cfg(any(test, feature = "test-support"))]
+                let hold_writer_capacity: Option<
+                    Arc<crate::session_owner_door::HoldProviderWriterCapacity>,
+                > = {
+                    let wire = Arc::clone(&wire);
+                    Some(Arc::new(move || {
+                        Box::new(wire.hold_writer_capacity_for_test())
+                    }))
+                };
+                let door = crate::session_owner_door::SessionOwnerDoor::new(
+                    #[cfg(any(test, feature = "test-support"))]
+                    hold_writer_capacity,
+                    move |tasks| {
+                        Arc::new(
+                            acp_client_runtime::owner_acp_binding::OwnerAcpProvider::new(
+                                wire,
+                                approvals,
+                                harness_clock,
+                                tasks,
+                                connection_retired,
+                            ),
+                        )
+                    },
+                    clock,
                     store,
                     hub,
-                    self.retirement(),
+                    retired,
                     #[cfg(any(test, feature = "test-support"))]
                     self.preparation_fixture.clone(),
-                ));
+                );
+                #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
+                let door = door.with_work_observer(
+                    acp_client_runtime::work_call_observation::host_work_observation_sink(),
+                );
+                let door = Arc::new(door);
                 self.owner_ingress.attach(&door);
                 door
             })
@@ -227,11 +259,13 @@ impl ExternalProviderRuntime {
         clock: Arc<dyn router_clock::RuntimeClock>,
     ) -> Result<Self, ExternalProviderRuntimeError> {
         let owner_ingress = Arc::new(SessionOwnerIngress::default());
-        let interaction_port = Arc::new(HostInteractionPort(owner_ingress.clone()));
+        let request_policy = Arc::new(HostRequestPolicy(owner_ingress.clone()));
         let client = AgentSessionClient::initialize_with_clock(
             launch,
-            Arc::clone(&interaction_port),
-            owner_ingress.clone(),
+            request_policy,
+            Arc::new(acp_client_runtime::HarnessCallbackEventSink::new(
+                owner_ingress.clone(),
+            )),
             behavior,
             clock,
         )
@@ -260,14 +294,16 @@ impl ExternalProviderRuntime {
         clock: Arc<dyn router_clock::RuntimeClock>,
     ) -> Result<Self, ExternalProviderRuntimeError> {
         let owner_ingress = Arc::new(SessionOwnerIngress::default());
-        let interaction_port = Arc::new(HostInteractionPort(owner_ingress.clone()));
+        let request_policy = Arc::new(HostRequestPolicy(owner_ingress.clone()));
         let client = AgentSessionClient::initialize_with_mcp_http(
             launch,
             model_picker,
             server_name,
             server_url,
-            Arc::clone(&interaction_port),
-            owner_ingress.clone(),
+            request_policy,
+            Arc::new(acp_client_runtime::HarnessCallbackEventSink::new(
+                owner_ingress.clone(),
+            )),
             behavior,
             clock,
         )
@@ -301,14 +337,16 @@ impl ExternalProviderRuntime {
         clock: Arc<dyn router_clock::RuntimeClock>,
     ) -> Result<Self, ExternalProviderRuntimeError> {
         let owner_ingress = Arc::new(SessionOwnerIngress::default());
-        let interaction_port = Arc::new(HostInteractionPort(owner_ingress.clone()));
+        let request_policy = Arc::new(HostRequestPolicy(owner_ingress.clone()));
         let client = AgentSessionClient::initialize_with_mcp_http(
             launch,
             model_picker,
             server_name,
             server_url,
-            Arc::clone(&interaction_port),
-            owner_ingress.clone(),
+            request_policy,
+            Arc::new(acp_client_runtime::HarnessCallbackEventSink::new(
+                owner_ingress.clone(),
+            )),
             behavior,
             clock,
         )
@@ -356,12 +394,14 @@ impl ExternalProviderRuntime {
         clock: Arc<dyn router_clock::RuntimeClock>,
     ) -> Result<Self, ExternalProviderRuntimeError> {
         let owner_ingress = Arc::new(SessionOwnerIngress::default());
-        let interaction_port = Arc::new(HostInteractionPort(owner_ingress.clone()));
+        let request_policy = Arc::new(HostRequestPolicy(owner_ingress.clone()));
         let client = AgentSessionClient::initialize_with_timeout(
             launch,
             initialize_timeout,
-            Arc::clone(&interaction_port),
-            owner_ingress.clone(),
+            request_policy,
+            Arc::new(acp_client_runtime::HarnessCallbackEventSink::new(
+                owner_ingress.clone(),
+            )),
             behavior,
             clock,
         )

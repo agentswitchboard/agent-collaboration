@@ -9,6 +9,7 @@ use std::{
     sync::Arc,
     task::{Context, Poll},
 };
+use tokio_util::sync::CancellationToken;
 
 const DIAGNOSTIC_TARGET: &str = "acp_client_runtime::provider_diagnostics";
 
@@ -143,15 +144,39 @@ pub(crate) struct ObservedProviderSink<Inner> {
     pending_frame_counts: [usize; 9],
     callback_claims: Arc<ProviderCallbackClaims>,
     pending_callback_replies: Vec<RequestId>,
+    transport_ending: CancellationToken,
+    #[cfg(feature = "test-observation")]
+    end_observer: Option<TransportEndObserver>,
 }
 impl<Inner> ObservedProviderSink<Inner> {
-    pub(crate) const fn new(inner: Inner, callback_claims: Arc<ProviderCallbackClaims>) -> Self {
+    pub(crate) const fn new(
+        inner: Inner,
+        callback_claims: Arc<ProviderCallbackClaims>,
+        transport_ending: CancellationToken,
+    ) -> Self {
         Self {
             inner,
             pending_frame_counts: [0; 9],
             callback_claims,
             pending_callback_replies: Vec::new(),
+            transport_ending,
+            #[cfg(feature = "test-observation")]
+            end_observer: None,
         }
+    }
+
+    #[cfg(feature = "test-observation")]
+    pub(crate) fn with_end_observer(mut self, observer: TransportEndObserver) -> Self {
+        self.end_observer = Some(observer);
+        self
+    }
+
+    fn mark_write_error(&self) {
+        #[cfg(feature = "test-observation")]
+        if let Some(observer) = &self.end_observer {
+            observer.report(TransportEnd::WriteError);
+        }
+        self.transport_ending.cancel();
     }
     fn record_flushed(&mut self) {
         for (kind, pending_count) in FRAME_KINDS
@@ -171,7 +196,10 @@ impl<Inner: Sink<String, Error = io::Error> + Unpin> Sink<String> for ObservedPr
         self: Pin<&mut Self>,
         context: &mut Context<'_>,
     ) -> Poll<Result<(), Self::Error>> {
-        Pin::new(&mut self.get_mut().inner).poll_ready(context)
+        let this = self.get_mut();
+        Pin::new(&mut this.inner)
+            .poll_ready(context)
+            .map(|ready| ready.inspect_err(|_| this.mark_write_error()))
     }
     fn start_send(self: Pin<&mut Self>, frame: String) -> Result<(), Self::Error> {
         let this = self.get_mut();
@@ -182,7 +210,9 @@ impl<Inner: Sink<String, Error = io::Error> + Unpin> Sink<String> for ObservedPr
         } else {
             ProviderFrameKind::Other
         };
-        Pin::new(&mut this.inner).start_send(frame)?;
+        Pin::new(&mut this.inner)
+            .start_send(frame)
+            .inspect_err(|_| this.mark_write_error())?;
         this.pending_callback_replies.extend(replies);
         if observed {
             if let Some(count) = this.pending_frame_counts.get_mut(kind.index()) {
@@ -205,6 +235,7 @@ impl<Inner: Sink<String, Error = io::Error> + Unpin> Sink<String> for ObservedPr
                 Poll::Ready(Ok(()))
             }
             Poll::Ready(Err(error)) => {
+                this.mark_write_error();
                 record("outgoingFlushError", ProviderFrameKind::Other, 1);
                 Poll::Ready(Err(error))
             }
@@ -216,7 +247,49 @@ impl<Inner: Sink<String, Error = io::Error> + Unpin> Sink<String> for ObservedPr
         context: &mut Context<'_>,
     ) -> Poll<Result<(), Self::Error>> {
         // Closing is not relabelled a successful flush.
-        Pin::new(&mut self.get_mut().inner).poll_close(context)
+        let this = self.get_mut();
+        Pin::new(&mut this.inner)
+            .poll_close(context)
+            .map(|closed| closed.inspect_err(|_| this.mark_write_error()))
+    }
+}
+
+#[cfg(feature = "test-observation")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TransportEnd {
+    ReadError,
+    EndOfInput,
+    WriteError,
+}
+
+#[cfg(feature = "test-observation")]
+#[derive(Clone, Default)]
+pub(crate) struct TransportEndObserver(
+    Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<TransportEnd>>>>,
+);
+
+#[cfg(feature = "test-observation")]
+impl TransportEndObserver {
+    pub(crate) fn observe(&self) -> tokio::sync::oneshot::Receiver<TransportEnd> {
+        let (signal, observed) = tokio::sync::oneshot::channel();
+        let previous = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .replace(signal);
+        assert!(previous.is_none(), "one pending transport ending witness");
+        observed
+    }
+
+    pub(crate) fn report(&self, end: TransportEnd) {
+        let signal = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(signal) = signal {
+            let _test_gone = signal.send(end);
+        }
     }
 }
 

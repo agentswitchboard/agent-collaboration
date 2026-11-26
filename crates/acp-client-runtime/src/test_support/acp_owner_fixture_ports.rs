@@ -2,8 +2,8 @@
 
 use super::{FixtureState, lock};
 use crate::{
-    InteractionPort, OwnerApprovalBindings, OwnerApprovalLease, ProviderPromptDispatchObservation,
-    SessionEventSink,
+    AcpRequestPayloads, OwnerApprovalBindings, OwnerApprovalLease,
+    ProviderPromptDispatchObservation, SessionEventSink,
     acp_transport::TransportRun,
     owner_acp_binding::OwnerAcpBinding,
     owner_session_open::{OwnerOpenedSession, OwnerSessionOpenSetup},
@@ -14,11 +14,11 @@ use crate::{
 };
 use futures_util::FutureExt as _;
 use provider_session_machines::session_owner::{
-    AuthorizedWork, CreateProgress, CreatedSessionFacts, DispatchAuthorization, DispatchResult,
-    EffectOutcome, ObservationCause, ObservedSetting, OwnerAddress, OwnerEffect, OwnerEvent,
-    OwnerInput, OwnerSetting, PreparationStage, PublicationBatch, PublicationFact,
-    PublicationResult, RestoreFailure, RestoreLoadReadback, RestorePreparation, RunAttempt,
-    SessionOwnerReply, SessionPublication, SessionStoreRequest, SessionStoreResult,
+    ActivationRefusal, AuthorizedWork, CreateProgress, CreatedSessionFacts, DispatchAuthorization,
+    DispatchResult, EffectOutcome, ObservationCause, ObservedSetting, OwnerAddress, OwnerEffect,
+    OwnerEvent, OwnerInput, OwnerSetting, PreparationStage, PublicationBatch, PublicationFact,
+    PublicationResult, RemoteEffect, RestoreFailure, RestoreLoadReadback, RestorePreparation,
+    RunAttempt, SessionOwnerReply, SessionPublication, SessionStoreRequest, SessionStoreResult,
     SessionWireRequest, SessionWireResult, SettingEvidence, SteerOrigin, TurnMembership,
     WireOutcome,
 };
@@ -27,7 +27,7 @@ use provider_session_machines::{
     session_lifecycle_machine::{LoadAttempt, RestoreVia},
     session_turn_machine::TurnId,
 };
-use session_event_model::{SessionEvent, SessionItem, SessionItemKind, SessionState};
+use session_event_model::{SessionEvent, SessionItem, SessionItemKind, SessionState, SkillView};
 use std::{
     collections::{BTreeMap, HashMap},
     sync::{Arc, Mutex},
@@ -46,7 +46,7 @@ struct OpenedRestore {
     fallback: Option<String>,
 }
 
-pub(super) struct FixturePorts<P: InteractionPort> {
+pub(super) struct FixturePorts<P: AcpRequestPayloads> {
     id: String,
     shared: Arc<Mutex<FixtureState<P>>>,
     wire: Arc<OwnerAcpWire>,
@@ -56,11 +56,12 @@ pub(super) struct FixturePorts<P: InteractionPort> {
     stop: CancellationToken,
     created: Option<(OwnerOpenedSession, CreatedSessionFacts)>,
     restores: Arc<Mutex<HashMap<LoadAttempt, OpenedRestore>>>,
+    restored_skills: Option<(RunAttempt<LoadAttempt>, SkillView)>,
     readers: HashMap<SessionGeneration, CancellationToken>,
     active_approval: Option<(TurnId, OwnerApprovalLease<P>)>,
 }
 
-impl<P: InteractionPort> FixturePorts<P> {
+impl<P: AcpRequestPayloads> FixturePorts<P> {
     pub(super) fn new(
         id: String,
         shared: Arc<Mutex<FixtureState<P>>>,
@@ -82,6 +83,7 @@ impl<P: InteractionPort> FixturePorts<P> {
             stop,
             created,
             restores: Arc::default(),
+            restored_skills: None,
             readers: HashMap::new(),
             active_approval: None,
         }
@@ -100,9 +102,11 @@ impl<P: InteractionPort> FixturePorts<P> {
         generation: SessionGeneration,
         mut opened: OwnerOpenedSession,
         completions: &OwnerCompletionPort,
-    ) {
+    ) -> Result<(), ActivationRefusal> {
         let run = Self::transport_run(address, generation);
-        self.wire.activate_route(run);
+        if !self.wire.activate_route(run) {
+            return Err(ActivationRefusal::RouteUnavailable);
+        }
         opened.register_in_folder_scope(&self.wire, run);
         {
             let mut shared = lock(&self.shared);
@@ -128,6 +132,7 @@ impl<P: InteractionPort> FixturePorts<P> {
                     .await;
             }
         });
+        Ok(())
     }
 
     fn restore(
@@ -176,6 +181,7 @@ impl<P: InteractionPort> FixturePorts<P> {
             let event = match receipt {
                 Ok(Ok(mut opened)) => match opened.prepare_replay() {
                     Ok(replay) => {
+                        let completeness = (via == RestoreVia::Load).then_some(replay.completeness);
                         let planned = opened.restore_setting_plan(setup.requested_mode.as_deref());
                         let catalogue = Arc::new(opened.catalog().clone());
                         lock(&restores).insert(
@@ -189,6 +195,7 @@ impl<P: InteractionPort> FixturePorts<P> {
                         );
                         SessionWireResult::Restore {
                             run,
+                            replay: completeness,
                             outcome: WireOutcome::Confirmed(RestoreLoadReadback {
                                 catalogue,
                                 router_auto_requested: setup.requested_mode.as_deref()
@@ -429,38 +436,13 @@ impl<P: InteractionPort> FixturePorts<P> {
         self.sink.publish_in(&self.id, run, event).map(|_| ())
     }
 
-    fn publish(
-        &mut self,
-        address: OwnerAddress,
-        batch: PublicationBatch,
-        completions: &OwnerCompletionPort,
-    ) -> OwnerEvent {
+    fn publish(&mut self, address: OwnerAddress, batch: PublicationBatch) -> OwnerEvent {
         let (id, facts) = match batch {
             PublicationBatch::Commit { id, facts } => (id, facts),
             PublicationBatch::Rebase { id, .. } => {
                 return OwnerEvent::Publication(PublicationResult::Applied(id));
             }
         };
-        let mut restored_skills = None;
-        for fact in &facts {
-            match fact {
-                PublicationFact::Live(SessionPublication::Created(run)) => {
-                    if let Some((opened, _)) = self.created.take() {
-                        self.wire
-                            .open_route(Self::transport_run(address, *run), self.id.clone());
-                        self.attach_reader(address, *run, opened, completions);
-                    }
-                }
-                PublicationFact::Live(SessionPublication::Activated { run, .. }) => {
-                    let opened = lock(&self.restores).remove(&run.attempt);
-                    if let Some(opened) = opened {
-                        restored_skills = opened.replay.skills;
-                        self.attach_reader(address, run.generation, opened.opened, completions);
-                    }
-                }
-                _ => {}
-            }
-        }
         for fact in &facts {
             if let PublicationFact::Settings {
                 run,
@@ -503,8 +485,12 @@ impl<P: InteractionPort> FixturePorts<P> {
                 .map(|_| ()),
             PublicationFact::Skills { view, .. } => self.sink.publish_skill_view(&self.id, view),
             PublicationFact::Live(fact) => {
-                if matches!(fact, SessionPublication::Activated { .. })
-                    && let Some(skills) = restored_skills.take()
+                if let SessionPublication::Activated { run, .. } = &fact
+                    && self
+                        .restored_skills
+                        .as_ref()
+                        .is_some_and(|(attempt, _)| attempt == run)
+                    && let Some((_, skills)) = self.restored_skills.take()
                 {
                     self.sink.publish_skill_view(&self.id, skills)?;
                 }
@@ -536,7 +522,7 @@ impl<P: InteractionPort> FixturePorts<P> {
     }
 }
 
-impl<P: InteractionPort> SessionOwnerPorts for FixturePorts<P> {
+impl<P: AcpRequestPayloads> SessionOwnerPorts for FixturePorts<P> {
     fn execute(
         &mut self,
         address: OwnerAddress,
@@ -557,10 +543,27 @@ impl<P: InteractionPort> SessionOwnerPorts for FixturePorts<P> {
                     .created
                     .as_ref()
                     .ok_or(OwnerTaskError::ExecutorStopped)?;
-                Ok(Some(OwnerEvent::Create(CreateProgress::Adopted {
+                Ok(Some(OwnerEvent::Create(CreateProgress::Configured {
                     operation,
                     facts: Box::new(facts.clone()),
                 })))
+            }
+            OwnerEffect::ActivateCreated {
+                operation,
+                generation,
+                facts,
+            } => {
+                let (opened, _) = self.created.take().ok_or(OwnerTaskError::ExecutorStopped)?;
+                self.wire
+                    .open_route(Self::transport_run(address, generation), self.id.clone());
+                let progress = match self.attach_reader(address, generation, opened, completions) {
+                    Ok(()) => CreateProgress::Activated { operation, facts },
+                    Err(_) => CreateProgress::Failed {
+                        operation,
+                        remote: RemoteEffect::Applied,
+                    },
+                };
+                Ok(Some(OwnerEvent::Create(progress)))
             }
             OwnerEffect::Wire(SessionWireRequest::Restore { run, via }) => {
                 self.restore(address, run, via, completions)
@@ -666,6 +669,21 @@ impl<P: InteractionPort> SessionOwnerPorts for FixturePorts<P> {
                     observed: BTreeMap::new(),
                 })))
             }
+            OwnerEffect::ActivateRestored { run, .. } => {
+                let opened = lock(&self.restores).remove(&run.attempt);
+                let result = match opened {
+                    Some(opened) => self
+                        .attach_reader(address, run.generation, opened.opened, completions)
+                        .map(|()| {
+                            self.restored_skills = opened.replay.skills.map(|skills| (run, skills))
+                        }),
+                    None => Err(ActivationRefusal::OpeningNotHeld),
+                };
+                Ok(Some(OwnerEvent::Prepare(RestorePreparation::Activation {
+                    run,
+                    result,
+                })))
+            }
             OwnerEffect::Authorize {
                 authorization,
                 work,
@@ -705,6 +723,8 @@ impl<P: InteractionPort> SessionOwnerPorts for FixturePorts<P> {
                 Ok(Some(OwnerEvent::Dispatch(self.revoke_work(authorization))))
             }
             OwnerEffect::CallbackMembership(change) => {
+                self.approvals
+                    .apply_membership(&self.id, address.incarnation, change);
                 self.wire.apply_membership(address.incarnation, change);
                 if let TurnMembership::End { turn, .. }
                 | TurnMembership::RemoveOnRevoke { turn, .. } = change
@@ -730,7 +750,7 @@ impl<P: InteractionPort> SessionOwnerPorts for FixturePorts<P> {
                     .reopen_route(Self::transport_run(address, run.generation), run.attempt);
                 Ok(None)
             }
-            OwnerEffect::Publish(batch) => Ok(Some(self.publish(address, batch, completions))),
+            OwnerEffect::Publish(batch) => Ok(Some(self.publish(address, batch))),
             OwnerEffect::Reply(reply) | OwnerEffect::ReplyUnsaved(reply) => {
                 let operation = match &reply {
                     SessionOwnerReply::RestoreFinished(result) => result.attempt.attempt.0,

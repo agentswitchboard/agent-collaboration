@@ -1,7 +1,6 @@
 //! Translate owner-authorized settings to exact ACP values and readback.
 
 use crate::owner_wire::OwnerWireRefusal;
-use crate::session_owner_task::OwnerCompletion;
 use crate::{
     PermissionModePlan, RequestedPermissionMode, owner_session_open::OwnerOpenedSession,
     plan_permission_mode,
@@ -13,18 +12,18 @@ use agent_client_protocol::{
         SetSessionModeRequest,
     },
 };
+use provider_session_machines::harness_lifecycle::{LifecycleReply, SettingFact};
 use provider_session_machines::{FastObserved, ProviderConfigValue, ProviderSettingsCatalog};
 use provider_session_machines::{
     ProviderSettingKind,
     session_lifecycle_machine::LoadAttempt,
     session_owner::{
         DispatchAuthorization, DispatchResult, FastReadback, ObservationCause, ObservedSetting,
-        OwnerEvent, OwnerSetting, RestoreModeOutcome, RestorePreparation, RestoredMode, RunAttempt,
-        SessionWireResult, SettingEvidence, SettingObservation, SettingReadback,
+        OwnerSetting, RestoreModeOutcome, RestoredMode, RunAttempt, SettingEvidence,
+        SettingObservation, SettingReadback,
     },
     session_setting_machine::{SettingApplication, SettingValueId},
 };
-use std::sync::Arc;
 use switchboard_harness_contracts::{ReservedWorkReply, WorkOfferRefusal, WorkReply};
 use uuid::Uuid;
 
@@ -117,12 +116,12 @@ pub(crate) enum SettingCorrelation {
     RestoreMode {
         run: RunAttempt<LoadAttempt>,
         setting: OwnerSetting,
-        completion: OwnerCompletion,
+        completion: LifecycleReply<SettingFact>,
     },
     RestoreFastOff {
         run: RunAttempt<LoadAttempt>,
         setting: OwnerSetting,
-        completion: OwnerCompletion,
+        completion: LifecycleReply<SettingFact>,
     },
 }
 
@@ -143,7 +142,7 @@ impl OwnerSettingWirePlan {
             .map_err(|_| OwnerWireRefusal::Encoding)
     }
 
-    pub(super) fn from_work_catalog(
+    pub(crate) fn from_work_catalog(
         session: String,
         catalog: &ProviderSettingsCatalog,
         kind: ProviderSettingKind,
@@ -220,6 +219,34 @@ impl OwnerSettingWirePlan {
 }
 
 impl CorrelatedSetting {
+    pub(super) fn settle_unsent(self) {
+        match self.correlation {
+            SettingCorrelation::Explicit {
+                authorization,
+                completion,
+            } => {
+                completion.send(WorkReply::Dispatch(DispatchResult::DefinitelyUnsent(
+                    authorization,
+                )));
+            }
+            SettingCorrelation::RestoreMode {
+                run,
+                setting,
+                completion,
+            }
+            | SettingCorrelation::RestoreFastOff {
+                run,
+                setting,
+                completion,
+            } => {
+                completion.send(SettingFact::NotSent {
+                    restore: run,
+                    setting,
+                });
+            }
+        }
+    }
+
     pub(crate) fn settle(
         self,
         reply: Option<Result<serde_json::Value, Error>>,
@@ -334,13 +361,13 @@ impl CorrelatedSetting {
                     },
                     None => RestoreModeOutcome::Unconfirmed,
                 };
-                completion.send(OwnerEvent::Wire(SessionWireResult::RestoreMode {
-                    run,
+                completion.send(SettingFact::Mode {
+                    restore: run,
                     setting,
                     outcome,
                     catalogue: (catalogue_reported || confirmed_legacy_mode)
-                        .then(|| Arc::new(shape.catalog)),
-                }));
+                        .then(|| shape.catalog.into_record()),
+                });
             }
             SettingCorrelation::RestoreFastOff {
                 run,
@@ -359,16 +386,16 @@ impl CorrelatedSetting {
                     None if refused => Some(ObservationCause::Refused),
                     None => Some(ObservationCause::Unconfirmed),
                 };
-                completion.send(OwnerEvent::Prepare(RestorePreparation::FastOff {
-                    run,
+                completion.send(SettingFact::FastOff {
+                    restore: run,
                     setting,
-                    catalogue: catalogue_reported.then(|| Arc::new(shape.catalog)),
+                    catalogue: catalogue_reported.then(|| shape.catalog.into_record()),
                     observation: SettingEvidence {
                         value: observed
                             .map_or(ObservedSetting::Unknown, ObservedSetting::Confirmed),
                         cause,
                     },
-                }));
+                });
             }
         }
     }

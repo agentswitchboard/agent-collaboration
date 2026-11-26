@@ -3,6 +3,7 @@
 //! core, with no I/O, no locks and no clock reads. The connection, the Host
 //! and their cells hold the state and run the effects.
 
+pub mod harness_lifecycle;
 pub mod monotonic_instant;
 mod provider_model_reasoning;
 mod provider_setting_choice;

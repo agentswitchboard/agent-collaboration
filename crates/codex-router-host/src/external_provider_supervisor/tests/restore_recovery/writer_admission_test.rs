@@ -11,7 +11,9 @@ async fn a_full_provider_writer_leaves_explicit_restore_known_unsent() {
     let owner = host
         .session_owner_for(&rig.target)
         .expect("registered session");
-    let held_writer = owner.hold_provider_writer_capacity();
+    let held_writer = owner
+        .hold_provider_writer_capacity()
+        .expect("real provider writer hold");
     let operation = OperationId::generate();
 
     host.load(rig.load_request(operation.clone()))

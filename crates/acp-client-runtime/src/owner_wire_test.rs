@@ -6,12 +6,15 @@ use provider_session_machines::{
     session_lifecycle_machine::SessionLifecycle,
     session_owner::{
         AuthorizedWork, ConnectionEpoch, CreateProgress, EffectOutcome, OwnerAddress, OwnerEffect,
-        OwnerInput, PromptAdmission, PublicationBatch, PublicationResult, SessionOwnerCommand,
-        SessionSnapshot, SessionStoreRequest, SessionStoreResult, SessionWireRequest,
+        OwnerEvent, OwnerInput, PromptAdmission, PublicationBatch, PublicationResult,
+        SessionOwnerCommand, SessionSnapshot, SessionStoreRequest, SessionStoreResult,
+        SessionWireRequest,
     },
     session_turn_machine::SessionTurn,
 };
 use session_event_model::{InputId, SessionState, TurnLostReason, TurnOutcome};
+use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 struct PromptPorts {
     taken: mpsc::UnboundedSender<DispatchAuthorization>,
@@ -33,11 +36,17 @@ impl SessionOwnerPorts for PromptPorts {
                 }))
             }
             OwnerEffect::AdoptProviderId { operation, .. } => {
-                Some(OwnerEvent::Create(CreateProgress::Adopted {
+                Some(OwnerEvent::Create(CreateProgress::Configured {
                     operation,
                     facts: Box::default(),
                 }))
             }
+            OwnerEffect::ActivateCreated {
+                operation, facts, ..
+            } => Some(OwnerEvent::Create(CreateProgress::Activated {
+                operation,
+                facts,
+            })),
             OwnerEffect::Publish(
                 PublicationBatch::Commit { id, .. } | PublicationBatch::Rebase { id, .. },
             ) => Some(OwnerEvent::Publication(PublicationResult::Applied(id))),
@@ -142,7 +151,6 @@ async fn settle_prompt_error(provider_shutdown: CancellationToken) -> SessionSna
     // Both waits are ready in the shutdown case. The reply wins the worker's
     // select and enters the owner before any independent retirement event.
     let (reply, connection_lost) = ResponseKind::read_reply(
-        matches!(&correlation, ResponseKind::Prompt { .. }),
         std::future::ready(Err(Error::internal_error())),
         &provider_shutdown,
         |_| false,
@@ -152,17 +160,11 @@ async fn settle_prompt_error(provider_shutdown: CancellationToken) -> SessionSna
         matches!(reply, Some(Err(_))),
         "consume the ready reply first"
     );
-    let ResponseKind::Prompt { completion, .. } = correlation else {
-        panic!("prompt reply correlation");
-    };
-    PromptTerminal {
-        authorization,
-        turn,
-        compact: false,
+    correlation.complete(
         reply,
-        completion,
-    }
-    .route(None, connection_lost);
+        connection_lost,
+        &crate::owner_session_setting::tests::ConnectionCatalogueBehavior,
+    );
 
     let settled = snapshots
         .wait_for(|snapshot| {

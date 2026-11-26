@@ -559,6 +559,7 @@ fn t4_unoffered_saved_mode_still_commits_with_not_offered_delta() {
         &mut state,
         OwnerEvent::Wire(SessionWireResult::Restore {
             run,
+            replay: Some(switchboard_harness_contracts::ReplayCompleteness::Complete),
             outcome: WireOutcome::Confirmed(RestoreLoadReadback {
                 catalogue: Arc::default(),
                 router_auto_requested: false,
@@ -586,6 +587,7 @@ fn report_restore_mode(
         state,
         OwnerEvent::Wire(SessionWireResult::Restore {
             run,
+            replay: Some(switchboard_harness_contracts::ReplayCompleteness::Complete),
             outcome: WireOutcome::Confirmed(RestoreLoadReadback {
                 catalogue: Arc::default(),
                 router_auto_requested: false,

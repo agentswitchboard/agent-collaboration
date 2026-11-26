@@ -58,6 +58,7 @@ async fn a_ready_host_restore_publishes_the_setters_catalogue_and_keeps_saved_se
     assert_eq!(
         owner
             .catalog()
+            .await
             .expect("active ACP catalogue")
             .effective_settings()
             .mode
@@ -249,7 +250,7 @@ async fn assert_restore_mode_reply(
         })
         .await
         .expect("the current live mode reply is accepted");
-    let active = owner.catalog().expect("active catalogue");
+    let active = owner.catalog().await.expect("active catalogue");
     assert_eq!(
         active.effective_settings().mode.as_deref(),
         Some("agent"),

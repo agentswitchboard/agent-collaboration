@@ -6,7 +6,7 @@ use super::{
 };
 use crate::provider_settings_catalog::ProviderSettingsUpdate;
 use crate::session_lifecycle_machine::{CloseAttempt, LoadAttempt};
-use crate::session_setting_machine::{SettingApplication, SettingValueId};
+use crate::session_setting_machine::SettingValueId;
 use crate::{ProviderSettingKind, ProviderSettingsCatalog};
 use session_event_model::{
     CapabilityReport, SessionEvent, SessionItem, SessionSettings, SessionState, SkillView,
@@ -17,8 +17,9 @@ use std::time::Duration;
 use uuid::Uuid;
 
 pub use switchboard_harness_contracts::{
-    CancelDrainReport, ConnectionEpoch, DispatchResult, FastReadback, OwnerAddress,
-    OwnerIncarnation, ProviderWireFailure, ProviderWireFailureKind, SettingReadback,
+    ActivationRefusal, CancelDrainReport, ConnectionEpoch, DispatchResult, FastReadback,
+    InitialSettingFailure, InitialSettingObservation, OwnerAddress, OwnerIncarnation,
+    ProviderWireFailure, ProviderWireFailureKind, SettingReadback,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -212,7 +213,11 @@ pub enum CreateProgress {
         operation: Uuid,
         provider_id: String,
     },
-    Adopted {
+    Configured {
+        operation: Uuid,
+        facts: Box<CreatedSessionFacts>,
+    },
+    Activated {
         operation: Uuid,
         facts: Box<CreatedSessionFacts>,
     },
@@ -225,6 +230,23 @@ pub enum CreateProgress {
     },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::session_owner) enum PendingCreate {
+    Opening(Uuid),
+    Adopting(Uuid),
+    Activating(Uuid),
+}
+
+impl PendingCreate {
+    pub const fn operation(self) -> Uuid {
+        match self {
+            Self::Opening(operation) | Self::Adopting(operation) | Self::Activating(operation) => {
+                operation
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CreatedSessionFacts {
     pub capabilities: CapabilityReport,
@@ -235,15 +257,6 @@ pub struct CreatedSessionFacts {
     pub mode_reason: Option<PermissionModeReason>,
     pub keep_fast_off: bool,
     pub failed_setting: Option<InitialSettingFailure>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct InitialSettingFailure {
-    pub kind: ProviderSettingKind,
-    pub attempted: SettingValueId,
-    pub application: SettingApplication,
-    pub unknown: bool,
-    pub confirmed_current: bool,
 }
 
 pub use switchboard_harness_contracts::PermissionModeReason;
@@ -259,6 +272,10 @@ pub enum ModelFastOutcome {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RestorePreparation {
     RouteReady(RunAttempt<LoadAttempt>),
+    Activation {
+        run: RunAttempt<LoadAttempt>,
+        result: Result<(), ActivationRefusal>,
+    },
     HostReady {
         run: RunAttempt<LoadAttempt>,
         capabilities: CapabilityReport,
@@ -299,6 +316,7 @@ pub enum RestoreFailure {
     ProviderError(ProviderWireFailure),
     NotEnqueued,
     Disconnected,
+    OutcomeUnknown,
     NoAnswer,
     LocalPrerequisite {
         stage: PreparationStage,
@@ -346,6 +364,7 @@ impl RestoreFailure {
             Self::Disconnected => {
                 "the provider disconnected before confirming the restore, so reconnect and retry this session"
             }
+            Self::OutcomeUnknown => "the provider did not confirm whether it restored the session",
             Self::NoAnswer => {
                 "the provider did not answer the restore in time, so retry this session"
             }
@@ -376,6 +395,8 @@ pub struct RestoreResult {
     pub phase: RestorePhase,
     pub disposition: RestoreDisposition,
     pub observed: BTreeMap<ProviderSettingKind, SettingEvidence>,
+    /// Capture evidence for a successfully activated load. Resume makes no replay claim.
+    pub replay: Option<switchboard_harness_contracts::ReplayCompleteness>,
 }
 
 impl RestoreResult {
@@ -523,11 +544,8 @@ pub enum PublicationFact {
     },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AcceptedRunSettings {
-    pub catalogue: Arc<ProviderSettingsCatalog>,
-    pub router_auto_requested: bool,
-}
+pub type AcceptedRunSettings =
+    switchboard_harness_contracts::AcceptedRunSettings<ProviderSettingsCatalog>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PublicationResult {
@@ -594,6 +612,15 @@ pub enum OwnerEffect {
         catalogue: Arc<ProviderSettingsCatalog>,
     },
     PrepareRoute(RunAttempt<LoadAttempt>),
+    ActivateRestored {
+        run: RunAttempt<LoadAttempt>,
+        accepted: AcceptedRunSettings,
+    },
+    ActivateCreated {
+        operation: Uuid,
+        generation: SessionGeneration,
+        facts: Box<CreatedSessionFacts>,
+    },
     Publish(PublicationBatch),
     Reply(SessionOwnerReply),
     ReplyUnsaved(SessionOwnerReply),
@@ -677,6 +704,7 @@ pub(in crate::session_owner) struct PendingPorts {
     pub history: HistoryAvailability,
     pub last_restore: Option<RestoreResult>,
     pub replay: Vec<SessionEvent>,
+    pub replay_completeness: Option<switchboard_harness_contracts::ReplayCompleteness>,
     pub observed: BTreeMap<ProviderSettingKind, SettingEvidence>,
     pub settings_catalogue: Option<Arc<ProviderSettingsCatalog>>,
     pub router_auto_requested: bool,
@@ -684,8 +712,7 @@ pub(in crate::session_owner) struct PendingPorts {
     pub last_live_turn: Option<LastLiveTurn>,
     pub projection: super::owner_reducer::OwnerProjection,
     pub restore_dependents: BTreeMap<Uuid, RunAttempt<LoadAttempt>>,
-    pub create: Option<Uuid>,
-    pub adopting: bool,
+    pub create: Option<PendingCreate>,
     pub setup: Option<PreparedSetup>,
     pub route_ready: bool,
     pub latest_setting: BTreeMap<ProviderSettingKind, OwnerSetting>,
@@ -723,6 +750,7 @@ impl PendingPorts {
             history: HistoryAvailability::Unavailable,
             last_restore: None,
             replay: Vec::new(),
+            replay_completeness: None,
             observed: BTreeMap::new(),
             settings_catalogue: None,
             router_auto_requested: false,
@@ -731,7 +759,6 @@ impl PendingPorts {
             projection: super::owner_reducer::OwnerProjection::default(),
             restore_dependents: BTreeMap::new(),
             create: None,
-            adopting: false,
             setup: None,
             route_ready: false,
             latest_setting: BTreeMap::new(),

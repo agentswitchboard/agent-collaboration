@@ -135,7 +135,9 @@ pub(super) async fn restore(
                 RestoreFailure::Lost { .. } => {
                     ConversationOperationFailureKind::ProviderSessionNotFound
                 }
-                RestoreFailure::NoAnswer | RestoreFailure::Disconnected => {
+                RestoreFailure::NoAnswer
+                | RestoreFailure::Disconnected
+                | RestoreFailure::OutcomeUnknown => {
                     ConversationOperationFailureKind::OutcomeUnknown
                 }
                 _ => ConversationOperationFailureKind::Unavailable,

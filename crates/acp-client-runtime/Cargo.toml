@@ -10,8 +10,8 @@ publish.workspace = true
 workspace = true
 
 [features]
-harness-work-observation = ["dep:sha2"]
-test-observation = []
+harness-work-observation = ["dep:sha2", "switchboard-harness-shared-mechanics/harness-work-observation"]
+test-observation = ["switchboard-harness-contracts/test-support"]
 # Scenario tests use the owner fixture, in-process transport, and named-point hook.
 # Enabled only by dev-dependencies.
 test-support = ["harness-work-observation"]

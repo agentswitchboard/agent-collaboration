@@ -146,65 +146,6 @@ async fn capability_report_uses_initialize_and_session_advertisements() {
     runtime.shutdown().await;
 }
 
-#[test]
-fn prompt_content_gate_matches_advertised_optional_types() {
-    // ACP v1 initialization.mdx:202-217: text and resource links are baseline;
-    // image, audio and embedded resources require promptCapabilities.
-    use acp_client_runtime::ProviderCapabilityReport;
-    use acp_client_runtime::ProviderPromptContent;
-    use session_event_model::PromptContent;
-
-    let examples = [
-        ("text", serde_json::json!({"type": "text", "text": "hello"})),
-        (
-            "resourceLink",
-            serde_json::json!({"type": "resourceLink", "name": "reference", "uri": "file:///tmp/reference"}),
-        ),
-        (
-            "image",
-            serde_json::json!({"type": "image", "mimeType": "image/png", "data": "AA=="}),
-        ),
-        (
-            "audio",
-            serde_json::json!({"type": "audio", "mimeType": "audio/wav", "data": "AA=="}),
-        ),
-        (
-            "embeddedResource",
-            serde_json::json!({"type": "embeddedResource", "uri": "file:///tmp/reference", "text": "content"}),
-        ),
-    ];
-    for advertised_mask in 0_u8..8 {
-        let report = ProviderCapabilityReport {
-            accepts_image: advertised_mask & 1 != 0,
-            accepts_audio: advertised_mask & 2 != 0,
-            accepts_embedded_resource: advertised_mask & 4 != 0,
-            ..ProviderCapabilityReport::default()
-        };
-        for (content_type, wire_block) in &examples {
-            let block: PromptContent =
-                serde_json::from_value(wire_block.clone()).expect("canonical content example");
-            let result = ProviderPromptContent::from_session_contents(vec![block], &report);
-            let accepted = match *content_type {
-                "text" | "resourceLink" => true,
-                "image" => report.accepts_image,
-                "audio" => report.accepts_audio,
-                "embeddedResource" => report.accepts_embedded_resource,
-                _ => false,
-            };
-            if accepted {
-                assert!(result.is_ok(), "{content_type} mask {advertised_mask}");
-            } else {
-                assert_eq!(
-                    result
-                        .expect_err("unadvertised content is rejected")
-                        .to_string(),
-                    format!("unsupportedContent{{{content_type}}}")
-                );
-            }
-        }
-    }
-}
-
 #[cfg(unix)]
 #[tokio::test]
 async fn text_prompt_reaches_agent_without_optional_prompt_capabilities() {

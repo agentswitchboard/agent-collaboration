@@ -5,8 +5,7 @@
 //! refused with the accepted list. The plan is pure: the caller applies it
 //! against the agent and reports the requested and actual modes.
 
-/// The router-level name every agent accepts for its auto realization.
-pub const AUTO_PERMISSION_MODE: &str = "auto";
+pub use switchboard_harness_contracts::AUTO_PERMISSION_MODE;
 
 /// How an agent's auto mode treats an action outside its granted folders (R7).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -157,13 +156,7 @@ pub fn plan_permission_mode(
     }
 }
 
-/// The requested and actual mode of a session and why they differ (R3).
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct PermissionModeReport {
-    pub requested: Option<String>,
-    pub actual: Option<String>,
-    pub reason: Option<PermissionModeReason>,
-}
+pub use switchboard_harness_contracts::PermissionModeReport;
 
 /// Why the optional mode portion of a restore differs from its saved setup.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

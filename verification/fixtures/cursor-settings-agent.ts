@@ -149,6 +149,7 @@ async function serveSharedSettings(peer: {
 //     text is "hold-open" stays running, as hold-first-prompt-open, until a
 //     session/cancel ends it.
 //   exit-on-stop-file: the agent exits once the file <receipt>.stop exists.
+//   invalid-utf8-on-release: emit an invalid stdout line after the release gate.
 //   permission-after-steer: with advertise-steering, a steer answered injected
 //     is followed by a permission request for a fetch in the running turn;
 //     the client's answer is recorded and the turn keeps running.
@@ -157,6 +158,13 @@ async function serveSharedSettings(peer: {
 //     a test can tell that turn's end from any later turn's.
 //   hold-load: session/load is answered only once the file
 //     <receipt>.release-load exists; other requests are answered meanwhile.
+//   saved-history: replay one user update and one agent update on session/load.
+//   malformed-saved-update and opaque-saved-update: insert one such update between them.
+//   reader-projection-error: after the first load, wait for .release-reader-error
+//     and send one live update that exceeds the projection limit.
+//   hold-created-update: send a created-session update on .release-created-update.
+//   restore-skill-view: replay one available command before the load reply.
+//   fast-on-only: the fast catalogue reads on and advertises no off value.
 const reactiveBehaviourNames = [
   "boolean-fast",
   "on-off-fast",
@@ -174,9 +182,17 @@ const reactiveBehaviourNames = [
   "advertise-steering",
   "prompt-directives",
   "exit-on-stop-file",
+  "invalid-utf8-on-release",
   "permission-after-steer",
   "held-turn-ends-max-tokens",
   "hold-load",
+  "saved-history",
+  "malformed-saved-update",
+  "opaque-saved-update",
+  "reader-projection-error",
+  "hold-created-update",
+  "restore-skill-view",
+  "fast-on-only",
 ] as const;
 type ReactiveBehaviour = (typeof reactiveBehaviourNames)[number];
 
@@ -214,7 +230,8 @@ function reactiveOptions(
     (behaviours.has("fast-not-offered-on-fixture-b") && session.model === "fixture-b")
   )
     return result;
-  if (behaviours.has("boolean-fast"))
+  if (behaviours.has("fast-on-only")) result.push(option("fast", "model_config", ["on"], "on"));
+  else if (behaviours.has("boolean-fast"))
     result.push({
       id: "fast",
       name: "fast",
@@ -232,6 +249,7 @@ interface ReactivePeer {
   readonly behaviours: ReadonlySet<ReactiveBehaviour>;
   /** The file whose appearance ends a held first prompt's turn. */
   readonly releasePath: string;
+  readonly sendCreatedUpdate: (sessionId: string) => void;
   /** The file whose appearance ends the agent (exit-on-stop-file). */
   readonly stopPath: string;
   readonly readRequest: () => Promise<Record<string, unknown> | undefined>;
@@ -424,11 +442,87 @@ function methodNotFound(peer: ReactivePeer, request: Record<string, unknown>): v
   });
 }
 
+function answerReactiveLoad(
+  peer: ReactivePeer,
+  request: Record<string, unknown>,
+  sessions: Map<string, ReactiveSession>,
+): void {
+  // A restarted agent loads a stored session at its defaults.
+  const sessionId = String(requestParameters(request).sessionId);
+  const firstLoad = !sessions.has(sessionId);
+  const session = sessions.get(sessionId) ?? {
+    mode: "agent",
+    model: "fixture-a",
+    effort: "medium",
+    fast: true,
+  };
+  sessions.set(sessionId, session);
+  const answer = (): void => {
+    if (peer.behaviours.has("restore-skill-view")) {
+      peer.send({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId,
+          update: {
+            sessionUpdate: "available_commands_update",
+            availableCommands: [{ name: "compact", description: "Compact context" }],
+          },
+        },
+      });
+    }
+    if (peer.behaviours.has("saved-history")) {
+      const sendUpdate = (kind: string, text: string | number): void => {
+        peer.send({
+          jsonrpc: "2.0",
+          method: "session/update",
+          params: {
+            sessionId,
+            update: { sessionUpdate: kind, content: { type: "text", text } },
+          },
+        });
+      };
+      sendUpdate("user_message_chunk", "first saved update");
+      if (peer.behaviours.has("malformed-saved-update")) sendUpdate("agent_message_chunk", 42);
+      if (peer.behaviours.has("opaque-saved-update"))
+        sendUpdate("fixture_future_update", "opaque saved update");
+      sendUpdate("agent_message_chunk", "second saved update");
+    }
+    peer.reply(request, { configOptions: reactiveOptions(session, peer.behaviours, true) });
+    if (firstLoad && peer.behaviours.has("reader-projection-error"))
+      reportReaderProjectionError(peer, sessionId);
+  };
+  if (peer.behaviours.has("hold-load")) void fileAppears(`${peer.releasePath}-load`).then(answer);
+  else answer();
+}
+
+function reportReaderProjectionError(peer: ReactivePeer, sessionId: string): void {
+  void fileAppears(`${peer.releasePath}-reader-error`).then((): void => {
+    // This exceeds the item projection limit while fitting in one ACP frame.
+    peer.send({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId,
+        update: {
+          sessionUpdate: "fixture_reader_projection_error",
+          content: { type: "text", text: "x".repeat(1024 * 1024 + 1) },
+        },
+      },
+    });
+  });
+}
+
 async function serveReactiveSettings(peer: ReactivePeer): Promise<void> {
   let promptsSeen = 0;
   /** The held-open prompt, while its turn runs. */
   let heldOpen: Record<string, unknown> | undefined;
   if (peer.behaviours.has("exit-on-stop-file")) exitWhenFileAppears(peer.stopPath);
+  if (peer.behaviours.has("invalid-utf8-on-release")) {
+    void fileAppears(`${peer.releasePath}-invalid-utf8`).then((): void => {
+      process.stdout.write(Uint8Array.of(0xff, 0x0a));
+    });
+  }
   const sessions = new Map<string, ReactiveSession>();
   const replies = new ReactiveFastReplies(peer.behaviours);
   for (;;) {
@@ -445,25 +539,12 @@ async function serveReactiveSettings(peer: ReactivePeer): Promise<void> {
           sessionId,
           configOptions: reactiveOptions(session, peer.behaviours, true),
         });
+        if (peer.behaviours.has("hold-created-update")) peer.sendCreatedUpdate(sessionId);
         break;
       }
-      case "session/load": {
-        // A restarted agent loads a stored session at its defaults.
-        const sessionId = String(requestParameters(request).sessionId);
-        const session = sessions.get(sessionId) ?? {
-          mode: "agent",
-          model: "fixture-a",
-          effort: "medium",
-          fast: true,
-        };
-        sessions.set(sessionId, session);
-        const answer = (): void =>
-          peer.reply(request, { configOptions: reactiveOptions(session, peer.behaviours, true) });
-        if (peer.behaviours.has("hold-load"))
-          void fileAppears(`${peer.releasePath}-load`).then(answer);
-        else answer();
+      case "session/load":
+        answerReactiveLoad(peer, request, sessions);
         break;
-      }
       case "session/set_config_option":
         answerReactiveSetting(
           peer,
@@ -576,6 +657,21 @@ function reactivePeer(
     behaviours: reactiveBehaviours(process.argv.slice(4)),
     releasePath: `${requireArgument(3)}.release`,
     stopPath: `${requireArgument(3)}.stop`,
+    sendCreatedUpdate: (sessionId: string): void => {
+      void fileAppears(`${requireArgument(3)}.release-created-update`).then((): void => {
+        io.send({
+          jsonrpc: "2.0",
+          method: "session/update",
+          params: {
+            sessionId,
+            update: {
+              sessionUpdate: "current_mode_update",
+              currentModeId: "ask",
+            },
+          },
+        });
+      });
+    },
     readRequest,
     reply,
     refuse: (request: Record<string, unknown>, message: string): void => {

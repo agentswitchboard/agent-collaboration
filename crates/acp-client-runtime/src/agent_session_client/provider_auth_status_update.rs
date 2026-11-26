@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use agent_client_protocol::{Agent, ConnectionTo, Dispatch, Error, HandleDispatchFrom, Handled};
+use provider_session_machines::harness_lifecycle::CallbackAdmission;
 use session_event_model::ProviderAuthStatus;
 use session_event_model::session_profile_codec::decode_connection_auth_status;
 use tokio::sync::RwLock;
@@ -57,7 +58,13 @@ impl HandleDispatchFrom<Agent> for ProviderAuthStatusHandler {
         *self.auth_status.write().await = status.clone();
         // Connection-wide: the agent's auth status belongs to the connection,
         // so it reaches every session's report, whatever its run.
-        for session_id in self.wire.routed_sessions() {
+        let (owners, unbound_sessions) = self.wire.auth_observation_targets();
+        for owner in owners {
+            if owner.report_connection_auth(status.clone()) == CallbackAdmission::Unavailable {
+                tracing::debug!("a session did not accept its auth status update");
+            }
+        }
+        for session_id in unbound_sessions {
             if self
                 .event_sink
                 .publish_connection_auth(&session_id, status.clone())

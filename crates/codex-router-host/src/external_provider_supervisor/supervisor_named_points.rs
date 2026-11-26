@@ -91,20 +91,22 @@ impl ExternalProviderSupervisor {
             .owner_door(endpoint)
             .ok_or(crate::ExternalProviderRuntimeError::LocalNotFound)?;
         let roots = crate::provider_work_roots::ProviderWorkRoots::default();
-        let created = door
-            .create(
+        let result = door
+            .create_with_harness(
                 endpoint.clone(),
                 collaboration_protocol::OperationId::generate(),
-                acp_client_runtime::owner_session_open::OwnerSessionOpenSetup {
+                provider_session_machines::harness_lifecycle::OpenSetup {
                     cwd,
                     scratch_folder: None,
                     work_roots: Default::default(),
                 },
-                acp_client_runtime::RequestedProviderSettings::default(),
+                Default::default(),
                 roots,
             )
-            .await?;
-        Ok(created.created.provider_session_id)
+            .await;
+        Ok(crate::provider_create_result::project_owner_create(result)?
+            .created
+            .provider_session_id)
     }
 
     /// Pauses the accepted terminal write at its place in the store lane.

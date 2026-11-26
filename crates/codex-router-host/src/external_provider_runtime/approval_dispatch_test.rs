@@ -258,6 +258,17 @@ async fn assert_refusal_before_answer_model(method: &str, params: Value, refusal
 }
 
 #[tokio::test]
+async fn managed_permission_reply_is_first_wire_frame_after_refusal() {
+    assert_refusal_before_answer_model(
+        "session/request_permission",
+        json!({"sessionId":"session-a","toolCall":{"toolCallId":"interaction-tool","title":"Run"},
+            "options":[{"optionId":"allow","name":"Allow once","kind":"allow_once"}]}),
+        json!({"outcome":{"outcome":"cancelled"}}),
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn managed_acp_empty_form_is_refused_and_cancelled_before_answer_model() {
     assert_refusal_before_answer_model(
         "elicitation/create",

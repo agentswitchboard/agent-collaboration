@@ -3,17 +3,17 @@
 use super::{AtomicU64, ExternalProviderApprovalRefusalWarning};
 
 use super::{
-    ActiveApprovalContext, AgentSessionClient, Arc, CancellationToken, Client, Duration,
-    ExternalProviderApprovalRefusalReason, ExternalProviderLaunch, ExternalProviderRuntimeError,
-    HashMap, InteractionPort, Lines, MAX_ACP_FRAME_BYTES, McpServer, Ordering,
-    PermissionDispatchState, ProviderAuthStatusHandler, ProviderCommand,
-    ProviderCursorCreatePlanHandler, ProviderCursorQuestionHandler, ProviderCursorTodoHandler,
-    ProviderFormElicitationHandler, ProviderFrameObservation, ProviderRequestFallback,
-    ProviderRequestSessionGuard, RequestPermissionRequest, SessionEventSink,
-    initialize_provider_connection, provider_lifecycle_requests, record_permission_refusal,
-    spawn_external_approval_dispatch,
+    AcpRequestPayloads, AcpRequestPolicy, ActiveApprovalContext, AgentSessionClient, Arc,
+    CancellationToken, Client, Duration, ExternalProviderApprovalRefusalReason,
+    ExternalProviderLaunch, ExternalProviderRuntimeError, HashMap, Lines, MAX_ACP_FRAME_BYTES,
+    McpServer, Ordering, OwnerApprovalBindings, PermissionDispatchState, ProviderAuthStatusHandler,
+    ProviderCommand, ProviderCursorCreatePlanHandler, ProviderCursorQuestionHandler,
+    ProviderCursorTodoHandler, ProviderFormElicitationHandler, ProviderFrameObservation,
+    ProviderRequestFallback, ProviderRequestSessionGuard, RequestPermissionRequest,
+    SessionEventSink, initialize_provider_connection, provider_lifecycle_requests,
+    record_permission_refusal, spawn_external_approval_dispatch,
 };
-impl<P: InteractionPort> AgentSessionClient<P> {
+impl<P: AcpRequestPayloads> AgentSessionClient<P> {
     #[expect(
         clippy::too_many_arguments,
         reason = "Passes the ACP connection inputs to the transport initializer."
@@ -23,7 +23,7 @@ impl<P: InteractionPort> AgentSessionClient<P> {
         model_picker: crate::ProviderModelPicker,
         initialize_timeout: Duration,
         configured_mcp_servers: Vec<McpServer>,
-        interaction_port: Arc<P>,
+        request_policy: Arc<AcpRequestPolicy<P>>,
         event_sink: Arc<dyn SessionEventSink>,
         behavior: Arc<dyn crate::ProviderBehavior>,
         clock: Arc<dyn router_clock::RuntimeClock>,
@@ -35,7 +35,7 @@ impl<P: InteractionPort> AgentSessionClient<P> {
             model_picker,
             initialize_timeout,
             configured_mcp_servers,
-            interaction_port,
+            request_policy,
             event_sink,
             behavior,
             clock,
@@ -54,7 +54,7 @@ impl<P: InteractionPort> AgentSessionClient<P> {
         model_picker: crate::ProviderModelPicker,
         initialize_timeout: Duration,
         configured_mcp_servers: Vec<McpServer>,
-        interaction_port: Arc<P>,
+        request_policy: Arc<AcpRequestPolicy<P>>,
         event_sink: Arc<dyn SessionEventSink>,
         behavior: Arc<dyn crate::ProviderBehavior>,
         clock: Arc<dyn router_clock::RuntimeClock>,
@@ -74,9 +74,10 @@ impl<P: InteractionPort> AgentSessionClient<P> {
         let task_frame_observation = Arc::clone(&frame_observation);
         let shutdown_failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let task_shutdown_failed = Arc::clone(&shutdown_failed);
+        let listing_shutdown_failed = Arc::clone(&shutdown_failed);
         let task_shutdown = shutdown.clone();
         let connection_retirement = retirement.clone();
-        let task_connection_retirement = retirement.clone();
+        let foreground_retirement = retirement.clone();
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
         let (admission_settled_tx, admission_settled_rx) = tokio::sync::oneshot::channel();
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(32);
@@ -85,6 +86,16 @@ impl<P: InteractionPort> AgentSessionClient<P> {
             Arc::clone(&behavior),
         );
         let owner_wire = Arc::new(owner_wire);
+        #[cfg(feature = "test-observation")]
+        let provider_exit_observation = Arc::clone(&owner_wire);
+        #[cfg(feature = "test-observation")]
+        let input_eof_control = Arc::clone(&owner_wire);
+        #[cfg(feature = "test-observation")]
+        let reply_test_wire = Arc::clone(&owner_wire);
+        #[cfg(feature = "test-observation")]
+        let fatal_callback_wire = Arc::clone(&owner_wire);
+        #[cfg(feature = "test-observation")]
+        let transport_end_observer = owner_wire.transport_end_observer_for_test();
         let callbacks = Arc::new(crate::owner_callback_routing::OwnerCallbackRouting::new(
             owner_wire.clone(),
         ));
@@ -110,19 +121,28 @@ impl<P: InteractionPort> AgentSessionClient<P> {
         let permission_outcome = Arc::new(std::sync::atomic::AtomicU8::new(0));
         #[cfg(any(test, feature = "test-observation"))]
         let callback_permission_outcome = Arc::clone(&permission_outcome);
-        let callback_interaction_port = Arc::clone(&interaction_port);
+        let callback_interaction_port = Arc::clone(&request_policy);
+        #[cfg(any(test, feature = "test-support"))]
+        let malformed_approval_observer = Arc::new(std::sync::Mutex::new(None));
+        #[cfg(any(test, feature = "test-support"))]
+        let callback_malformed_approval_observer = Arc::clone(&malformed_approval_observer);
 
         let approval_contexts = Arc::new(std::sync::Mutex::new(HashMap::<
             String,
             ActiveApprovalContext<P>,
         >::new()));
-        let callback_approval_contexts = Arc::clone(&approval_contexts);
-        let callback_question_contexts = Arc::clone(&approval_contexts);
-        let callback_question_port = Arc::clone(&interaction_port);
-        let callback_plan_contexts = Arc::clone(&approval_contexts);
-        let callback_plan_port = Arc::clone(&interaction_port);
-        let callback_elicitation_contexts = Arc::clone(&approval_contexts);
-        let callback_elicitation_port = Arc::clone(&interaction_port);
+        let approval_bindings = OwnerApprovalBindings::new(
+            approval_contexts,
+            Arc::clone(&request_policy),
+            retirement.clone(),
+        );
+        let callback_approval_bindings = approval_bindings.clone();
+        let callback_question_bindings = approval_bindings.clone();
+        let callback_question_port = Arc::clone(&request_policy);
+        let callback_plan_bindings = approval_bindings.clone();
+        let callback_plan_port = Arc::clone(&request_policy);
+        let callback_elicitation_bindings = approval_bindings.clone();
+        let callback_elicitation_port = Arc::clone(&request_policy);
         let permission_refusal_reasons = Arc::new(std::sync::Mutex::new(HashMap::new()));
         let callback_permission_refusal_reasons = Arc::clone(&permission_refusal_reasons);
         let endpoint_id = Arc::new(tokio::sync::RwLock::new(None::<String>));
@@ -139,10 +159,15 @@ impl<P: InteractionPort> AgentSessionClient<P> {
         let observed_tool_calls = Arc::clone(&test_tool_calls);
         let client_clock = Arc::clone(&clock);
         let provider_behavior = Arc::clone(&behavior);
+        let connection_approval_bindings = approval_bindings.clone();
         #[cfg(feature = "test-observation")]
         let connection_settled = CancellationToken::new();
         #[cfg(feature = "test-observation")]
         let mark_connection_settled = connection_settled.clone().drop_guard();
+        #[cfg(feature = "test-observation")]
+        let connection_drain_started = CancellationToken::new();
+        #[cfg(feature = "test-observation")]
+        let mark_connection_drain_started = connection_drain_started.clone();
         #[cfg(feature = "test-observation")]
         let provider_reaping_finished = CancellationToken::new();
         #[cfg(feature = "test-observation")]
@@ -158,17 +183,26 @@ impl<P: InteractionPort> AgentSessionClient<P> {
             });
             let callback_claims =
                 Arc::new(crate::provider_callback_claims::ProviderCallbackClaims::default());
+            let transport_ending = CancellationToken::new();
             let outgoing = crate::provider_transport_diagnostics::ObservedProviderSink::new(
                 futures_util::SinkExt::<String>::sink_map_err(
                     FramedWrite::new(writer, LinesCodec::new()),
                     std::io::Error::other,
                 ),
                 Arc::clone(&callback_claims),
+                transport_ending.clone(),
             );
+            #[cfg(feature = "test-observation")]
+            let outgoing = outgoing.with_end_observer(transport_end_observer.clone());
             let incoming_frame_observation = Arc::clone(&task_frame_observation);
-            let input_ended = CancellationToken::new();
-            let input_error = input_ended.clone();
-            let input_eof = input_ended.clone();
+            #[cfg(feature = "test-observation")]
+            let callback_frame_observation = Arc::clone(&task_frame_observation);
+            let input_error = transport_ending.clone();
+            let input_eof = transport_ending.clone();
+            #[cfg(feature = "test-observation")]
+            let read_error_observer = transport_end_observer.clone();
+            let error_approvals = connection_approval_bindings.clone();
+            let eof_approvals = connection_approval_bindings.clone();
             let incoming =
                 FramedRead::new(reader, LinesCodec::new_with_max_length(MAX_ACP_FRAME_BYTES))
                     .map(move |line| {
@@ -176,7 +210,10 @@ impl<P: InteractionPort> AgentSessionClient<P> {
                             crate::provider_transport_diagnostics::record_incoming_frame(frame);
                         }
                         line.map_err(|error| {
+                            #[cfg(feature = "test-observation")]
+                            read_error_observer.report(crate::owner_wire::TransportEnd::ReadError);
                             input_error.cancel();
+                            error_approvals.stop_connection();
                             crate::provider_transport_diagnostics::record_incoming_error();
                             if matches!(
                                 error,
@@ -194,17 +231,39 @@ impl<P: InteractionPort> AgentSessionClient<P> {
                         })
                     })
                     .chain(futures_util::stream::once(async move {
+                        #[cfg(feature = "test-observation")]
+                        input_eof_control.before_provider_eof_for_test().await;
+                        #[cfg(feature = "test-observation")]
+                        transport_end_observer.report(crate::owner_wire::TransportEnd::EndOfInput);
                         input_eof.cancel();
+                        eof_approvals.stop_connection();
                         Err(std::io::Error::new(
                             std::io::ErrorKind::UnexpectedEof,
                             "provider stdout closed",
                         ))
                     }));
 
-            let connection = Client.builder().name("codex-router-host")
+            let (start_writer, writer_ready) = tokio::sync::oneshot::channel();
+            let writer_shutdown = connection_retirement.child_token();
+            // A forced outer-task abort still asks the independently owned
+            // writer to drain. Normal exits also join it below.
+            let _stop_writer_on_drop = writer_shutdown.clone().drop_guard();
+            let writer = tokio::spawn(async move {
+                let mut owner_output = owner_output;
+                match writer_ready.await {
+                    Ok((connection, configuration)) => {
+                        owner_output
+                            .run(connection, configuration, writer_shutdown, transport_ending)
+                            .await;
+                    }
+                    Err(_) => owner_output.drain_unsent(&writer_shutdown).await,
+                }
+            });
+
+            let builder = Client.builder().name("codex-router-host")
                 .with_handler(ProviderRequestSessionGuard::new(request_routes))
                 .with_handler(crate::owner_callback_routing::OwnerToolCallHandler::new(Arc::clone(&callbacks)))
-                .with_handler(crate::owner_restore_updates::OwnerRestoreUpdateRouter(restore_routes))
+                .with_handler(crate::owner_wire::owner_restore_update_router::OwnerRestoreUpdateRouter(restore_routes))
                 .on_receive_request(
                     async move |request: RequestPermissionRequest, responder, connection| {
                         crate::provider_transport_diagnostics::record_callback_entered(crate::provider_transport_diagnostics::ProviderFrameKind::Permission);
@@ -226,7 +285,7 @@ impl<P: InteractionPort> AgentSessionClient<P> {
                             return result;
                         }
                         let scope = permission_callbacks.current_scope(request.session_id.0.as_ref());
-                        let context = callback_approval_contexts.lock().ok().and_then(|contexts| {
+                        let context = callback_approval_bindings.active.lock().ok().and_then(|contexts| {
                             contexts.get(request.session_id.0.as_ref()).filter(|context| {
                                 scope.is_some_and(|(run, turn)| {
                                     context.incarnation == run.incarnation
@@ -236,7 +295,7 @@ impl<P: InteractionPort> AgentSessionClient<P> {
                             }).cloned()
                         });
                         // A scoped grant can answer without sending the request to a person.
-                        if context.is_some()
+                        if let Some(context) = context.as_ref()
                             && let Some(scope) = scope
                             && let Some(permission) = crate::in_folder_allowance::InFolderPermission::from_offer(
                                 &request.tool_call, &request.options, &|action, title| {
@@ -250,16 +309,25 @@ impl<P: InteractionPort> AgentSessionClient<P> {
                                 permission,
                             )
                         {
-                            return responder.respond(
-                                agent_client_protocol::schema::v1::RequestPermissionResponse::new(
-                                    agent_client_protocol::schema::v1::RequestPermissionOutcome::Selected(
-                                        agent_client_protocol::schema::v1::SelectedPermissionOutcome::new(option),
-                                    ),
-                                ),
-                            );
+                            use agent_client_protocol::schema::v1::{
+                                RequestPermissionOutcome, RequestPermissionResponse, SelectedPermissionOutcome,
+                            };
+                            if let Some(guard) = context.track_response("session/request_permission", responder.id(), responder.cancellation()) {
+                                let selected = RequestPermissionResponse::new(
+                                    RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(option)),
+                                );
+                                let declined = RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled);
+                                return guard.commit(|open| responder.respond(if open { selected } else { declined }));
+                            }
+                            return responder.respond(RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled));
                         }
                         let dispatch_state = PermissionDispatchState {
-                            interaction_port: Arc::clone(&callback_interaction_port),
+                            request_policy: Arc::clone(&callback_interaction_port),
+                            approval_bindings: callback_approval_bindings.clone(),
+                            #[cfg(feature = "test-observation")]
+                            frame_observation: Arc::clone(&callback_frame_observation),
+                            #[cfg(any(test, feature = "test-support"))]
+                            malformed_approval_observer: Arc::clone(&callback_malformed_approval_observer),
                             refusal_reasons: Arc::clone(&callback_permission_refusal_reasons),
                             endpoint_id: Arc::clone(&callback_endpoint_id),
                             persistence_target,
@@ -294,20 +362,20 @@ impl<P: InteractionPort> AgentSessionClient<P> {
                 ))
                 .with_handler(ProviderCursorQuestionHandler::new(
                     Arc::clone(&callbacks),
-                    callback_question_contexts,
+                    callback_question_bindings,
                     callback_question_port,
                 ))
                 .with_handler(ProviderCursorCreatePlanHandler::new(
                     Arc::clone(&callbacks),
                     Arc::clone(&todo_state),
                     Arc::clone(&task_event_sink),
-                    callback_plan_contexts,
+                    callback_plan_bindings,
                     callback_plan_port,
                     task_shutdown.clone(),
                     sink_closed.clone(),
                 ))
                 .with_handler(ProviderFormElicitationHandler::new(
-                    callback_elicitation_contexts,
+                    callback_elicitation_bindings,
                     callback_elicitation_port,
                 ))
                 .with_handler(ProviderCursorTodoHandler::new(
@@ -317,13 +385,27 @@ impl<P: InteractionPort> AgentSessionClient<P> {
                     task_shutdown.clone(),
                     sink_closed.clone(),
                 ))
-                .with_handler(ProviderRequestFallback)
-                .connect_with(
+                .with_handler(ProviderRequestFallback);
+            #[cfg(feature = "test-observation")]
+            let builder = {
+                let fatal_callback_bindings = connection_approval_bindings.clone();
+                builder.with_spawned(move |connection| async move {
+                    fatal_callback_wire
+                        .fatal_callback_requested_for_test()
+                        .await;
+                    let _registered = fatal_callback_bindings.spawn_callback(&connection, async {
+                        Err(agent_client_protocol::Error::internal_error())
+                    });
+                    Ok(())
+                })
+            };
+            let connection = builder.connect_with(
                 Lines::new(outgoing, incoming),
                 async move |connection| {
                     let initialized = tokio::select! {
                         biased;
                         () = task_shutdown.cancelled() => {
+                            foreground_retirement.cancel();
                             return Ok(());
                         }
                         response = router_clock::timeout_at(
@@ -352,16 +434,18 @@ impl<P: InteractionPort> AgentSessionClient<P> {
                                 auth_status: open_auth_status,
                                 #[cfg(any(test, feature = "test-observation"))]
                                 observed_tool_calls,
+                                #[cfg(feature = "test-observation")]
+                                reply_test_wire: Some(reply_test_wire),
                             };
+                            let _writer_gone = start_writer.send((connection.clone(), configuration));
                             let _reader_gone = ready_tx.send(Ok((admission, capabilities)));
-                            Some(configuration)
+                            true
                         }
-                        Err(error) => { let _reader_gone = ready_tx.send(Err(error)); None }
+                        Err(error) => { let _reader_gone = ready_tx.send(Err(error)); false }
                     };
                     let _reader_gone = admission_settled_tx.send(());
-                    if let Some(configuration) = opened {
-                        let mut executors = tokio::task::JoinSet::new();
-                        executors.spawn(owner_output.run(connection.clone(), configuration, task_connection_retirement.clone(), input_ended));
+                    if opened {
+                        let mut listings = tokio::task::JoinSet::new();
                         loop {
                             tokio::select! {
                                 () = task_shutdown.cancelled() => break,
@@ -369,7 +453,7 @@ impl<P: InteractionPort> AgentSessionClient<P> {
                                     Some(ProviderCommand { cwd, reply }) => {
                                         let connection = connection.clone();
                                         let stopped = task_shutdown.clone();
-                                        executors.spawn(async move {
+                                        listings.spawn(async move {
                                             let result = tokio::select! {
                                                 () = stopped.cancelled() => Err(ExternalProviderRuntimeError::TransportFailure),
                                                 listed = provider_lifecycle_requests::list_provider_sessions(connection, cwd) => listed,
@@ -379,39 +463,73 @@ impl<P: InteractionPort> AgentSessionClient<P> {
                                     }
                                     None => break,
                                 },
-                                Some(result) = executors.join_next(), if !executors.is_empty() => {
-                                    if result.is_err() { task_shutdown_failed.store(true, Ordering::Relaxed); }
+                                Some(result) = listings.join_next(), if !listings.is_empty() => {
+                                    if result.is_err() { listing_shutdown_failed.store(true, Ordering::Relaxed); }
                                 }
                             }
                         }
-                        task_connection_retirement.cancel();
                         task_shutdown.cancel();
 
-                        while let Some(result) = executors.join_next().await {
-                            if result.is_err() { task_shutdown_failed.store(true, Ordering::Relaxed); }
+                        while let Some(result) = listings.join_next().await {
+                            if result.is_err() { listing_shutdown_failed.store(true, Ordering::Relaxed); }
                         }
                     }
+                    foreground_retirement.cancel();
                     Ok(())
                 },
             );
-            tokio::pin!(connection);
-            let child_exited = tokio::select! {
-                _result = &mut connection => false,
+            let mut connection = Box::pin(connection);
+            let (child_exited, sdk_failed) = tokio::select! {
+                result = &mut connection => (false, result.is_err()),
                 () = lifetime.exited() => {
+                    connection_retirement.cancel();
                     // The exited child may have flushed its initialize response into stdout.
                     // Let the connection settle admission before retiring it.
                     tokio::select! {
                         _settled = admission_settled_rx => {}
                         _result = &mut connection => {}
                     }
-                    true
+                    (true, false)
                 },
             };
+            // The SDK may drop its foreground and its listing tasks. The
+            // ordered writer is joined by this task after the SDK is gone.
+            drop(connection);
+            #[cfg(feature = "test-observation")]
+            provider_exit_observation.after_sdk_drop_for_test().await;
+            connection_approval_bindings.stop_connection();
             connection_retirement.cancel();
+            #[cfg(feature = "test-observation")]
+            provider_exit_observation.publish_provider_end_for_test({
+                use crate::owner_wire::ProviderConnectionEnd;
+                if child_exited {
+                    ProviderConnectionEnd::ChildExited
+                } else if sdk_failed {
+                    ProviderConnectionEnd::SdkFailed
+                } else {
+                    ProviderConnectionEnd::SdkReturned
+                }
+            });
+            #[cfg(not(feature = "test-observation"))]
+            let _ = sdk_failed;
+            #[cfg(feature = "test-observation")]
+            let writer_result = provider_exit_observation
+                .await_observed_writer_for_test(writer)
+                .await;
+            #[cfg(not(feature = "test-observation"))]
+            let writer_result = writer.await;
+            if writer_result.is_err() {
+                task_shutdown_failed.store(true, Ordering::Relaxed);
+            }
 
+            #[cfg(feature = "test-observation")]
+            provider_exit_observation.publish_provider_reap_start_for_test();
             if !child_exited {
                 lifetime.end().await;
             }
+            #[cfg(feature = "test-observation")]
+            mark_connection_drain_started.cancel();
+            connection_approval_bindings.drain_connection().await;
             #[cfg(feature = "test-observation")]
             mark_provider_reaping_finished.cancel();
             if let Some(stderr_task) = stderr_task {
@@ -454,6 +572,8 @@ impl<P: InteractionPort> AgentSessionClient<P> {
             #[cfg(feature = "test-observation")]
             connection_settled,
             #[cfg(feature = "test-observation")]
+            connection_drain_started,
+            #[cfg(feature = "test-observation")]
             provider_reaping_finished,
             shutdown_failed,
             frame_observation,
@@ -464,9 +584,10 @@ impl<P: InteractionPort> AgentSessionClient<P> {
             permission_request_count,
             #[cfg(any(test, feature = "test-observation"))]
             permission_outcome,
-            interaction_port,
+            #[cfg(any(test, feature = "test-support"))]
+            malformed_approval_observer,
             _event_sink: event_sink,
-            approval_contexts,
+            approval_bindings,
             permission_refusal_reasons,
             endpoint_id,
             #[cfg(any(test, feature = "test-observation"))]

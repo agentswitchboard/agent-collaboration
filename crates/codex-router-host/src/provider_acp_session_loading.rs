@@ -7,7 +7,7 @@ use crate::{
 use acp_client_runtime::{RestoreFailure, RestorePhase, acp_transport::TransportRun};
 use collaboration_contracts::LoadPolicy;
 use collaboration_protocol::{DeliveryCorrelationId, SessionRef};
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
 use switchboard_session_store::ProviderOperationStore;
 use tokio::sync::Mutex;
 
@@ -38,12 +38,8 @@ pub(crate) enum ProviderSessionLoadOutcome {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ProviderSessionLoadability {
     AlreadyLoaded,
-    /// Loadable in its recorded folder, with the setup its create had
-    /// rebuilt from its record (D1 R18; owner Decision 3).
-    Loadable {
-        working_directory: PathBuf,
-        setup: acp_client_runtime::SessionRestoreSetup,
-    },
+    /// The owner can load the record and rebuild its setup when requested.
+    Loadable,
     UnsupportedLoad,
     MissingRecord,
     LiveElsewhere,
@@ -156,10 +152,10 @@ pub(crate) async fn ensure_provider_session_loaded(
                 ProviderSessionLoadOutcome::Ready
             };
         }
-        ProviderSessionLoadability::Loadable { .. } if load_policy == LoadPolicy::LoadedOnly => {
+        ProviderSessionLoadability::Loadable if load_policy == LoadPolicy::LoadedOnly => {
             return ProviderSessionLoadOutcome::NotLoaded;
         }
-        ProviderSessionLoadability::Loadable { .. } => {}
+        ProviderSessionLoadability::Loadable => {}
         ProviderSessionLoadability::UnsupportedLoad => {
             return ProviderSessionLoadOutcome::UnsupportedLoad;
         }
@@ -222,8 +218,7 @@ pub(crate) async fn session_queue_plan(
         .runtime_for(&target.endpoint)
         .ok_or_else(|| unavailable("provider runtime is unavailable"))?;
     match checked_loadability(supervisor, &runtime, store, ownership, target).await {
-        ProviderSessionLoadability::Loadable { .. } | ProviderSessionLoadability::AlreadyLoaded => {
-        }
+        ProviderSessionLoadability::Loadable | ProviderSessionLoadability::AlreadyLoaded => {}
         ProviderSessionLoadability::UnsupportedLoad => {
             return Err(ProviderSessionLoadOutcome::UnsupportedLoad);
         }
@@ -473,18 +468,10 @@ pub(crate) async fn inspect_provider_session_loadability(
         }
         Err(error) => return unavailable_loadability(error.to_string()),
     }
-    let record = match store.lock().await.session_record(target).await {
-        Ok(Some(record)) => record,
-        Ok(None) => return ProviderSessionLoadability::MissingRecord,
-        Err(error) => return unavailable_loadability(error.to_string()),
-    };
-    let working_directory = PathBuf::from(String::from(record.working_directory));
-    let setup = runtime
-        .session_setup()
-        .restore_setup(&working_directory, &record.resume);
-    ProviderSessionLoadability::Loadable {
-        working_directory,
-        setup,
+    match store.lock().await.session_record(target).await {
+        Ok(Some(_)) => ProviderSessionLoadability::Loadable,
+        Ok(None) => ProviderSessionLoadability::MissingRecord,
+        Err(error) => unavailable_loadability(error.to_string()),
     }
 }
 

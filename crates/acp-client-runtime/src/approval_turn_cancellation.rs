@@ -3,112 +3,204 @@
 //! drain through. The client's cancel and the session actor both use it.
 
 use crate::{
-    ExternalProviderRuntimeError, InteractionPort, acp_transport::TransportRun,
-    owner_wire::OwnerAcpWire,
+    AcpRequestPayloads, AcpRequestPolicy, ApprovalPortOutcome, ExternalProviderRuntimeError,
+    acp_transport::TransportRun, interaction_port::observe_cancellation, owner_wire::OwnerAcpWire,
 };
 use provider_session_machines::session_owner::{
     CancelDrainReport, DispatchAuthorization, DispatchResult, PendingTurnResponse,
 };
+use session_event_model::{ApprovalRequest, QuestionRequest, QuestionResponse};
 use std::{
     collections::{BTreeMap, HashMap},
-    sync::{Arc, Mutex, MutexGuard, PoisonError},
+    future::Future,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 use switchboard_harness_contracts::{
-    CancelDrainStart, CancelReservationRefusal, ReplyAdmission, RunRetirement, WorkReply,
+    ApprovalContext, ApprovalLease, ApprovalLeaseRefusalReason, CancelDrainStart,
+    CancelReservationRefusal, Decision, ExactScope, ExactTurn, ReplyAdmission, RequestCancellation,
+    RequestDecisionRefusal, RunRetirement, StopRequestsCause, TurnMembership, WorkReply,
     WriterState,
 };
-use tokio_util::{sync::CancellationToken, task::TaskTracker};
+use tokio_util::{
+    sync::CancellationToken,
+    task::{TaskTracker, task_tracker::TaskTrackerToken},
+};
 
 #[cfg(test)]
 #[path = "approval_turn_cancellation_test.rs"]
 mod tests;
 
+#[path = "approval_response_barrier.rs"]
+mod response_barrier;
+use response_barrier::{PermissionResponseBarrier, PermissionResponseGuard};
+
 #[derive(Default)]
-pub(crate) struct PermissionResponseBarrier {
-    pending: Mutex<BTreeMap<PendingTurnResponse, usize>>,
-    drained: tokio::sync::Notify,
+struct PolicyStop {
+    started: AtomicBool,
+    finished: CancellationToken,
 }
 
-impl PermissionResponseBarrier {
-    fn pending(&self) -> MutexGuard<'_, BTreeMap<PendingTurnResponse, usize>> {
-        self.pending.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    pub(crate) fn track(
-        self: &Arc<Self>,
-        method: &'static str,
-        id: &impl serde::Serialize,
-    ) -> PermissionResponseGuard {
-        let key = PendingTurnResponse {
-            method,
-            request_id: serde_json::to_string(id).unwrap_or_default(),
-        };
-        *self.pending().entry(key.clone()).or_default() += 1;
-        PermissionResponseGuard {
-            barrier: Arc::clone(self),
-            key,
-        }
-    }
-
-    async fn wait_drained(&self) {
-        loop {
-            let notified = self.drained.notified();
-            tokio::pin!(notified);
-            notified.as_mut().enable();
-            if self.pending().is_empty() {
-                return;
-            }
-            notified.await;
-        }
-    }
-}
-
-pub(crate) struct PermissionResponseGuard {
-    barrier: Arc<PermissionResponseBarrier>,
-    key: PendingTurnResponse,
-}
-
-impl Drop for PermissionResponseGuard {
-    fn drop(&mut self) {
-        let mut pending = self.barrier.pending();
-        if let Some(count) = pending.get_mut(&self.key) {
-            *count -= 1;
-            if *count == 0 {
-                pending.remove(&self.key);
-            }
-        }
-        if pending.is_empty() {
-            self.barrier.drained.notify_waiters();
-        }
-    }
-}
-
-pub(crate) struct ActiveApprovalContext<P: InteractionPort> {
-    pub(crate) approval: P::Context,
+pub(crate) struct ActiveApprovalContext<P: AcpRequestPayloads> {
+    pub(crate) approval: Arc<P::Context>,
+    pub(crate) operation_id: Arc<P::OperationId>,
     pub(crate) generation: provider_session_machines::SessionGeneration,
     pub(crate) incarnation: provider_session_machines::session_owner::OwnerIncarnation,
     pub(crate) turn: Option<provider_session_machines::session_turn_machine::TurnId>,
     pub(crate) cancelling: CancellationToken,
-    pub(crate) responses: Arc<PermissionResponseBarrier>,
+    responses: Arc<PermissionResponseBarrier>,
+    stop: Arc<PolicyStop>,
 }
 
-impl<P: InteractionPort> Clone for ActiveApprovalContext<P> {
+impl<P: AcpRequestPayloads> Clone for ActiveApprovalContext<P> {
     fn clone(&self) -> Self {
         Self {
             approval: self.approval.clone(),
+            operation_id: self.operation_id.clone(),
             generation: self.generation,
             incarnation: self.incarnation,
             turn: self.turn,
             cancelling: self.cancelling.clone(),
             responses: Arc::clone(&self.responses),
+            stop: Arc::clone(&self.stop),
         }
     }
 }
 
-impl<P: InteractionPort> ActiveApprovalContext<P> {
+impl<P: AcpRequestPayloads> ActiveApprovalContext<P> {
+    fn exact_turn(&self) -> Option<ExactTurn> {
+        Some(ExactTurn {
+            run: TransportRun {
+                incarnation: self.incarnation,
+                generation: self.generation,
+            },
+            turn: self.turn?,
+        })
+    }
+
+    pub(crate) fn track_response(
+        &self,
+        method: &'static str,
+        id: &impl serde::Serialize,
+        peer: agent_client_protocol::RequestCancellation,
+    ) -> Option<PermissionResponseGuard> {
+        self.responses.track(method, id, peer)
+    }
+
+    pub(crate) fn managed_refusal(
+        &self,
+        policy: &AcpRequestPolicy<P>,
+    ) -> Option<session_event_model::managed_interaction_refusal::ManagedInteractionRefusal> {
+        self.responses
+            .is_open()
+            .then(|| policy.managed_refusal())
+            .flatten()
+    }
+
+    fn policy_context(&self) -> ApprovalContext<P::Context> {
+        let run = TransportRun {
+            incarnation: self.incarnation,
+            generation: self.generation,
+        };
+        ApprovalContext {
+            scope: match self.turn {
+                Some(turn) => ExactScope::Turn(ExactTurn { run, turn }),
+                None => ExactScope::Session { run },
+            },
+            context: self.approval.as_ref().clone(),
+        }
+    }
+
+    fn policy_cancellation(&self, request: CancellationToken) -> RequestCancellation {
+        RequestCancellation {
+            turn: observe_cancellation(self.cancelling.clone()),
+            request: observe_cancellation(request),
+        }
+    }
+
+    pub(crate) async fn decide_approval(
+        &self,
+        policy: &AcpRequestPolicy<P>,
+        request: ApprovalRequest,
+        peer: agent_client_protocol::RequestCancellation,
+    ) -> ApprovalPortOutcome {
+        let cancellation = CancellationToken::new();
+        if !self.responses.is_open() {
+            return ApprovalPortOutcome::Cancelled;
+        }
+        let decision = policy.decide_approval(
+            self.policy_context(),
+            request,
+            self.policy_cancellation(cancellation.clone()),
+        );
+        self.wait_for_decision(decision, peer, cancellation)
+            .await
+            .unwrap_or(ApprovalPortOutcome::Cancelled)
+    }
+
+    pub(crate) async fn decide_question(
+        &self,
+        policy: &AcpRequestPolicy<P>,
+        request: QuestionRequest,
+        peer: agent_client_protocol::RequestCancellation,
+    ) -> QuestionResponse {
+        let cancellation = CancellationToken::new();
+        if !self.responses.is_open() {
+            return QuestionResponse::Cancelled;
+        }
+        let decision = policy.decide_question(
+            self.policy_context(),
+            request,
+            self.policy_cancellation(cancellation.clone()),
+        );
+        self.wait_for_decision(decision, peer, cancellation)
+            .await
+            .unwrap_or(QuestionResponse::Cancelled)
+    }
+
+    async fn wait_for_decision<Answer>(
+        &self,
+        decision: impl Future<Output = Decision<Answer>>,
+        peer: agent_client_protocol::RequestCancellation,
+        request: CancellationToken,
+    ) -> Option<Answer> {
+        let scope_stopped = async {
+            self.responses.ended().await;
+            self.stop.finished.cancelled().await;
+        };
+        tokio::pin!(decision, scope_stopped);
+        let decision = tokio::select! {
+            biased;
+            () = peer.cancelled() => {
+                request.cancel();
+                tokio::select! {
+                    biased;
+                    _ = &mut decision => {}
+                    () = &mut scope_stopped => {}
+                }
+                return None;
+            }
+            decision = &mut decision => decision,
+            () = &mut scope_stopped => return None,
+        };
+        match decision {
+            Decision::Answer(answer) => Some(answer),
+            // Even a standing policy answer leaves ACP owing this new wire
+            // request a response. Decline it without touching that answer.
+            Decision::Refused(
+                RequestDecisionRefusal::AlreadyAnswered
+                | RequestDecisionRefusal::AnsweredElsewhere
+                | RequestDecisionRefusal::NoOpenScope
+                | RequestDecisionRefusal::ScopeEnded,
+            ) => None,
+        }
+    }
+
     pub(crate) async fn cancel_after_refusal(
         self,
-        interaction_port: Arc<P>,
+        request_policy: Arc<AcpRequestPolicy<P>>,
         refusal: session_event_model::managed_interaction_refusal::ManagedInteractionRefusal,
     ) {
         tracing::warn!(
@@ -116,49 +208,60 @@ impl<P: InteractionPort> ActiveApprovalContext<P> {
             reason = refusal.reason(),
             "managed provider interaction refused"
         );
-        interaction_port
-            .cancel_after_managed_refusal(self.approval)
+        request_policy
+            .cancel_after_managed_refusal(self.policy_context())
             .await;
     }
 }
 
-struct ApprovalContextGuard<P: InteractionPort> {
-    contexts: Arc<std::sync::Mutex<HashMap<String, ActiveApprovalContext<P>>>>,
+struct ApprovalContextGuard<P: AcpRequestPayloads> {
+    bindings: OwnerApprovalBindings<P>,
     provider_session_id: String,
-    operation_id: P::OperationId,
+    responses: Arc<PermissionResponseBarrier>,
 }
 
-impl<P: InteractionPort> Drop for ApprovalContextGuard<P> {
+impl<P: AcpRequestPayloads> Drop for ApprovalContextGuard<P> {
     fn drop(&mut self) {
-        if let Ok(mut contexts) = self.contexts.lock()
-            && contexts
-                .get(&self.provider_session_id)
-                .is_some_and(|context| P::operation_id(&context.approval) == self.operation_id)
-        {
-            contexts.remove(&self.provider_session_id);
-        }
+        self.bindings.end_matching(
+            &self.provider_session_id,
+            |context| Arc::ptr_eq(&context.responses, &self.responses),
+            StopRequestsCause::TurnEnded,
+        );
     }
 }
 
-pub struct OwnerApprovalBindings<P: InteractionPort> {
-    active: Arc<Mutex<HashMap<String, ActiveApprovalContext<P>>>>,
-    interaction_port: Arc<P>,
+pub struct OwnerApprovalBindings<P: AcpRequestPayloads> {
+    pub(crate) active: Arc<Mutex<HashMap<String, ActiveApprovalContext<P>>>>,
+    request_policy: Arc<AcpRequestPolicy<P>>,
+    retirement: CancellationToken,
+    closing: Arc<AtomicBool>,
+    tasks: TaskTracker,
 }
 
-impl<P: InteractionPort> Clone for OwnerApprovalBindings<P> {
+impl<P: AcpRequestPayloads> Clone for OwnerApprovalBindings<P> {
     fn clone(&self) -> Self {
         Self {
             active: Arc::clone(&self.active),
-            interaction_port: Arc::clone(&self.interaction_port),
+            request_policy: Arc::clone(&self.request_policy),
+            retirement: self.retirement.clone(),
+            closing: Arc::clone(&self.closing),
+            tasks: self.tasks.clone(),
         }
     }
 }
 
-pub struct OwnerApprovalLease<P: InteractionPort> {
+pub struct OwnerApprovalLease<P: AcpRequestPayloads> {
     _lease: ApprovalContextGuard<P>,
 }
 
-impl<P: InteractionPort> OwnerApprovalBindings<P> {
+impl<P: AcpRequestPayloads> ApprovalLease for OwnerApprovalLease<P> {}
+
+impl<P: AcpRequestPayloads> OwnerApprovalBindings<P> {
+    #[cfg(feature = "test-support")]
+    pub(crate) fn policy_operation_id(&self, context: &P::Context) -> P::OperationId {
+        self.request_policy.operation_id(context)
+    }
+
     #[cfg(all(debug_assertions, feature = "test-observation"))]
     pub fn held_turn_for_test(
         &self,
@@ -169,12 +272,184 @@ impl<P: InteractionPort> OwnerApprovalBindings<P> {
 
     pub(crate) fn new(
         active: Arc<Mutex<HashMap<String, ActiveApprovalContext<P>>>>,
-        interaction_port: Arc<P>,
+        request_policy: Arc<AcpRequestPolicy<P>>,
+        retirement: CancellationToken,
     ) -> Self {
         Self {
             active,
-            interaction_port,
+            request_policy,
+            retirement,
+            closing: Arc::default(),
+            tasks: TaskTracker::new(),
         }
+    }
+
+    /// The SDK can stop polling its tasks on EOF. Keep the admitted callback
+    /// alive until ACP has stopped its policy and settled the responder.
+    pub(crate) fn spawn_callback(
+        &self,
+        connection: &agent_client_protocol::ConnectionTo<agent_client_protocol::Agent>,
+        callback: impl Future<Output = Result<(), agent_client_protocol::Error>> + Send + 'static,
+    ) -> Result<(), agent_client_protocol::Error> {
+        let tracked = self.tasks.spawn(callback);
+        let retirement = self.retirement.clone();
+        connection.spawn(async move {
+            let result = match tracked.await {
+                Ok(result) => result,
+                Err(_) => Err(agent_client_protocol::Error::internal_error()),
+            };
+            result.inspect_err(|_| retirement.cancel())
+        })
+    }
+
+    pub(crate) fn stop_connection(&self) {
+        let closed: Vec<_> = {
+            let mut active = self
+                .active
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.closing.store(true, Ordering::Relaxed);
+            active
+                .drain()
+                .map(|(_, context)| self.close_context(context, StopRequestsCause::ConnectionLost))
+                .collect()
+        };
+        for scope in closed {
+            scope.finish();
+        }
+    }
+
+    pub(crate) async fn drain_connection(&self) {
+        self.tasks.close();
+        self.tasks.wait().await;
+    }
+
+    #[cfg(feature = "test-observation")]
+    pub(crate) fn observe_scope_drain(
+        &self,
+        session: &str,
+    ) -> Option<(Vec<PendingTurnResponse>, impl Future<Output = ()> + use<P>)> {
+        let responses = Arc::clone(&self.active.lock().ok()?.get(session)?.responses);
+        let pending = responses.pending_responses();
+        Some((pending, async move { responses.wait_drained().await }))
+    }
+
+    #[cfg(feature = "test-observation")]
+    pub(crate) fn scope_lock_probe(
+        &self,
+        session: &str,
+    ) -> Option<impl Fn() -> bool + Send + Sync + use<P>> {
+        let scopes = self.active.clone();
+        let responses = Arc::clone(&scopes.lock().ok()?.get(session)?.responses);
+        Some(move || scopes.try_lock().is_ok() && responses.lock_available_for_test())
+    }
+
+    fn end_turn(&self, session: &str, turn: ExactTurn) {
+        self.end_matching(
+            session,
+            |context| context.exact_turn() == Some(turn),
+            StopRequestsCause::TurnEnded,
+        );
+    }
+
+    pub(crate) fn apply_membership(
+        &self,
+        session: &str,
+        incarnation: provider_session_machines::session_owner::OwnerIncarnation,
+        change: TurnMembership,
+    ) {
+        match change {
+            TurnMembership::End { run, turn } | TurnMembership::RemoveOnRevoke { run, turn } => {
+                self.end_turn(
+                    session,
+                    ExactTurn {
+                        run: TransportRun {
+                            incarnation,
+                            generation: run,
+                        },
+                        turn,
+                    },
+                );
+            }
+            TurnMembership::Retire(generation) => {
+                self.retire_run(
+                    session,
+                    TransportRun {
+                        incarnation,
+                        generation,
+                    },
+                );
+            }
+            TurnMembership::Provisional { .. } | TurnMembership::ObservedEligible { .. } => {}
+        }
+    }
+
+    pub(crate) fn retire_run(&self, session: &str, run: TransportRun) {
+        self.end_matching(
+            session,
+            |context| {
+                context.incarnation == run.incarnation && context.generation == run.generation
+            },
+            StopRequestsCause::GenerationRetired,
+        );
+    }
+
+    fn end_matching(
+        &self,
+        session: &str,
+        matches_scope: impl FnOnce(&ActiveApprovalContext<P>) -> bool,
+        cause: StopRequestsCause,
+    ) {
+        let closed = {
+            let mut active = self
+                .active
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !active.get(session).is_some_and(matches_scope) {
+                return;
+            }
+            let Some(context) = active.remove(session) else {
+                return;
+            };
+            let cause = if self.retirement.is_cancelled() {
+                StopRequestsCause::ConnectionLost
+            } else {
+                cause
+            };
+            self.close_context(context, cause)
+        };
+        closed.finish();
+    }
+
+    fn close_context(
+        &self,
+        context: ActiveApprovalContext<P>,
+        cause: StopRequestsCause,
+    ) -> ClosingApprovalScope<P> {
+        let had_pending = context.responses.close();
+        // Reserve the join before releasing the active map. Connection
+        // teardown must see a retirement's work even before it can be woken.
+        let stop = if had_pending {
+            self.drain(&context).and_then(|drain| {
+                let reservation = drain.reserve_policy_stop(true)?;
+                Some((drain, reservation, cause))
+            })
+        } else {
+            None
+        };
+        ClosingApprovalScope { context, stop }
+    }
+
+    fn drain(&self, context: &ActiveApprovalContext<P>) -> Option<OwnerApprovalDrain<P>> {
+        Some(OwnerApprovalDrain {
+            turn: context.exact_turn()?,
+            cancelling: context.cancelling.clone(),
+            approval: Arc::clone(&context.approval),
+            request_policy: Arc::clone(&self.request_policy),
+            responses: Arc::clone(&context.responses),
+            stop: Arc::clone(&context.stop),
+            tasks: self.tasks.clone(),
+        })
     }
 
     pub fn install(
@@ -182,38 +457,84 @@ impl<P: InteractionPort> OwnerApprovalBindings<P> {
         provider_session_id: String,
         run: TransportRun,
         turn: provider_session_machines::session_turn_machine::TurnId,
-        mut context: P::Context,
+        context: P::Context,
     ) -> Result<OwnerApprovalLease<P>, ExternalProviderRuntimeError> {
-        let mut active = self.active.lock().map_err(|_| {
-            ExternalProviderRuntimeError::Operation(
-                "provider approval context unavailable".to_owned(),
-            )
-        })?;
-        if active.contains_key(&provider_session_id) {
-            return Err(ExternalProviderRuntimeError::Operation(
-                "a provider approval context is already active".to_owned(),
-            ));
+        self.install_lease(provider_session_id, run, turn, context)
+            .map_err(|reason| {
+                ExternalProviderRuntimeError::Operation(
+                    match reason {
+                        ApprovalLeaseRefusalReason::ContextUnavailable => {
+                            "provider approval context unavailable"
+                        }
+                        ApprovalLeaseRefusalReason::AlreadyActive => {
+                            "a provider approval context is already active"
+                        }
+                    }
+                    .to_owned(),
+                )
+            })
+    }
+
+    pub(crate) fn install_lease(
+        &self,
+        provider_session_id: String,
+        run: TransportRun,
+        turn: provider_session_machines::session_turn_machine::TurnId,
+        mut context: P::Context,
+    ) -> Result<OwnerApprovalLease<P>, ApprovalLeaseRefusalReason> {
+        {
+            let active = self
+                .active
+                .lock()
+                .map_err(|_| ApprovalLeaseRefusalReason::ContextUnavailable)?;
+            self.check_install(&active, &provider_session_id)?;
         }
-        let operation_id = P::operation_id(&context);
-        P::bind_owner_scope(&mut context, run.generation, turn);
-        active.insert(
+        let operation_id = Arc::new(self.request_policy.operation_id(&context));
+        self.request_policy
+            .bind_owner_scope(&mut context, ExactTurn { run, turn });
+        let approval = Arc::new(context);
+        let responses = Arc::new(PermissionResponseBarrier::default());
+        let mut active = self
+            .active
+            .lock()
+            .map_err(|_| ApprovalLeaseRefusalReason::ContextUnavailable)?;
+        self.check_install(&active, &provider_session_id)?;
+        let displaced = active.insert(
             provider_session_id.clone(),
             ActiveApprovalContext {
-                approval: context,
+                approval,
+                operation_id,
                 generation: run.generation,
                 incarnation: run.incarnation,
                 turn: Some(turn),
                 cancelling: tokio_util::sync::CancellationToken::new(),
-                responses: Arc::new(PermissionResponseBarrier::default()),
+                responses: Arc::clone(&responses),
+                stop: Arc::default(),
             },
         );
+        drop(active);
+        drop(displaced);
         Ok(OwnerApprovalLease {
             _lease: ApprovalContextGuard {
-                contexts: Arc::clone(&self.active),
+                bindings: self.clone(),
                 provider_session_id,
-                operation_id,
+                responses,
             },
         })
+    }
+
+    fn check_install(
+        &self,
+        active: &HashMap<String, ActiveApprovalContext<P>>,
+        session: &str,
+    ) -> Result<(), ApprovalLeaseRefusalReason> {
+        if self.closing.load(Ordering::Relaxed) || self.retirement.is_cancelled() {
+            return Err(ApprovalLeaseRefusalReason::ContextUnavailable);
+        }
+        if active.contains_key(session) {
+            return Err(ApprovalLeaseRefusalReason::AlreadyActive);
+        }
+        Ok(())
     }
 
     pub fn begin_cancel(
@@ -221,75 +542,111 @@ impl<P: InteractionPort> OwnerApprovalBindings<P> {
         provider_session_id: &str,
         authorization: &DispatchAuthorization,
     ) -> Option<OwnerApprovalDrain<P>> {
-        let drain = active_turn_cancellation(
-            &self.active,
-            &self.interaction_port,
-            provider_session_id,
-            authorization,
-        )?;
+        let provider_session_machines::session_owner::AuthorizationTarget::ExistingTurn { turn } =
+            authorization.target
+        else {
+            return None;
+        };
+        let exact = ExactTurn {
+            run: TransportRun {
+                incarnation: authorization.incarnation,
+                generation: authorization.run,
+            },
+            turn,
+        };
+        let drain = {
+            let contexts = self.active.lock().ok()?;
+            let context = contexts.get(provider_session_id)?;
+            (context.exact_turn() == Some(exact))
+                .then(|| self.drain(context))
+                .flatten()?
+        };
         drain.mark_cancelling();
         Some(drain)
     }
 }
 
-fn active_turn_cancellation<P: InteractionPort>(
-    contexts: &Arc<Mutex<HashMap<String, ActiveApprovalContext<P>>>>,
-    interaction_port: &Arc<P>,
-    provider_session_id: &str,
-    authorization: &provider_session_machines::session_owner::DispatchAuthorization,
-) -> Option<OwnerApprovalDrain<P>> {
-    let provider_session_machines::session_owner::AuthorizationTarget::ExistingTurn { turn } =
-        authorization.target
-    else {
-        return None;
-    };
-    contexts.lock().ok().and_then(|contexts| {
-        contexts.get(provider_session_id).and_then(|context| {
-            (context.incarnation == authorization.incarnation
-                && context.generation == authorization.run
-                && context.turn == Some(turn))
-            .then(|| OwnerApprovalDrain {
-                cancelling: context.cancelling.clone(),
-                approval: context.approval.clone(),
-                interaction_port: Arc::clone(interaction_port),
-                responses: Arc::clone(&context.responses),
-            })
-        })
-    })
+struct ClosingApprovalScope<P: AcpRequestPayloads> {
+    context: ActiveApprovalContext<P>,
+    stop: Option<(OwnerApprovalDrain<P>, TaskTrackerToken, StopRequestsCause)>,
 }
 
-pub struct OwnerApprovalDrain<P: InteractionPort> {
+impl<P: AcpRequestPayloads> ClosingApprovalScope<P> {
+    fn finish(self) {
+        self.context.cancelling.cancel();
+        self.context.responses.signal_end();
+        if let Some((drain, reservation, cause)) = self.stop {
+            drain.spawn_policy_stop(reservation, cause);
+        }
+    }
+}
+
+pub struct OwnerApprovalDrain<P: AcpRequestPayloads> {
+    turn: ExactTurn,
     pub(crate) cancelling: CancellationToken,
-    pub(crate) approval: P::Context,
-    pub(crate) interaction_port: Arc<P>,
-    pub(crate) responses: Arc<PermissionResponseBarrier>,
+    pub(crate) approval: Arc<P::Context>,
+    pub(crate) request_policy: Arc<AcpRequestPolicy<P>>,
+    responses: Arc<PermissionResponseBarrier>,
+    stop: Arc<PolicyStop>,
+    tasks: TaskTracker,
 }
 
-impl<P: InteractionPort> OwnerApprovalDrain<P> {
+impl<P: AcpRequestPayloads> OwnerApprovalDrain<P> {
     pub(crate) fn mark_cancelling(&self) {
         self.cancelling.cancel();
     }
 
     pub async fn settle_pending_approvals(&self) {
-        self.interaction_port
-            .cancel_all(self.approval.clone(), "turnCancelled")
-            .await;
+        if let Some(reservation) = self.reserve_policy_stop(false) {
+            self.spawn_policy_stop(reservation, StopRequestsCause::TurnCancelled);
+        }
+        tokio::select! {
+            () = self.stop.finished.cancelled() => {}
+            () = self.responses.ended() => {}
+        }
         self.responses.wait_drained().await;
+    }
+
+    fn reserve_policy_stop(&self, had_pending_at_close: bool) -> Option<TaskTrackerToken> {
+        self.responses
+            .reserve_stop(had_pending_at_close, || {
+                (!self.stop.started.swap(true, Ordering::Relaxed)).then(|| self.tasks.token())
+            })
+            .flatten()
+    }
+
+    fn spawn_policy_stop(&self, reservation: TaskTrackerToken, cause: StopRequestsCause) {
+        let policy = Arc::clone(&self.request_policy);
+        let context = Arc::clone(&self.approval);
+        let turn = self.turn;
+        let finished = self.stop.finished.clone().drop_guard();
+        let responses = Arc::clone(&self.responses);
+        tokio::spawn(async move {
+            let _tracked = reservation;
+            policy.stop_all(context.as_ref().clone(), turn, cause).await;
+            drop(finished);
+            responses.wait_drained().await;
+        });
     }
 
     #[must_use]
     pub fn pending_responses(&self) -> Vec<PendingTurnResponse> {
-        self.responses.pending().keys().cloned().collect()
+        self.responses.pending_responses()
     }
 }
 
 /// Per-owner executor for the exact turn's outstanding ACP responses.
-pub(crate) struct OwnerCancelDrainExecutor<P: InteractionPort> {
+pub(crate) struct OwnerCancelDrainExecutor<P: AcpRequestPayloads> {
     approvals: OwnerApprovalBindings<P>,
     pending: BTreeMap<DispatchAuthorization, Arc<OwnerApprovalDrain<P>>>,
 }
 
-impl<P: InteractionPort> OwnerCancelDrainExecutor<P> {
+enum CancelDrainExit {
+    Finished,
+    Relinquished,
+}
+
+impl<P: AcpRequestPayloads> OwnerCancelDrainExecutor<P> {
     pub fn new(approvals: OwnerApprovalBindings<P>) -> Self {
         Self {
             approvals,
@@ -320,11 +677,16 @@ impl<P: InteractionPort> OwnerCancelDrainExecutor<P> {
         let drain = Arc::new(drain);
         self.pending.insert(authorization.clone(), drain.clone());
         tasks.spawn(async move {
-            tokio::select! {
-                () = retired => {}
-                () = drain.settle_pending_approvals() => completion.send(
-                    WorkReply::Dispatch(DispatchResult::CancelDrainFinished(authorization))
-                ),
+            let exit = tokio::select! {
+                biased;
+                () = drain.settle_pending_approvals() => CancelDrainExit::Finished,
+                () = retired => CancelDrainExit::Relinquished,
+            };
+            match exit {
+                CancelDrainExit::Finished => completion.send(WorkReply::Dispatch(
+                    DispatchResult::CancelDrainFinished(authorization),
+                )),
+                CancelDrainExit::Relinquished => drop(completion),
             }
         });
         CancelDrainStart::Waiting

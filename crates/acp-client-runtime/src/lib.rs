@@ -7,7 +7,7 @@
 //! ```
 //!
 //! ```compile_fail
-//! let _ = acp_client_runtime::ProviderPromptContent::new;
+//! let _ = acp_client_runtime::provider_prompt_content::acp_blocks_from_prompt_content;
 //! ```
 //!
 //! ```compile_fail
@@ -33,8 +33,10 @@
 //! ```
 
 #[cfg(feature = "test-support")]
-#[path = "test_support/acp_owner_fixture.rs"]
-pub mod acp_owner_fixture;
+pub mod acp_owner_fixture {
+    pub use crate::fixture_legacy_client::FixtureClient;
+    pub use crate::policy_fixture_client::PolicyFixtureClient;
+}
 mod acp_protocol_version;
 pub mod acp_transport;
 mod agent_session_client;
@@ -42,16 +44,28 @@ mod approval_presentation;
 mod approval_turn_cancellation;
 mod callback_router;
 mod external_permission_options;
+#[cfg(feature = "test-support")]
+#[path = "test_support/fixture_legacy_client.rs"]
+mod fixture_legacy_client;
+#[cfg(any(test, feature = "test-support"))]
+#[path = "test_support/fixture_policy.rs"]
+mod fixture_policy;
 #[cfg(all(debug_assertions, feature = "test-observation"))]
 pub mod handover_test_control;
 mod in_folder_allowance;
 mod interaction_port;
 pub mod owner_acp_binding;
 mod owner_callback_routing;
+#[cfg(any(test, feature = "test-observation"))]
+mod owner_opening_disposal;
+mod owner_opening_instance;
 mod owner_restore_updates;
 pub mod owner_session_creation;
 mod owner_session_replay;
 pub mod owner_wire;
+#[cfg(feature = "test-support")]
+#[path = "test_support/acp_owner_fixture.rs"]
+mod policy_fixture_client;
 #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
 pub mod work_call_observation;
 pub use owner_wire::{owner_session_open, owner_session_setting, owner_session_stream};
@@ -95,9 +109,13 @@ pub use approval_turn_cancellation::{
 };
 pub use external_permission_options::RefusedPermissionOption;
 pub(crate) use external_permission_options::map_permission_options;
+pub(crate) use interaction_port::AcpRequestPolicy;
 pub use interaction_port::{
-    ApprovalPortOutcome, InteractionFuture, InteractionPort, RefusedApprovalOffer,
+    AcpRequestPayloads, ApprovalPortOutcome, CanonicalRequestPayloads, InteractionFuture,
+    RefusedApprovalOffer,
 };
+#[cfg(any(test, feature = "test-support"))]
+pub use interaction_port::{FixtureCancellation, InteractionPort};
 pub use permission_mode_plan::{
     AUTO_PERMISSION_MODE, AutoPermissionMode, AutoRealization, PermissionModePlan,
     PermissionModeReason, PermissionModeRefusal, PermissionModeReport, RequestedPermissionMode,
@@ -109,7 +127,6 @@ pub use provider_client_contract::ProviderPromptDispatchObservation;
 pub use provider_client_contract::{ProviderSessionActivity, ProviderSteeringOutcome};
 pub use provider_model_picker::ProviderModelPicker;
 pub use provider_persistence_target::ProviderPersistenceTarget;
-pub use provider_prompt_content::ProviderPromptContent;
 pub use provider_restore_failure::{RestoreFailure, RestorePhase};
 pub use provider_session_settings::{
     AppliedProviderSetting, FailedProviderSetting, FastRequest, InvalidSettingSessionDisposition,
@@ -117,8 +134,8 @@ pub use provider_session_settings::{
     RequestedProviderSettings,
 };
 pub use session_event_sink::{
-    EventSinkClosed, GenerationPublication, HistoryReplayFuture, HistoryReplayUnavailable,
-    SessionEventSink,
+    EventSinkClosed, GenerationPublication, HarnessCallbackEventSink, HistoryReplayFuture,
+    HistoryReplayUnavailable, SessionEventSink,
 };
 
 #[cfg(feature = "test-observation")]

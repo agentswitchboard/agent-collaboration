@@ -34,7 +34,7 @@ use crate::provider_cursor_plan_items::ProviderCursorTodoHandler;
 pub(crate) use crate::provider_frame_observation::ProviderFrameObservation;
 #[cfg(any(test, feature = "test-observation"))]
 pub(crate) use crate::provider_frame_observation::frame_limit_exceeded_count_for_test;
-use crate::{InteractionPort, SessionEventSink};
+use crate::{AcpRequestPayloads, AcpRequestPolicy, SessionEventSink};
 use agent_client_protocol::schema::v1::{McpServer, McpServerHttp, RequestPermissionRequest};
 use agent_client_protocol::{AcpAgent, Client, Lines};
 use external_approval_dispatch::{
@@ -67,7 +67,7 @@ struct ProviderCommand {
     >,
 }
 /// Owns the provider process and ACP connection independently of caller tasks.
-pub struct AgentSessionClient<P: InteractionPort> {
+pub struct AgentSessionClient<P: AcpRequestPayloads> {
     admission: ExternalProviderAdmission,
     base_capabilities: ProviderCapabilityReport,
     auth_status: Arc<tokio::sync::RwLock<session_event_model::ProviderAuthStatus>>,
@@ -80,6 +80,8 @@ pub struct AgentSessionClient<P: InteractionPort> {
     #[cfg(feature = "test-observation")]
     connection_settled: CancellationToken,
     #[cfg(feature = "test-observation")]
+    connection_drain_started: CancellationToken,
+    #[cfg(feature = "test-observation")]
     provider_reaping_finished: CancellationToken,
     shutdown_failed: Arc<std::sync::atomic::AtomicBool>,
     frame_observation: Arc<ProviderFrameObservation>,
@@ -90,9 +92,10 @@ pub struct AgentSessionClient<P: InteractionPort> {
     permission_request_count: Arc<AtomicU64>,
     #[cfg(any(test, feature = "test-observation"))]
     permission_outcome: Arc<std::sync::atomic::AtomicU8>,
-    interaction_port: Arc<P>,
+    #[cfg(any(test, feature = "test-support"))]
+    malformed_approval_observer: external_approval_dispatch::MalformedApprovalObserver<P>,
     _event_sink: Arc<dyn SessionEventSink>,
-    approval_contexts: Arc<std::sync::Mutex<HashMap<String, ActiveApprovalContext<P>>>>,
+    approval_bindings: OwnerApprovalBindings<P>,
     permission_refusal_reasons:
         Arc<std::sync::Mutex<HashMap<P::OperationId, ExternalProviderApprovalRefusalReason>>>,
     endpoint_id: Arc<tokio::sync::RwLock<Option<String>>>,
@@ -102,12 +105,35 @@ pub struct AgentSessionClient<P: InteractionPort> {
     test_tool_calls: Arc<std::sync::Mutex<Vec<ExternalProviderToolCall>>>,
 }
 
-impl<P: InteractionPort> AgentSessionClient<P> {
+impl<P: AcpRequestPayloads> AgentSessionClient<P> {
+    #[cfg(feature = "test-support")]
+    pub(crate) fn policy_operation_id(&self, context: &P::Context) -> P::OperationId {
+        self.approval_bindings.policy_operation_id(context)
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(crate) fn observe_malformed_approval_offers(
+        &self,
+        observer: external_approval_dispatch::MalformedApprovalCallback<P::Context>,
+    ) {
+        match self.malformed_approval_observer.lock() {
+            Ok(mut current) => *current = Some(observer),
+            Err(poisoned) => *poisoned.into_inner() = Some(observer),
+        }
+    }
+
     /// The stop request and owned connection task exit, observed independently.
     #[must_use]
     #[cfg(feature = "test-observation")]
     pub fn connection_fixture_signals(&self) -> (CancellationToken, CancellationToken) {
         (self.shutdown.clone(), self.connection_settled.clone())
+    }
+
+    /// Signals that the connection has stopped serving and is about to join callbacks.
+    #[must_use]
+    #[cfg(feature = "test-observation")]
+    pub fn connection_drain_started_for_test(&self) -> CancellationToken {
+        self.connection_drain_started.clone()
     }
 
     /// Observes the process lifetime decision before the connection drains stderr.
@@ -119,10 +145,7 @@ impl<P: InteractionPort> AgentSessionClient<P> {
 
     #[must_use]
     pub fn owner_approval_bindings(&self) -> OwnerApprovalBindings<P> {
-        OwnerApprovalBindings::new(
-            Arc::clone(&self.approval_contexts),
-            Arc::clone(&self.interaction_port),
-        )
+        self.approval_bindings.clone()
     }
 
     #[must_use]
@@ -146,37 +169,32 @@ impl<P: InteractionPort> AgentSessionClient<P> {
         &self,
         input: crate::ProviderTurnInput,
         capabilities: &ProviderCapabilityReport,
-    ) -> Result<crate::ProviderPromptContent, ExternalProviderRuntimeError> {
-        use crate::provider_prompt_content::join_submitted_text_blocks;
-        use session_event_model::PromptContent;
-        let (contents, history_text, selected) = match input {
+    ) -> Result<session_event_model::PreparedPrompt, ExternalProviderRuntimeError> {
+        use crate::provider_prompt_content::validate_prompt_content;
+        use session_event_model::PreparedPrompt;
+        let prepared = match input {
             crate::ProviderTurnInput::Prompt(submission) => {
-                let original =
-                    join_submitted_text_blocks(submission.content.iter().filter_map(|block| {
-                        match block {
-                            PromptContent::Text { text } => Some(text.as_str()),
-                            _ => None,
-                        }
-                    }));
-                let selected = submission.selected.clone();
-                (
-                    self.provider_behavior.prepare(submission)?,
-                    Some(original),
-                    selected,
-                )
+                let submitted_text = submission.submitted_text();
+                let selected_skills = submission.selected.clone();
+                let blocks = self.provider_behavior.prepare(submission)?;
+                PreparedPrompt::Input {
+                    blocks: blocks.into(),
+                    submitted_text,
+                    selected_skills,
+                }
             }
             crate::ProviderTurnInput::Compact => match self.provider_behavior.compact()? {
-                crate::PreparedCompact::Prompt(content) => (content, None, Vec::new()),
+                crate::PreparedCompact::Prompt(blocks) => PreparedPrompt::Compaction {
+                    blocks: blocks.into(),
+                },
             },
         };
-        let mut prepared =
-            crate::ProviderPromptContent::from_session_contents(contents, capabilities)?;
-        prepared.set_input_context(history_text, selected);
+        validate_prompt_content(prepared.as_harness_content().blocks(), capabilities)?;
         Ok(prepared)
     }
 }
 
-impl<P: InteractionPort> std::fmt::Debug for AgentSessionClient<P> {
+impl<P: AcpRequestPayloads> std::fmt::Debug for AgentSessionClient<P> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("AgentSessionClient")
@@ -185,7 +203,7 @@ impl<P: InteractionPort> std::fmt::Debug for AgentSessionClient<P> {
     }
 }
 
-impl<P: InteractionPort> Drop for AgentSessionClient<P> {
+impl<P: AcpRequestPayloads> Drop for AgentSessionClient<P> {
     fn drop(&mut self) {
         self.retirement.cancel();
         self.shutdown.cancel();

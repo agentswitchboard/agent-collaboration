@@ -7,9 +7,13 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write as _};
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use switchboard_harness_contracts::{AuthorizationTarget, DispatchAuthorization};
 use uuid::Uuid;
+
+pub use switchboard_harness_shared_mechanics::work_observation::{
+    WorkObservationKind, WorkObservationSink,
+};
 
 const DIRECTORY: &str = "CODEX_ROUTER_WORK_WITNESS_DIRECTORY";
 const NONCE: &str = "CODEX_ROUTER_WORK_WITNESS_NONCE";
@@ -95,9 +99,45 @@ impl WitnessConfig {
     }
 }
 
-pub fn record_host_work(authorization: &DispatchAuthorization, event: WorkWitnessEvent<'_>) {
+fn record_host_work(authorization: &DispatchAuthorization, event: WorkWitnessEvent<'_>) {
     if let Some(config) = WitnessConfig::load() {
         config.record(authorization, event);
+    }
+}
+
+struct WorkWitnessRecorder;
+
+#[must_use]
+pub fn host_work_observation_sink() -> Arc<dyn WorkObservationSink> {
+    Arc::new(WorkWitnessRecorder)
+}
+
+impl WorkObservationSink for WorkWitnessRecorder {
+    fn offered(&self, authorization: &DispatchAuthorization, work_kind: WorkObservationKind) {
+        record_host_work(
+            authorization,
+            WorkWitnessEvent::Offered {
+                work_kind: work_kind.into(),
+            },
+        );
+    }
+
+    fn newly_taken(&self, authorization: &DispatchAuthorization, work_kind: WorkObservationKind) {
+        record_host_work(
+            authorization,
+            WorkWitnessEvent::NewlyTaken {
+                work_kind: work_kind.into(),
+            },
+        );
+    }
+}
+
+impl From<WorkObservationKind> for WorkWitnessKind {
+    fn from(kind: WorkObservationKind) -> Self {
+        match kind {
+            WorkObservationKind::Prompt => Self::Prompt,
+            WorkObservationKind::ManagedNotice => Self::ManagedNotice,
+        }
     }
 }
 

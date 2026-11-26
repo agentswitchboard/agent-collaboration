@@ -60,7 +60,7 @@ impl SessionDeliveryRoute for ProviderAcpDeliveryRoute {
                     .await;
                     match loadability {
                         ProviderSessionLoadability::AlreadyLoaded => RoutePresence::Running,
-                        ProviderSessionLoadability::Loadable { .. } => RoutePresence::Wakeable,
+                        ProviderSessionLoadability::Loadable => RoutePresence::Wakeable,
                         ProviderSessionLoadability::UnsupportedLoad => RoutePresence::Unreachable {
                             reason: "provider does not support loading this session".to_owned(),
                         },

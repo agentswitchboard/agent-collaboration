@@ -4,15 +4,17 @@ use crate::binding_dispatch_permit::BindingUncertainty;
 use crate::session_store_lane::{
     MarkedInput, SessionStoreLane, SessionStoreLaneTask, SessionStoreOfferError, StoreLaneHandover,
 };
-use acp_client_runtime::{
-    acp_transport::{AcpTransport, SlotEvidence},
-    session_owner_task::{SessionOwnerHandle, SessionOwnerTask},
-};
+#[cfg(test)]
+use acp_client_runtime::acp_transport::{AcpTransport, SlotEvidence};
+use acp_client_runtime::session_owner_task::{SessionOwnerHandle, SessionOwnerTask};
 use collaboration_protocol::{OperationId, SessionRef};
+#[cfg(test)]
+use provider_session_machines::session_owner::DispatchAuthorization;
 use provider_session_machines::session_owner::{
-    ConnectionEpoch, DispatchAuthorization, OwnerAddress, OwnerIncarnation,
+    ConnectionEpoch, OwnerAddress, OwnerEvidence, OwnerIncarnation, OwnerInputEvidence,
 };
 use router_clock::RuntimeClock;
+use session_event_model::InputId;
 use std::{
     collections::{BTreeMap, BTreeSet},
     num::NonZeroUsize,
@@ -46,10 +48,10 @@ pub struct SessionRegistration {
     pub launch: Option<(OwnerTaskLaunch, SessionStoreLaneTask)>,
 }
 
-pub struct FailedOwnerSettlement {
+pub struct FailedOwnerSettlement<Evidence = OwnerEvidence> {
     pub replacement: OwnerTaskLaunch,
     pub handover: StoreLaneHandover,
-    pub slot_evidence: Vec<(DispatchAuthorization, SlotEvidence)>,
+    pub slot_evidence: Evidence,
     pub inputs: Vec<FailedOwnerInput>,
 }
 
@@ -233,18 +235,36 @@ impl SessionOwnerRegistry {
     /// Called by the task monitor after the old owner stops offering effects.
     /// It fences the registry compare-and-swap, transport revocation and lane
     /// handover against a concurrent attempt to replace the same entry.
+    #[cfg(test)]
     pub fn replace_failed_session<'connection, Frame: 'connection>(
         &self,
         target: &SessionRef,
         failed: OwnerIncarnation,
         connection: ConnectionEpoch,
         transports: impl IntoIterator<Item = &'connection AcpTransport<Frame>>,
-    ) -> Result<FailedOwnerSettlement, SessionOwnerRegistryError> {
-        self.replace_failed_with(target, failed, connection, |incarnation| {
-            transports
-                .into_iter()
-                .flat_map(|transport| transport.revoke_incarnation(incarnation))
-                .collect()
+    ) -> Result<
+        FailedOwnerSettlement<Vec<(DispatchAuthorization, SlotEvidence)>>,
+        SessionOwnerRegistryError,
+    > {
+        let mut slots = Vec::new();
+        let settled = self.replace_failed_with(
+            target,
+            failed,
+            connection,
+            BTreeSet::new(),
+            |incarnation, inputs| {
+                slots = transports
+                    .into_iter()
+                    .flat_map(|transport| transport.revoke_incarnation(incarnation))
+                    .collect();
+                answer_complete_acp_snapshot(inputs, &slots)
+            },
+        )?;
+        Ok(FailedOwnerSettlement {
+            replacement: settled.replacement,
+            handover: settled.handover,
+            slot_evidence: slots,
+            inputs: settled.inputs,
         })
     }
 
@@ -253,29 +273,26 @@ impl SessionOwnerRegistry {
         target: &SessionRef,
         failed: OwnerIncarnation,
         connection: ConnectionEpoch,
-        revoke: impl FnOnce(OwnerIncarnation) -> Vec<(DispatchAuthorization, SlotEvidence)>,
-    ) -> Result<FailedOwnerSettlement, SessionOwnerRegistryError> {
+        mut asked_inputs: BTreeSet<InputId>,
+        give_up_owner: impl FnOnce(OwnerIncarnation, &BTreeSet<InputId>) -> OwnerEvidence,
+    ) -> Result<FailedOwnerSettlement<OwnerEvidence>, SessionOwnerRegistryError> {
         let mut entries = self.entries();
         let current = entries
             .sessions
             .get_mut(target)
             .filter(|entry| entry.owner.owner.address.incarnation == failed)
             .ok_or(SessionOwnerRegistryError::Replaced)?;
-        let slot_evidence = revoke(failed);
-        let taken: BTreeSet<_> = slot_evidence
-            .iter()
-            .filter_map(|(key, evidence)| {
-                (*evidence == SlotEvidence::Taken).then_some(&key.input_id)
-            })
-            .collect();
+        let accepted_marks = current.lane.accepted_marks(failed);
+        asked_inputs.extend(accepted_marks.iter().map(|marked| marked.input.clone()));
+        let slot_evidence = give_up_owner(failed, &asked_inputs);
         let mut cleanups = Vec::new();
         let mut inputs = Vec::new();
-        for marked in current.lane.accepted_marks(failed) {
-            if taken.contains(&marked.input) {
-                inputs.push(FailedOwnerInput::PotentiallyApplied(marked));
-            } else {
+        for marked in accepted_marks {
+            if owner_proved_unsent(slot_evidence.get(&marked.input)) {
                 cleanups.push(marked.clone());
                 inputs.push(FailedOwnerInput::KnownUnsent(marked));
+            } else {
+                inputs.push(FailedOwnerInput::PotentiallyApplied(marked));
             }
         }
         let replacement = self.launch(connection);
@@ -324,6 +341,44 @@ impl SessionOwnerRegistry {
             Arc::clone(&self.binding),
         )
     }
+}
+
+pub(super) fn owner_proved_unsent(evidence: Option<&OwnerInputEvidence>) -> bool {
+    matches!(
+        evidence,
+        Some(OwnerInputEvidence::Withdrawn { .. } | OwnerInputEvidence::NeverOffered)
+    )
+}
+
+/// Project the complete ACP snapshot used by the raw-slot registry fixture.
+#[cfg(test)]
+fn answer_complete_acp_snapshot(
+    inputs: &BTreeSet<InputId>,
+    slots: &[(DispatchAuthorization, SlotEvidence)],
+) -> OwnerEvidence {
+    let mut by_input = BTreeMap::<InputId, Vec<_>>::new();
+    for (authorization, evidence) in slots {
+        by_input
+            .entry(authorization.input_id.clone())
+            .or_default()
+            .push((authorization.clone(), *evidence));
+    }
+    inputs
+        .iter()
+        .map(|input| {
+            let answer = match by_input.remove(input) {
+                None => OwnerInputEvidence::NeverOffered,
+                Some(slots) if slots.iter().any(|(_, slot)| *slot == SlotEvidence::Taken) => {
+                    OwnerInputEvidence::Taken { slots }
+                }
+                Some(slots) if slots.iter().all(|(_, slot)| *slot == SlotEvidence::Revoked) => {
+                    OwnerInputEvidence::Withdrawn { slots }
+                }
+                Some(slots) => OwnerInputEvidence::NoEvidence { slots },
+            };
+            (input.clone(), answer)
+        })
+        .collect()
 }
 
 impl From<&OwnerTaskLaunch> for OwnerEntry {

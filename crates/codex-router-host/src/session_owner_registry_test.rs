@@ -1,4 +1,6 @@
 use super::*;
+use crate::session_owner_calls::{InputAcceptance, SessionOwnerCalls};
+use crate::session_owner_door::SessionOwnerDoor;
 use crate::session_store_lane::{
     SessionStoreSettlement, SessionStoreTicket, SessionStoreWrite, tests::StoreFixture,
 };
@@ -13,11 +15,12 @@ use collaboration_protocol::{
 use provider_session_machines::{
     session_lifecycle_machine::{LoadAttempt, RestoreVia, SessionLifecycle},
     session_owner::{
-        AuthorizedWork, CloseOutcome, DispatchResult, EffectOutcome, OwnerEffect, OwnerEvent,
-        OwnerInput, PromptAdmission, PublicationBatch, PublicationFact, PublicationResult,
-        RestoreLoadReadback, RestorePreparation, RestoredMode, SessionOwnerCommand,
-        SessionOwnerReply, SessionPublication, SessionStoreRequest, SessionStoreResult,
-        SessionWireRequest, SessionWireResult, WireOutcome,
+        AuthorizationTarget, AuthorizedWork, CloseOutcome, DispatchResult, EffectOutcome,
+        OwnerEffect, OwnerEvent, OwnerInput, PromptAdmission, PublicationBatch, PublicationFact,
+        PublicationResult, RemoteEffect, RestoreLoadReadback, RestorePreparation, RestoredMode,
+        RevokeReason, SessionOwnerCommand, SessionOwnerReply, SessionPublication,
+        SessionStoreRequest, SessionStoreResult, SessionWireRequest, SessionWireResult,
+        WireOutcome,
     },
     session_turn_machine::TurnId,
 };
@@ -174,9 +177,12 @@ impl SessionOwnerPorts for ScenarioPorts {
                     outcome: EffectOutcome::Applied,
                 }))
             }
-            OwnerEffect::Wire(SessionWireRequest::Restore { run, .. }) => {
+            OwnerEffect::Wire(SessionWireRequest::Restore { run, via }) => {
                 Some(OwnerEvent::Wire(SessionWireResult::Restore {
                     run,
+                    replay: (via == RestoreVia::Load).then_some(
+                        provider_session_machines::harness_lifecycle::ReplayCompleteness::Complete,
+                    ),
                     outcome: WireOutcome::Confirmed(RestoreLoadReadback {
                         catalogue: Arc::default(),
                         router_auto_requested: false,
@@ -226,6 +232,12 @@ impl SessionOwnerPorts for ScenarioPorts {
                     capabilities: Default::default(),
                     settings: Default::default(),
                     observed: BTreeMap::new(),
+                }))
+            }
+            OwnerEffect::ActivateRestored { run, .. } => {
+                Some(OwnerEvent::Prepare(RestorePreparation::Activation {
+                    run,
+                    result: Ok(()),
                 }))
             }
             OwnerEffect::Publish(batch) => {
@@ -543,6 +555,180 @@ async fn failed_owner_settles_late_prompt_mark_across_handover_and_reopen() {
 #[tokio::test(flavor = "current_thread")]
 async fn failed_owner_settles_late_steer_mark_across_handover_and_reopen() {
     owner_dies_after_accepting_mark(true).await;
+}
+
+#[derive(Clone, Copy, Debug)]
+enum RecoveryAnswer {
+    Withdrawn,
+    Taken,
+    NeverOffered,
+    NoEvidence,
+    Omitted,
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn explicit_owner_recovery_controls_reopened_marks_and_both_caller_replies() {
+    for (answer, unsent) in [
+        (RecoveryAnswer::Withdrawn, true),
+        (RecoveryAnswer::Taken, false),
+        (RecoveryAnswer::NeverOffered, true),
+        (RecoveryAnswer::NoEvidence, false),
+        (RecoveryAnswer::Omitted, false),
+    ] {
+        check_recovered_mark_and_caller(answer, unsent).await;
+    }
+}
+
+async fn check_recovered_mark_and_caller(answer: RecoveryAnswer, unsent: bool) {
+    let fixture = StoreFixture::new().await;
+    let target = fixture.record_session("evidence-handover").await;
+    let registry = SessionOwnerRegistry::new(
+        fixture.store.clone(),
+        fixture.clock.clone(),
+        NonZeroUsize::MIN,
+        NonZeroUsize::MIN,
+    );
+    let registration = registry.get_or_insert(target.clone(), connection());
+    let (owner, lane_task) = registration.launch.expect("first owner and lane");
+    let lane = registration.session.lane;
+    let stop = CancellationToken::new();
+    let runner = tokio::spawn(lane_task.run(stop.clone()));
+    let failed = owner.owner.address.incarnation;
+    let input = OwnerInput {
+        generation: provider_session_machines::SessionGeneration::from_number(1),
+        input: InputId::generate(),
+        operation: Uuid::now_v7(),
+        turn: TurnId(Uuid::now_v7()),
+    };
+    let operation = admit_prompt(&fixture, &target, input.operation).await;
+    let marked = MarkedInput {
+        input: input.input.clone(),
+        operation: operation.clone(),
+    };
+    let mark = lane
+        .offer(failed, SessionStoreWrite::MarkDispatch(marked.clone()))
+        .expect("accept mark")
+        .wait()
+        .await
+        .expect("persist mark");
+    let SessionStoreSettlement::Operation(before) = mark else {
+        panic!("expected the persisted operation mark: {answer:?}");
+    };
+    assert_eq!(before.stage, ProviderOperationStage::MayHaveDispatched);
+    assert_eq!(before.effect, ProviderOperationEffect::Unknown);
+
+    let callers = Arc::new(SessionOwnerCalls::default());
+    let content = session_event_model::PreparedPrompt::plain(vec![
+        session_event_model::PromptContent::text("recover".to_owned()).expect("prompt"),
+    ]);
+    callers.insert_content(&input, content);
+    let acceptance = callers.expect_acceptance(input.operation);
+    let terminal = callers.expect_settlement(input.operation);
+    let asked_inputs = BTreeSet::from([input.input.clone()]);
+    let authorization = DispatchAuthorization {
+        incarnation: failed,
+        run: input.generation,
+        input_id: input.input.clone(),
+        authorization_seq: 1,
+        target: AuthorizationTarget::NewTurn,
+    };
+
+    let settled = registry
+        .replace_failed_with(
+            &target,
+            failed,
+            connection(),
+            asked_inputs.clone(),
+            |owner, asked| {
+                assert_eq!(owner, failed);
+                assert_eq!(
+                    asked, &asked_inputs,
+                    "the accepted mark and waiter share one answer"
+                );
+                let evidence = match answer {
+                    RecoveryAnswer::Withdrawn => OwnerInputEvidence::Withdrawn {
+                        slots: vec![(authorization, SlotEvidence::Revoked)],
+                    },
+                    RecoveryAnswer::Taken => OwnerInputEvidence::Taken {
+                        slots: vec![(authorization, SlotEvidence::Taken)],
+                    },
+                    RecoveryAnswer::NeverOffered => OwnerInputEvidence::NeverOffered,
+                    RecoveryAnswer::NoEvidence => {
+                        OwnerInputEvidence::NoEvidence { slots: Vec::new() }
+                    }
+                    RecoveryAnswer::Omitted => return OwnerEvidence::new(),
+                };
+                OwnerEvidence::from([(input.input.clone(), evidence)])
+            },
+        )
+        .expect("replace failed owner");
+    assert!(matches!(
+        lane.offer(failed, SessionStoreWrite::MarkDispatch(marked)),
+        Err(SessionStoreOfferError::Replaced)
+    ));
+    let mut saved = BTreeMap::new();
+    for (marked, ticket) in settled.handover.cleanups {
+        assert!(matches!(
+            ticket.wait().await,
+            Ok(SessionStoreSettlement::Operation(_))
+        ));
+        saved.insert(marked.input, true);
+    }
+    assert!(matches!(
+        settled.handover.barrier.settlement().await,
+        Ok(SessionStoreSettlement::HandedOver)
+    ));
+
+    SessionOwnerDoor::settle_recovered_callers_for_test(&callers, &settled.slot_evidence, saved);
+    let accepted = acceptance.await.expect("waiting acceptance");
+    let settled = terminal.await.expect("waiting terminal reply");
+    assert_eq!(settled.saved, unsent, "{answer:?}");
+    let mut reopened = ProviderOperationStore::open(&fixture.path)
+        .await
+        .expect("reopen");
+    let after = reopened
+        .inspect(&operation)
+        .await
+        .expect("read mark")
+        .expect("row remains");
+    if unsent {
+        assert_eq!(
+            accepted,
+            InputAcceptance::Unsent {
+                reason: Some(RevokeReason::ConnectionLost)
+            },
+            "{answer:?}",
+        );
+        assert!(
+            matches!(
+                settled.reply,
+                SessionOwnerReply::InputUnsent { input: actual, reason: RevokeReason::ConnectionLost }
+                    if actual == input
+            ),
+            "{answer:?}"
+        );
+        assert_eq!(after.stage, ProviderOperationStage::Terminal);
+        assert_eq!(after.effect, ProviderOperationEffect::None);
+        assert_eq!(
+            after.reconciliation_state,
+            ProviderReconciliationState::Confirmed
+        );
+    } else {
+        assert_eq!(accepted, InputAcceptance::Unknown, "{answer:?}");
+        assert!(
+            matches!(
+                settled.reply,
+                SessionOwnerReply::InputFinished { input: actual, remote: RemoteEffect::Unknown }
+                    if actual == input
+            ),
+            "{answer:?}"
+        );
+        assert_eq!(after.stage, before.stage);
+        assert_eq!(after.effect, before.effect);
+        assert_eq!(after.reconciliation_state, before.reconciliation_state);
+    }
+    stop.cancel();
+    runner.await.expect("lane stopped");
 }
 
 #[path = "session_owner_registry_close_test.rs"]

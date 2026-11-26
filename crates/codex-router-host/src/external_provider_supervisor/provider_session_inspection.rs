@@ -43,7 +43,7 @@ pub(super) async fn inspect(
             .await
             .to_session_model(),
     };
-    let catalog = supervisor.owner_session_catalog(&target);
+    let catalog = supervisor.owner_session_catalog(&target).await;
     let confirmed_mode = snapshot.as_ref().and_then(|owner| {
         match &owner
             .settings
@@ -182,7 +182,7 @@ impl ExternalProviderSupervisor {
         {
             return Err(SessionModelCatalogError::SessionNotFound);
         }
-        let catalog = match self.owner_session_catalog(target) {
+        let catalog = match self.owner_session_catalog(target).await {
             Some(catalog) => catalog,
             None => self
                 .inner
