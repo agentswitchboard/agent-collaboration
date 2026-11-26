@@ -211,6 +211,8 @@ impl SessionOwnerExecution {
                         preparation
                     };
                     completion.send(OwnerEvent::Prepare(result));
+                    #[cfg(test)]
+                    fixture.witness_restore_completion_queued();
                 });
                 return Ok(None);
             }

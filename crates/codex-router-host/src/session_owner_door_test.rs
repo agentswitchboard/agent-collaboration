@@ -14,10 +14,7 @@ use session_event_model::{InputId, PromptContent, SessionState};
 use switchboard_session_store::ProviderOperationAdmission;
 
 impl SessionOwnerAddress {
-    #[allow(
-        dead_code,
-        reason = "the failed-owner lane proof is developed on the companion branch"
-    )]
+    #[cfg(debug_assertions)]
     pub(crate) fn recovery_storage_for_test(&self) -> &SessionOwnerStorage {
         &self.storage
     }
