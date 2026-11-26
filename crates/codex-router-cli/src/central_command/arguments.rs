@@ -1,12 +1,11 @@
-use approval_request_protocol::{
-    Answer, ApprovalListFilter, ApprovalRequestId, OfferedOptionId, SessionCallDecision,
+use central_person_link_client::approvals::{
+    Answer, ApprovalListFilter, ApprovalRequestId, OfferedOptionId, RequestId, SessionCallDecision,
 };
 use clap::{Args, Parser, Subcommand};
 use std::{
     ffi::OsString,
     path::{Path, PathBuf},
 };
-use workspace_ids::RequestId;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum CentralCommand {

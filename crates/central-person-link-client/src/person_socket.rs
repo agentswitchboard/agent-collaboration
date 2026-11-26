@@ -38,18 +38,18 @@ pub(crate) async fn upgrade(
         .map_err(|_| PersonLinkError::Upgrade)
 }
 
-pub(crate) async fn send_call(
-    socket: &mut WebSocket,
-    attempt: CallAttempt,
-) -> Result<(), PersonLinkError> {
-    let text = encode_text(
+pub(crate) fn encode_call(attempt: CallAttempt) -> Result<String, PersonLinkError> {
+    encode_text(
         &LinkFrame::Data(DataFrame::CallCentral {
             correlation_id: attempt.correlation,
             request: Box::new(attempt.call.body.into_request(attempt.call.target)),
         }),
         FrameDirection::ToCentral,
     )
-    .map_err(|_| PersonLinkError::Protocol)?;
+    .map_err(|_| PersonLinkError::CallEncoding)
+}
+
+pub(crate) async fn send_call(socket: &mut WebSocket, text: String) -> Result<(), PersonLinkError> {
     socket
         .send(Message::Text(text))
         .await

@@ -101,6 +101,8 @@ pub enum PersonLinkError {
     Closed(u16),
     #[error("the person WebSocket returned an unexpected protocol frame")]
     Protocol,
+    #[error("could not encode the person call")]
+    CallEncoding,
     #[error("Central refused the person call ({0:?})")]
     CallRefused(LinkCallRefusal),
     #[error("Central returned an invalid workspace page cursor")]

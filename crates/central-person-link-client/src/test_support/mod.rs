@@ -5,5 +5,6 @@
     reason = "fixture setup and required test receipts"
 )]
 
+mod approval_relay_fault;
 pub mod fixture_authority;
 pub mod fixture_signin;

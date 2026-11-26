@@ -16,7 +16,8 @@ use central_link_protocol::{
     approval_rpc::{ApprovalHolderTarget, RegisterRunReply},
 };
 use central_person_link_client::{
-    ApprovalDecisionOutcome, PersonLinkError,
+    PersonLinkError,
+    approvals::ApprovalDecisionOutcome,
     test_support::{
         fixture_authority::INITIAL_SECONDS,
         fixture_signin::{ApprovalRelayFault, ApprovalSignIn},
@@ -380,7 +381,8 @@ async fn lost_committed_reply_is_unknown_and_the_operation_id_recovers_it() {
     assert_eq!(
         outcome,
         ApprovalDecisionOutcome::Unknown {
-            operation_id: operation_id.clone()
+            operation_id: operation_id.clone(),
+            cause: PersonLinkError::Closed(1011),
         }
     );
     assert_eq!(
@@ -484,7 +486,7 @@ async fn expired_request_is_too_late_and_foreign_target_is_a_typed_refusal() {
 }
 
 #[tokio::test]
-async fn mismatched_correlated_reply_fails_the_decide_protocol() {
+async fn mismatched_correlated_reply_leaves_a_committed_decide_unknown() {
     let fixture = ApprovalFixture::start().await;
     let (target, mut holder) = fixture.holder().await;
     let request = seed(
@@ -494,17 +496,40 @@ async fn mismatched_correlated_reply_fails_the_decide_protocol() {
     )
     .await;
     let mut client = fixture.signin.client();
+    let operation_id = operation(&fixture);
     fixture
         .signin
         .relay
         .script_once(ApprovalRelayFault::WrongDecideReply);
 
     let outcome = client
-        .decide_approval(request.request_id().clone(), operation(&fixture), allow())
-        .await;
+        .decide_approval(request.request_id().clone(), operation_id.clone(), allow())
+        .await
+        .unwrap();
 
-    assert_eq!(outcome, Err(PersonLinkError::Protocol));
-    assert!(fixture.operation_rows().await.is_empty());
+    assert_eq!(
+        outcome,
+        ApprovalDecisionOutcome::Unknown {
+            operation_id: operation_id.clone(),
+            cause: PersonLinkError::Protocol
+        }
+    );
+    assert_eq!(
+        fixture.operation_rows().await,
+        [vec![SqlValue::Text(operation_id.to_string())]]
+    );
+    fixture
+        .ending(&mut holder, &target, &request, held_ending())
+        .await;
+    drop(client);
+    let mut client = fixture.signin.client();
+    assert_eq!(
+        client
+            .decide_approval(request.request_id().clone(), operation_id, allow())
+            .await
+            .unwrap(),
+        saved(allow())
+    );
     drop(client);
     drop(holder);
     fixture.close().await;

@@ -27,7 +27,7 @@ use crate::{
     },
     fleet_credential::refresh_for_upgrade,
     fleet_login,
-    person_socket::{receive_event, send_call, upgrade},
+    person_socket::{encode_call, receive_event, send_call, upgrade},
 };
 
 const CALL_BUDGET: Duration = Duration::from_secs(30);
@@ -38,8 +38,13 @@ pub enum ApprovalDecisionOutcome {
     /// A submission may have reached Central. Retry with the same request, answer and operation ID.
     Unknown {
         operation_id: RequestId,
+        cause: PersonLinkError,
     },
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("Decision was not sent: {0}")]
+pub struct ApprovalNotSent(#[source] PersonLinkError);
 
 /// One sequential person connection shared by directory and approval calls.
 pub struct PersonLinkClient {
@@ -129,7 +134,7 @@ impl PersonLinkClient {
                     limit,
                 }))
                 .await
-                .map_err(|failure| failure.error)?;
+                .map_err(CallFailure::read_error)?;
             let PersonReply::Workspaces(page) = reply else {
                 return Err(PersonLinkError::Protocol);
             };
@@ -161,7 +166,7 @@ impl PersonLinkClient {
                     cursor: cursor.clone(),
                 }))
                 .await
-                .map_err(|failure| failure.error)?;
+                .map_err(CallFailure::read_error)?;
             let PersonReply::Approvals(ApprovalListReply::Page { items, next }) = reply else {
                 return Err(PersonLinkError::Protocol);
             };
@@ -188,7 +193,7 @@ impl PersonLinkClient {
         let reply = self
             .call(PersonCall::ReadApproval(ReadPersonApproval { request_id }))
             .await
-            .map_err(|failure| failure.error)?;
+            .map_err(CallFailure::read_error)?;
         let PersonReply::Approval(reply) = reply else {
             return Err(PersonLinkError::Protocol);
         };
@@ -200,7 +205,7 @@ impl PersonLinkClient {
         request_id: ApprovalRequestId,
         operation_id: RequestId,
         answer: Answer,
-    ) -> Result<ApprovalDecisionOutcome, PersonLinkError> {
+    ) -> Result<ApprovalDecisionOutcome, ApprovalNotSent> {
         match self
             .call(PersonCall::DecideApproval(DecidePersonApproval {
                 request_id,
@@ -210,17 +215,15 @@ impl PersonLinkClient {
             .await
         {
             Ok(PersonReply::Decision(reply)) => Ok(ApprovalDecisionOutcome::Reply(reply)),
-            Ok(_) => Err(PersonLinkError::Protocol),
-            Err(failure)
-                if failure.send_attempted
-                    && !matches!(
-                        failure.error,
-                        PersonLinkError::Protocol | PersonLinkError::CallRefused(_)
-                    ) =>
-            {
-                Ok(ApprovalDecisionOutcome::Unknown { operation_id })
-            }
-            Err(failure) => Err(failure.error),
+            Ok(_) => Ok(ApprovalDecisionOutcome::Unknown {
+                operation_id,
+                cause: PersonLinkError::Protocol,
+            }),
+            Err(CallFailure::AfterWrite(cause)) => Ok(ApprovalDecisionOutcome::Unknown {
+                operation_id,
+                cause,
+            }),
+            Err(CallFailure::BeforeWrite(cause)) => Err(ApprovalNotSent(cause)),
         }
     }
 
@@ -254,25 +257,16 @@ impl PersonLinkClient {
                     Err(error) => ConnectionEvent::Failed(error),
                 },
                 ConnectionEffect::Send(attempt) => {
-                    let active = socket.as_mut().ok_or(PersonLinkError::ConnectionState)?;
-                    send_attempted = true;
-                    let sent =
-                        timeout_at(self.clock.as_ref(), deadline, send_call(active, attempt)).await;
-                    match sent {
-                        Ok(Ok(())) => self.wait_for_call_event(active, deadline).await,
-                        Ok(Err(PersonLinkError::Socket)) => {
-                            // A revocation close can cross the write. Replay only if its typed close arrives.
-                            match self.wait_for_call_event(active, deadline).await {
-                                ConnectionEvent::LifetimeClosed => ConnectionEvent::LifetimeClosed,
-                                _ => ConnectionEvent::Failed(PersonLinkError::Socket),
-                            }
-                        }
-                        Ok(Err(error)) => ConnectionEvent::Failed(error),
-                        Err(_) => ConnectionEvent::Failed(PersonLinkError::Deadline),
-                    }
+                    let active = socket.as_mut().ok_or_else(|| {
+                        CallFailure::from_progress(PersonLinkError::ConnectionState, send_attempted)
+                    })?;
+                    self.send_attempt(active, attempt, deadline, &mut send_attempted)
+                        .await
                 }
                 ConnectionEffect::Receive => {
-                    let active = socket.as_mut().ok_or(PersonLinkError::ConnectionState)?;
+                    let active = socket.as_mut().ok_or_else(|| {
+                        CallFailure::from_progress(PersonLinkError::ConnectionState, send_attempted)
+                    })?;
                     self.wait_for_call_event(active, deadline).await
                 }
                 ConnectionEffect::RetireSocket => {
@@ -284,22 +278,51 @@ impl PersonLinkClient {
                         self.socket = socket;
                     }
                     self.state = Some(state);
-                    return answer.map_err(|error| CallFailure {
-                        error,
-                        send_attempted,
-                    });
+                    return answer
+                        .map_err(|error| CallFailure::from_progress(error, send_attempted));
                 }
             };
             match ConnectionMachine::transition(&state, event) {
-                Ok(transition) => (state, effect) = take_effect(transition)?,
+                Ok(transition) => {
+                    (state, effect) = take_effect(transition)
+                        .map_err(|error| CallFailure::from_progress(error, send_attempted))?;
+                }
                 Err(TransitionError::Stale) => effect = ConnectionEffect::Receive,
                 Err(error) => {
-                    return Err(CallFailure {
-                        error: transition_error(error),
+                    return Err(CallFailure::from_progress(
+                        transition_error(error),
                         send_attempted,
-                    });
+                    ));
                 }
             }
+        }
+    }
+
+    async fn send_attempt(
+        &self,
+        socket: &mut WebSocket,
+        attempt: CallAttempt,
+        deadline: ClockInstant,
+        send_attempted: &mut bool,
+    ) -> ConnectionEvent {
+        let text = match encode_call(attempt) {
+            Ok(text) => text,
+            Err(error) => return ConnectionEvent::Failed(error),
+        };
+        let write = async {
+            *send_attempted = true;
+            send_call(socket, text).await
+        };
+        match timeout_at(self.clock.as_ref(), deadline, write).await {
+            Ok(Ok(())) => self.wait_for_call_event(socket, deadline).await,
+            Ok(Err(error)) => {
+                // A reconnect close can cross the write. Replay only if its typed close arrives.
+                match self.wait_for_call_event(socket, deadline).await {
+                    ConnectionEvent::LifetimeClosed => ConnectionEvent::LifetimeClosed,
+                    _ => ConnectionEvent::Failed(error),
+                }
+            }
+            Err(_) => ConnectionEvent::Failed(PersonLinkError::Deadline),
         }
     }
 
@@ -346,17 +369,35 @@ impl PersonLinkClient {
     }
 }
 
-struct CallFailure {
-    error: PersonLinkError,
-    send_attempted: bool,
+enum CallFailure {
+    BeforeWrite(PersonLinkError),
+    AfterWrite(PersonLinkError),
+}
+
+impl CallFailure {
+    fn from_progress(cause: PersonLinkError, send_attempted: bool) -> Self {
+        if send_attempted {
+            Self::AfterWrite(cause)
+        } else {
+            Self::BeforeWrite(cause)
+        }
+    }
+
+    fn read_error(self) -> PersonLinkError {
+        let cause = match self {
+            Self::BeforeWrite(cause) | Self::AfterWrite(cause) => cause,
+        };
+        if matches!(cause, PersonLinkError::CallEncoding) {
+            PersonLinkError::Protocol
+        } else {
+            cause
+        }
+    }
 }
 
 impl From<PersonLinkError> for CallFailure {
     fn from(error: PersonLinkError) -> Self {
-        Self {
-            error,
-            send_attempted: false,
-        }
+        Self::BeforeWrite(error)
     }
 }
 

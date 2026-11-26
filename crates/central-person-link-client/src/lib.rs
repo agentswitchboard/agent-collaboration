@@ -1,5 +1,6 @@
 //! A person's reusable, authenticated connection to Central.
 
+pub mod approvals;
 mod connection_machine;
 mod error;
 mod fleet_target;
@@ -31,7 +32,7 @@ fn clock_uuid(millis: i64) -> uuid::Uuid {
 
 mod person_link_client;
 mod person_socket;
-pub use person_link_client::{ApprovalDecisionOutcome, PersonLinkClient};
+pub use person_link_client::PersonLinkClient;
 
 #[cfg(feature = "test-support")]
 pub mod test_support;

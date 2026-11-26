@@ -17,14 +17,9 @@ use axum::{
     serve::Listener,
 };
 use central_link_protocol::{
-    CentralCall, CentralCallReply, CentralLinkRpc, CorrelationId, DataFrame, FrameDirection,
-    LinkFrame, TypedCallResult, decode_text, encode_text,
-    person_link_rpc::{
-        ListOrganizationWorkspaces, ListOrganizationWorkspacesRpc, ListPersonApprovalsRpc,
-        OrganizationWorkspacePage,
-    },
+    CentralCall, CorrelationId, DataFrame, FrameDirection, LinkFrame, TypedCallResult, decode_text,
+    encode_text, person_link_rpc::ListOrganizationWorkspaces,
 };
-use fleet_rpc::Envelope;
 use futures_util::SinkExt;
 use reqwest_websocket::{Message as CentralMessage, RequestBuilderExt, WebSocket as CentralSocket};
 use router_clock::RuntimeClock;
@@ -41,6 +36,8 @@ use tokio_rustls::{
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
+pub use super::approval_relay_fault::ApprovalRelayFault;
+use super::approval_relay_fault::{approval_reply_with_fault, scripted_approval_reply};
 use super::fixture_authority::{
     ADMIN_AUDIENCE, CLIENT_ID, FixtureCredential, FixturePerson, IssuerKey, authority_claims,
     fleet_claims, fresh_request_id, verify_dpop,
@@ -112,6 +109,7 @@ pub struct SignInEvidence {
     pub refresh_attempts: usize,
     pub refreshes: usize,
     pub upgrades: usize,
+    pub refused_upgrades: Vec<u16>,
     pub closes: Vec<u16>,
     pub reads: Vec<ObservedRead>,
     pub approval_calls: Vec<ObservedApprovalCall>,
@@ -122,13 +120,6 @@ pub struct SignInEvidence {
 }
 
 type ApprovalBearer = Box<dyn Fn(i64, usize) -> String + Send + Sync>;
-
-#[derive(Clone, Copy)]
-pub enum ApprovalRelayFault {
-    RepeatListCursor,
-    WrongDecideReply,
-    DropSavedDecision,
-}
 
 pub struct TestSignIn {
     clock: Arc<dyn RuntimeClock>,
@@ -256,6 +247,7 @@ impl TestSignIn {
                 refresh_attempts: 0,
                 refreshes: 0,
                 upgrades: 0,
+                refused_upgrades: Vec::new(),
                 closes: Vec::new(),
                 reads: Vec::new(),
                 approval_calls: Vec::new(),
@@ -436,7 +428,18 @@ async fn person_link(
         .upgrade()
         .send()
         .await
-        .map_err(|_| StatusCode::BAD_GATEWAY)?
+        .map_err(|_| StatusCode::BAD_GATEWAY)?;
+    let status = upstream.status();
+    if status != StatusCode::SWITCHING_PROTOCOLS {
+        signin
+            .evidence
+            .lock()
+            .unwrap()
+            .refused_upgrades
+            .push(status.as_u16());
+        return Err(status);
+    }
+    let upstream = upstream
         .into_websocket()
         .await
         .map_err(|_| StatusCode::BAD_GATEWAY)?;
@@ -477,7 +480,7 @@ async fn relay(
                 } else if signin.approval_bearer.is_some()
                     && matches!(*request, CentralCall::ListPersonApprovals(_) | CentralCall::ReadPersonApproval(_) | CentralCall::DecidePersonApproval(_))
                 {
-                    let scripted = scripted_approval_reply(signin, &request);
+                    let scripted = scripted_approval_reply(&signin.approval_fault, &request);
                     signin.evidence.lock().unwrap().approval_calls.push(ObservedApprovalCall {
                         socket, correlation: correlation_id.clone(), request: *request,
                     });
@@ -498,10 +501,10 @@ async fn relay(
             incoming = central.next() => {
                 match incoming {
                     Some(Ok(CentralMessage::Text(text))) => {
-                        if drop_saved_decision(signin, &text) {
+                        let Some(text) = approval_reply_with_fault(&signin.approval_fault, text) else {
                             signin.evidence.lock().unwrap().dropped_decisions += 1;
                             return;
-                        }
+                        };
                         if downstream.send(Message::Text(text.into())).await.is_err() { return }
                     }
                     Some(Ok(CentralMessage::Close { code, reason })) => {
@@ -515,61 +518,6 @@ async fn relay(
             }
         }
     }
-}
-
-fn scripted_approval_reply(signin: &TestSignIn, request: &CentralCall) -> Option<CentralCallReply> {
-    let mut fault = signin.approval_fault.lock().unwrap();
-    let reply = match (*fault, request) {
-        (Some(ApprovalRelayFault::RepeatListCursor), CentralCall::ListPersonApprovals(request)) => {
-            let cursor = request.body.cursor.clone()?;
-            ListPersonApprovalsRpc::reply(Envelope {
-                target: request.target.clone(),
-                body: approval_request_protocol::ApprovalListReply::Page {
-                    items: Vec::new(),
-                    next: Some(cursor),
-                },
-            })
-        }
-        (
-            Some(ApprovalRelayFault::WrongDecideReply),
-            CentralCall::DecidePersonApproval(request),
-        ) => ListOrganizationWorkspacesRpc::reply(Envelope {
-            target: request.target.clone(),
-            body: OrganizationWorkspacePage {
-                workspaces: Vec::new(),
-                next: None,
-            },
-        }),
-        _ => return None,
-    };
-    *fault = None;
-    Some(reply)
-}
-
-fn drop_saved_decision(signin: &TestSignIn, text: &str) -> bool {
-    let mut fault = signin.approval_fault.lock().unwrap();
-    if !matches!(*fault, Some(ApprovalRelayFault::DropSavedDecision)) {
-        return false;
-    }
-    let Ok(LinkFrame::Data(DataFrame::CentralCallReply { result, .. })) =
-        decode_text(text, FrameDirection::ToRouter)
-    else {
-        return false;
-    };
-    let TypedCallResult::Answered {
-        reply: CentralCallReply::DecidePersonApproval(reply),
-    } = *result
-    else {
-        return false;
-    };
-    if !matches!(
-        reply.body,
-        approval_request_protocol::ApprovalDecideReply::SavedDecision { .. }
-    ) {
-        return false;
-    }
-    *fault = None;
-    true
 }
 
 fn header<'headers>(headers: &'headers HeaderMap, name: &str) -> Option<&'headers str> {

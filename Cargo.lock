@@ -1228,7 +1228,6 @@ version = "0.1.160"
 dependencies = [
  "agent-collaboration-tui",
  "agent-router-quota-tui",
- "approval-request-protocol",
  "base64 0.22.1",
  "central-link-protocol",
  "central-person-link-client",
@@ -1287,7 +1286,6 @@ dependencies = [
  "ui-preference-store",
  "unicode-width 0.2.2",
  "uuid",
- "workspace-ids",
 ]
 
 [[package]]

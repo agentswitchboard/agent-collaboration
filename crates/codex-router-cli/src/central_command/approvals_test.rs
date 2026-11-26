@@ -5,17 +5,17 @@ use std::{
     time::Duration,
 };
 
-use approval_request_protocol::{
-    ApprovalRequestId, Label, OfferedOption, OfferedOptionId, OfferedOptions, OptionEffect,
-    OptionLifetime, Raise,
-};
 use central_link_protocol::{
     DataFrame, LinkFrame, MacCallKind,
     approval_rpc::{ApprovalHolderTarget, RegisterRunReply},
 };
-use central_person_link_client::test_support::{
-    fixture_authority::{FixturePerson, INITIAL_SECONDS},
-    fixture_signin::{ApprovalRelayFault, ApprovalSignIn},
+use central_person_link_client::{
+    PersonLinkError,
+    approvals::ApprovalRequestId,
+    test_support::{
+        fixture_authority::{FixturePerson, INITIAL_SECONDS},
+        fixture_signin::{ApprovalRelayFault, ApprovalSignIn},
+    },
 };
 use collaboration_central_conformance::{
     approval_link_scenarios::{
@@ -37,6 +37,9 @@ use serde_json::{Value, json};
 
 use super::*;
 use crate::central_command::CentralCommand;
+
+#[path = "approval_outcome_test.rs"]
+mod outcomes;
 
 const TARGET: &str = "fixture's target.json";
 const PERSON: FixturePerson = FixturePerson {
@@ -107,17 +110,18 @@ impl Fixture {
         let (session, _) = create_bound(&mut holder, &target.organization_id, 1, None)
             .await
             .unwrap();
-        let mut approval = provider_raise(&target, &session, 2, ProviderAsk::Approval).unwrap();
-        if let Raise::ProviderApproval { offer, .. } = &mut approval {
-            let mut options = offer.options.as_slice().to_vec();
-            options.push(OfferedOption {
-                id: OfferedOptionId::new(3).unwrap(),
-                label: Label::new("Decline").unwrap(),
-                effect: OptionEffect::Decline,
-                lasts: OptionLifetime::ThisRequest {},
-            });
-            offer.options = OfferedOptions::new(options).unwrap();
-        }
+        let mut approval = serde_json::to_value(
+            provider_raise(&target, &session, 2, ProviderAsk::Approval).unwrap(),
+        )
+        .unwrap();
+        approval
+            .pointer_mut("/offer/options")
+            .and_then(Value::as_array_mut)
+            .unwrap()
+            .push(json!({
+                "id": 3, "label": "Decline", "effect": "decline", "lasts": {"kind": "thisRequest"},
+            }));
+        let approval = serde_json::from_value(approval).unwrap();
         let question = provider_raise(&target, &session, 3, ProviderAsk::Question).unwrap();
         let held = held_start(&target.router_run, 4).unwrap();
         for request in [&approval, &question, &held] {
@@ -454,6 +458,7 @@ async fn generated_operation_is_flushed_before_a_lost_reply_and_recovers_over_th
         unknown,
         json!({
             "kind":"unknown", "operationId":operation,
+            "cause": PersonLinkError::Socket.to_string(),
             "retryCommand": format!("codex-router central approvals decide --target='fixture'\\''s target.json' {} --allow --operation {operation} --json", offers.held),
         })
     );
@@ -509,7 +514,13 @@ async fn generated_operation_is_flushed_before_a_lost_reply_and_recovers_over_th
     assert_eq!(unknown_text.status.code(), 8);
     assert_eq!(
         unknown_text.text().lines().next(),
-        Some(format!("Outcome unknown for operation {explicit_operation}.").as_str())
+        Some(
+            format!(
+                "Outcome unknown for operation {explicit_operation}. Cause: {}.",
+                PersonLinkError::Socket
+            )
+            .as_str()
+        )
     );
     assert_eq!(unknown_text.text().lines().last(), Some(format!(
         "codex-router central approvals decide --target='fixture'\\''s target.json' {} --option 1 --operation {explicit_operation}",

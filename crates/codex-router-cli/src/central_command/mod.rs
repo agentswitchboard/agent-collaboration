@@ -34,10 +34,20 @@ pub enum CentralCommandError {
     AsyncDispatchRequired,
     #[error("could not allocate a decide operation ID")]
     OperationId,
+    #[error(transparent)]
+    ApprovalNotSent(#[from] central_person_link_client::approvals::ApprovalNotSent),
+    #[error("Decision was not sent: {0}")]
+    DecisionPreparation(#[source] Box<CentralCommandError>),
     #[error("could not render a Central approval reply")]
     ApprovalJson(#[from] serde_json::Error),
     #[error("{0}")]
     ApprovalOutcome(ApprovalExit),
+}
+
+impl CentralCommandError {
+    fn before_decide(error: Self) -> Self {
+        Self::DecisionPreparation(Box::new(error))
+    }
 }
 
 pub(crate) async fn run_central_command(
@@ -57,7 +67,15 @@ pub(crate) async fn run_central_command(
         CentralCommand::Approvals(command) => {
             let clock = Arc::new(router_clock::SystemRuntimeClock::new());
             let mut client =
-                person_connection::build_person_client(command.target(), clock.clone()).await?;
+                person_connection::build_person_client(command.target(), clock.clone())
+                    .await
+                    .map_err(|error| {
+                        if matches!(command, arguments::ApprovalCommand::Decide(_)) {
+                            CentralCommandError::before_decide(error)
+                        } else {
+                            error
+                        }
+                    })?;
             let status =
                 approvals::run(command, &mut client, clock.as_ref(), stdout, stderr).await?;
             if status != ApprovalExit::Success {

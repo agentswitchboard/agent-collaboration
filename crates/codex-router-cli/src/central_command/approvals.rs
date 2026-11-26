@@ -1,15 +1,16 @@
 use std::{io::Write, os::unix::ffi::OsStrExt, path::Path};
 
-use approval_request_protocol::{
-    ApprovalDecideReply, ApprovalInvalidReason, ApprovalListReply, ApprovalReadReply,
-    ApprovalSummaryEnding, ApprovalSummaryState, DecidedBy, InvalidAnswer, RequestKind,
-    RequestSummary, RequestView, SessionCallOperation,
+use central_person_link_client::{
+    PersonLinkClient,
+    approvals::{
+        ApprovalDecideReply, ApprovalDecisionOutcome, ApprovalInvalidReason, ApprovalListReply,
+        ApprovalReadReply, ApprovalSummaryEnding, ApprovalSummaryState, DecidedBy, InvalidAnswer,
+        RequestId, RequestKind, RequestSummary, RequestView, SessionCallOperation,
+    },
 };
-use central_person_link_client::{ApprovalDecisionOutcome, PersonLinkClient};
 use router_clock::RuntimeClock;
 use serde::Serialize;
 use uuid::{NoContext, Timestamp, Uuid};
-use workspace_ids::RequestId;
 
 use super::{
     CentralCommandError,
@@ -102,10 +103,11 @@ async fn decide(
 ) -> Result<ApprovalExit, CentralCommandError> {
     let operation_id = match arguments.operation_id.clone() {
         Some(id) => id,
-        None => mint_operation_id(clock)?,
+        None => mint_operation_id(clock).map_err(CentralCommandError::before_decide)?,
     };
-    writeln!(stderr, "Operation ID {operation_id}")?;
-    stderr.flush()?;
+    writeln!(stderr, "Operation ID {operation_id}")
+        .and_then(|()| stderr.flush())
+        .map_err(|error| CentralCommandError::before_decide(error.into()))?;
 
     let reply = client
         .decide_approval(
@@ -123,18 +125,25 @@ async fn decide(
             }
             Ok(decision_status(&reply))
         }
-        ApprovalDecisionOutcome::Unknown { operation_id } => {
+        ApprovalDecisionOutcome::Unknown {
+            operation_id,
+            cause,
+        } => {
             let retry_command = retry_command(&arguments, &operation_id);
             if arguments.output.json {
                 write_json(
                     stdout,
                     &UnknownDecision::Unknown {
                         operation_id: &operation_id,
+                        cause: &cause.to_string(),
                         retry_command: &retry_command,
                     },
                 )?;
             } else {
-                writeln!(stdout, "Outcome unknown for operation {operation_id}.")?;
+                writeln!(
+                    stdout,
+                    "Outcome unknown for operation {operation_id}. Cause: {cause}."
+                )?;
                 writeln!(stdout, "Retry with the same operation ID and answer:")?;
                 writeln!(stdout, "{retry_command}")?;
             }
@@ -164,6 +173,7 @@ fn mint_operation_id(clock: &dyn RuntimeClock) -> Result<RequestId, CentralComma
 enum UnknownDecision<'a> {
     Unknown {
         operation_id: &'a RequestId,
+        cause: &'a str,
         retry_command: &'a str,
     },
 }
