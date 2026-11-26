@@ -433,3 +433,6 @@ async fn mcp_auto_rechecks_unknown_outcomes_before_waiting_on_the_ended_prompt()
     server.stop().await.expect("MCP shutdown");
     rig.supervisor.shutdown().await.expect("drain");
 }
+
+#[path = "provider_session_command_port_wait_recheck_test.rs"]
+mod wait_recheck;

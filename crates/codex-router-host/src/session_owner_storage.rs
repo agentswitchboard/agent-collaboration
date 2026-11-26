@@ -19,6 +19,7 @@ use provider_session_machines::{
     },
     session_setting_machine::SettingApplication,
 };
+use router_clock::ClockInstant;
 use session_event_model::StopReason;
 use std::{
     collections::{HashMap, HashSet},
@@ -185,14 +186,22 @@ impl SessionOwnerStorage {
                     },
                 )
             }
-            SessionStoreRequest::MarkDispatch(input) => {
-                self.report_dispatch(address, input, LaneDispatchKind::Prompt, completions)
-            }
-            SessionStoreRequest::MarkQueuedDispatch(input) => {
-                self.report_dispatch(address, input, LaneDispatchKind::QueuedPrompt, completions)
-            }
+            SessionStoreRequest::MarkDispatch(mark) => self.report_dispatch(
+                address,
+                mark.input,
+                LaneDispatchKind::Prompt,
+                None,
+                completions,
+            ),
+            SessionStoreRequest::MarkQueuedDispatch(input) => self.report_dispatch(
+                address,
+                input,
+                LaneDispatchKind::QueuedPrompt,
+                None,
+                completions,
+            ),
             SessionStoreRequest::MarkSteerDispatch(input) => {
-                self.report_dispatch(address, input, LaneDispatchKind::Steer, completions)
+                self.report_dispatch(address, input, LaneDispatchKind::Steer, None, completions)
             }
             SessionStoreRequest::UndoDispatch(input) => {
                 let operation = operation_id(input.operation)?;
@@ -205,6 +214,7 @@ impl SessionOwnerStorage {
                             operation,
                             undo_input,
                             LaneDispatchKind::Undo,
+                            None,
                             None,
                         )
                     },
@@ -304,11 +314,28 @@ impl SessionOwnerStorage {
         }
     }
 
+    pub(crate) fn execute_dispatch_mark(
+        &self,
+        address: OwnerAddress,
+        input: OwnerInput,
+        deadline: ClockInstant,
+        completions: &OwnerCompletionPort,
+    ) -> Result<Option<OwnerEvent>, OwnerTaskError> {
+        self.report_dispatch(
+            address,
+            input,
+            LaneDispatchKind::Prompt,
+            Some(deadline),
+            completions,
+        )
+    }
+
     fn report_dispatch(
         &self,
         address: OwnerAddress,
         input: OwnerInput,
         kind: LaneDispatchKind,
+        deadline: Option<ClockInstant>,
         completions: &OwnerCompletionPort,
     ) -> Result<Option<OwnerEvent>, OwnerTaskError> {
         let completion = completions.reserve(address)?;
@@ -316,7 +343,9 @@ impl SessionOwnerStorage {
         let lane = self.lane.clone();
         let mut changes = lane.subscribe_dispatch_eligibility();
         let snapshots = self.snapshots.clone();
-        let offer = offer_dispatch(&lane, &snapshots, address, &operation, &input, kind);
+        let offer = offer_dispatch(
+            &lane, &snapshots, address, &operation, &input, kind, deadline,
+        );
         #[cfg(any(test, feature = "test-support"))]
         if kind == LaneDispatchKind::QueuedPrompt {
             lane.notice_fixture_wait(
@@ -376,9 +405,11 @@ impl SessionOwnerStorage {
             )));
         }
         let clock = lane.dispatch_clock();
-        let deadline = clock
-            .monotonic_now()
-            .after(crate::session_store_lane::STORE_WAIT);
+        let wait_until = deadline.unwrap_or_else(|| {
+            clock
+                .monotonic_now()
+                .after(crate::session_store_lane::STORE_WAIT)
+        });
         self.tasks.spawn(async move {
             let mut offer = offer;
             if matches!(
@@ -395,11 +426,12 @@ impl SessionOwnerStorage {
                             .changed()
                             .await
                             .map_err(|_| SessionStoreOfferError::Stopped)?;
-                        if clock.monotonic_now() >= deadline {
+                        if clock.monotonic_now() >= wait_until {
                             return Err(SessionStoreOfferError::Stopped);
                         }
-                        let reply =
-                            offer_dispatch(&lane, &snapshots, address, &operation, &input, kind);
+                        let reply = offer_dispatch(
+                            &lane, &snapshots, address, &operation, &input, kind, deadline,
+                        );
                         if !matches!(
                             reply,
                             Err(SessionStoreOfferError::DispatchBusy {
@@ -411,9 +443,17 @@ impl SessionOwnerStorage {
                         }
                     }
                 };
-                offer = router_clock::timeout_at(clock.as_ref(), deadline, waiting)
+                offer = router_clock::timeout_at(clock.as_ref(), wait_until, waiting)
                     .await
                     .unwrap_or(Err(SessionStoreOfferError::Stopped));
+                #[cfg(test)]
+                if offer.is_err() && clock.monotonic_now() >= wait_until {
+                    lane.notice_fixture_wait(
+                        crate::binding_store_fixture::BindingFixtureWait::DispatchWaitExpired(
+                            operation.clone(),
+                        ),
+                    );
+                }
             }
             let outcome = match offer {
                 Ok(ticket) => store_effect(ticket.settlement().await),
@@ -496,11 +536,12 @@ fn offer_dispatch(
     operation: &OperationId,
     input: &OwnerInput,
     kind: LaneDispatchKind,
+    deadline: Option<ClockInstant>,
 ) -> Result<SessionStoreTicket, SessionStoreOfferError> {
-    let ended_prompt = if kind == LaneDispatchKind::Prompt {
+    let ended_turn = if kind == LaneDispatchKind::Prompt {
         let snapshot = snapshots.borrow();
         snapshot
-            .live_idle_ended_prompt()
+            .live_idle_ended_turn()
             .filter(|ended| snapshot.owner == address && ended.generation == input.generation)
             .map(|ended| ended.operation)
     } else {
@@ -511,8 +552,17 @@ fn offer_dispatch(
         operation.clone(),
         input.clone(),
         kind,
-        ended_prompt,
+        ended_turn,
+        deadline,
     );
+    #[cfg(test)]
+    if kind == LaneDispatchKind::Prompt && attempted.is_ok() {
+        lane.notice_fixture_wait(
+            crate::binding_store_fixture::BindingFixtureWait::DirectDispatchAccepted(
+                operation.clone(),
+            ),
+        );
+    }
     #[cfg(test)]
     if kind == LaneDispatchKind::Prompt
         && matches!(

@@ -7,7 +7,13 @@ use tokio::sync::oneshot;
 #[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum BindingFixtureWait {
     #[cfg(test)]
-    EndedPromptAdmission(OperationId),
+    RefuseWhileRunningAdmission(uuid::Uuid),
+    #[cfg(test)]
+    DirectDispatchAccepted(OperationId),
+    #[cfg(test)]
+    DispatchWaitExpired(OperationId),
+    #[cfg(test)]
+    EndedTurnAdmission(OperationId),
     #[cfg(test)]
     DirectDispatchBlocked(OperationId),
     #[cfg(test)]

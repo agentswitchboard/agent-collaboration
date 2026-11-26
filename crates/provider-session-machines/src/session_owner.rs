@@ -350,13 +350,19 @@ pub enum SessionWireRequest {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TurnDispatchMark {
+    pub input: OwnerInput,
+    pub budget: std::time::Duration,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SessionStoreRequest {
     RecordTerminal {
         write: TerminalWriteId,
         reply: Box<SessionOwnerReply>,
     },
     ReadRestoreSetup(RunAttempt<LoadAttempt>),
-    MarkDispatch(OwnerInput),
+    MarkDispatch(TurnDispatchMark),
     MarkQueuedDispatch(OwnerInput),
     UndoDispatch(OwnerInput),
     MarkSteerDispatch(OwnerInput),

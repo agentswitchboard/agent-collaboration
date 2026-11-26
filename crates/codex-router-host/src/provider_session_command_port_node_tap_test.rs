@@ -134,6 +134,47 @@ enum AgentFixture {
     },
     ScriptedSteering,
     LiteralSteering(literal_steer::PeerSteerBehavior),
+    TurnFollowUp(FixtureTurnEnding),
+}
+
+#[derive(Clone, Copy)]
+enum FixtureTurnEnding {
+    EndTurn,
+    Refusal,
+    Lost,
+}
+
+fn turn_follow_up_launch(
+    receipt: &std::path::Path,
+    ending: FixtureTurnEnding,
+) -> ExternalProviderLaunch {
+    use crate::external_provider_runtime::acp_scripted_fixture::AcpFixtureScript;
+    use serde_json::json;
+
+    let script = AcpFixtureScript::new()
+        .expect_request("init", "initialize", json!({}))
+        .respond("init", json!({"protocolVersion": 1, "agentCapabilities": {"loadSession": true}, "agentInfo": {"name":"turn-fixture", "version":"1"}}))
+        .expect_request("new", "session/new", json!({}))
+        .respond("new", json!({"sessionId":"fixture-session"}))
+        .expect_recorded_request("foreground", "session/prompt", json!({}), &receipt.with_extension("prompt"))
+        .wait_for_socket_signal(&receipt.with_extension("foreground.sock"));
+    let script = match ending {
+        FixtureTurnEnding::EndTurn => {
+            script.respond("foreground", json!({"stopReason":"end_turn"}))
+        }
+        FixtureTurnEnding::Refusal => script.respond("foreground", json!({"stopReason":"refusal"})),
+        FixtureTurnEnding::Lost => script.respond_error("foreground", -32603),
+    };
+    script
+        .expect_recorded_request(
+            "successor",
+            "session/prompt",
+            json!({}),
+            &receipt.with_extension("successor"),
+        )
+        .wait_for_socket_signal(&receipt.with_extension("successor.sock"))
+        .respond("successor", json!({"stopReason":"end_turn"}))
+        .launch()
 }
 
 fn scripted_steering_launch(receipt: &std::path::Path) -> ExternalProviderLaunch {
@@ -179,6 +220,9 @@ async fn command_port_rig(fixture: AgentFixture) -> CommandPortRig {
             .expect("board endpoint");
     let behavior: Arc<dyn acp_client_runtime::ProviderBehavior> = match fixture {
         AgentFixture::Behavior { .. } => Arc::new(acp_provider_adapters::CursorAcpBehavior),
+        AgentFixture::TurnFollowUp(_) => Arc::new(acp_provider_adapters::ClaudeAcpBehavior::new(
+            acp_provider_adapters::ClaudeSkillSource::Annotated,
+        )),
         AgentFixture::ScriptedSteering | AgentFixture::LiteralSteering(_) => {
             Arc::new(acp_provider_adapters::StandardAcpBehavior)
         }
@@ -206,6 +250,7 @@ async fn command_port_rig(fixture: AgentFixture) -> CommandPortRig {
         }
         AgentFixture::ScriptedSteering => scripted_steering_launch(&receipt),
         AgentFixture::LiteralSteering(behavior) => literal_steer::launch_peer(&receipt, behavior),
+        AgentFixture::TurnFollowUp(ending) => turn_follow_up_launch(&receipt, ending),
     };
     let runtime = ExternalProviderRuntime::initialize_with_mcp_http_and_hub(
         launch,

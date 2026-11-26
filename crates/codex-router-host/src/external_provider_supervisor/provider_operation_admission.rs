@@ -160,7 +160,7 @@ impl ExternalProviderSupervisor {
         })
     }
 
-    fn last_ended_prompt_operation(&self, request: AdmissionRequest<'_>) -> Option<uuid::Uuid> {
+    fn last_ended_turn_operation(&self, request: AdmissionRequest<'_>) -> Option<uuid::Uuid> {
         if request.kind != ProviderOperationKind::ConversationPrompt
             || request.mode.class != AdmissionClass::Independent
         {
@@ -172,7 +172,7 @@ impl ExternalProviderSupervisor {
             .existing(target)?
             .snapshots();
         let snapshot = snapshots.borrow();
-        snapshot.live_idle_ended_prompt().map(|turn| turn.operation)
+        snapshot.live_idle_ended_turn().map(|turn| turn.operation)
     }
 
     #[expect(
@@ -195,7 +195,7 @@ impl ExternalProviderSupervisor {
             if let Some(changes) = &mut changes {
                 changes.borrow_and_update();
             }
-            let last_ended_prompt = self.last_ended_prompt_operation(request);
+            let last_ended_turn = self.last_ended_turn_operation(request);
             let decision = {
                 // Take binding outcomes before the live index, as the store lane does.
                 // All store reads finish before these guards. Reconcile may take the
@@ -262,14 +262,14 @@ impl ExternalProviderSupervisor {
                         context.unconfirmed_cancel.as_deref(),
                     );
                     if let (Some(ended), Some(target), Err(blockers)) =
-                        (last_ended_prompt, request.target, &reservation)
+                        (last_ended_turn, request.target, &reservation)
                         && blockers.unknown.is_empty()
                         && let [holder] = blockers.in_flight.as_slice()
                         && uuid::Uuid::parse_str(holder.as_str()).ok() == Some(ended)
                         && operations
                             .operations
                             .get(holder)
-                            .is_some_and(|live| live.is_prompt_for(target))
+                            .is_some_and(|live| live.is_turn_start_for(target))
                     {
                         // The turn has ended, but its terminal writer still holds
                         // the operation. Wait for custody release on this binding.
@@ -277,7 +277,7 @@ impl ExternalProviderSupervisor {
                         if let Some(cell) = &context.cell {
                             cell.fixture.waiting(
                                 target,
-                                crate::binding_store_fixture::BindingFixtureWait::EndedPromptAdmission(holder.clone()),
+                                crate::binding_store_fixture::BindingFixtureWait::EndedTurnAdmission(holder.clone()),
                             );
                         }
                         None
@@ -364,7 +364,7 @@ impl ExternalProviderSupervisor {
             .await?
         {
             Reservation::Acquired => Ok(Some(live)),
-            Reservation::Occupied(prior) if prior.is_prompt_for(target) => Ok(None),
+            Reservation::Occupied(prior) if prior.is_turn_start_for(target) => Ok(None),
             Reservation::Occupied(_) => Err(reused_id_failure(
                 operation_id.clone(),
                 Some(target.clone()),

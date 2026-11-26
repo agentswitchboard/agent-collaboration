@@ -2,7 +2,7 @@
 
 ## 0.1.165
 
-- A prompt sent immediately after a provider turn ends waits for that turn’s operation to finish settling, avoiding a spurious busy response.
+- A prompt or compaction sent immediately after a provider turn ends waits for that turn’s operation to finish settling, avoiding a spurious busy response.
 
 ## 0.1.164
 
