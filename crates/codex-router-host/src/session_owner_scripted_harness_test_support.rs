@@ -1,37 +1,39 @@
 //! A second harness used to drive the production session owner in tests.
 
+#[path = "session_owner_scripted_harness_work_test_support.rs"]
+mod work;
+
 use crate::{
     external_provider_approval_context::ExternalProviderApprovalContext,
     session_owner_lifecycle_reports::{OwnerHarnessPayloads, SessionHarnessBinding},
 };
 use provider_session_machines::{
-    ProviderSettingKind, SessionGeneration,
+    SessionGeneration,
     harness_lifecycle::{
         AcceptedRunSettings, ActivationSetup, ApprovalLease, ApprovalLeaseBinding,
         ApprovalLeaseRefusalReason, BeforeOfferApprovalLeaseRefusal, CatalogueFact,
         CatalogueRequest, CloseFact, CreateAttempt, CreatedSetupFact, CreatedSetupReport,
-        ExactTurn, HandOverRefusal, HarnessContent, HarnessOwnerEvents, HarnessProvider,
-        HarnessSessionId, Held, LifecycleRefusal, LifecycleReply, ObservedTurnApprovalLeaseRefusal,
-        OpenAttempt, OpenRequest, OpeningFact, OwnerHarnessBinding, PermissionModeReport,
+        ExactTurn, HarnessOwnerEvents, HarnessOwnerRecovery, HarnessProvider, HarnessSessionId,
+        Held, LifecycleRefusal, LifecycleReply, ObservedTurnApprovalLeaseRefusal, OpenAttempt,
+        OpenRequest, OpeningFact, OpeningFailure, OwnerHarnessBinding, PermissionModeReport,
         RestoreLoadReadback, RestoreSettingRefusal, RestoredOpening, RunRetirement,
         SessionCreatedSetupFact, SessionLifecycleFact, SessionLifecyclePort, SettingAttempt,
-        SettingFact, SetupReport, StreamTurn, WorkReply,
+        SettingFact, SetupReport, SlotEvidence, StreamTurn,
     },
     session_lifecycle_machine::{CloseAttempt, LoadAttempt, RestoreVia},
     session_owner::{
-        CancelDrainReport, CancelDrainStart, CancelDrainWait, DispatchAuthorization,
-        DispatchResult, HarnessBinding, OwnerAddress, PromptCompletion, ReplyAdmission,
-        ReservedWorkReply, RestoredMode, RunAttempt, SettingOffer, SteerIdlePolicy,
-        TakeBackRefusal, TurnMembership, WireOutcome, WorkOfferRefusal,
+        DispatchAuthorization, OwnerAddress, OwnerEvidence, OwnerIncarnation, OwnerInputEvidence,
+        ReplyAdmission, ReservedWorkReply, RestoredMode, RunAttempt, TurnMembership,
     },
-    session_setting_machine::SettingValueId,
-    session_turn_machine::TurnId,
 };
 use session_event_model::{
-    CapabilityReport, ProviderAuthStatus, SessionEvent, SessionItem, SessionItemKind,
-    SessionSettings, SkillView, StopReason,
+    CapabilityReport, InputId, ProviderAuthStatus, SessionEvent, SessionItem, SessionItemKind,
+    SessionSettings, SkillView,
 };
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::{Arc, Mutex, MutexGuard},
+};
 use tokio::sync::mpsc;
 use tokio_util::task::TaskTracker;
 use uuid::Uuid;
@@ -46,6 +48,7 @@ pub(super) enum ScriptObservation {
     CreateOpened(CreateAttempt),
     Configured(CreateAttempt),
     Replayed(RunAttempt<LoadAttempt>),
+    ReplayLost(RunAttempt<LoadAttempt>),
     Activated(ActivationSetup),
     SkillsReported,
     LiveReported,
@@ -57,14 +60,96 @@ pub(super) enum ScriptObservation {
 pub(super) struct ScriptedHarness {
     tasks: TaskTracker,
     journal: mpsc::UnboundedSender<ScriptObservation>,
+    replay: ReplayCapture,
+    owners: Mutex<BTreeMap<OwnerIncarnation, Arc<Mutex<BindingState>>>>,
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum ReplayCapture {
+    Complete,
+    Interrupted,
+}
+
+impl ReplayCapture {
+    fn capture(self) -> Result<Vec<SessionEvent>, OpeningFailure> {
+        REPLAY_TEXTS
+            .into_iter()
+            .enumerate()
+            .map(|(index, text)| {
+                if index == 1 && matches!(self, Self::Interrupted) {
+                    Err(OpeningFailure::ReplayNotKnown)
+                } else {
+                    Ok(item_event(text))
+                }
+            })
+            .collect()
+    }
 }
 
 impl ScriptedHarness {
     pub(super) fn new(
         tasks: TaskTracker,
+        replay: ReplayCapture,
     ) -> (Arc<Self>, mpsc::UnboundedReceiver<ScriptObservation>) {
         let (journal, observations) = mpsc::unbounded_channel();
-        (Arc::new(Self { tasks, journal }), observations)
+        (
+            Arc::new(Self {
+                tasks,
+                journal,
+                replay,
+                owners: Mutex::default(),
+            }),
+            observations,
+        )
+    }
+}
+
+impl HarnessOwnerRecovery for ScriptedHarness {
+    fn give_up_owner(
+        &self,
+        incarnation: OwnerIncarnation,
+        inputs: &BTreeSet<InputId>,
+    ) -> OwnerEvidence {
+        let owner = lock(&self.owners).remove(&incarnation);
+        let Some(owner) = owner else {
+            return inputs
+                .iter()
+                .map(|input| {
+                    (
+                        input.clone(),
+                        OwnerInputEvidence::NoEvidence { slots: vec![] },
+                    )
+                })
+                .collect();
+        };
+        let mut state = lock(&owner);
+        state.held = None;
+        state.active = None;
+        state.offered = None;
+        for (_, evidence) in &mut state.dispatches {
+            if *evidence == SlotEvidence::Offered {
+                *evidence = SlotEvidence::Revoked;
+            }
+        }
+        inputs
+            .iter()
+            .map(|input| {
+                let slots: Vec<_> = state
+                    .dispatches
+                    .iter()
+                    .filter(|(authorization, _)| authorization.input_id == *input)
+                    .cloned()
+                    .collect();
+                let evidence = if slots.iter().any(|(_, slot)| *slot == SlotEvidence::Taken) {
+                    OwnerInputEvidence::Taken { slots }
+                } else if slots.is_empty() {
+                    OwnerInputEvidence::NeverOffered
+                } else {
+                    OwnerInputEvidence::Withdrawn { slots }
+                };
+                (input.clone(), evidence)
+            })
+            .collect()
     }
 }
 
@@ -75,12 +160,15 @@ impl HarnessProvider<OwnerHarnessPayloads> for ScriptedHarness {
         owner_events: Arc<dyn HarnessOwnerEvents<ProviderAuthStatus>>,
     ) -> SessionHarnessBinding {
         record(&self.journal, ScriptObservation::Bound(address));
+        let state = Arc::new(Mutex::new(BindingState::default()));
+        lock(&self.owners).insert(address.incarnation, state.clone());
         Box::new(ScriptedBinding {
             address,
             tasks: self.tasks.clone(),
             journal: self.journal.clone(),
-            state: Arc::default(),
+            state,
             _owner_events: owner_events,
+            replay: self.replay,
         })
     }
 
@@ -100,6 +188,7 @@ struct ScriptedBinding {
     journal: mpsc::UnboundedSender<ScriptObservation>,
     state: Arc<Mutex<BindingState>>,
     _owner_events: Arc<dyn HarnessOwnerEvents<ProviderAuthStatus>>,
+    replay: ReplayCapture,
 }
 
 #[derive(Default)]
@@ -107,7 +196,21 @@ struct BindingState {
     held: Option<OpenAttempt>,
     active: Option<SessionGeneration>,
     offered: Option<(DispatchAuthorization, ReservedWorkReply)>,
-    taken: Option<DispatchAuthorization>,
+    dispatches: Vec<(DispatchAuthorization, SlotEvidence)>,
+}
+
+impl BindingState {
+    fn record_slot(&mut self, authorization: &DispatchAuthorization, slot: SlotEvidence) {
+        if let Some((_, current)) = self
+            .dispatches
+            .iter_mut()
+            .find(|(recorded, _)| recorded == authorization)
+        {
+            *current = slot;
+        } else {
+            self.dispatches.push((authorization.clone(), slot));
+        }
+    }
 }
 
 impl OwnerHarnessBinding<OwnerHarnessPayloads> for ScriptedBinding {
@@ -136,6 +239,7 @@ impl OwnerHarnessBinding<OwnerHarnessPayloads> for ScriptedBinding {
             } if owner == self.address && session.0 == SCRIPTED_SESSION => {
                 let state = self.state.clone();
                 let journal = self.journal.clone();
+                let capture = self.replay;
                 self.tasks.spawn(async move {
                     let open = async {
                         let readback = RestoreLoadReadback {
@@ -146,7 +250,14 @@ impl OwnerHarnessBinding<OwnerHarnessPayloads> for ScriptedBinding {
                         };
                         let opening = match via {
                             RestoreVia::Load => {
-                                let replay = REPLAY_TEXTS.map(item_event).to_vec();
+                                let replay = match capture.capture() {
+                                    Ok(replay) => replay,
+                                    Err(failure) => {
+                                        record(&journal, ScriptObservation::ReplayLost(run));
+                                        reply.send(OpeningFact::RestoreFailed { run, failure });
+                                        return;
+                                    }
+                                };
                                 if events
                                     .send(SessionLifecycleFact::Replay {
                                         run,
@@ -316,112 +427,6 @@ impl OwnerHarnessBinding<OwnerHarnessPayloads> for ScriptedBinding {
     }
 
     fn set_scope(&self, _change: TurnMembership) {}
-}
-
-impl HarnessBinding for ScriptedBinding {
-    fn offer_prompt(
-        &self,
-        authorization: DispatchAuthorization,
-        _turn: TurnId,
-        _content: HarnessContent<'_>,
-        reply: ReservedWorkReply,
-    ) -> Result<(), WorkOfferRefusal> {
-        let mut state = lock(&self.state);
-        if authorization.incarnation != self.address.incarnation
-            || state.active != Some(authorization.run)
-        {
-            return Err(WorkOfferRefusal::RouteUnavailable);
-        }
-        if state.offered.is_some() {
-            return Err(WorkOfferRefusal::OtherAuthorizationOffered);
-        }
-        state.offered = Some((authorization, reply));
-        Ok(())
-    }
-
-    fn offer_steer(
-        &self,
-        _authorization: DispatchAuthorization,
-        _content: HarnessContent<'_>,
-        _idle: SteerIdlePolicy,
-        _reply: ReservedWorkReply,
-    ) -> Result<(), WorkOfferRefusal> {
-        Err(WorkOfferRefusal::RouteUnavailable)
-    }
-
-    fn offer_setting(
-        &self,
-        _authorization: DispatchAuthorization,
-        _kind: ProviderSettingKind,
-        _value: SettingValueId,
-        _reply: ReservedWorkReply,
-    ) -> Result<SettingOffer, WorkOfferRefusal> {
-        Err(WorkOfferRefusal::SettingSetterUnavailable)
-    }
-
-    fn hand_over(
-        &self,
-        authorization: &DispatchAuthorization,
-        still_requested: &mut dyn FnMut() -> bool,
-    ) -> Result<DispatchResult, HandOverRefusal> {
-        let mut state = lock(&self.state);
-        let Some((authorization, reply)) = state.offered.take_if(|offer| &offer.0 == authorization)
-        else {
-            return Err(HandOverRefusal::NoSuchOffer);
-        };
-        if !still_requested() {
-            return Ok(DispatchResult::DefinitelyUnsent(authorization));
-        }
-        state.taken = Some(authorization.clone());
-        record(
-            &self.journal,
-            ScriptObservation::PromptTaken(authorization.clone()),
-        );
-        reply.send(WorkReply::Dispatch(DispatchResult::PromptFinished {
-            authorization: authorization.clone(),
-            outcome: WireOutcome::Confirmed(PromptCompletion {
-                stop_reason: StopReason::EndTurn,
-                local_cause: None,
-                response: "scripted answer".into(),
-            }),
-        }));
-        Ok(DispatchResult::Taken(authorization))
-    }
-
-    fn take_back(
-        &mut self,
-        authorization: &DispatchAuthorization,
-    ) -> Result<DispatchResult, TakeBackRefusal> {
-        let mut state = lock(&self.state);
-        if state.taken.as_ref() == Some(authorization) {
-            return Ok(DispatchResult::AlreadyTaken(authorization.clone()));
-        }
-        state
-            .offered
-            .take_if(|offer| &offer.0 == authorization)
-            .map(|(authorization, _)| DispatchResult::Revoked(authorization))
-            .ok_or(TakeBackRefusal::NoRecord)
-    }
-
-    fn begin_cancel(
-        &mut self,
-        _authorization: DispatchAuthorization,
-        _reserve: &mut dyn FnMut() -> ReplyAdmission<WorkReply>,
-        _retired: RunRetirement,
-    ) -> CancelDrainStart {
-        CancelDrainStart::AlreadyDrained
-    }
-
-    fn send_cancel(
-        &mut self,
-        authorization: DispatchAuthorization,
-        _wait: CancelDrainWait,
-    ) -> DispatchResult {
-        DispatchResult::CancelTaken {
-            authorization,
-            drain: CancelDrainReport::Drained,
-        }
-    }
 }
 
 struct ScriptedApprovalLease;
