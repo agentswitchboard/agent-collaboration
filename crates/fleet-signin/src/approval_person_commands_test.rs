@@ -11,10 +11,12 @@ struct DecideIntentVector {
 
 #[test]
 fn decide_intent_matches_the_retained_canonical_bytes() {
-    let vector: DecideIntentVector =
-        serde_json::from_str(include_str!("approval-decide-intent-vector.json")).unwrap();
-    assert_eq!(vector.body.canonical_intent().unwrap(), vector.canonical);
-    assert_eq!(vector.body.intent_digest().unwrap(), vector.digest);
+    let vectors: [DecideIntentVector; 3] =
+        serde_json::from_str(include_str!("approval-decide-intent-vectors.json")).unwrap();
+    for vector in vectors {
+        assert_eq!(vector.body.canonical_intent().unwrap(), vector.canonical);
+        assert_eq!(vector.body.intent_digest().unwrap(), vector.digest);
+    }
 }
 
 #[test]
