@@ -1,9 +1,12 @@
 #![deny(clippy::wildcard_enum_match_arm)]
 
+use approval_request_protocol::{ApprovalDecideReply, ApprovalListReply, ApprovalReadReply};
 use central_link_protocol::{
-    CentralCallReply, CentralLinkRpc, CorrelationId, TypedCallResult,
+    CentralCall, CentralCallReply, CentralLinkRpc, CorrelationId, TypedCallResult,
     person_link_rpc::{
-        ListOrganizationWorkspaces, ListOrganizationWorkspacesRpc, OrganizationWorkspacePage,
+        DecidePersonApproval, DecidePersonApprovalRpc, ListOrganizationWorkspaces,
+        ListOrganizationWorkspacesRpc, ListPersonApprovals, ListPersonApprovalsRpc,
+        OrganizationWorkspacePage, ReadPersonApproval, ReadPersonApprovalRpc,
     },
 };
 use fleet_identity_protocol::OrganizationId;
@@ -14,26 +17,92 @@ use state_machine_core::{
 
 use crate::PersonLinkError;
 
-pub(crate) type WorkspaceRead = Envelope<OrganizationId, ListOrganizationWorkspaces>;
+pub(crate) type AddressedPersonCall = Envelope<OrganizationId, PersonCall>;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum PersonCall {
+    ListWorkspaces(ListOrganizationWorkspaces),
+    ListApprovals(ListPersonApprovals),
+    ReadApproval(ReadPersonApproval),
+    DecideApproval(DecidePersonApproval),
+}
+
+#[derive(Debug)]
+pub(crate) enum PersonReply {
+    Workspaces(OrganizationWorkspacePage),
+    Approvals(ApprovalListReply),
+    Approval(Box<ApprovalReadReply>),
+    Decision(ApprovalDecideReply),
+}
+
+impl PersonCall {
+    pub(crate) fn into_request(self, target: OrganizationId) -> CentralCall {
+        match self {
+            Self::ListWorkspaces(body) => {
+                ListOrganizationWorkspacesRpc::request(Envelope { target, body })
+            }
+            Self::ListApprovals(body) => ListPersonApprovalsRpc::request(Envelope { target, body }),
+            Self::ReadApproval(body) => ReadPersonApprovalRpc::request(Envelope { target, body }),
+            Self::DecideApproval(body) => {
+                DecidePersonApprovalRpc::request(Envelope { target, body })
+            }
+        }
+    }
+
+    fn answer(
+        &self,
+        target: &OrganizationId,
+        reply: CentralCallReply,
+    ) -> Result<PersonReply, PersonLinkError> {
+        match self {
+            Self::ListWorkspaces(_) => {
+                take_organization_reply::<ListOrganizationWorkspacesRpc>(target, reply)
+                    .map(PersonReply::Workspaces)
+            }
+            Self::ListApprovals(_) => {
+                take_organization_reply::<ListPersonApprovalsRpc>(target, reply)
+                    .map(PersonReply::Approvals)
+            }
+            Self::ReadApproval(_) => {
+                take_organization_reply::<ReadPersonApprovalRpc>(target, reply)
+                    .map(PersonReply::Approval)
+            }
+            Self::DecideApproval(_) => {
+                take_organization_reply::<DecidePersonApprovalRpc>(target, reply)
+                    .map(PersonReply::Decision)
+            }
+        }
+    }
+}
+
+fn take_organization_reply<Call: CentralLinkRpc<Target = OrganizationId>>(
+    target: &OrganizationId,
+    reply: CentralCallReply,
+) -> Result<Call::Reply, PersonLinkError> {
+    Call::take_reply(reply)
+        .filter(|reply| &reply.target == target)
+        .map(|reply| reply.body)
+        .ok_or(PersonLinkError::Protocol)
+}
 
 #[derive(Clone)]
-pub(crate) struct ReadAttempt {
-    pub read: WorkspaceRead,
+pub(crate) struct CallAttempt {
+    pub call: AddressedPersonCall,
     pub correlation: CorrelationId,
 }
 
 #[derive(Clone)]
 pub(crate) enum ConnectionState {
-    Connecting(WorkspaceRead),
-    Connected(Option<ReadAttempt>),
-    ClosedByLifetime(WorkspaceRead),
-    Reconnecting(WorkspaceRead),
+    Connecting(AddressedPersonCall),
+    Connected(Option<CallAttempt>),
+    ClosedByLifetime(AddressedPersonCall),
+    Reconnecting(AddressedPersonCall),
     Refused(PersonLinkError),
 }
 
 #[derive(Clone)]
 pub(crate) enum ConnectionEvent {
-    Read(ReadAttempt),
+    Call(CallAttempt),
     Upgraded(CorrelationId),
     LifetimeClosed,
     SocketRetired,
@@ -46,17 +115,17 @@ pub(crate) enum ConnectionEvent {
 
 pub(crate) enum ConnectionEffect {
     Upgrade,
-    Send(ReadAttempt),
+    Send(CallAttempt),
     Receive,
     RetireSocket,
-    Finish(Result<OrganizationWorkspacePage, PersonLinkError>),
+    Finish(Result<PersonReply, PersonLinkError>),
 }
 
 pub(crate) struct ConnectionMachine;
 
 impl ConnectionMachine {
-    pub(crate) fn begin(read: WorkspaceRead) -> (ConnectionState, ConnectionEffect) {
-        (ConnectionState::Connecting(read), ConnectionEffect::Upgrade)
+    pub(crate) fn begin(call: AddressedPersonCall) -> (ConnectionState, ConnectionEffect) {
+        (ConnectionState::Connecting(call), ConnectionEffect::Upgrade)
     }
 }
 
@@ -80,7 +149,7 @@ impl StateTag for ConnectionState {
 impl EventTag for ConnectionEvent {
     fn event_tag(&self) -> &'static str {
         match self {
-            Self::Read(_) => "read",
+            Self::Call(_) => "call",
             Self::Upgraded(_) => "upgraded",
             Self::LifetimeClosed => "lifetimeClosed",
             Self::SocketRetired => "socketRetired",
@@ -115,9 +184,9 @@ impl StateMachine for ConnectionMachine {
         use ConnectionState as State;
 
         let (next, effect) = match (state, event) {
-            (State::Connecting(read) | State::Reconnecting(read), Event::Upgraded(correlation)) => {
-                let attempt = ReadAttempt {
-                    read: read.clone(),
+            (State::Connecting(call) | State::Reconnecting(call), Event::Upgraded(correlation)) => {
+                let attempt = CallAttempt {
+                    call: call.clone(),
                     correlation,
                 };
                 (
@@ -125,16 +194,16 @@ impl StateMachine for ConnectionMachine {
                     Effect::Send(attempt),
                 )
             }
-            (State::Connected(None), Event::Read(attempt)) => (
+            (State::Connected(None), Event::Call(attempt)) => (
                 State::Connected(Some(attempt.clone())),
                 Effect::Send(attempt),
             ),
             (State::Connected(Some(attempt)), Event::LifetimeClosed) => (
-                State::ClosedByLifetime(attempt.read.clone()),
+                State::ClosedByLifetime(attempt.call.clone()),
                 Effect::RetireSocket,
             ),
-            (State::ClosedByLifetime(read), Event::SocketRetired) => {
-                (State::Reconnecting(read.clone()), Effect::Upgrade)
+            (State::ClosedByLifetime(call), Event::SocketRetired) => {
+                (State::Reconnecting(call.clone()), Effect::Upgrade)
             }
             (
                 State::Connected(Some(attempt)),
@@ -148,13 +217,10 @@ impl StateMachine for ConnectionMachine {
                 }
                 let answer = match *result {
                     TypedCallResult::Answered { reply } => {
-                        ListOrganizationWorkspacesRpc::take_reply(reply)
-                            .filter(|reply| reply.target == attempt.read.target)
-                            .map(|reply| reply.body)
-                            .ok_or(PersonLinkError::Protocol)
+                        attempt.call.body.answer(&attempt.call.target, reply)
                     }
                     TypedCallResult::Refused { reason } => {
-                        Err(PersonLinkError::WorkspaceRefused(reason))
+                        Err(PersonLinkError::CallRefused(reason))
                     }
                 };
                 if matches!(answer, Err(PersonLinkError::Protocol)) {
@@ -170,7 +236,7 @@ impl StateMachine for ConnectionMachine {
                 State::Connecting(_) | State::Connected(Some(_)) | State::Reconnecting(_),
                 Event::Failed(error),
             ) => (State::Refused(error), Effect::Finish(Err(error))),
-            (State::Refused(error), Event::Read(_)) => {
+            (State::Refused(error), Event::Call(_)) => {
                 return Err(TransitionError::Domain(ConnectionRefusal::AlreadyRefused(
                     *error,
                 )));
@@ -180,7 +246,7 @@ impl StateMachine for ConnectionMachine {
                 | State::Connected(Some(_))
                 | State::ClosedByLifetime(_)
                 | State::Reconnecting(_),
-                event @ Event::Read(_),
+                event @ Event::Call(_),
             )
             | (
                 State::Connected(_) | State::ClosedByLifetime(_) | State::Refused(_),
@@ -242,7 +308,7 @@ impl StateMachine for ConnectionMachine {
         const TRANSITIONS: &[Transition] = &[
             edge("connecting", "upgraded", "connectedAwaitingReply"),
             refusal("connecting", "failed"),
-            edge("connectedIdle", "read", "connectedAwaitingReply"),
+            edge("connectedIdle", "call", "connectedAwaitingReply"),
             edge("connectedAwaitingReply", "reply", "connectedIdle"),
             refusal("connectedAwaitingReply", "reply"),
             edge(

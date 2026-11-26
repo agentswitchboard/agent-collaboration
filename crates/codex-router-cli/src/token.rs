@@ -18,7 +18,7 @@ pub fn export_token_assignment(env_var: &str, token: &str, shell: Shell) -> Stri
     }
 }
 
-fn quote_posix(value: &str) -> String {
+pub(crate) fn quote_posix(value: &str) -> String {
     let mut quoted = String::from("'");
     for character in value.chars() {
         if character == '\'' {

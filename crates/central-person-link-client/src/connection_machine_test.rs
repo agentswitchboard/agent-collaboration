@@ -1,3 +1,7 @@
+use approval_request_protocol::{
+    Answer, ApprovalDecideReply, ApprovalListFilter, ApprovalListReply, ApprovalReadReply,
+    ApprovalRequestId, SessionCallDecision,
+};
 use central_link_protocol::{
     CentralCallReply, LinkCallRefusal,
     person_link_rpc::{OrganizationWorkspacePage, PersonWorkspacePageLimit},
@@ -8,10 +12,11 @@ use state_machine_core::{
 };
 
 use super::{
-    ConnectionEffect as Effect, ConnectionEvent as Event, ConnectionMachine as Machine,
-    ConnectionState as State, CorrelationId, Envelope, ListOrganizationWorkspaces,
-    ListOrganizationWorkspacesRpc, OrganizationId, PersonLinkError, StateMachine, TransitionError,
-    TypedCallResult, WorkspaceRead,
+    AddressedPersonCall, CallAttempt, ConnectionEffect as Effect, ConnectionEvent as Event,
+    ConnectionMachine as Machine, ConnectionState as State, CorrelationId, DecidePersonApproval,
+    DecidePersonApprovalRpc, Envelope, ListOrganizationWorkspaces, ListOrganizationWorkspacesRpc,
+    ListPersonApprovals, ListPersonApprovalsRpc, OrganizationId, PersonCall, PersonLinkError,
+    ReadPersonApproval, ReadPersonApprovalRpc, StateMachine, TransitionError, TypedCallResult,
 };
 use central_link_protocol::CentralLinkRpc;
 
@@ -28,25 +33,63 @@ fn correlation(serial: u16) -> CorrelationId {
         .unwrap()
 }
 
-fn read() -> WorkspaceRead {
-    Envelope {
-        target: organization(),
-        body: ListOrganizationWorkspaces {
+fn person_calls() -> [PersonCall; 4] {
+    let request_id: ApprovalRequestId = "019f0000-0000-7000-8000-00000000c813".parse().unwrap();
+    [
+        PersonCall::ListWorkspaces(ListOrganizationWorkspaces {
             operation_id: "019f0000-0000-7000-8000-00000000c811".parse().unwrap(),
             after: Some("019f0000-0000-7000-8000-00000000c812".parse().unwrap()),
             limit: PersonWorkspacePageLimit::try_from(1).unwrap(),
-        },
+        }),
+        PersonCall::ListApprovals(ListPersonApprovals {
+            filter: ApprovalListFilter::Waiting,
+            cursor: None,
+        }),
+        PersonCall::ReadApproval(ReadPersonApproval {
+            request_id: request_id.clone(),
+        }),
+        PersonCall::DecideApproval(DecidePersonApproval {
+            request_id,
+            operation_id: "019f0000-0000-7000-8000-00000000c814".parse().unwrap(),
+            answer: Answer::UnprovenCall {
+                decision: SessionCallDecision::Allow,
+            },
+        }),
+    ]
+}
+
+fn person_call(body: PersonCall) -> AddressedPersonCall {
+    Envelope {
+        target: organization(),
+        body,
     }
 }
 
-fn reply(serial: u16, target: OrganizationId) -> Event {
-    let reply: CentralCallReply = ListOrganizationWorkspacesRpc::reply(Envelope {
-        target,
-        body: OrganizationWorkspacePage {
-            workspaces: Vec::new(),
-            next: None,
-        },
-    });
+fn reply(call: &PersonCall, serial: u16, target: OrganizationId) -> Event {
+    let reply: CentralCallReply = match call {
+        PersonCall::ListWorkspaces(_) => ListOrganizationWorkspacesRpc::reply(Envelope {
+            target,
+            body: OrganizationWorkspacePage {
+                workspaces: Vec::new(),
+                next: None,
+            },
+        }),
+        PersonCall::ListApprovals(_) => ListPersonApprovalsRpc::reply(Envelope {
+            target,
+            body: ApprovalListReply::Page {
+                items: Vec::new(),
+                next: None,
+            },
+        }),
+        PersonCall::ReadApproval(_) => ReadPersonApprovalRpc::reply(Envelope {
+            target,
+            body: Box::new(ApprovalReadReply::NotVisible {}),
+        }),
+        PersonCall::DecideApproval(_) => DecidePersonApprovalRpc::reply(Envelope {
+            target,
+            body: ApprovalDecideReply::TooLate {},
+        }),
+    };
     Event::Reply {
         correlation: correlation(serial),
         result: Box::new(TypedCallResult::Answered { reply }),
@@ -55,27 +98,33 @@ fn reply(serial: u16, target: OrganizationId) -> Event {
 
 #[test]
 fn table_and_reducer_cover_each_other() {
-    let read = read();
-    let attempt = super::ReadAttempt {
-        read: read.clone(),
+    for call in person_calls().map(person_call) {
+        check_call_transitions(call);
+    }
+}
+
+fn check_call_transitions(call: AddressedPersonCall) {
+    let attempt = CallAttempt {
+        call: call.clone(),
         correlation: correlation(1),
     };
     let states = [
-        State::Connecting(read.clone()),
+        State::Connecting(call.clone()),
         State::Connected(None),
         State::Connected(Some(attempt.clone())),
-        State::ClosedByLifetime(read.clone()),
-        State::Reconnecting(read),
+        State::ClosedByLifetime(call.clone()),
+        State::Reconnecting(call.clone()),
         State::Refused(PersonLinkError::Socket),
     ];
     let events = [
-        Event::Read(attempt),
+        Event::Call(attempt),
         Event::Upgraded(correlation(2)),
         Event::LifetimeClosed,
         Event::SocketRetired,
-        reply(1, organization()),
-        reply(2, organization()),
+        reply(&call.body, 1, organization()),
+        reply(&call.body, 2, organization()),
         reply(
+            &call.body,
             1,
             "019f0000-0000-7000-8000-00000000c899"
                 .to_owned()
@@ -116,21 +165,31 @@ fn table_and_reducer_cover_each_other() {
 }
 
 #[hegel::test(test_cases = 48)]
-fn generated_histories_keep_one_read_and_ignore_old_replies(case: hegel::TestCase) {
+fn generated_histories_keep_one_call_and_ignore_old_replies(case: hegel::TestCase) {
     let lifetimes = case.draw(gs::integers::<u16>().min_value(1).max_value(8));
     let repetitions = case.draw(gs::integers::<u8>().min_value(1).max_value(5));
     let refuse_at_end = case.draw(gs::booleans());
-    let read = read();
-    let (mut state, initial) = Machine::begin(read.clone());
+    for call in person_calls().map(person_call) {
+        check_call_history(call, lifetimes, repetitions, refuse_at_end);
+    }
+}
+
+fn check_call_history(
+    call: AddressedPersonCall,
+    lifetimes: u16,
+    repetitions: u8,
+    refuse_at_end: bool,
+) {
+    let (mut state, initial) = Machine::begin(call.clone());
     assert!(matches!(initial, Effect::Upgrade));
     for serial in 1..=lifetimes {
         let (connected, effects) =
             Machine::transition(&state, Event::Upgraded(correlation(serial))).unwrap();
         assert!(matches!(effects.as_slice(), [Effect::Send(attempt)]
-            if attempt.correlation == correlation(serial) && attempt.read == read));
+            if attempt.correlation == correlation(serial) && attempt.call == call));
         for _ in 0..repetitions {
             assert!(matches!(
-                Machine::transition(&connected, reply(serial - 1, organization())),
+                Machine::transition(&connected, reply(&call.body, serial - 1, organization())),
                 Err(TransitionError::Stale)
             ));
         }
@@ -144,7 +203,7 @@ fn generated_histories_keep_one_read_and_ignore_old_replies(case: hegel::TestCas
     let serial = lifetimes + 1;
     let (connected, effects) =
         Machine::transition(&state, Event::Upgraded(correlation(serial))).unwrap();
-    assert!(matches!(effects.as_slice(), [Effect::Send(attempt)] if attempt.read == read));
+    assert!(matches!(effects.as_slice(), [Effect::Send(attempt)] if attempt.call == call));
     let answer = if refuse_at_end {
         Event::Reply {
             correlation: correlation(serial),
@@ -153,13 +212,13 @@ fn generated_histories_keep_one_read_and_ignore_old_replies(case: hegel::TestCas
             }),
         }
     } else {
-        reply(serial, organization())
+        reply(&call.body, serial, organization())
     };
     let (idle, effects) = Machine::transition(&connected, answer.clone()).unwrap();
     if refuse_at_end {
         assert!(matches!(
             effects.as_slice(),
-            [Effect::Finish(Err(PersonLinkError::WorkspaceRefused(
+            [Effect::Finish(Err(PersonLinkError::CallRefused(
                 LinkCallRefusal::WrongTarget
             )))]
         ));
@@ -171,4 +230,23 @@ fn generated_histories_keep_one_read_and_ignore_old_replies(case: hegel::TestCas
         Machine::transition(&idle, answer),
         Err(TransitionError::NotAllowed { .. })
     ));
+}
+
+#[test]
+fn decide_rejects_a_correlated_reply_of_another_call_type() {
+    let [workspace_list, approval_list, approval_read, decide] = person_calls();
+    let state = State::Connected(Some(CallAttempt {
+        call: person_call(decide),
+        correlation: correlation(1),
+    }));
+
+    for call in [workspace_list, approval_list, approval_read] {
+        let (next, effects) = Machine::transition(&state, reply(&call, 1, organization())).unwrap();
+
+        assert!(matches!(next, State::Refused(PersonLinkError::Protocol)));
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::Finish(Err(PersonLinkError::Protocol))]
+        ));
+    }
 }

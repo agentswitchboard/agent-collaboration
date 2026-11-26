@@ -17,34 +17,37 @@ use axum::{
     serve::Listener,
 };
 use central_link_protocol::{
-    CentralCall, CorrelationId, DataFrame, FrameDirection, LinkFrame, decode_text,
-    person_link_rpc::ListOrganizationWorkspaces,
+    CentralCall, CorrelationId, DataFrame, FrameDirection, LinkFrame, TypedCallResult, decode_text,
+    encode_text, person_link_rpc::ListOrganizationWorkspaces,
 };
-use collaboration_central_conformance::signin_fixtures::{ORGANIZATION, fresh_request_id};
 use futures_util::SinkExt;
 use reqwest_websocket::{Message as CentralMessage, RequestBuilderExt, WebSocket as CentralSocket};
-use router_clock::{ManualClock, RuntimeClock};
+use router_clock::RuntimeClock;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Notify;
+use tokio::task::JoinHandle;
 use tokio_rustls::{
     TlsAcceptor,
     rustls::{ServerConfig, pki_types::PrivateKeyDer},
     server::TlsStream,
 };
+use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
+pub use super::approval_relay_fault::ApprovalRelayFault;
+use super::approval_relay_fault::{approval_reply_with_fault, scripted_approval_reply};
 use super::fixture_authority::{
-    ADMIN_AUDIENCE, CLIENT_ID, FixtureCredential, IssuerKey, authority_claims, fleet_claims,
-    verify_dpop,
+    ADMIN_AUDIENCE, CLIENT_ID, FixtureCredential, FixturePerson, IssuerKey, authority_claims,
+    fleet_claims, fresh_request_id, verify_dpop,
 };
 
-pub(super) const PERSON_AUDIENCE: &str = "https://central.example.invalid/person-link";
+pub const PERSON_AUDIENCE: &str = "https://central.example.invalid/person-link";
 const TOKEN_PATH: &str = "/api/auth/oauth2/token";
 const PERSON_PATH: &str = "/api/fleet/person-link";
 
-pub(super) struct TestTlsListener {
+pub struct TestTlsListener {
     pub tcp: TcpListener,
     acceptor: TlsAcceptor,
 }
@@ -90,47 +93,148 @@ impl Listener for TestTlsListener {
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct ObservedRead {
+pub struct ObservedRead {
     pub socket: usize,
     pub correlation: CorrelationId,
     pub request: ListOrganizationWorkspaces,
 }
 
-pub(super) struct SignInEvidence {
+pub struct ObservedApprovalCall {
+    pub socket: usize,
+    pub correlation: CorrelationId,
+    pub request: CentralCall,
+}
+
+pub struct SignInEvidence {
     pub refresh_attempts: usize,
     pub refreshes: usize,
     pub upgrades: usize,
+    pub refused_upgrades: Vec<u16>,
     pub closes: Vec<u16>,
     pub reads: Vec<ObservedRead>,
+    pub approval_calls: Vec<ObservedApprovalCall>,
+    pub dropped_decisions: usize,
     refresh_expected: String,
     access_issued: Option<String>,
     used_proofs: HashSet<uuid::Uuid>,
 }
 
-pub(super) struct TestSignIn {
-    pub clock: Arc<ManualClock>,
-    pub origin: String,
-    pub central: String,
-    pub signing: Arc<IssuerKey>,
-    pub credential: Arc<FixtureCredential>,
+type ApprovalBearer = Box<dyn Fn(i64, usize) -> String + Send + Sync>;
+
+pub struct TestSignIn {
+    clock: Arc<dyn RuntimeClock>,
+    origin: String,
+    central: String,
+    signing: Arc<IssuerKey>,
+    credential: Arc<FixtureCredential>,
     pub evidence: Mutex<SignInEvidence>,
     pub sockets: TaskTracker,
+    person: FixturePerson,
+    approval_bearer: Option<ApprovalBearer>,
+    approval_fault: Mutex<Option<ApprovalRelayFault>>,
     refresh_gate: Mutex<Option<Arc<RefreshGate>>>,
 }
 
+pub struct ApprovalSignIn {
+    pub relay: Arc<TestSignIn>,
+    certificate: reqwest::Certificate,
+    stop: CancellationToken,
+    serving: JoinHandle<io::Result<()>>,
+}
+
+impl ApprovalSignIn {
+    pub async fn start(
+        clock: Arc<dyn RuntimeClock>,
+        central_origin: String,
+        person: FixturePerson,
+        bearer: impl Fn(i64, usize) -> String + Send + Sync + 'static,
+    ) -> Self {
+        let (listener, certificate) =
+            TestTlsListener::new(TcpListener::bind("127.0.0.1:0").await.unwrap());
+        let origin = format!("https://{}", listener.tcp.local_addr().unwrap());
+        let relay = TestSignIn::for_approvals(
+            clock,
+            origin,
+            central_origin,
+            Arc::new(IssuerKey::generate()),
+            FixtureCredential::new(),
+            person,
+            bearer,
+        );
+        let stop = CancellationToken::new();
+        let shutdown = stop.clone();
+        let routes = relay.router();
+        let serving = tokio::spawn(async move {
+            axum::serve(listener, routes)
+                .with_graceful_shutdown(shutdown.cancelled_owned())
+                .await
+        });
+        Self {
+            relay,
+            certificate,
+            stop,
+            serving,
+        }
+    }
+
+    pub fn client(&self) -> crate::PersonLinkClient {
+        self.relay.client(self.certificate.clone())
+    }
+
+    pub async fn close(self) {
+        self.stop.cancel();
+        self.serving.await.unwrap().unwrap();
+        self.relay.sockets.close();
+        self.relay.sockets.wait().await;
+    }
+}
+
 #[derive(Default)]
-pub(super) struct RefreshGate {
+pub struct RefreshGate {
     pub committed: Notify,
     pub release: Notify,
 }
 
 impl TestSignIn {
     pub fn new(
-        clock: Arc<ManualClock>,
+        clock: Arc<dyn RuntimeClock>,
         origin: String,
         central: String,
         signing: Arc<IssuerKey>,
         credential: Arc<FixtureCredential>,
+        person: FixturePerson,
+    ) -> Arc<Self> {
+        Self::with_bearer(clock, origin, central, signing, credential, person, None)
+    }
+
+    pub fn for_approvals(
+        clock: Arc<dyn RuntimeClock>,
+        origin: String,
+        central: String,
+        signing: Arc<IssuerKey>,
+        credential: Arc<FixtureCredential>,
+        person: FixturePerson,
+        bearer: impl Fn(i64, usize) -> String + Send + Sync + 'static,
+    ) -> Arc<Self> {
+        Self::with_bearer(
+            clock,
+            origin,
+            central,
+            signing,
+            credential,
+            person,
+            Some(Box::new(bearer)),
+        )
+    }
+
+    fn with_bearer(
+        clock: Arc<dyn RuntimeClock>,
+        origin: String,
+        central: String,
+        signing: Arc<IssuerKey>,
+        credential: Arc<FixtureCredential>,
+        person: FixturePerson,
+        approval_bearer: Option<ApprovalBearer>,
     ) -> Arc<Self> {
         let refresh_expected = credential.initial_refresh();
         Arc::new(Self {
@@ -143,13 +247,19 @@ impl TestSignIn {
                 refresh_attempts: 0,
                 refreshes: 0,
                 upgrades: 0,
+                refused_upgrades: Vec::new(),
                 closes: Vec::new(),
                 reads: Vec::new(),
+                approval_calls: Vec::new(),
+                dropped_decisions: 0,
                 refresh_expected,
                 access_issued: None,
                 used_proofs: HashSet::new(),
             }),
             sockets: TaskTracker::new(),
+            person,
+            approval_bearer,
+            approval_fault: Mutex::new(None),
             refresh_gate: Mutex::new(None),
         })
     }
@@ -170,6 +280,29 @@ impl TestSignIn {
         let gate = Arc::new(RefreshGate::default());
         *self.refresh_gate.lock().unwrap() = Some(gate.clone());
         gate
+    }
+
+    pub fn script_once(&self, fault: ApprovalRelayFault) {
+        assert!(self.approval_fault.lock().unwrap().replace(fault).is_none());
+    }
+
+    pub fn client(&self, root: reqwest::Certificate) -> crate::PersonLinkClient {
+        let target = crate::FleetTarget::from_json(
+            &serde_json::to_vec(&json!({
+                "issuer":self.origin, "organizationId":self.person.organization,
+                "centralAdminAudience":ADMIN_AUDIENCE, "ownerFleetCliClientId":CLIENT_ID,
+                "centralPublicOrigin":super::fixture_authority::PUBLIC_ORIGIN,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        crate::PersonLinkClient::with_trusted_root(
+            target,
+            self.credential.clone(),
+            self.clock.clone(),
+            root,
+        )
+        .unwrap()
     }
 }
 
@@ -209,11 +342,14 @@ async fn refresh(
             return Err(invalid);
         }
 
-        let access = signin.signing.sign(
-            "at+jwt",
-            &fleet_claims(&signin.origin, now, &signin.credential.jkt),
-        );
-        evidence.refresh_expected = fresh_request_id(now).unwrap();
+        let mut claims = fleet_claims(signin.person, &signin.origin, now, &signin.credential.jkt);
+        if signin.approval_bearer.is_some() {
+            let claims = claims.as_object_mut().unwrap();
+            claims.remove("second_factor_at");
+            claims.remove("second_factor_method");
+        }
+        let access = signin.signing.sign("at+jwt", &claims);
+        evidence.refresh_expected = fresh_request_id(now);
         evidence.refreshes += 1;
         evidence.access_issued = Some(access.clone());
         Json(json!({
@@ -249,7 +385,7 @@ async fn person_link(
         Some(token),
     )
     .ok_or(invalid)?;
-    if organization != ORGANIZATION
+    if organization != signin.person.organization
         || claims.get("token_profile").and_then(Value::as_str) != Some("person-fleet")
         || claims.pointer("/cnf/jkt").and_then(Value::as_str)
             != Some(signin.credential.jkt.as_str())
@@ -269,12 +405,17 @@ async fn person_link(
         }
     }
 
-    let mut claims = authority_claims(&signin.origin, PERSON_AUDIENCE, now);
-    claims
-        .as_object_mut()
-        .unwrap()
-        .insert("token_profile".to_owned(), json!("person-link"));
-    let bearer = signin.signing.sign("at+jwt", &claims);
+    let bearer = match &signin.approval_bearer {
+        Some(bearer) => bearer(now, signin.evidence.lock().unwrap().upgrades + 1),
+        None => {
+            let mut claims = authority_claims(signin.person, &signin.origin, PERSON_AUDIENCE, now);
+            claims
+                .as_object_mut()
+                .unwrap()
+                .insert("token_profile".to_owned(), json!("person-link"));
+            signin.signing.sign("at+jwt", &claims)
+        }
+    };
     let upstream = reqwest::Client::builder()
         .no_proxy()
         .build()
@@ -287,7 +428,18 @@ async fn person_link(
         .upgrade()
         .send()
         .await
-        .map_err(|_| StatusCode::BAD_GATEWAY)?
+        .map_err(|_| StatusCode::BAD_GATEWAY)?;
+    let status = upstream.status();
+    if status != StatusCode::SWITCHING_PROTOCOLS {
+        signin
+            .evidence
+            .lock()
+            .unwrap()
+            .refused_upgrades
+            .push(status.as_u16());
+        return Err(status);
+    }
+    let upstream = upstream
         .into_websocket()
         .await
         .map_err(|_| StatusCode::BAD_GATEWAY)?;
@@ -320,16 +472,39 @@ async fn relay(
                 let Ok(LinkFrame::Data(DataFrame::CallCentral { correlation_id, request })) =
                     decode_text(&text, FrameDirection::ToCentral)
                 else { return };
-                let CentralCall::ListOrganizationWorkspaces(request) = *request else { return };
-                assert_eq!(request.target.as_str(), ORGANIZATION);
-                signin.evidence.lock().unwrap().reads.push(ObservedRead {
-                    socket, correlation: correlation_id, request: request.body,
-                });
+                if let CentralCall::ListOrganizationWorkspaces(request) = *request {
+                    assert_eq!(request.target.as_str(), signin.person.organization);
+                    signin.evidence.lock().unwrap().reads.push(ObservedRead {
+                        socket, correlation: correlation_id, request: request.body,
+                    });
+                } else if signin.approval_bearer.is_some()
+                    && matches!(*request, CentralCall::ListPersonApprovals(_) | CentralCall::ReadPersonApproval(_) | CentralCall::DecidePersonApproval(_))
+                {
+                    let scripted = scripted_approval_reply(&signin.approval_fault, &request);
+                    signin.evidence.lock().unwrap().approval_calls.push(ObservedApprovalCall {
+                        socket, correlation: correlation_id.clone(), request: *request,
+                    });
+                    if let Some(reply) = scripted {
+                        let frame = LinkFrame::Data(DataFrame::CentralCallReply {
+                            correlation_id,
+                            result: Box::new(TypedCallResult::Answered { reply }),
+                        });
+                        let text = encode_text(&frame, FrameDirection::ToRouter).unwrap();
+                        if downstream.send(Message::Text(text.into())).await.is_err() { return }
+                        continue;
+                    }
+                } else {
+                    return;
+                }
                 if central.send(CentralMessage::Text(text.to_string())).await.is_err() { return }
             }
             incoming = central.next() => {
                 match incoming {
                     Some(Ok(CentralMessage::Text(text))) => {
+                        let Some(text) = approval_reply_with_fault(&signin.approval_fault, socket, text) else {
+                            signin.evidence.lock().unwrap().dropped_decisions += 1;
+                            return;
+                        };
                         if downstream.send(Message::Text(text.into())).await.is_err() { return }
                     }
                     Some(Ok(CentralMessage::Close { code, reason })) => {

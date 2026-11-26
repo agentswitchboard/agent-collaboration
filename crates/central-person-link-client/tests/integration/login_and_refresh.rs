@@ -16,8 +16,8 @@ use axum::{
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use central_person_link_client::{
-    FleetCredentialError, FleetCredentialStore, FleetLoginError, FleetTarget, PersonLinkError,
-    PersonWorkspaceClient, RefreshUncertainty,
+    FleetCredentialError, FleetCredentialStore, FleetLoginError, FleetTarget, PersonLinkClient,
+    PersonLinkError, RefreshUncertainty,
 };
 use collaboration_central_conformance::signin_fixtures::{ORGANIZATION, fresh_request_id};
 use ring::{
@@ -30,7 +30,8 @@ use serde_json::{Value, json};
 use tokio::{net::TcpListener, sync::oneshot, task::JoinHandle};
 use url::Url;
 
-use super::{
+use super::PERSON;
+use central_person_link_client::test_support::{
     fixture_authority::{
         ADMIN_AUDIENCE, CLIENT_ID, FixtureCredential, INITIAL_SECONDS, IssuerKey, decode_segment,
         fleet_claims, sha256_url, verify_dpop_key,
@@ -67,7 +68,7 @@ impl TestIssuer {
         self.task = Some(tokio::spawn(axum::serve(listener, routes).into_future()));
     }
 
-    fn client(&self, store: Arc<FixtureCredential>) -> PersonWorkspaceClient {
+    fn client(&self, store: Arc<FixtureCredential>) -> PersonLinkClient {
         let target = FleetTarget::from_json(
             &serde_json::to_vec(&json!({
                 "issuer": self.origin,
@@ -79,7 +80,7 @@ impl TestIssuer {
             .unwrap(),
         )
         .unwrap();
-        PersonWorkspaceClient::with_trusted_root(
+        PersonLinkClient::with_trusted_root(
             target,
             store,
             self.clock.clone(),
@@ -96,6 +97,7 @@ impl TestIssuer {
             "http://127.0.0.1:1".to_owned(),
             Arc::new(IssuerKey::generate()),
             credential,
+            PERSON,
         );
         self.serve(signin.router());
         signin
@@ -241,7 +243,7 @@ async fn exchange_code(
     *issuer.proof_key.lock().unwrap() = Some(public);
     let token = issuer.signing.sign(
         "at+jwt",
-        &fleet_claims(&issuer.origin, INITIAL_SECONDS, &jkt),
+        &fleet_claims(PERSON, &issuer.origin, INITIAL_SECONDS, &jkt),
     );
     Ok(Json(
         json!({ "access_token": token, "token_type": "DPoP", "refresh_token": issuer.refresh }),
