@@ -92,8 +92,12 @@ export const LEDGER_BASE = {
   leftOutByName: ["*_test.rs", "*_tests.rs"],
 } as const;
 
-/** Current locations of historical entries whose ownership moved in DEL-01. */
+/** Current locations of historical entries whose ownership moved. */
 export const LEDGER_RELOCATIONS = new Map<string, string>([
+  [
+    "crates/collaboration-service/src/conversation_operation_projection.rs",
+    "crates/switchboard-session-store/src/conversation_operation_projection.rs",
+  ],
   [
     "crates/collaboration-runtime/src/provider_operation_store.rs",
     "crates/switchboard-session-store/src/provider_operation_store.rs",

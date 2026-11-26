@@ -1,8 +1,10 @@
 //! SQLite persistence for provider operations and saved provider sessions.
 
+mod conversation_operation_projection;
 mod provider_operation_store;
 mod provider_session_record;
 
+pub use conversation_operation_projection::conversation_operation_snapshot;
 pub use provider_operation_store::{
     PROVIDER_OPERATION_RETENTION_MONTHS, ProviderOperationAdmission,
     ProviderOperationAdmissionResult, ProviderOperationRecord, ProviderOperationStore,

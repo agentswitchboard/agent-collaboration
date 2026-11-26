@@ -677,7 +677,7 @@ fn local_failure(
 fn codex_snapshot(
     record: switchboard_session_store::ProviderOperationRecord,
 ) -> Result<ConversationOperationSnapshot, ConversationFailure> {
-    crate::conversation_operation_snapshot(record)
+    switchboard_session_store::conversation_operation_snapshot(record)
         .map_err(|_| ConversationFailure::InvalidStoredOperation)
 }
 

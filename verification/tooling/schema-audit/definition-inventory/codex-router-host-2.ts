@@ -192,7 +192,7 @@ export const rows: InventoryRow[] = [
     owner: "router-vocabulary",
     kind: "rust-type",
     defines:
-      "hand-built ConversationOperationSnapshot for Router-queued prompts (256-279) with NotSubmitted reason literal queueCancelled (157); a second constructor beside collaboration-service conversation_operation_projection.rs:8",
+      "hand-built ConversationOperationSnapshot for Router-queued prompts (256-279) with NotSubmitted reason literal queueCancelled (157); the saved-record constructor is in switchboard-session-store conversation_operation_projection.rs:5",
     usedBy: [{ crate: "codex-router-host" }],
     duplicateGroup: "operation-snapshot-construction",
     disposition: "duplicate",
