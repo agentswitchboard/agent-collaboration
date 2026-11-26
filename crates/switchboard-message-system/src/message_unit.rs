@@ -6,7 +6,8 @@ use futures_util::{
 };
 use router_clock::RuntimeClock;
 use switchboard_central_link::{
-    link_driver::LinkDriver, link_lane::link_lane_channel, link_policy::LinkStatus,
+    central_call_lane::CentralCallHandle, link_driver::LinkDriver, link_lane::link_lane_channel,
+    link_policy::LinkStatus,
 };
 use switchboard_link_lease::{DiscoverySource, EnrollmentLeaseSource, LinkSettingsSource};
 use switchboard_machine_core_store::{
@@ -87,6 +88,7 @@ pub(crate) struct MessageUnit {
     pub(crate) settings: OwnedLinkTask,
     pub(crate) lease: Arc<EnrollmentLeaseSource>,
     pub(crate) front: CustodyTaskHandle,
+    pub(crate) central_calls: CentralCallHandle,
 }
 
 type EnrollmentLinkDriver = LinkDriver<EnrollmentKey, EnrollmentLeaseSource>;
@@ -158,6 +160,7 @@ impl MessageUnit {
             }
         };
         let (lane, driver_lane) = link_lane_channel();
+        let central_calls = lane.central_calls();
         let custody = CustodyLink::new(
             Arc::new(lane),
             clock.clone(),
@@ -219,6 +222,7 @@ impl MessageUnit {
             settings,
             lease,
             front,
+            central_calls,
         })
     }
 }
