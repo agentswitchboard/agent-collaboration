@@ -1,5 +1,9 @@
 # Release Notes
 
+## 0.1.166
+
+- When the Router loses the restore receipt, it reports “the provider did not confirm whether it restored the session”. An activation refusal now fails the operation before the session is published as live.
+
 ## 0.1.165
 
 - A prompt or compaction sent immediately after a provider turn ends waits for that turn’s operation to finish settling, avoiding a spurious busy response.
