@@ -31,6 +31,21 @@ pub(super) struct RuntimeFixture {
     door: Arc<SessionOwnerDoor>,
 }
 
+#[cfg(debug_assertions)]
+impl ExternalProviderRuntime {
+    pub(crate) fn try_recovered_handover_for_test(
+        &self,
+        authorization: &provider_session_machines::session_owner::DispatchAuthorization,
+    ) -> Result<
+        provider_session_machines::session_owner::DispatchResult,
+        provider_session_machines::harness_lifecycle::HandOverRefusal,
+    > {
+        self.client
+            .owner_wire()
+            .try_recovered_handover_for_test(authorization)
+    }
+}
+
 impl RuntimeFixture {
     fn target(&self, provider_id: String) -> Result<SessionRef, ExternalProviderRuntimeError> {
         let session_id = SessionId::try_from(provider_id)

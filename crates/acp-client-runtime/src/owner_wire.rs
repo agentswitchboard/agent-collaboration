@@ -183,6 +183,14 @@ impl OwnerAcpWire {
         self.transport.handover_test.arm(point, input)
     }
 
+    #[cfg(all(debug_assertions, feature = "test-observation"))]
+    pub fn try_recovered_handover_for_test(
+        &self,
+        authorization: &DispatchAuthorization,
+    ) -> Result<DispatchResult, HandOverRefusal> {
+        self.hand_over_work(authorization, || true)
+    }
+
     pub(crate) fn new(
         capacity: NonZeroUsize,
         behavior: Arc<dyn crate::ProviderBehavior>,

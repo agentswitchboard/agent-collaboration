@@ -1,11 +1,181 @@
 use super::*;
+use collaboration_contracts::SessionEventHub;
 use collaboration_protocol::{ProviderSettingName, ProviderSettingsSetRequest};
 use provider_session_machines::{
     session_lifecycle_answers::state_answer,
     session_lifecycle_machine::SessionLifecycle,
+    session_owner::{
+        OwnerEvent, PublicationStatus, RunAttempt, SessionOwnerCommand, SessionWireResult,
+        WireOutcome,
+    },
     session_refusal_answers::{session_busy_answer, settings_hold_answer},
     session_setting_machine::UnresolvedCause,
 };
+
+#[tokio::test]
+async fn connection_loss_during_a_held_opening_refuses_queued_work_and_late_activation() {
+    let rig = RestoreRig::new();
+    rig.seed_session().await;
+    let (host, hub) = rig
+        .open_host_with_fixture_arguments(
+            &["plain-prompts", "silent-prompts"],
+            Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        )
+        .await;
+    let runtime = host
+        .runtime_for(&rig.target.endpoint)
+        .expect("provider runtime");
+    let (held, release) = runtime.preparation_fixture.pause_restore();
+    let restoring = OperationId::generate();
+    host.load(rig.load_request(restoring.clone()))
+        .await
+        .expect("restore admitted");
+    held.await
+        .expect("provider load reached the held Host activation");
+    let owner = host
+        .session_owner_for(&rig.target)
+        .expect("restoring owner");
+    let SessionLifecycle::Loading { generation, .. } = owner.snapshots().borrow().lifecycle else {
+        panic!("the old opening must still be held");
+    };
+    let queued = OperationId::generate();
+    host.prompt(rig.prompt_request(queued.clone(), "queued during held opening"))
+        .await
+        .expect("the held opening admits queued work");
+    wait_for_queued_input(&host, &rig.target, &queued).await;
+
+    runtime.retirement().cancel();
+    let (restore, queued) = tokio::join!(
+        host.wait(wait_request(restoring)),
+        host.wait(wait_request(queued))
+    );
+    assert_eq!(
+        restore
+            .expect_err("the lost opening did not activate")
+            .effect,
+        ProviderOperationEffect::Applied
+    );
+    assert_eq!(
+        queued.expect_err("the queued prompt did not send").effect,
+        ProviderOperationEffect::None
+    );
+    release
+        .send(())
+        .expect("release the old activation completion");
+    owner
+        .admit(SessionOwnerCommand::AcceptSettings { generation })
+        .await
+        .expect_err("the old activation did not reopen the unloaded session");
+    assert_lost_session_is_retained(&rig, &hub, &owner).await;
+    assert_eq!(rig.wire_receipt()["prompts"], serde_json::json!([]));
+    host.shutdown().await.expect("stop Host");
+}
+
+#[tokio::test]
+async fn connection_loss_after_close_is_offered_keeps_the_outcome_unknown() {
+    let rig = RestoreRig::new();
+    rig.seed_session().await;
+    let (host, hub) = rig
+        .open_host_with_fixture_arguments(
+            &["plain-prompts", "advertise-close", "hold-close-refusal"],
+            Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        )
+        .await;
+    rig.assert_loads(&host).await;
+    let owner = host.session_owner_for(&rig.target).expect("live owner");
+    let runtime = host
+        .runtime_for(&rig.target.endpoint)
+        .expect("provider runtime");
+    let close = OperationId::generate();
+    host.close(ConversationCloseRequest {
+        operation_id: close.clone(),
+        target: rig.target.clone(),
+        generation: Some(generation()),
+        requested_by: rig.target.clone().into(),
+        approver: rig.target.clone().into(),
+    })
+    .await
+    .expect("close admitted");
+    rig.until_wire_request("closes").await;
+    let SessionLifecycle::Closing {
+        generation,
+        attempt,
+        ..
+    } = owner.snapshots().borrow().lifecycle
+    else {
+        panic!("the provider received a close but has not replied");
+    };
+    let run = RunAttempt {
+        generation,
+        attempt,
+    };
+    runtime.retirement().cancel();
+    let failure = host
+        .wait(wait_request(close.clone()))
+        .await
+        .expect_err("the taken close is unconfirmed");
+    assert_eq!(
+        failure.kind,
+        ConversationOperationFailureKind::OutcomeUnknown
+    );
+    assert_eq!(failure.effect, ProviderOperationEffect::Unknown);
+
+    owner
+        .report_event(OwnerEvent::Wire(SessionWireResult::Close {
+            run,
+            outcome: WireOutcome::Confirmed(()),
+        }))
+        .expect("deliver the late confirmation to its original owner and attempt");
+    owner
+        .admit(SessionOwnerCommand::AcceptSettings { generation })
+        .await
+        .expect_err("the retired attempt is no longer live");
+    assert_lost_session_is_retained(&rig, &hub, &owner).await;
+    let durable = rig
+        .store()
+        .await
+        .inspect(&close)
+        .await
+        .expect("inspect close")
+        .expect("close record");
+    assert_eq!(durable.effect, ProviderOperationEffect::Unknown);
+    assert_eq!(
+        rig.wire_receipt()["closes"],
+        serde_json::json!([rig.target.session_id])
+    );
+    host.shutdown().await.expect("stop Host");
+}
+
+async fn assert_lost_session_is_retained(
+    rig: &RestoreRig,
+    hub: &switchboard_session_events::ProviderSessionEventHub,
+    owner: &crate::session_owner_door::SessionOwnerAddress,
+) {
+    let snapshot = owner.snapshots().borrow().clone();
+    assert!(matches!(
+        snapshot.lifecycle,
+        SessionLifecycle::NotLoaded { .. }
+    ));
+    assert_eq!(snapshot.publication, PublicationStatus::Current);
+    assert_eq!(
+        snapshot.projection.state,
+        session_event_model::SessionState::Unloaded
+    );
+    let target = collaboration_protocol::ProviderIdentity::session_to_board(&rig.target)
+        .expect("session identity for the hub");
+    assert_eq!(
+        hub.state(target).await.expect("existing session"),
+        session_event_model::SessionState::Unloaded
+    );
+    assert!(
+        rig.store()
+            .await
+            .session_record(&rig.target)
+            .await
+            .expect("read session record")
+            .is_some()
+    );
+}
 
 fn mode_request(rig: &RestoreRig) -> ProviderSettingsSetRequest {
     ProviderSettingsSetRequest {

@@ -38,6 +38,16 @@ pub struct SessionOwnerStorage {
 }
 
 impl SessionOwnerStorage {
+    #[cfg(all(test, debug_assertions))]
+    pub(crate) fn try_recovered_mark_for_test(
+        &self,
+        owner: provider_session_machines::session_owner::OwnerIncarnation,
+        mark: crate::session_store_lane::MarkedInput,
+    ) -> Result<SessionStoreTicket, SessionStoreOfferError> {
+        self.lane
+            .offer(owner, SessionStoreWrite::MarkDispatch(mark))
+    }
+
     pub fn new(lane: SessionStoreLane, tasks: TaskTracker) -> Self {
         Self {
             lane,
