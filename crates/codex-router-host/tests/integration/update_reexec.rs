@@ -12,6 +12,7 @@ use codex_router_host::HostConfigInputs;
 use codex_router_host::HostCoordinationPaths;
 use codex_router_host::HostInstance;
 use codex_router_host::HostRuntime;
+use codex_router_host::InstanceAcquireError;
 use codex_router_host::ManagedChildLaunchPlans;
 use codex_router_host::ManagedUpdateInputs;
 use codex_router_host::OperatorFrame;
@@ -39,7 +40,9 @@ use update_reexec_fixture::check_equal;
 use update_reexec_fixture::fixture_host_deadlines;
 use update_reexec_fixture::fixture_update_deadlines;
 use update_reexec_fixture::install_updater_fixture;
+use update_reexec_fixture::lock_file_identity;
 use update_reexec_fixture::process_is_running;
+use update_reexec_fixture::report_restart_lock_contention;
 use update_reexec_fixture::required_path;
 use update_reexec_fixture::run_update_case;
 use update_reexec_fixture::run_update_with_blocked_installer_case;
@@ -335,6 +338,7 @@ async fn host_restart_exec_failure_releases_singleton_after_settling_children()
         directory.path().join("operator.sock"),
         directory.path().join("instance.lock"),
     );
+    let test_process_id = std::process::id();
     let mut runtime = tokio::spawn(HostRuntime::run(
         HostConfig::new(HostConfigInputs {
             coordination_paths: coordination_paths.clone(),
@@ -363,6 +367,8 @@ async fn host_restart_exec_failure_releases_singleton_after_settling_children()
             TerminalClassification::Ready,
             "exec-failure fixture Host must start ready",
         )?;
+        // The first Host acquire creates the lock artifact. Capture it while that Host owns it.
+        let original_lock_identity = lock_file_identity(coordination_paths.instance_lock());
         let app_server_pid = wait_for_process_id(&app_server_log).await?;
         let frames = send_operator_request(
             coordination_paths.operator_socket(),
@@ -391,25 +397,23 @@ async fn host_restart_exec_failure_releases_singleton_after_settling_children()
             matches!(runtime_result, Err(codex_router_host::HostError::Exec(_))),
             "failed replacement exec must terminate the foreground Host with an exec error",
         )?;
+        let app_server_reaped = !process_is_running(app_server_pid);
         check(
-            !process_is_running(app_server_pid),
+            app_server_reaped,
             "failed replacement exec must occur after app-server settlement",
         )?;
-        let reacquired = HostInstance::acquire(coordination_paths.clone()).inspect_err(
-            |acquire_error| {
-                use std::io::Write as _;
-                use std::os::unix::fs::MetadataExt as _;
-
-                let lock_identity = std::fs::metadata(coordination_paths.instance_lock())
-                    .map(|metadata| (metadata.dev(), metadata.ino()));
-                let stdin_identity = rustix::fs::fstat(rustix::stdio::stdin())
-                    .map(|metadata| (metadata.st_dev, metadata.st_ino));
-                let _ = writeln!(
-                    std::io::stderr(),
-                    "immediate HostInstance::acquire failed: {acquire_error:?}; after-failure lock-file dev/inode: {lock_identity:?}; actual stdin fstat dev/inode: {stdin_identity:?}; other descriptors and holder identity are unobserved"
-                );
-            },
-        )?;
+        let reacquired =
+            HostInstance::acquire(coordination_paths.clone()).inspect_err(|acquire_error| {
+                if matches!(acquire_error, InstanceAcquireError::AlreadyRunning) {
+                    report_restart_lock_contention(
+                        coordination_paths.instance_lock(),
+                        &original_lock_identity,
+                        test_process_id,
+                        app_server_pid,
+                        app_server_reaped,
+                    );
+                }
+            })?;
         drop(reacquired);
         Ok(())
     }

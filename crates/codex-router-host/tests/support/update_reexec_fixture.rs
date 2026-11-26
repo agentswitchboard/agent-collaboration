@@ -1,4 +1,5 @@
-use std::os::unix::fs::PermissionsExt;
+use std::io::Write as _;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
@@ -489,6 +490,155 @@ pub(super) fn process_is_running(process_id: u32) -> bool {
         .ok()
         .and_then(rustix::process::Pid::from_raw)
         .is_some_and(|process_id| rustix::process::test_kill_process(process_id).is_ok())
+}
+
+pub(super) fn lock_file_identity(lock_path: &Path) -> std::io::Result<(u64, u64)> {
+    std::fs::metadata(lock_path).map(|metadata| (metadata.dev(), metadata.ino()))
+}
+
+pub(super) fn report_restart_lock_contention(
+    lock_path: &Path,
+    original_identity: &std::io::Result<(u64, u64)>,
+    test_process_id: u32,
+    app_server_pid: u32,
+    app_server_reaped: bool,
+) {
+    let current_identity = lock_file_identity(lock_path);
+    let mut stderr = std::io::stderr().lock();
+    let _ = writeln!(
+        stderr,
+        "immediate HostInstance::acquire failed: AlreadyRunning; test PID={test_process_id}; original lock dev/inode={original_identity:?}; after-failure lock dev/inode={current_identity:?}; app-server PID={app_server_pid} reaped={app_server_reaped}"
+    );
+    let Ok(identity) = original_identity else {
+        let _ = writeln!(
+            stderr,
+            "lock openers unavailable: original lock identity was not read"
+        );
+        return;
+    };
+    let own_descriptors = matching_own_descriptors(*identity);
+    let _ = writeln!(
+        stderr,
+        "own descriptors (fd, inode): {own_descriptors:?}; close-on-exec not observed. On macOS own descriptors match by regular-file inode because /dev/fd reports the device filesystem's device."
+    );
+    match other_lock_openers(lock_path, *identity, test_process_id) {
+        Ok(openers) => {
+            let _ = writeln!(stderr, "other processes with the lock file open: {openers}");
+        }
+        Err(error) => {
+            let _ = writeln!(
+                stderr,
+                "other processes with the lock file open unavailable: {error}"
+            );
+        }
+    }
+}
+
+fn matching_own_descriptors(identity: (u64, u64)) -> std::io::Result<Vec<(u32, u64)>> {
+    #[cfg(target_os = "linux")]
+    let directory = "/proc/self/fd";
+    #[cfg(not(target_os = "linux"))]
+    let directory = "/dev/fd";
+
+    let mut matches = Vec::new();
+    for entry in std::fs::read_dir(directory)? {
+        let entry = entry?;
+        let Ok(descriptor) = entry.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
+        // A descriptor may close between listing and reading its metadata.
+        if let Ok(metadata) = std::fs::metadata(entry.path())
+            && metadata.is_file()
+            && metadata.ino() == identity.1
+            && (!cfg!(target_os = "linux") || metadata.dev() == identity.0)
+        {
+            matches.push((descriptor, metadata.ino()));
+        }
+    }
+    matches.sort_unstable();
+    Ok(matches)
+}
+
+#[cfg(target_os = "macos")]
+fn other_lock_openers(
+    lock_path: &Path,
+    identity: (u64, u64),
+    test_pid: u32,
+) -> std::io::Result<String> {
+    if lock_file_identity(lock_path)? != identity {
+        return Err(std::io::Error::other(
+            "lock path no longer names the original inode",
+        ));
+    }
+    let output = std::process::Command::new("/usr/sbin/lsof")
+        .args(["-nP", "-p", &format!("^{test_pid}"), "-FpcRfiDl", "--"])
+        .arg(lock_path)
+        .output()?;
+    Ok(format!(
+        "lsof {} (p=PID, R=parent PID, c=command, f=descriptor, i=inode, D=device, l=lock):\n{}{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn other_lock_openers(
+    _lock_path: &Path,
+    identity: (u64, u64),
+    test_pid: u32,
+) -> std::io::Result<String> {
+    let mut openers = Vec::new();
+    let mut unreadable = 0;
+    for entry in std::fs::read_dir("/proc")? {
+        let entry = entry?;
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
+        if pid == test_pid {
+            continue;
+        }
+        let descriptors = match std::fs::read_dir(entry.path().join("fd")) {
+            Ok(descriptors) => descriptors,
+            Err(error) => {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    unreadable += 1;
+                }
+                continue;
+            }
+        };
+        let matches = descriptors.flatten().any(|descriptor| {
+            lock_file_identity(&descriptor.path())
+                .is_ok_and(|opened_identity| opened_identity == identity)
+        });
+        if matches {
+            let status = std::fs::read_to_string(entry.path().join("status"));
+            let fields = status.as_deref().unwrap_or_default();
+            let parent = fields
+                .lines()
+                .find_map(|line| line.strip_prefix("PPid:"))
+                .map_or("unavailable", str::trim);
+            let command = fields
+                .lines()
+                .find_map(|line| line.strip_prefix("Name:"))
+                .map_or("unavailable", str::trim);
+            openers.push(format!("PID={pid} parent PID={parent} command={command}"));
+        }
+    }
+    Ok(format!(
+        "/proc matches={openers:?}; unreadable process fd directories={unreadable}"
+    ))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn other_lock_openers(
+    _lock_path: &Path,
+    _identity: (u64, u64),
+    _test_pid: u32,
+) -> std::io::Result<String> {
+    Err(std::io::Error::other(
+        "no process file inventory for this operating system",
+    ))
 }
 
 pub(super) fn kill_process(process_id: u32) -> Result<(), Box<dyn std::error::Error>> {
