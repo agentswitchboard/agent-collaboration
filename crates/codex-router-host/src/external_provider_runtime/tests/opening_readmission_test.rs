@@ -164,7 +164,7 @@ async fn exercise_readmission(scenario: AfterRefusal) {
             false
         }
         AfterRefusal::Unchanged => true,
-        AfterRefusal::ReaderEnds => unreachable!("the reader ending has its own barrier"),
+        AfterRefusal::ReaderEnds => panic!("the reader ending has its own barrier"),
     };
     paused
         .release
