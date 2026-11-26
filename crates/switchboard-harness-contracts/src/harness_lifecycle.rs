@@ -1,0 +1,181 @@
+//! Provider discovery and the lifecycle of an owner's harness connections.
+
+use crate::{
+    AcceptedRunSettings, ActivationSetup, CatalogueFact, CatalogueRequest, CloseAttempt, CloseFact,
+    CreateAttempt, CreatedSetupFact, HarnessBinding, HarnessSessionId, Held, LifecycleEventPort,
+    LifecycleRefusal, LifecycleReply, OpenAttempt, OpenRequest, OpeningFact, OwnerAddress,
+    RunAttempt, RunRetirement, SessionGeneration, SettingAttempt, SettingFact, SetupReport, TurnId,
+    TurnMembership,
+};
+
+#[cfg(test)]
+#[path = "harness_lifecycle_test.rs"]
+mod tests;
+
+/// Session model types chosen by the controller. The harness supplies their values.
+pub trait HarnessLifecyclePayloads: Send + Sync + 'static {
+    type Event: Send + 'static;
+    type SkillView: Send + 'static;
+    type TurnOutcome: Send + 'static;
+    type Capabilities: Send + 'static;
+    type AuthStatus: Send + 'static;
+    type Settings: Send + 'static;
+    type SettingFailureReason: Send + 'static;
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CallbackAdmission {
+    /// The controller enqueued the observation for its session owner.
+    Admitted,
+    /// The named session, generation or turn is no longer eligible.
+    Ended,
+    /// The controller could not enqueue the observation on its inline path.
+    Unavailable,
+}
+
+/// The controller's immediate admission of lifecycle observations from harness callbacks.
+///
+/// Admission checks the controller's current state and uses its inline mailbox path.
+/// A callback can act on the returned outcome before doing further work. Opening and
+/// activation use the backpressured event port for replay and reader observations.
+pub trait HarnessCallbackIngress<Payloads: HarnessLifecyclePayloads>:
+    Send + Sync + 'static
+{
+    /// Capture the current generation when a callback starts. The controller checks it
+    /// again when it receives the observation. A session without a current generation
+    /// yields [`SessionGeneration::UNTRACKED`].
+    fn current_generation(&self, session: &HarnessSessionId) -> SessionGeneration;
+
+    /// Report a stream event observed for one generation. The controller determines its turn.
+    fn report_for_generation(
+        &self,
+        session: &HarnessSessionId,
+        run: SessionGeneration,
+        event: Payloads::Event,
+    ) -> CallbackAdmission;
+
+    /// Report a stream event attributed by the harness to an exact run and turn.
+    fn report_for_turn(
+        &self,
+        session: &HarnessSessionId,
+        run: SessionGeneration,
+        turn: TurnId,
+        event: Payloads::Event,
+    ) -> CallbackAdmission;
+
+    /// Report an out-of-reader skill view using the controller's current generation.
+    fn report_skill_view(
+        &self,
+        session: &HarnessSessionId,
+        view: Payloads::SkillView,
+    ) -> CallbackAdmission;
+
+    /// Report a connection-wide auth observation for this session's capability report.
+    fn report_connection_auth(
+        &self,
+        session: &HarnessSessionId,
+        status: Payloads::AuthStatus,
+    ) -> CallbackAdmission;
+}
+
+pub trait HarnessProvider<Payloads: HarnessLifecyclePayloads>: Send + Sync + 'static {
+    /// Create the owner's binding locally before any opening is offered.
+    fn bind(&self, owner: OwnerAddress) -> Box<dyn OwnerHarnessBinding<Payloads>>;
+
+    /// Return the offered catalogue for the named scope, without inventing choices.
+    fn model_catalogue(
+        &self,
+        request: CatalogueRequest,
+        reply: LifecycleReply<CatalogueFact>,
+    ) -> Result<(), LifecycleRefusal>;
+}
+
+/// The owner holds one binding for lifecycle and work across all of its generations.
+pub trait OwnerHarnessBinding<Payloads: HarnessLifecyclePayloads>:
+    HarnessBinding + 'static
+{
+    /// Start one opening and keep its connection under the exact attempt. An immediate refusal
+    /// means nothing was sent. Otherwise the opening settles through the reserved reply.
+    /// The request must name the owner for which the binding was created.
+    /// Before finishing a load, publish its complete replay through `events` and wait for ingress
+    /// acceptance. `retired` can stop the opening or a backpressured replay. A resume skips replay.
+    fn open(
+        &mut self,
+        request: OpenRequest,
+        reply: LifecycleReply<OpeningFact>,
+        events: LifecycleEventPort<
+            Payloads::Event,
+            Payloads::SkillView,
+            Payloads::TurnOutcome,
+            Payloads::AuthStatus,
+        >,
+        retired: RunRetirement,
+    ) -> Result<(), LifecycleRefusal>;
+
+    /// Finish applying the held request after the controller has accepted the created session's
+    /// ID. The harness reuses the settings it received at open, including any applied there.
+    fn configure_created(
+        &self,
+        attempt: CreateAttempt,
+        reply: LifecycleReply<
+            CreatedSetupFact<
+                Payloads::Capabilities,
+                Payloads::Settings,
+                Payloads::SettingFailureReason,
+            >,
+        >,
+        retired: RunRetirement,
+    ) -> Result<(), LifecycleRefusal>;
+
+    /// Reapply one setting for the exact restore attempt and return its own observation.
+    fn put_setting_back(
+        &self,
+        attempt: SettingAttempt,
+        reply: LifecycleReply<SettingFact>,
+    ) -> Result<(), LifecycleRefusal>;
+
+    /// Ask the harness to end the session. An immediate refusal does not mark the route closing.
+    fn close(
+        &self,
+        attempt: RunAttempt<CloseAttempt>,
+        reply: LifecycleReply<CloseFact>,
+    ) -> Result<(), LifecycleRefusal>;
+
+    /// Check that the exact opening is still available before adopting its settings.
+    fn opening_is_held(&self, attempt: OpenAttempt) -> Held;
+
+    /// Accept the controller's catalogue for the held opening and report the observed setup.
+    fn accept_settings(
+        &self,
+        attempt: OpenAttempt,
+        accepted: &AcceptedRunSettings,
+    ) -> Result<SetupReport<Payloads::Capabilities, Payloads::Settings>, LifecycleRefusal>;
+
+    /// Admit callbacks and install the folder grant before publishing the held skill view or
+    /// draining live events. The caller binds `events` and `retired` to this attempt. The harness
+    /// owns the reader task, stops it on retirement and joins it under the harness task owner.
+    fn activate(
+        &self,
+        setup: ActivationSetup,
+        accepted: AcceptedRunSettings,
+        events: LifecycleEventPort<
+            Payloads::Event,
+            Payloads::SkillView,
+            Payloads::TurnOutcome,
+            Payloads::AuthStatus,
+        >,
+        retired: RunRetirement,
+    );
+
+    /// Publish an accepted setting snapshot for this generation only.
+    fn use_settings(&self, generation: SessionGeneration, accepted: AcceptedRunSettings);
+
+    /// Clear the closing marker only if it belongs to this exact refused close attempt.
+    fn admit_again(&self, refused: RunAttempt<CloseAttempt>);
+
+    /// Let go of a generation and its held state without reporting a remote close.
+    fn retire(&self, generation: SessionGeneration);
+
+    /// Update callback membership for the exact run and turn carried by the change.
+    fn set_scope(&self, change: TurnMembership);
+}
