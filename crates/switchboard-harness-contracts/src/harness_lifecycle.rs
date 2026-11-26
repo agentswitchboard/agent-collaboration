@@ -2,10 +2,15 @@
 
 use crate::{
     AcceptedRunSettings, ActivationSetup, CatalogueFact, CatalogueRequest, CloseAttempt, CloseFact,
-    CreateAttempt, CreatedSetupFact, HarnessBinding, Held, LifecycleEventPort, LifecycleRefusal,
-    LifecycleReply, OpenAttempt, OpenRequest, OpeningFact, OwnerAddress, RunAttempt, RunRetirement,
-    SessionGeneration, SettingAttempt, SettingFact, SetupReport, TurnMembership,
+    CreateAttempt, CreatedSetupFact, HarnessBinding, HarnessSessionId, Held, LifecycleEventPort,
+    LifecycleRefusal, LifecycleReply, OpenAttempt, OpenRequest, OpeningFact, OwnerAddress,
+    RunAttempt, RunRetirement, SessionGeneration, SettingAttempt, SettingFact, SetupReport, TurnId,
+    TurnMembership,
 };
+
+#[cfg(test)]
+#[path = "harness_lifecycle_test.rs"]
+mod tests;
 
 /// Session model types chosen by the controller. The harness supplies their values.
 pub trait HarnessLifecyclePayloads: Send + Sync + 'static {
@@ -16,6 +21,61 @@ pub trait HarnessLifecyclePayloads: Send + Sync + 'static {
     type AuthStatus: Send + 'static;
     type Settings: Send + 'static;
     type SettingFailureReason: Send + 'static;
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CallbackAdmission {
+    /// The controller enqueued the observation for its session owner.
+    Admitted,
+    /// The named session, generation or turn is no longer eligible.
+    Ended,
+    /// The controller could not enqueue the observation on its inline path.
+    Unavailable,
+}
+
+/// The controller's immediate admission of lifecycle observations from harness callbacks.
+///
+/// Admission checks the controller's current state and uses its inline mailbox path.
+/// A callback can act on the returned outcome before doing further work. Opening and
+/// activation use the backpressured event port for replay and reader observations.
+pub trait HarnessCallbackIngress<Payloads: HarnessLifecyclePayloads>:
+    Send + Sync + 'static
+{
+    /// Capture the current generation when a callback starts. The controller checks it
+    /// again when it receives the observation. A session without a current generation
+    /// yields [`SessionGeneration::UNTRACKED`].
+    fn current_generation(&self, session: &HarnessSessionId) -> SessionGeneration;
+
+    /// Report a stream event observed for one generation. The controller determines its turn.
+    fn report_for_generation(
+        &self,
+        session: &HarnessSessionId,
+        run: SessionGeneration,
+        event: Payloads::Event,
+    ) -> CallbackAdmission;
+
+    /// Report a stream event attributed by the harness to an exact run and turn.
+    fn report_for_turn(
+        &self,
+        session: &HarnessSessionId,
+        run: SessionGeneration,
+        turn: TurnId,
+        event: Payloads::Event,
+    ) -> CallbackAdmission;
+
+    /// Report an out-of-reader skill view using the controller's current generation.
+    fn report_skill_view(
+        &self,
+        session: &HarnessSessionId,
+        view: Payloads::SkillView,
+    ) -> CallbackAdmission;
+
+    /// Report a connection-wide auth observation for this session's capability report.
+    fn report_connection_auth(
+        &self,
+        session: &HarnessSessionId,
+        status: Payloads::AuthStatus,
+    ) -> CallbackAdmission;
 }
 
 pub trait HarnessProvider<Payloads: HarnessLifecyclePayloads>: Send + Sync + 'static {
