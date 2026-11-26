@@ -210,9 +210,18 @@ impl ExternalProviderRuntime {
                 let harness_clock = Arc::clone(&clock);
                 let retired = self.retirement();
                 let connection_retired = retired.clone();
+                #[cfg(any(test, feature = "test-support"))]
+                let hold_writer_capacity: Option<
+                    Arc<crate::session_owner_door::HoldProviderWriterCapacity>,
+                > = {
+                    let wire = Arc::clone(&wire);
+                    Some(Arc::new(move || {
+                        Box::new(wire.hold_writer_capacity_for_test())
+                    }))
+                };
                 let door = Arc::new(crate::session_owner_door::SessionOwnerDoor::new(
                     #[cfg(any(test, feature = "test-support"))]
-                    Arc::clone(&wire),
+                    hold_writer_capacity,
                     move |tasks| {
                         Arc::new(
                             acp_client_runtime::owner_acp_binding::OwnerAcpProvider::new(

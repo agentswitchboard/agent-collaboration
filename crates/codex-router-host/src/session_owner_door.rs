@@ -12,8 +12,6 @@ use crate::{
     session_owner_registry::{RegisteredOwner, SessionOwnerRegistry},
     session_owner_storage::SessionOwnerStorage,
 };
-#[cfg(any(test, feature = "test-support"))]
-use acp_client_runtime::owner_wire::OwnerAcpWire;
 use acp_client_runtime::{ProviderPromptContent, session_owner_task::OwnerMailboxUnavailable};
 use collaboration_protocol::SessionRef;
 use provider_session_machines::{
@@ -57,7 +55,7 @@ pub struct SessionOwnerDoor {
     clock: Arc<dyn RuntimeClock>,
     hub: Arc<ProviderSessionEventHub>,
     #[cfg(any(test, feature = "test-support"))]
-    wire: Arc<OwnerAcpWire>,
+    hold_writer_capacity: Option<Arc<HoldProviderWriterCapacity>>,
     provider: Arc<SessionHarnessProvider>,
     connection: ConnectionEpoch,
     retired: CancellationToken,
@@ -73,13 +71,16 @@ pub(crate) trait SessionOwnerSnapshotObserver: Send + Sync + 'static {
     fn observe(&self, session: &str, previous: &SessionSnapshot, current: &SessionSnapshot);
 }
 
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) type HoldProviderWriterCapacity = dyn Fn() -> Box<dyn Send> + Send + Sync;
+
 pub struct SessionOwnerAddress {
     owner: RegisteredOwner,
     calls: Arc<SessionOwnerCalls>,
     storage: SessionOwnerStorage,
     provider: Arc<SessionHarnessProvider>,
     #[cfg(any(test, feature = "test-support"))]
-    wire: Arc<OwnerAcpWire>,
+    hold_writer_capacity: Option<Arc<HoldProviderWriterCapacity>>,
     #[cfg(any(test, feature = "test-support"))]
     preparation_fixture: Arc<crate::session_owner_preparation_fixture::PreparationFixture>,
 }
@@ -91,7 +92,9 @@ pub(crate) struct OwnerDeliveryHandle {
 
 impl SessionOwnerDoor {
     pub(crate) fn new(
-        #[cfg(any(test, feature = "test-support"))] wire: Arc<OwnerAcpWire>,
+        #[cfg(any(test, feature = "test-support"))] hold_writer_capacity: Option<
+            Arc<HoldProviderWriterCapacity>,
+        >,
         build_provider: impl FnOnce(TaskTracker) -> Arc<SessionHarnessProvider>,
         clock: Arc<dyn RuntimeClock>,
         store: Arc<AsyncMutex<ProviderOperationStore>>,
@@ -114,7 +117,7 @@ impl SessionOwnerDoor {
             clock,
             hub,
             #[cfg(any(test, feature = "test-support"))]
-            wire,
+            hold_writer_capacity,
             provider,
             connection: ConnectionEpoch(Uuid::now_v7()),
             retired,
@@ -288,7 +291,7 @@ impl SessionOwnerDoor {
             storage,
             provider: self.provider.clone(),
             #[cfg(any(test, feature = "test-support"))]
-            wire: self.wire.clone(),
+            hold_writer_capacity: self.hold_writer_capacity.clone(),
             #[cfg(any(test, feature = "test-support"))]
             preparation_fixture: self.preparation_fixture.clone(),
         });
@@ -737,8 +740,8 @@ impl SessionOwnerAddress {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn hold_provider_writer_capacity(&self) -> impl Sized + use<> {
-        self.wire.hold_writer_capacity_for_test()
+    pub fn hold_provider_writer_capacity(&self) -> Option<Box<dyn Send>> {
+        self.hold_writer_capacity.as_ref().map(|hold| hold())
     }
 }
 

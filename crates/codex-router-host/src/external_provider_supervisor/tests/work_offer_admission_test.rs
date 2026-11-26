@@ -43,8 +43,11 @@ async fn check_approval_lease_at_offer(path: OfferPath) {
         .supervisor
         .session_owner_for(&rig.target)
         .expect("stored owner");
-    let held_writer =
-        matches!(path, OfferPath::FullWriter).then(|| owner.hold_provider_writer_capacity());
+    let held_writer = matches!(path, OfferPath::FullWriter).then(|| {
+        owner
+            .hold_provider_writer_capacity()
+            .expect("real provider writer hold")
+    });
     let runtime = rig
         .supervisor
         .runtime_for(&rig.target.endpoint)
