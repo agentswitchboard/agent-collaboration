@@ -1,8 +1,9 @@
 //! Stage the exact reader, then authorize it only after its real handoff.
 
 use super::policy::activation_refusal;
+use super::row::ReaderHandoff;
 use super::{
-    Arc, Command, OpeningSlot, OwnerOpenings, ReaderHandoff, RunRetirement, SessionLifecycleFact,
+    Arc, Command, Effect, OpeningSlot, OwnerOpenings, RunRetirement, SessionLifecycleFact,
     SessionLifecyclePort, lock,
 };
 use crate::owner_session_stream::OwnerStreamTarget;
@@ -17,6 +18,10 @@ impl OwnerOpenings {
     ) -> Result<(), ActivationRefusal> {
         self.observe_health().map_err(activation_refusal)?;
         let (instance, generation, handoff) = lock(&self.attempts).begin_reader(self, setup)?;
+        let Effect::StartReader(handoff) = handoff else {
+            handoff.finish(&self.wire);
+            return Err(ActivationRefusal::OperationNotOffered);
+        };
         let slot = OpeningSlot::Run(generation);
         let ReaderHandoff {
             mut session,
@@ -78,9 +83,10 @@ impl OwnerOpenings {
             }
             let accepted = attempts.apply(slot, &instance, Command::ReaderAccepted);
             drop(attempts);
-            accepted
-                .map_err(|rejected| activation_refusal(rejected.reason))?
-                .finish(&self.wire);
+            let effect = accepted.map_err(|rejected| activation_refusal(rejected.reason))?;
+            if !effect.finish(&self.wire) {
+                return Err(ActivationRefusal::OperationNotOffered);
+            }
         }
         if install_route {
             self.watch_route(slot, instance, route.clone());

@@ -14,7 +14,15 @@ fn owned_writer_step_commits_the_declared_awaiting_variant() {
         CancellationToken::new(),
     );
 
-    let Ok((Some(row), Effect::None)) = row.apply(&instance, Command::WriterAccepted) else {
+    let outcome = row.apply(&instance, Command::WriterAccepted);
+    if let Ok((stored, Effect::Fault(fault))) = &outcome {
+        assert!(stored.is_none(), "the table must discard a mismatching row");
+        assert_eq!(fault.phase, OpeningPhase::QueuedCreate);
+        assert_eq!(fault.edge, Edge::WriterAccepted);
+        assert_eq!(fault.declared, OpeningPhase::AwaitingCreate);
+        panic!("writer acceptance produced an isolated typed fault");
+    }
+    let Ok((Some(row), Effect::None)) = outcome else {
         panic!("writer acceptance must keep the exact opening and add no release effect");
     };
 

@@ -242,6 +242,7 @@ pub(super) struct ReaderHandoff {
 }
 
 pub(super) enum Effect {
+    Fault(Box<StepFault>),
     Discarded(Box<Command>),
     DropSignal(oneshot::Sender<bool>, Box<Effect>),
     ReleaseBefore(Box<Effect>, Box<Effect>),
@@ -261,6 +262,46 @@ pub(super) enum Effect {
         release: Option<Release>,
     },
     Release(Release),
+}
+
+pub(super) struct StepFault {
+    pub(super) phase: OpeningPhase,
+    pub(super) edge: Edge,
+    pub(super) declared: OpeningPhase,
+    pub(super) actual: Option<OpeningPhase>,
+    instance: OpeningInstance,
+    previous_run: Option<RunResources>,
+    previous_offer: Option<OpeningOffer>,
+    rejected: Option<Release>,
+    effect: Effect,
+}
+
+impl StepFault {
+    fn fence(&self) {
+        if let Some(offer) = &self.previous_offer {
+            let _taken = offer.was_taken_or_withdraw();
+        }
+        if let Some(run) = &self.previous_run {
+            run.route.mark_removed();
+        }
+        if let Some(rejected) = &self.rejected {
+            rejected.state.mark_retired();
+        }
+    }
+
+    fn release(self, wire: &OwnerAcpWire) {
+        tracing::error!(phase=?self.phase, edge=?self.edge, declared=?self.declared,
+            actual=?self.actual, "ACP opening step returned an undeclared outcome");
+        if let Some(run) = self.previous_run {
+            wire.retire_opening_route(&run.route, &self.instance);
+            run.route.notify_removed();
+            run.stopped.cancel();
+        }
+        if let Some(rejected) = self.rejected {
+            rejected.run(wire);
+        }
+        drop(self.effect);
+    }
 }
 
 pub(super) struct Release {
@@ -471,8 +512,17 @@ impl OpeningRow {
 }
 
 impl Effect {
+    pub(super) fn faulted(&self) -> bool {
+        match self {
+            Self::Fault(_) => true,
+            Self::DropSignal(_, next) | Self::DiscardAfter(_, next) => next.faulted(),
+            _ => false,
+        }
+    }
+
     pub(super) fn fence(&self) {
         match self {
+            Self::Fault(fault) => fault.fence(),
             Self::Release(release)
             | Self::ResolveRestore {
                 release: Some(release),
@@ -487,6 +537,10 @@ impl Effect {
 
     pub(super) fn finish(self, wire: &OwnerAcpWire) -> bool {
         match self {
+            Self::Fault(fault) => {
+                fault.release(wire);
+                false
+            }
             Self::None | Self::Rollback(None) => true,
             Self::Release(release) => {
                 release.run(wire);

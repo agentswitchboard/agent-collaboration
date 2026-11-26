@@ -34,9 +34,7 @@ use provider_session_machines::{
     session_owner::{OwnerAddress, ProviderWireFailureKind, RunAttempt},
 };
 use router_clock::RuntimeClock;
-use row::{
-    Command, Effect, OpeningRow, ReaderHandoff, Rejected, RunResources, Slot as OpeningSlot,
-};
+use row::{Command, Effect, OpeningRow, Rejected, RunResources, Slot as OpeningSlot};
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex, MutexGuard, OnceLock},
@@ -201,7 +199,7 @@ impl OpeningAttempts {
         &mut self,
         opening: &OwnerOpenings,
         setup: ActivationSetup,
-    ) -> Result<(OpeningInstance, SessionGeneration, ReaderHandoff), ActivationRefusal> {
+    ) -> Result<(OpeningInstance, SessionGeneration, Effect), ActivationRefusal> {
         use policy::activation_refusal;
         if let Some(reason) = self.port_refusal {
             return Err(activation_refusal(reason));
@@ -244,13 +242,13 @@ impl OpeningAttempts {
                 },
             )
             .map_err(|rejected| activation_refusal(rejected.reason))?;
-        let Effect::StartReader(work) = effect else {
-            return Err(ActivationRefusal::ReaderUnavailable);
-        };
-        if created && let Some(row) = self.remove(slot) {
+        if created
+            && matches!(effect, Effect::StartReader(_))
+            && let Some(row) = self.remove(slot)
+        {
             self.insert(run_slot, row);
         }
-        Ok((instance, generation, work))
+        Ok((instance, generation, effect))
     }
 
     fn targeted(&self, attempt: OpenAttempt) -> Option<&OpeningRow> {

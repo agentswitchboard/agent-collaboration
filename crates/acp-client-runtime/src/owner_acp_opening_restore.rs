@@ -67,9 +67,22 @@ impl OwnerOpenings {
             }
         };
         let accepted = lock(&self.attempts).apply(slot, &instance, Command::WriterAccepted);
-        if let Err(rejected) = accepted {
-            tracing::debug!(?run, reason=?rejected.reason, "ACP had taken the restore before the row was retired");
-            return Ok(());
+        match accepted {
+            Ok(effect) if effect.faulted() => {
+                effect.finish(&self.wire);
+                reply.send(OpeningFact::RestoreFailed {
+                    run,
+                    failure: OpeningFailure::OutcomeUnknown,
+                });
+                return Ok(());
+            }
+            Ok(effect) => {
+                effect.finish(&self.wire);
+            }
+            Err(rejected) => {
+                tracing::debug!(?run, reason=?rejected.reason, "ACP had taken the restore before the row was retired");
+                return Ok(());
+            }
         }
         self.watch_route(slot, instance.clone(), resources.route);
         let restored = RestoreWorker {
@@ -82,15 +95,19 @@ impl OwnerOpenings {
             let open = async {
                 let mut session = match receipt.await {
                     Ok(Ok(session)) => session,
-                    Ok(Err(error)) => return Err(opening_failure(error)),
-                    Err(_) => return Err(OpeningFailure::OutcomeUnknown),
+                    Ok(Err(error)) => {
+                        return Err(RestoreWorkerFailure::Provider(opening_failure(error)));
+                    }
+                    Err(_) => {
+                        return Err(RestoreWorkerFailure::Provider(
+                            OpeningFailure::OutcomeUnknown,
+                        ));
+                    }
                 };
                 let replay = if via == RestoreVia::Load {
-                    Some(
-                        session
-                            .prepare_replay()
-                            .map_err(|_| OpeningFailure::ReplayNotKnown)?,
-                    )
+                    Some(session.prepare_replay().map_err(|_| {
+                        RestoreWorkerFailure::Provider(OpeningFailure::ReplayNotKnown)
+                    })?)
                 } else {
                     None
                 };
@@ -113,7 +130,7 @@ impl OwnerOpenings {
                     skills: replay.as_ref().and_then(|replay| replay.skills.clone()),
                 });
                 let opening = if let Some(replay) = replay {
-                    if !restored.advance(RestoreMilestone::Loaded(held)).await {
+                    if !restored.advance(RestoreMilestone::Loaded(held)).await? {
                         return Ok(None);
                     }
                     if events
@@ -126,7 +143,7 @@ impl OwnerOpenings {
                     {
                         return Ok(None);
                     }
-                    if !restored.advance(RestoreMilestone::ReplayAdmitted).await {
+                    if !restored.advance(RestoreMilestone::ReplayAdmitted).await? {
                         return Ok(None);
                     }
                     RestoredOpening::Loaded {
@@ -139,7 +156,7 @@ impl OwnerOpenings {
                     restored.wire.at_opening_effect_for_test(
                         crate::owner_wire::OpeningPausePoint::ResumeReaderBeforeCommit,
                     );
-                    if !restored.advance(RestoreMilestone::Resumed(held)).await {
+                    if !restored.advance(RestoreMilestone::Resumed(held)).await? {
                         return Ok(None);
                     }
                     RestoredOpening::Resumed {
@@ -157,13 +174,32 @@ impl OwnerOpenings {
             };
             match answer {
                 Some(Ok(Some(opening))) => reply.send(OpeningFact::Restored { run, opening }),
-                Some(Err(failure)) => {
-                    if restored.advance(RestoreMilestone::Failed).await {
+                Some(Err(RestoreWorkerFailure::Provider(failure))) => {
+                    if restored
+                        .advance(RestoreMilestone::Failed)
+                        .await
+                        .unwrap_or(true)
+                    {
                         reply.send(OpeningFact::RestoreFailed { run, failure });
                     }
                 }
+                Some(Err(RestoreWorkerFailure::Internal)) => {
+                    reply.send(OpeningFact::RestoreFailed {
+                        run,
+                        failure: OpeningFailure::OutcomeUnknown,
+                    });
+                }
                 Some(Ok(None)) | None => {
-                    let _ended = restored.advance(RestoreMilestone::WorkerExited).await;
+                    if restored
+                        .advance(RestoreMilestone::WorkerExited)
+                        .await
+                        .is_err()
+                    {
+                        reply.send(OpeningFact::RestoreFailed {
+                            run,
+                            failure: OpeningFailure::OutcomeUnknown,
+                        });
+                    }
                 }
             }
         });
@@ -230,8 +266,13 @@ struct RestoreWorker {
     instance: OpeningInstance,
 }
 
+enum RestoreWorkerFailure {
+    Provider(OpeningFailure),
+    Internal,
+}
+
 impl RestoreWorker {
-    async fn advance(&self, milestone: RestoreMilestone) -> bool {
+    async fn advance(&self, milestone: RestoreMilestone) -> Result<bool, RestoreWorkerFailure> {
         let (outcome, deferred) = oneshot::channel();
         let admitted = lock(&self.attempts).apply(
             self.slot,
@@ -244,10 +285,14 @@ impl RestoreWorker {
                 self.wire.at_opening_effect_for_test(
                     crate::owner_wire::OpeningPausePoint::RestoreDeferred,
                 );
-                deferred.await.unwrap_or(false)
+                Ok(deferred.await.unwrap_or(false))
             }
-            Ok(effect) => effect.finish(&self.wire),
-            Err(_) => false,
+            Ok(effect) if effect.faulted() => {
+                effect.finish(&self.wire);
+                Err(RestoreWorkerFailure::Internal)
+            }
+            Ok(effect) => Ok(effect.finish(&self.wire)),
+            Err(_) => Ok(false),
         }
     }
 }

@@ -3,7 +3,7 @@
 use super::{
     Command, DeferredRestore, Edge, Effect, HeldCreate, HeldRestore, OpeningInstance, OpeningPhase,
     OpeningPolicy, OpeningState, ReaderHandoff, Release, RestoreMilestone, RoutedRestore,
-    StateMachine, StoppedReceipt,
+    StateMachine, StepFault, StoppedReceipt,
 };
 use crate::{owner_opening_instance::OpeningOffer, owner_session_open::OwnerOpenedSession};
 use provider_session_machines::{
@@ -34,6 +34,8 @@ pub(super) fn step(
         }
         other => (other, None),
     };
+    let previous_run = state.run().cloned();
+    let previous_offer = state.offer().cloned();
     let (next, effect) = match apply_edge(state, command, instance, edge, taken) {
         Ok(value) => value,
         Err((state, Command::RestoreProgress(payload, None))) => {
@@ -41,12 +43,20 @@ pub(super) fn step(
         }
         Err(value) => return Err(value),
     };
-    check_declared(from, edge, declared, next.as_ref());
     let effect = if let Some(signal) = signal {
         Effect::DropSignal(signal, Box::new(effect))
     } else {
         effect
     };
+    let (next, effect) = DeclaredOutcome {
+        phase: from,
+        edge,
+        declared,
+        instance,
+        previous_run,
+        previous_offer,
+    }
+    .validate(next, effect);
     match (next, effect) {
         (Some(origin), Effect::Rollback(Some(DeferredRestore { milestone, outcome }))) => {
             match step(
@@ -71,6 +81,9 @@ pub(super) fn step(
                         release: None,
                     },
                 )),
+                Ok((next, fault @ Effect::Fault(_))) => {
+                    Ok((next, Effect::DropSignal(outcome, Box::new(fault))))
+                }
                 Ok((next, other)) => Ok((
                     next,
                     Effect::ReleaseBefore(
@@ -99,23 +112,47 @@ pub(super) fn step(
     }
 }
 
-fn check_declared(
-    from: OpeningPhase,
+struct DeclaredOutcome<'a> {
+    phase: OpeningPhase,
     edge: Edge,
     declared: OpeningPhase,
-    next: Option<&OpeningState>,
-) {
-    // A bad handler must fail before the table can commit it, in either build profile.
-    assert!(
-        next.map_or(
+    instance: &'a OpeningInstance,
+    previous_run: Option<super::RunResources>,
+    previous_offer: Option<OpeningOffer>,
+}
+
+impl DeclaredOutcome<'_> {
+    fn validate(
+        self,
+        next: Option<OpeningState>,
+        effect: Effect,
+    ) -> (Option<OpeningState>, Effect) {
+        let actual = next.as_ref().map(OpeningState::phase);
+        let matches = actual.map_or(
             matches!(
-                declared,
+                self.declared,
                 OpeningPhase::Terminal | OpeningPhase::RetiredAwaitingReply
             ),
-            |next| next.phase() == declared,
-        ),
-        "ACP opening step diverged from {from:?} + {edge:?} -> {declared:?}"
-    );
+            |actual| actual == self.declared,
+        );
+        if matches {
+            return (next, effect);
+        }
+        (
+            None,
+            Effect::Fault(Box::new(StepFault {
+                phase: self.phase,
+                edge: self.edge,
+                declared: self.declared,
+                actual,
+                instance: self.instance.clone(),
+                previous_run: self.previous_run,
+                previous_offer: self.previous_offer,
+                rejected: next.map(|state| Release::new(self.instance, state, true)),
+                effect,
+            })),
+        )
+    }
 }
 
 fn store(state: OpeningState, effect: Effect) -> Step {
@@ -531,3 +568,7 @@ fn apply_catalogue(
         observed: crate::owner_session_creation::catalogue_evidence(session.catalog()),
     }
 }
+
+#[cfg(test)]
+#[path = "owner_acp_opening_step_test.rs"]
+mod tests;

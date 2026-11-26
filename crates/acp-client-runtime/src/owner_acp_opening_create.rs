@@ -41,9 +41,19 @@ impl OwnerOpenings {
             }
         };
         let accepted = lock(&self.attempts).apply(slot, &instance, Command::WriterAccepted);
-        if let Err(rejected) = accepted {
-            tracing::debug!(?attempt, reason=?rejected.reason, "ACP had taken the create before the row was retired");
-            return Ok(());
+        match accepted {
+            Ok(effect) if effect.faulted() => {
+                effect.finish(&self.wire);
+                reply.send(create_fault(attempt));
+                return Ok(());
+            }
+            Ok(effect) => {
+                effect.finish(&self.wire);
+            }
+            Err(rejected) => {
+                tracing::debug!(?attempt, reason=?rejected.reason, "ACP had taken the create before the row was retired");
+                return Ok(());
+            }
         }
         let attempts = Arc::clone(&self.attempts);
         let session_id = Arc::clone(&self.session);
@@ -62,17 +72,24 @@ impl OwnerOpenings {
                         let mut attempts = lock(&attempts);
                         let result =
                             attempts.apply(slot, &instance, Command::Created(Box::new(session)));
-                        if result.is_ok() {
+                        if result.as_ref().is_ok_and(|effect| !effect.faulted()) {
                             session_id.get_or_init(|| provider_id.clone());
                         }
                         result
                     };
-                    if !accepted.is_ok_and(|effect| effect.finish(&wire)) {
-                        return;
-                    }
-                    OpeningFact::Created {
-                        attempt,
-                        session: HarnessSessionId(provider_id),
+                    match accepted {
+                        Ok(effect) if effect.faulted() => {
+                            effect.finish(&wire);
+                            create_fault(attempt)
+                        }
+                        Ok(effect) => {
+                            effect.finish(&wire);
+                            OpeningFact::Created {
+                                attempt,
+                                session: HarnessSessionId(provider_id),
+                            }
+                        }
+                        _ => return,
                     }
                 }
                 Some(Ok(Err(error))) => {
@@ -135,7 +152,7 @@ impl OwnerOpenings {
         let Effect::Configure(HeldCreate {
             mut session,
             requested,
-        }) = admitted.map_err(|rejected| rejected.reason)?
+        }) = require_effect(admitted, &self.wire)?
         else {
             return Err(LifecycleRefusal::OperationNotOffered);
         };
@@ -179,7 +196,7 @@ impl OwnerOpenings {
                 Command::AcceptSettings(accepted.clone()),
             )
         };
-        let Effect::Settings(report) = accepted.map_err(|rejected| rejected.reason)? else {
+        let Effect::Settings(report) = require_effect(accepted, &self.wire)? else {
             return Err(LifecycleRefusal::OperationNotOffered);
         };
         Ok(*report)
@@ -206,5 +223,28 @@ fn finish_create(
     command: Command,
 ) -> bool {
     let result = lock(attempts).apply(slot, instance, command);
-    result.is_ok_and(|effect| effect.finish(wire))
+    result.is_ok_and(|effect| {
+        let faulted = effect.faulted();
+        effect.finish(wire) || faulted
+    })
+}
+
+fn create_fault(attempt: CreateAttempt) -> OpeningFact {
+    OpeningFact::CreateFailed {
+        attempt,
+        remote: CreationEffect::Unknown,
+        failure: OpeningFailure::OutcomeUnknown,
+    }
+}
+
+pub(super) fn require_effect(
+    result: Result<Effect, super::Rejected>,
+    wire: &OwnerAcpWire,
+) -> Result<Effect, LifecycleRefusal> {
+    let effect = result.map_err(|rejected| rejected.reason)?;
+    if effect.faulted() {
+        effect.finish(wire);
+        return Err(LifecycleRefusal::OperationNotOffered);
+    }
+    Ok(effect)
 }

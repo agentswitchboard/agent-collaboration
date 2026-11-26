@@ -9,7 +9,7 @@ use crate::{owner_wire::OpeningPausePoint, owner_wire::OwnerAcpWire};
 use provider_session_machines::{
     harness_lifecycle::CloseFact, session_lifecycle_machine::CloseAttempt,
 };
-use switchboard_harness_contracts::ReservedReply;
+use switchboard_harness_contracts::{CloseUncertainty, ReservedReply};
 use tokio::sync::oneshot;
 
 impl OwnerOpenings {
@@ -43,7 +43,8 @@ impl OwnerOpenings {
             let admitted = attempts.apply(slot, &instance, Command::CloseAsked(close));
             (instance, admitted, session)
         };
-        let Effect::CloseOffer(route, offer) = admitted.map_err(|rejected| rejected.reason)? else {
+        let Effect::CloseOffer(route, offer) = super::create::require_effect(admitted, &self.wire)?
+        else {
             return Err(LifecycleRefusal::OperationNotOffered);
         };
 
@@ -80,7 +81,15 @@ impl OwnerOpenings {
         let offered =
             lock(&self.attempts).apply(slot, &instance, Command::CloseOffered(close, true));
         if let Ok(effect) = offered {
+            let faulted = effect.faulted();
             effect.finish(&self.wire);
+            if faulted {
+                reply.send(CloseFact::Unknown {
+                    run: close,
+                    cause: CloseUncertainty::EffectUnconfirmed,
+                });
+                return Ok(());
+            }
         }
 
         // The frame was admitted even if retirement removed its row in
@@ -90,8 +99,17 @@ impl OwnerOpenings {
         self.tasks.spawn(async move {
             if let Ok(fact) = received.await {
                 let settled = lock(&attempts).apply(slot, &instance, Command::CloseSettled(fact));
-                if settled.is_ok_and(|effect| effect.finish(&wire)) {
-                    reply.send(fact);
+                if let Ok(effect) = settled {
+                    let faulted = effect.faulted();
+                    effect.finish(&wire);
+                    reply.send(if faulted {
+                        CloseFact::Unknown {
+                            run: close,
+                            cause: CloseUncertainty::EffectUnconfirmed,
+                        }
+                    } else {
+                        fact
+                    });
                 }
             }
         });
@@ -127,7 +145,9 @@ impl OwnerOpenings {
             Err(rejected) => {
                 tracing::debug!(?close, reason=?rejected.reason, "ACP refused the exact close re-admission")
             }
-            Ok(_) => tracing::error!(?close, "ACP readmission returned an unexpected effect"),
+            Ok(effect) => {
+                effect.finish(&self.wire);
+            }
         }
     }
 }
