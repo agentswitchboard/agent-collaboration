@@ -68,14 +68,18 @@ impl<Id: Copy + Ord + Debug, Owner: Copy + Eq + Debug> ReplyLedger<Id, Owner> {
                 "reply admitted twice"
             );
         }
-        let mut accounted = self.owed();
+        let accounted = self.owed();
         assert_eq!(accounted, held.iter().copied().collect::<BTreeMap<_, _>>());
         assert_eq!(accounted.len(), held.len(), "a holder was counted twice");
         for id in delivered {
             assert_eq!(self.0.get(id), Some(&ReplySite::Delivered));
             assert!(
-                accounted.insert(*id, owed_before[id]).is_none(),
-                "reply accounted for twice"
+                !accounted.contains_key(id),
+                "a delivered reply is still held"
+            );
+            assert!(
+                owed_before.remove(id).is_some(),
+                "reply was unowed or delivered twice"
             );
         }
         assert_eq!(accounted, owed_before);

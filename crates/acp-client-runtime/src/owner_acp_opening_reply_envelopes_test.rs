@@ -86,7 +86,12 @@ impl PendingReply {
                         run,
                         failure: OpeningFailure::OutcomeUnknown,
                     } => ReplyId::Restore(run.attempt.0),
-                    _ => panic!("unexpected failure for a queued opening"),
+                    OpeningFact::Created { .. }
+                    | OpeningFact::CreateFailed { .. }
+                    | OpeningFact::Restored { .. }
+                    | OpeningFact::RestoreFailed { .. } => {
+                        panic!("unexpected failure for a queued opening")
+                    }
                 }
             }
             Self::Setup(receipt) => {
