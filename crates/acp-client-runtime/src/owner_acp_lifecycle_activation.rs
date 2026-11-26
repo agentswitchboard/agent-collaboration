@@ -145,9 +145,18 @@ impl OwnerOpenings {
             };
             let ended = lock(&attempts).apply(slot, &instance, Command::ReaderStopped(reason));
             #[cfg(any(test, feature = "test-observation"))]
-            wire.at_opening_effect_for_test(
-                crate::owner_wire::OpeningPausePoint::ReaderStoppedDelivered,
-            );
+            {
+                use crate::owner_wire::{OpeningPausePoint, OpeningReaderEnd};
+                let observed = match reason {
+                    ReaderEnd::Retired => OpeningReaderEnd::Retired,
+                    ReaderEnd::Finished => OpeningReaderEnd::Finished,
+                    ReaderEnd::Failed => OpeningReaderEnd::Failed,
+                    ReaderEnd::IngressClosed => OpeningReaderEnd::IngressClosed,
+                    ReaderEnd::HandoffClosed => OpeningReaderEnd::HandoffClosed,
+                };
+                wire.observe_reader_ending_for_test(route.run, observed);
+                wire.at_opening_effect_for_test(OpeningPausePoint::ReaderStoppedDelivered);
+            }
             if let Ok(effect) = ended {
                 let report = matches!(
                     effect,

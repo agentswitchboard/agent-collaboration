@@ -162,6 +162,7 @@ async function serveSharedSettings(peer: {
 //   reader-projection-error: after the first load, wait for .release-reader-error
 //     and send one live update that exceeds the projection limit.
 //   hold-created-update: send a created-session update on .release-created-update.
+//   restore-skill-view: replay one available command before the load reply.
 //   fast-on-only: the fast catalogue reads on and advertises no off value.
 const reactiveBehaviourNames = [
   "boolean-fast",
@@ -188,6 +189,7 @@ const reactiveBehaviourNames = [
   "opaque-saved-update",
   "reader-projection-error",
   "hold-created-update",
+  "restore-skill-view",
   "fast-on-only",
 ] as const;
 type ReactiveBehaviour = (typeof reactiveBehaviourNames)[number];
@@ -454,6 +456,19 @@ function answerReactiveLoad(
   };
   sessions.set(sessionId, session);
   const answer = (): void => {
+    if (peer.behaviours.has("restore-skill-view")) {
+      peer.send({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId,
+          update: {
+            sessionUpdate: "available_commands_update",
+            availableCommands: [{ name: "compact", description: "Compact context" }],
+          },
+        },
+      });
+    }
     if (peer.behaviours.has("saved-history")) {
       const sendUpdate = (kind: string, text: string | number): void => {
         peer.send({

@@ -4,6 +4,8 @@
 mod close_race;
 #[path = "opening_binding_model_test.rs"]
 mod model;
+#[path = "opening_reader_endings_test.rs"]
+mod reader_endings;
 #[path = "opening_reader_retirement_test.rs"]
 mod reader_retirement;
 #[path = "opening_readmission_test.rs"]

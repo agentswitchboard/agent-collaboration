@@ -9,7 +9,7 @@ mod owner_opening_test_control;
 #[cfg(any(test, feature = "test-observation"))]
 pub use crate::owner_opening_disposal::{OpeningDisposalKind, OpeningDisposalProbe};
 #[cfg(any(test, feature = "test-observation"))]
-pub use owner_opening_test_control::{OpeningPause, OpeningPausePoint};
+pub use owner_opening_test_control::{OpeningPause, OpeningPausePoint, OpeningReaderEnd};
 pub(crate) mod owner_restore_update_router;
 pub mod owner_session_open;
 pub mod owner_session_setting;

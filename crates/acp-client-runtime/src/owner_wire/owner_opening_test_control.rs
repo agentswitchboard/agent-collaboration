@@ -1,12 +1,17 @@
 //! One-shot test barriers at the actual opening effect boundaries.
 
 use super::OwnerAcpWire;
+use crate::acp_transport::TransportRun;
 use crate::owner_opening_disposal::{
     OpeningDisposalKind, OpeningDisposalProbe, OpeningDisposalToken,
 };
 use std::{
     collections::BTreeMap,
-    sync::{Mutex, mpsc},
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
 };
 use tokio::sync::oneshot;
 
@@ -34,10 +39,21 @@ pub struct OpeningPause {
     pub release: mpsc::Sender<()>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OpeningReaderEnd {
+    Retired,
+    Finished,
+    Failed,
+    IngressClosed,
+    HandoffClosed,
+}
+
 #[derive(Default)]
 pub(super) struct OpeningTestControls {
     pauses: Mutex<BTreeMap<OpeningPausePoint, Barrier>>,
     disposals: Mutex<BTreeMap<OpeningDisposalKind, OpeningDisposalProbe>>,
+    reader_ending: Mutex<Option<oneshot::Sender<(TransportRun, OpeningReaderEnd)>>>,
+    close_restored_reader_start: AtomicBool,
 }
 
 struct Barrier {
@@ -46,6 +62,46 @@ struct Barrier {
 }
 
 impl OwnerAcpWire {
+    pub fn observe_next_reader_ending_for_test(
+        &self,
+    ) -> oneshot::Receiver<(TransportRun, OpeningReaderEnd)> {
+        let (receipt, observed) = oneshot::channel();
+        let prior = self
+            .opening_test
+            .reader_ending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .replace(receipt);
+        assert!(prior.is_none(), "one pending reader-ending observation");
+        observed
+    }
+
+    pub(crate) fn observe_reader_ending_for_test(&self, run: TransportRun, end: OpeningReaderEnd) {
+        let receipt = self
+            .opening_test
+            .reader_ending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(receipt) = receipt {
+            let _test_gone = receipt.send((run, end));
+        }
+    }
+
+    pub fn close_next_restored_reader_start_for_test(&self) {
+        let old = self
+            .opening_test
+            .close_restored_reader_start
+            .swap(true, Ordering::AcqRel);
+        assert!(!old, "one pending restored reader handoff closure");
+    }
+
+    pub(crate) fn take_restored_start_closure_for_test(&self) -> bool {
+        self.opening_test
+            .close_restored_reader_start
+            .swap(false, Ordering::AcqRel)
+    }
+
     #[cfg(feature = "test-observation")]
     pub fn stop_ordered_writer_for_test(
         &self,

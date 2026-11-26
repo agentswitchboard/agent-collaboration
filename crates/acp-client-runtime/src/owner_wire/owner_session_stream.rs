@@ -395,19 +395,27 @@ impl OwnerOpenedSession {
     > {
         let (start, wait_for_start) = tokio::sync::oneshot::channel();
         match self.route.take() {
-            Some(OpenedSessionRoute::Restored { sdk, updates }) => Ok((
-                start,
-                Either::Left(async move {
-                    wait_for_start
-                        .await
-                        .map_err(|_| ExternalProviderRuntimeError::SessionReleased)?;
-                    let result = self
-                        .read_updates(SessionUpdates::Restored(updates), target)
-                        .await;
-                    drop(sdk);
-                    result
-                }),
-            )),
+            Some(OpenedSessionRoute::Restored { sdk, updates }) => {
+                #[cfg(any(test, feature = "test-observation"))]
+                let wait_for_start =
+                    (!target.wire.take_restored_start_closure_for_test()).then_some(wait_for_start);
+                Ok((
+                    start,
+                    Either::Left(async move {
+                        #[cfg(any(test, feature = "test-observation"))]
+                        let wait_for_start =
+                            wait_for_start.ok_or(ExternalProviderRuntimeError::SessionReleased)?;
+                        wait_for_start
+                            .await
+                            .map_err(|_| ExternalProviderRuntimeError::SessionReleased)?;
+                        let result = self
+                            .read_updates(SessionUpdates::Restored(updates), target)
+                            .await;
+                        drop(sdk);
+                        result
+                    }),
+                ))
+            }
             Some(OpenedSessionRoute::Created(activate)) => {
                 let (finished, result) = tokio::sync::oneshot::channel();
                 activate
