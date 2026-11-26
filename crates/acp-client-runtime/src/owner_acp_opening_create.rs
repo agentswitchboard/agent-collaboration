@@ -1,6 +1,5 @@
 //! Provisional creation and its separately admitted configuration worker.
 
-use super::row::HeldCreate;
 use super::{
     Arc, Command, CreateAttempt, Effect, HarnessSessionId, LifecycleRefusal, LifecycleReply, Mutex,
     OpenAttempt, OpenSetup, OpeningAttempts, OpeningFact, OpeningFailure, OpeningInstance,
@@ -149,10 +148,10 @@ impl OwnerOpenings {
             let admitted = attempts.apply(slot, &instance, Command::Configure(stopped.clone()));
             (instance, admitted)
         };
-        let Effect::Configure(HeldCreate {
+        let Effect::Configure {
             mut session,
             requested,
-        }) = require_effect(admitted, &self.wire)?
+        } = require_effect(admitted, &self.wire)?
         else {
             return Err(LifecycleRefusal::OperationNotOffered);
         };
@@ -246,5 +245,11 @@ pub(super) fn require_effect(
         effect.finish(wire);
         return Err(LifecycleRefusal::OperationNotOffered);
     }
-    Ok(effect)
+    match effect {
+        Effect::WithdrawSetters(setters, next) => {
+            drop(setters);
+            require_effect(Ok(*next), wire)
+        }
+        other => Ok(other),
+    }
 }

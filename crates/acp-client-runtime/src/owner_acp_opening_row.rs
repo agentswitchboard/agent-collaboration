@@ -9,15 +9,17 @@ use crate::{
     acp_transport::LifecycleRoute,
     owner_opening_instance::{OpeningInstance, OpeningOffer},
     owner_session_open::OwnerOpenedSession,
+    owner_session_setting::OwnerSettingWirePlan,
     owner_wire::OwnerAcpWire,
 };
 use provider_session_machines::{
     SessionGeneration,
     harness_lifecycle::{
-        AcceptedRunSettings, CloseFact, LifecycleRefusal, OpenAttempt, SetupReport,
+        AcceptedRunSettings, CloseFact, LifecycleRefusal, LifecycleReply, OpenAttempt,
+        SettingAttempt, SettingFact, SetupReport,
     },
-    session_lifecycle_machine::CloseAttempt,
-    session_owner::{OwnerAddress, RunAttempt},
+    session_lifecycle_machine::{CloseAttempt, LoadAttempt},
+    session_owner::{OwnerAddress, OwnerSetting, RunAttempt},
 };
 use session_event_model::{CapabilityReport, SessionSettings, SkillView};
 use state_machine_core::StateMachine;
@@ -83,7 +85,7 @@ struct PendingCreate {
     pub(super) stopped: CancellationToken,
 }
 
-pub(super) struct HeldCreate {
+struct HeldCreate {
     pub(super) session: Box<OwnerOpenedSession>,
     pub(super) requested: Box<RequestedProviderSettings>,
 }
@@ -99,10 +101,30 @@ struct RoutedRestore {
     pub(super) held: Box<HeldRestore>,
 }
 
+pub(super) struct PendingSetter {
+    claim: OpeningOffer,
+    plan: Option<SetterPlan>,
+}
+
+struct SetterPlan {
+    restore: RunAttempt<LoadAttempt>,
+    setting: OwnerSetting,
+    wire: OwnerSettingWirePlan,
+}
+
+pub(super) struct SetterWrite {
+    pub(super) route: LifecycleRoute,
+    pub(super) restore: RunAttempt<LoadAttempt>,
+    pub(super) setting: OwnerSetting,
+    pub(super) plan: OwnerSettingWirePlan,
+    pub(super) reply: LifecycleReply<SettingFact>,
+}
+
 pub(super) struct HeldRestore {
     pub(super) session: Box<OwnerOpenedSession>,
     pub(super) accepted_mode_fallback: Option<String>,
     pub(super) skills: Option<SkillView>,
+    setters: Vec<PendingSetter>,
 }
 
 pub(super) struct DeferredRestore {
@@ -119,6 +141,25 @@ pub(super) enum RestoreMilestone {
 }
 
 impl RestoreMilestone {
+    pub(super) fn held(
+        session: OwnerOpenedSession,
+        accepted_mode_fallback: Option<String>,
+        skills: Option<SkillView>,
+        from_load: bool,
+    ) -> Self {
+        let held = Box::new(HeldRestore {
+            session: Box::new(session),
+            accepted_mode_fallback,
+            skills,
+            setters: Vec::new(),
+        });
+        if from_load {
+            Self::Loaded(held)
+        } else {
+            Self::Resumed(held)
+        }
+    }
+
     pub(super) fn event(&self) -> Edge {
         match self {
             Self::Loaded(_) => Edge::RestoreLoadReply,
@@ -206,6 +247,11 @@ impl OpeningState {
         if let Some(run) = self.run() {
             run.route.mark_removed();
         }
+        if let Self::HeldRestore(restore) = self {
+            for setter in &restore.held.setters {
+                let _taken = setter.claim.was_taken_or_withdraw();
+            }
+        }
     }
 }
 
@@ -219,7 +265,16 @@ pub(super) enum Command {
     Configured(Box<OwnerOpenedSession>),
     ConfigureClosed,
     AcceptSettings(AcceptedRunSettings),
-    Activate { run: RunResources, created: bool },
+    PutSettingBack {
+        attempt: Box<SettingAttempt>,
+        session: String,
+    },
+    SetterReserved(OpeningOffer, LifecycleReply<SettingFact>),
+    SetterDone(OpeningOffer),
+    Activate {
+        run: RunResources,
+        created: bool,
+    },
     ActivationFailed,
     ReaderAccepted,
     RestoreProgress(RestoreMilestone, Option<oneshot::Sender<bool>>),
@@ -250,8 +305,15 @@ pub(super) enum Effect {
     Readmit(LifecycleRoute, CloseAttempt),
     Rollback(Option<DeferredRestore>),
     None,
-    Configure(HeldCreate),
+    Configure {
+        session: Box<OwnerOpenedSession>,
+        requested: Box<RequestedProviderSettings>,
+    },
     Settings(Box<SetupReport<CapabilityReport, SessionSettings>>),
+    RefuseSetter(LifecycleRefusal),
+    ReserveSetter(OpeningOffer),
+    WriteSetter(Box<SetterWrite>),
+    WithdrawSetters(Vec<PendingSetter>, Box<Effect>),
     StartReader(ReaderHandoff),
     CloseOffer(LifecycleRoute, OpeningOffer),
     CloseConfirmed(Release, Option<oneshot::Sender<bool>>),
@@ -413,16 +475,6 @@ impl OpeningRow {
         (route.is_removed() && self.phase() != OpeningPhase::RouteLost).then(|| route.clone())
     }
 
-    pub(super) fn held_restore_offer_data(&self) -> Option<(LifecycleRoute, Option<String>)> {
-        let OpeningState::HeldRestore(restore) = &self.state else {
-            return None;
-        };
-        Some((
-            restore.run.route.clone(),
-            restore.held.accepted_mode_fallback.clone(),
-        ))
-    }
-
     pub(super) fn create(
         attempt: OpenAttempt,
         instance: OpeningInstance,
@@ -522,6 +574,12 @@ impl Effect {
 
     pub(super) fn fence(&self) {
         match self {
+            Self::WithdrawSetters(setters, next) => {
+                for setter in setters {
+                    let _taken = setter.claim.was_taken_or_withdraw();
+                }
+                next.fence();
+            }
             Self::Fault(fault) => fault.fence(),
             Self::Release(release)
             | Self::ResolveRestore {
@@ -537,6 +595,10 @@ impl Effect {
 
     pub(super) fn finish(self, wire: &OwnerAcpWire) -> bool {
         match self {
+            Self::WithdrawSetters(setters, next) => {
+                drop(setters);
+                next.finish(wire)
+            }
             Self::Fault(fault) => {
                 fault.release(wire);
                 false
@@ -583,8 +645,11 @@ impl Effect {
             Self::Readmit(route, close) => wire.reopen_opening_route(&route, close),
             Self::Deferred
             | Self::Rollback(Some(_))
-            | Self::Configure(_)
+            | Self::Configure { .. }
             | Self::Settings(_)
+            | Self::RefuseSetter(_)
+            | Self::ReserveSetter(_)
+            | Self::WriteSetter(_)
             | Self::StartReader(_)
             | Self::CloseOffer(_, _) => false,
         }

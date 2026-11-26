@@ -14,6 +14,8 @@ mod policy;
 mod restore;
 #[path = "owner_acp_opening_row.rs"]
 mod row;
+#[path = "owner_acp_opening_setter.rs"]
+mod setter;
 
 use super::{lifecycle_transport_refusal, transport_run};
 use crate::owner_opening_instance::OpeningOffer;

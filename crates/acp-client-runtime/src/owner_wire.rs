@@ -552,10 +552,14 @@ impl OwnerAcpWire {
         run: RunAttempt<LoadAttempt>,
         setting: OwnerSetting,
         plan: OwnerSettingWirePlan,
+        claim: &crate::owner_opening_instance::OpeningOffer,
         completion: LifecycleReply<SettingFact>,
     ) -> Result<(), TransportRefusal> {
-        self.transport
-            .enqueue_lifecycle_request(route, restore_setting_frame(run, setting, plan, completion))
+        self.transport.enqueue_lifecycle_request(
+            route,
+            claim,
+            restore_setting_frame(run, setting, plan, completion),
+        )
     }
 }
 

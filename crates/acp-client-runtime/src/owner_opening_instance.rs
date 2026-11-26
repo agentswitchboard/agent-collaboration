@@ -24,6 +24,9 @@ const TAKEN: u8 = 1;
 const WITHDRAWN: u8 = 2;
 
 impl OpeningOffer {
+    pub(crate) fn is_same_as(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
     pub(crate) fn take(&self) -> bool {
         self.0
             .compare_exchange(UNCLAIMED, TAKEN, Ordering::AcqRel, Ordering::Acquire)

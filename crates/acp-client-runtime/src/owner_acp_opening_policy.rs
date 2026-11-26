@@ -73,6 +73,8 @@ tagged_enum!(OpeningEvent,
     ReplayAdmitted => "replay_admitted",
     OpenFailed => "open_failed",
     PutSettingBack => "put_setting_back",
+    SetterReserved => "setter_reserved",
+    SetterDone => "setter_done",
     AcceptSettings => "accept_settings",
     AcceptCreatedSettings => "accept_created_settings",
     Activate => "activate",
@@ -198,6 +200,8 @@ impl StateMachine for OpeningPolicy {
         CapturingReplay + WorkerExited => Terminal;
         CapturingReplay + WaitOpening => CapturingReplay;
         HeldRestore + PutSettingBack => HeldRestore;
+        HeldRestore + SetterReserved => HeldRestore;
+        HeldRestore + SetterDone => HeldRestore;
         HeldRestore + AcceptSettings => PreparedRestore;
         HeldRestore + CloseAsked => OfferingClose;
         HeldRestore + Retire => Terminal;

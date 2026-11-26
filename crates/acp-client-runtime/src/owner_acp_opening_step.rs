@@ -2,16 +2,20 @@
 
 use super::{
     Command, DeferredRestore, Edge, Effect, HeldCreate, HeldRestore, OpeningInstance, OpeningPhase,
-    OpeningPolicy, OpeningState, ReaderHandoff, Release, RestoreMilestone, RoutedRestore,
-    StateMachine, StepFault, StoppedReceipt,
+    OpeningPolicy, OpeningState, PendingSetter, ReaderHandoff, Release, RestoreMilestone,
+    RoutedRestore, SetterPlan, SetterWrite, StateMachine, StepFault, StoppedReceipt,
 };
-use crate::{owner_opening_instance::OpeningOffer, owner_session_open::OwnerOpenedSession};
+use crate::{
+    owner_opening_instance::OpeningOffer, owner_session_open::OwnerOpenedSession,
+    owner_session_setting::OwnerSettingWirePlan,
+};
 use provider_session_machines::{
     ProviderSettingsCatalog,
-    harness_lifecycle::{AcceptedRunSettings, CloseFact, SetupReport},
+    harness_lifecycle::{AcceptedRunSettings, CloseFact, LifecycleRefusal, SetupReport},
 };
 use session_event_model::{CapabilityReport, SessionSettings};
 use std::sync::Arc;
+use switchboard_harness_contracts::WorkOfferRefusal;
 
 type Step = Result<(Option<OpeningState>, Effect), (OpeningState, Command)>;
 
@@ -182,6 +186,9 @@ fn edge(state: &OpeningState, command: &Command, taken: bool) -> Option<Edge> {
             Edge::AcceptCreatedSettings
         }
         Command::AcceptSettings(_) => Edge::AcceptSettings,
+        Command::PutSettingBack { .. } => Edge::PutSettingBack,
+        Command::SetterReserved(_, _) => Edge::SetterReserved,
+        Command::SetterDone(_) => Edge::SetterDone,
         Command::Activate { .. } => Edge::Activate,
         Command::ActivationFailed => Edge::ActivationFailed,
         Command::ReaderAccepted => Edge::ReaderAccepted,
@@ -321,9 +328,13 @@ fn apply_edge(
             }),
             Effect::None,
         ),
-        (State::HeldCreate(held), Command::Configure(stopped)) => {
-            store(State::ConfiguringCreate(stopped), Effect::Configure(held))
-        }
+        (State::HeldCreate(held), Command::Configure(stopped)) => store(
+            State::ConfiguringCreate(stopped),
+            Effect::Configure {
+                session: held.session,
+                requested: held.requested,
+            },
+        ),
         (State::ConfiguringCreate(_), Command::Configured(session)) => {
             store(State::ConfiguredCreate(session), Effect::None)
         }
@@ -336,11 +347,96 @@ fn apply_edge(
         }
         (State::HeldRestore(mut restore), Command::AcceptSettings(accepted)) => {
             let report = apply_catalogue(&mut restore.held.session, accepted);
+            let setters = std::mem::take(&mut restore.held.setters);
             store(
                 State::PreparedRestore(restore),
-                Effect::Settings(Box::new(report)),
+                withdraw_setters(setters, Effect::Settings(Box::new(report))),
             )
         }
+        (State::HeldRestore(mut restore), Command::PutSettingBack { attempt, session }) => {
+            let plan = if attempt.setting.change.generation == attempt.restore.generation {
+                OwnerSettingWirePlan::from_work_catalog(
+                    session,
+                    &ProviderSettingsCatalog::from_record(attempt.catalogue),
+                    attempt.setting.kind,
+                    attempt.value.0,
+                    restore.held.accepted_mode_fallback.clone(),
+                )
+                .map_err(|reason| match reason {
+                    WorkOfferRefusal::SettingValueNotOffered => {
+                        LifecycleRefusal::SettingValueNotOffered
+                    }
+                    WorkOfferRefusal::SettingSetterUnavailable => {
+                        LifecycleRefusal::SettingSetterUnavailable
+                    }
+                    _ => LifecycleRefusal::Encoding,
+                })
+            } else {
+                Err(LifecycleRefusal::AttemptMismatch)
+            };
+            let wire = match plan {
+                Ok(wire) => wire,
+                Err(reason) => {
+                    return store(State::HeldRestore(restore), Effect::RefuseSetter(reason));
+                }
+            };
+            let claim = OpeningOffer::default();
+            restore.held.setters.push(PendingSetter {
+                claim: claim.clone(),
+                plan: Some(SetterPlan {
+                    restore: attempt.restore,
+                    setting: attempt.setting,
+                    wire,
+                }),
+            });
+            store(State::HeldRestore(restore), Effect::ReserveSetter(claim))
+        }
+        (State::HeldRestore(mut restore), Command::SetterReserved(claim, reply)) => {
+            let plan = restore
+                .held
+                .setters
+                .iter_mut()
+                .find(|pending| pending.claim.is_same_as(&claim))
+                .and_then(|pending| pending.plan.take());
+            let Some(SetterPlan {
+                restore: run,
+                setting,
+                wire,
+            }) = plan
+            else {
+                return Err((
+                    State::HeldRestore(restore),
+                    Command::SetterReserved(claim, reply),
+                ));
+            };
+            let route = restore.run.route.clone();
+            store(
+                State::HeldRestore(restore),
+                Effect::WriteSetter(Box::new(SetterWrite {
+                    route,
+                    restore: run,
+                    setting,
+                    plan: wire,
+                    reply,
+                })),
+            )
+        }
+        (State::HeldRestore(mut restore), Command::SetterDone(claim)) => {
+            let Some(index) = restore
+                .held
+                .setters
+                .iter()
+                .position(|pending| pending.claim.is_same_as(&claim))
+            else {
+                return Err((State::HeldRestore(restore), Command::SetterDone(claim)));
+            };
+            let offer = restore.held.setters.swap_remove(index);
+            store(
+                State::HeldRestore(restore),
+                withdraw_setters(vec![offer], Effect::None),
+            )
+        }
+
         (State::ConfiguredCreate(session), Command::Activate { run, created: true }) => {
             let work = ReaderHandoff {
                 session,
@@ -410,11 +506,15 @@ fn apply_edge(
             state,
             Command::RestoreProgress(RestoreMilestone::Failed | RestoreMilestone::WorkerExited, _),
         ) => finish(state, instance),
-        (origin, Command::CloseAsked(close)) => {
+        (mut origin, Command::CloseAsked(close)) => {
             let Some(route) = origin.run().map(|run| run.route.clone()) else {
                 return Err((origin, Command::CloseAsked(close)));
             };
             let offer = OpeningOffer::default();
+            let setters = match &mut origin {
+                State::HeldRestore(restore) => std::mem::take(&mut restore.held.setters),
+                _ => Vec::new(),
+            };
             store(
                 State::OfferingClose {
                     origin: Box::new(origin),
@@ -422,7 +522,7 @@ fn apply_edge(
                     offer: offer.clone(),
                     deferred: None,
                 },
-                Effect::CloseOffer(route, offer),
+                withdraw_setters(setters, Effect::CloseOffer(route, offer)),
             )
         }
         (
@@ -572,3 +672,11 @@ fn apply_catalogue(
 #[cfg(test)]
 #[path = "owner_acp_opening_step_test.rs"]
 mod tests;
+
+fn withdraw_setters(setters: Vec<PendingSetter>, effect: Effect) -> Effect {
+    if setters.is_empty() {
+        effect
+    } else {
+        Effect::WithdrawSetters(setters, Box::new(effect))
+    }
+}

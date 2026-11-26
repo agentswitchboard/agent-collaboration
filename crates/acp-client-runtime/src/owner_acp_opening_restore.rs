@@ -1,22 +1,18 @@
 //! Restore receipts, replay publication, and exact held settings.
 
-use super::row::{HeldRestore, RestoreMilestone};
+use super::row::RestoreMilestone;
 use super::{
-    Arc, Command, Effect, LifecycleRefusal, LifecycleReply, Mutex, OpenAttempt, OpeningAttempts,
-    OpeningFact, OpeningFailure, OpeningInstance, OpeningSlot, OwnerAcpWire, OwnerOpenings,
-    RestoreOpening, RestoreVia, RunRetirement, SessionLifecycleFact, SessionLifecyclePort,
+    Arc, Command, Effect, LifecycleRefusal, LifecycleReply, Mutex, OpeningAttempts, OpeningFact,
+    OpeningFailure, OpeningInstance, OpeningSlot, OwnerAcpWire, OwnerOpenings, RestoreOpening,
+    RestoreVia, RunRetirement, SessionLifecycleFact, SessionLifecyclePort,
     lifecycle_transport_refusal, lock, opening_failure,
 };
-use crate::owner_session_setting::{OwnerSettingWirePlan, RestoreSettingPlan};
+use crate::owner_session_setting::RestoreSettingPlan;
 use crate::owner_wire::RestoreOffer;
 use provider_session_machines::{
-    ProviderSettingsCatalog,
-    harness_lifecycle::{
-        RestoreLoadReadback, RestoreSettingRefusal, RestoredOpening, SettingAttempt, SettingFact,
-    },
+    harness_lifecycle::{RestoreLoadReadback, RestoredOpening},
     session_setting_machine::SettingValueId,
 };
-use switchboard_harness_contracts::{ReplyAdmission, WorkOfferRefusal};
 use tokio::sync::oneshot;
 
 impl OwnerOpenings {
@@ -124,13 +120,14 @@ impl OwnerOpenings {
                     fast_on: fast_off,
                 };
                 let reported_fallback = accepted_mode_fallback.clone().map(SettingValueId);
-                let held = Box::new(HeldRestore {
-                    session: Box::new(session),
+                let held = RestoreMilestone::held(
+                    session,
                     accepted_mode_fallback,
-                    skills: replay.as_ref().and_then(|replay| replay.skills.clone()),
-                });
+                    replay.as_ref().and_then(|replay| replay.skills.clone()),
+                    replay.is_some(),
+                );
                 let opening = if let Some(replay) = replay {
-                    if !restored.advance(RestoreMilestone::Loaded(held)).await? {
+                    if !restored.advance(held).await? {
                         return Ok(None);
                     }
                     if events
@@ -156,7 +153,7 @@ impl OwnerOpenings {
                     restored.wire.at_opening_effect_for_test(
                         crate::owner_wire::OpeningPausePoint::ResumeReaderBeforeCommit,
                     );
-                    if !restored.advance(RestoreMilestone::Resumed(held)).await? {
+                    if !restored.advance(held).await? {
                         return Ok(None);
                     }
                     RestoredOpening::Resumed {
@@ -204,58 +201,6 @@ impl OwnerOpenings {
             }
         });
         Ok(())
-    }
-
-    pub(in super::super) fn put_setting_back(
-        &self,
-        attempt: SettingAttempt,
-        reserve_reply: &mut dyn FnMut() -> ReplyAdmission<SettingFact>,
-    ) -> Result<(), RestoreSettingRefusal> {
-        let refusal = RestoreSettingRefusal::Harness;
-        self.observe_health().map_err(refusal)?;
-        if attempt.setting.change.generation != attempt.restore.generation {
-            return Err(refusal(LifecycleRefusal::AttemptMismatch));
-        }
-        let identity = OpenAttempt::Restore(attempt.restore);
-        let (route, fallback) = {
-            let attempts = lock(&self.attempts);
-            let Some(row) = attempts.targeted(identity) else {
-                return Err(refusal(self.opening_refusal(&attempts, identity)));
-            };
-            row.held_restore_offer_data()
-                .ok_or_else(|| refusal(row.phase().refusal()))?
-        };
-        let session = self
-            .session
-            .get()
-            .ok_or_else(|| refusal(LifecycleRefusal::RouteUnavailable))?;
-        let request = OwnerSettingWirePlan::from_work_catalog(
-            session.clone(),
-            &ProviderSettingsCatalog::from_record(attempt.catalogue),
-            attempt.setting.kind,
-            attempt.value.0,
-            fallback,
-        )
-        .map_err(|reason| {
-            refusal(match reason {
-                WorkOfferRefusal::SettingValueNotOffered => {
-                    LifecycleRefusal::SettingValueNotOffered
-                }
-                WorkOfferRefusal::SettingSetterUnavailable => {
-                    LifecycleRefusal::SettingSetterUnavailable
-                }
-                _ => LifecycleRefusal::Encoding,
-            })
-        })?;
-        let reply = match reserve_reply() {
-            ReplyAdmission::Reserved(reply) => reply,
-            ReplyAdmission::Refused(reason) => {
-                return Err(RestoreSettingRefusal::ReplyReservation(reason));
-            }
-        };
-        self.wire
-            .reapply_exact_setting(&route, attempt.restore, attempt.setting, request, reply)
-            .map_err(|reason| refusal(lifecycle_transport_refusal(reason)))
     }
 }
 

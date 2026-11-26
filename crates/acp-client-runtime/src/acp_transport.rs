@@ -839,6 +839,7 @@ impl<Frame> AcpTransport<Frame> {
     pub(crate) fn enqueue_lifecycle_request(
         &self,
         route: &LifecycleRoute,
+        claim: &OpeningOffer,
         frame: Frame,
     ) -> Result<(), TransportRefusal> {
         let state = self.state();
@@ -850,7 +851,7 @@ impl<Frame> AcpTransport<Frame> {
         if current.closing.is_some() {
             return Err(TransportRefusal::Closing);
         }
-        self.enqueue(route.run, frame)
+        self.enqueue_opening_claim(route.run, claim, frame)
     }
 
     pub(crate) fn reopen_lifecycle_route(
