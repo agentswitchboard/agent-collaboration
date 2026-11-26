@@ -220,6 +220,13 @@ impl<'fence> AdmittedSocketLane<'fence> {
         self.state.admitted()
     }
 
+    pub(super) fn is_registered(&self, attempt: &ConnectionAttempt) -> bool {
+        self.registered
+            .borrow()
+            .as_ref()
+            .is_some_and(|registered| &registered.admitted().connection == attempt)
+    }
+
     pub(super) fn publish_registered(&self, registered: RegisteredConnection) {
         self.registered.send_replace(Some(registered));
     }

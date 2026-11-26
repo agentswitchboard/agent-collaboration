@@ -419,6 +419,7 @@ impl OutboxDispatcher {
                         ));
                     }
                     UntouchedCommand::ConnectionUnavailable
+                    | UntouchedCommand::RunNotRegistered
                     | UntouchedCommand::WriterBusy
                     | UntouchedCommand::SendWindowElapsed => {}
                 }

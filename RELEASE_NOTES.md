@@ -1,5 +1,10 @@
 # Release Notes
 
+## 0.1.161
+
+- A Router sends only housekeeping on a connection to Central until Central acknowledges its run registration. Outgoing messages, receipts, status questions, and recovery probes are sent only after registration.
+- During registration, an immediate request returns "central unavailable" at once. The Router keeps messages Central sends meanwhile.
+
 ## 0.1.160
 
 - Two start-now-or-refuse prompts for one session can no longer both be admitted: the second is refused at once. Automatic sends, steers and queue requests are placed by the session's owner and are not refused this way.

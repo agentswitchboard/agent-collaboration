@@ -193,6 +193,8 @@ async fn run_custody(
     let mut intake_retry_at = None;
     let mut admission = lane.watch_admitted();
     let mut admission_open = true;
+    let mut registration = lane.watch_registered();
+    let mut registration_open = true;
     let mut orphan_reply: Option<OutstandingOrphan> = None;
     let mut orphan_scan_at = Some(clock.monotonic_now());
     let mut retry_orphans_at = None;
@@ -232,6 +234,14 @@ async fn run_custody(
                 deferred_orphans.clear();
                 retry_orphans_at = None;
                 orphan_scan_at = Some(clock.monotonic_now());
+            },
+            changed = registration.changed(), if registration_open => {
+                registration_open = changed.is_ok();
+                if registration.borrow().is_some() {
+                    deferred_orphans.clear();
+                    retry_orphans_at = None;
+                    orphan_scan_at = Some(clock.monotonic_now());
+                }
             },
             command = commands.recv() => {
                 let Some(command) = command else { break };
@@ -383,12 +393,13 @@ async fn run_custody(
             },
             () = sleep_until(clock.as_ref(), receipt_wake.as_ref().map(|(_, wake)| *wake)), if receipts.is_none() => {
                 let Some(((connection, mark), _)) = receipt_wake else { continue };
-                let send_before = admission.borrow().as_ref()
+                let send_before = registration.borrow().as_ref()
+                    .map(central_link_client::RegisteredConnection::admitted)
                     .filter(|admitted| admitted.connection == connection)
                     .map(|admitted| crate::flush_clock::send_fence_for_mark(admitted.clock_anchor, mark));
-                receipt_mark = Some((connection.clone(), mark));
                 let Some(send_before) = send_before else { continue };
-                match custody.prepare_receipt_turn().await {
+                receipt_mark = Some((connection.clone(), mark));
+                match custody.prepare_receipt_turn(&connection).await {
                     Ok(Some(frame)) => {
                         let command = frame.command(send_before);
                         let untouched = if command.connection != connection {

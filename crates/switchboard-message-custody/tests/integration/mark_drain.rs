@@ -389,7 +389,7 @@ pub(super) async fn check_rebased_admission(old_count: u16) {
     let mut backwards = new_admission(owner.machine_id.clone(), clock.source.clone());
     backwards.clock_anchor.central_time =
         Timestamp::from_timestamp_millis(MARK_MS - 140_000).unwrap();
-    lane.admitted.send_replace(Some(backwards));
+    lane.set_connected(Some(backwards));
     let gate = lane.hold_next_batch();
     let (calls, group, mut events) = start_worker(custody);
     clock

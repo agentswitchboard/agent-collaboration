@@ -1,8 +1,8 @@
 //! Custody's user of the admitted message lane. The driver owns the socket.
 
 use central_link_client::{
-    AdmittedConnection, CorrelatedReceiptResults, ImmediateRequestCommand, LinkLaneDisposition,
-    ReadyLinkLane, RequestStatusCommand,
+    AdmittedConnection, ConnectionAttempt, CorrelatedReceiptResults, ImmediateRequestCommand,
+    LinkLaneDisposition, ReadyLinkLane, RegisteredConnection, RequestStatusCommand,
 };
 use central_link_protocol::{FreshCorrelationId, RequestStatusQuery};
 use router_clock::{ClockInstant, RuntimeClock};
@@ -154,6 +154,10 @@ impl CustodyLink {
         admitted_for(self.lane.as_ref())
     }
 
+    fn registered_connection(&self) -> Option<RegisteredConnection> {
+        self.lane.watch_registered().borrow().clone()
+    }
+
     /// Submit through the frozen seam. Only a message or thread post enters the outbox.
     pub async fn submit(&mut self, caller: Caller, payload: SubmissionPayload) -> Submission {
         match self.prepare_submission(caller, payload).await {
@@ -175,14 +179,13 @@ impl CustodyLink {
             Ok(route) => route,
             Err(refusal) => return PreparedSubmission::Complete(Submission::Refused(refusal)),
         };
-        let admitted = self.admitted_connection();
         match route {
             SubmissionRoute::Outbox { request, payload } => {
-                self.queue_outbox_write(admitted, caller, request, payload)
+                self.queue_outbox_write(self.admitted_connection(), caller, request, payload)
                     .await
             }
             SubmissionRoute::Immediate(payload) => {
-                let Some(admitted) = admitted else {
+                let Some(registered) = self.registered_connection() else {
                     return PreparedSubmission::Complete(Submission::Refused(
                         SubmitRefusal::CentralUnavailable,
                     ));
@@ -198,7 +201,7 @@ impl CustodyLink {
                     }
                 };
                 PreparedSubmission::Immediate(ImmediateRequestCommand {
-                    connection: admitted.connection,
+                    connection: registered.admitted().connection.clone(),
                     send_before: self.clock.monotonic_now().after(IMMEDIATE_COMMAND_WINDOW),
                     request: Box::new(request),
                 })
@@ -243,14 +246,14 @@ impl CustodyLink {
                 return PreparedRequestStatus::Complete(CustodyRequestStatus::StatusUnavailable);
             }
         }
-        let Some(admitted) = self.admitted_connection() else {
+        let Some(registered) = self.registered_connection() else {
             return PreparedRequestStatus::Complete(CustodyRequestStatus::StatusUnavailable);
         };
         let correlation_id = FreshCorrelationId::mint_at(self.outbox_driver.work.local_now_ms())
             .wire_id()
             .clone();
         PreparedRequestStatus::Remote(RequestStatusCommand {
-            connection: admitted.connection,
+            connection: registered.admitted().connection.clone(),
             send_before: self.clock.monotonic_now().after(IMMEDIATE_COMMAND_WINDOW),
             correlation_id,
             caller,
@@ -453,16 +456,15 @@ impl CustodyLink {
 
     pub(crate) async fn prepare_receipt_turn(
         &mut self,
+        connection: &ConnectionAttempt,
     ) -> Result<Option<ReceiptFrame>, CustodyLinkError> {
-        let Some(admitted) = self.admitted_connection() else {
+        if !self
+            .registered_connection()
+            .is_some_and(|registered| &registered.admitted().connection == connection)
+        {
             return Ok(None);
-        };
-        Ok(self
-            .inbox
-            .lock()
-            .await
-            .prepare_receipts(&admitted.connection)
-            .await?)
+        }
+        Ok(self.inbox.lock().await.prepare_receipts(connection).await?)
     }
 
     pub(crate) async fn settle_receipt_turn(
@@ -507,7 +509,8 @@ impl CustodyLink {
         ClockInstant,
     )> {
         let now = self.clock.monotonic_now();
-        let admitted = self.admitted_connection()?;
+        let registered = self.registered_connection()?;
+        let admitted = registered.admitted();
         // A receipt may be retried on a replacement connection. Its minute
         // belongs to that connection's Welcome, independent of local retries.
         let previous = last_mark
@@ -518,7 +521,7 @@ impl CustodyLink {
             previous,
         );
         let wake = wake_for_mark(admitted.clock_anchor, mark, self.jitter.jitter_millis(mark));
-        Some(((admitted.connection, mark), wake))
+        Some(((admitted.connection.clone(), mark), wake))
     }
 
     pub(crate) async fn next_intake_retry(&mut self) -> Option<ClockInstant> {

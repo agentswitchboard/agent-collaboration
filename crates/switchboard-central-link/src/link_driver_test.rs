@@ -432,6 +432,8 @@ async fn first_byte_to_disposition_stays_within_the_exported_limit_during_a_bloc
         )
     ));
     control_write::complete_registration(&mut peer).await;
+    assert!(open.as_mut().now_or_never().is_none());
+    assert!(lane.watch_registered().borrow().is_some());
     transport.crossed.store(0, Ordering::Relaxed);
     transport.remaining.store(1, Ordering::Relaxed);
     let mut command = lane.request_status(RequestStatusCommand {

@@ -74,8 +74,7 @@ pub(super) async fn check_subsequent_claim_recovery(count: u16) {
     second_gate.crash_worker();
     assert_eq!(group.join().await, Err(CustodyRunFailure::WorkerPanicked));
     clock.advance(Duration::from_secs(3)).unwrap();
-    peer.admitted
-        .send_replace(Some(new_admission(owner.machine_id.clone(), clock.clone())));
+    peer.set_connected(Some(new_admission(owner.machine_id.clone(), clock.clone())));
     let observed_clock = WorkerClock::observing(clock.clone());
     let reopened = custody_with_store(
         &db,

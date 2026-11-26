@@ -56,7 +56,9 @@ impl MessageSystemReason {
             RegistrationFailure::TimedOut => Self::RegistrationTimedOut,
             RegistrationFailure::CentralEnrollmentEnded => Self::CentralReportedEnrollmentEnded,
             RegistrationFailure::NotWritten(cause) => match cause {
-                UntouchedCommand::ConnectionUnavailable => Self::RegistrationWriterUnavailable,
+                UntouchedCommand::ConnectionUnavailable | UntouchedCommand::RunNotRegistered => {
+                    Self::RegistrationWriterUnavailable
+                }
                 UntouchedCommand::WriterBusy => Self::RegistrationWriterBusy,
                 UntouchedCommand::SendWindowElapsed => Self::RegistrationSendWindowElapsed,
                 UntouchedCommand::FrameTooLarge => Self::RegistrationFrameTooLarge,

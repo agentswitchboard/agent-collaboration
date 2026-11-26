@@ -270,7 +270,7 @@ impl CustodyEventSink for StoppingNoticeSink {
 #[tokio::test]
 async fn a_crash_at_the_sender_notice_sink_replays_the_same_owed_notice() {
     let fixture = NoticeFixture::prepare().await;
-    fixture.lane.admitted.send_replace(None);
+    fixture.lane.set_connected(None);
     let mut inbox = fixture.reopen().await;
     inbox
         .record_delivery(
@@ -357,7 +357,7 @@ async fn startup_drains_an_acknowledged_sender_notice_and_reconciles_lost_commit
             .await
             .unwrap();
         drop(prior);
-        fixture.lane.admitted.send_replace(None);
+        fixture.lane.set_connected(None);
         if let Some(stage) = stage {
             fixture.faults.arm(FaultSite::RecordSenderNotice, stage);
         }

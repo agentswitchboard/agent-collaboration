@@ -295,7 +295,7 @@ async fn an_orphaned_claim_arms_the_flush_after_the_last_waiting_row_disappears(
 async fn an_offer_consumer_fault_is_visible_on_the_operator_path_only() {
     let (_root, mut custody, lane, _) = limits_fixture().await;
     let connection = lane.admitted.borrow().as_ref().unwrap().connection.clone();
-    lane.admitted.send_replace(None);
+    lane.set_connected(None);
     lane.push_event(LinkLaneEvent::ConnectionFaulted {
         connection: connection.clone(),
         cause: LinkLocalFault::DeliveryConsumerStalled,

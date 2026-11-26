@@ -10,6 +10,64 @@ use super::{
 };
 
 #[tokio::test]
+async fn a_welcome_that_never_registers_still_anchors_offline_receipts() {
+    let mut campaign = WorkerFaultCampaign::start().await;
+    let session = super::inbox_custody::recipient_session();
+    let mut replacement = new_admission(session.machine_id, campaign.clock.clone());
+    replacement.clock_anchor.central_time =
+        Timestamp::from_timestamp_millis(MARK_MS - 145_000).unwrap();
+    let before_welcome = campaign.worker.clock.checkpoint();
+    campaign.peer.set_admitted(Some(replacement));
+    campaign.worker.wait_after(before_welcome).await;
+    let before_withdrawal = campaign.worker.clock.checkpoint();
+    campaign.peer.set_connected(None);
+    campaign.worker.wait_after(before_withdrawal).await;
+
+    let write = campaign.submit(None).await;
+    assert!(campaign.pending().await.iter().any(|stored| {
+        stored.request_id == write.request && stored.flush_at_ms == MARK_MS - 120_000
+    }));
+    campaign.stop().await;
+}
+
+#[tokio::test]
+async fn waiting_writes_are_not_claimed_until_the_connection_registers() {
+    for (hold, send_at) in [(20, 20), (24, 80)] {
+        let mut campaign = WorkerFaultCampaign::start().await;
+        let admission = campaign.peer.admitted.borrow().clone().unwrap();
+        campaign.peer.set_admitted(Some(admission));
+        let write = campaign.submit(None).await;
+
+        let held = campaign
+            .worker
+            .advance(Duration::from_secs(hold))
+            .await
+            .unwrap();
+        assert!(held.answered.is_empty() && held.issues.is_empty() && held.ended.is_empty());
+        assert_eq!(
+            campaign.faults.claim_calls(),
+            0,
+            "due work must stay unclaimed"
+        );
+        assert!(campaign.peer.batch_commands().is_empty());
+
+        campaign.peer.register_admitted();
+        let report = campaign
+            .worker
+            .advance(Duration::from_secs(send_at - hold))
+            .await
+            .unwrap();
+        assert!(matches!(report.answered.as_slice(), [answer] if answer.request == write.request));
+        assert_eq!(campaign.peer.batch_commands().len(), 1);
+        assert_eq!(
+            campaign.peer.command_instants(),
+            [ClockInstant::ZERO.after(Duration::from_secs(send_at))]
+        );
+        campaign.stop().await;
+    }
+}
+
+#[tokio::test]
 async fn worker_readmission_after_a_missed_mark_arms_the_next_window_without_spinning() {
     let mut campaign = WorkerFaultCampaign::start().await;
     campaign.disconnect();
@@ -22,8 +80,7 @@ async fn worker_readmission_after_a_missed_mark_arms_the_next_window_without_spi
     clock.advance(Duration::from_secs(30)).unwrap();
     let waiting_since = clock.wait_checkpoint();
     let before_admission = campaign.worker.clock.checkpoint();
-    peer.admitted
-        .send_replace(Some(new_admission(owner.machine_id.clone(), clock.clone())));
+    peer.set_connected(Some(new_admission(owner.machine_id.clone(), clock.clone())));
     let next = ClockInstant::ZERO.after(Duration::from_secs(80));
     campaign.worker.wait_for_timer(before_admission, next).await;
     let disconnected_gap = clock.monotonic_now();
@@ -83,7 +140,7 @@ async fn a_backwards_welcome_rebases_waiting_receipts_but_preserves_used_windows
     backwards.clock_anchor.central_time =
         Timestamp::from_timestamp_millis(MARK_MS - 1_190_000).unwrap();
     let before_rebase = campaign.worker.clock.checkpoint();
-    campaign.peer.admitted.send_replace(Some(backwards));
+    campaign.peer.set_connected(Some(backwards));
     let available = ClockInstant::ZERO.after(Duration::from_secs(75));
     campaign
         .worker
@@ -115,7 +172,7 @@ async fn a_backwards_welcome_rebases_waiting_receipts_but_preserves_used_windows
     let mut returned = new_admission(owner.machine_id.clone(), campaign.clock.clone());
     returned.clock_anchor.central_time = Timestamp::from_timestamp_millis(MARK_MS).unwrap();
     let before_return = campaign.worker.clock.checkpoint();
-    campaign.peer.admitted.send_replace(Some(returned));
+    campaign.peer.set_connected(Some(returned));
     campaign
         .worker
         .wait_for_timer(
