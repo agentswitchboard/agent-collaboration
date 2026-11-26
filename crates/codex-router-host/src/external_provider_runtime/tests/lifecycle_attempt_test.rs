@@ -10,7 +10,7 @@ use provider_session_machines::{
         CreatedSettingsFailure, CreatedSetupFact, EventPort, EventSendFuture, HarnessOwnerEvents,
         HarnessProvider, HarnessSessionId, Held, LifecycleMove, OpenAttempt, OpenRequest,
         OpenSetup, OpeningFact, ReplayCompleteness, RequestedProviderSettings, ReservedReply,
-        RestoredOpening, SessionLifecycleFact, SessionLifecyclePort,
+        RestoreLoadReadback, RestoredOpening, SessionLifecycleFact, SessionLifecyclePort,
     },
     session_lifecycle_machine::{LoadAttempt, RestoreVia},
     session_owner::{ConnectionEpoch, OwnerAddress, OwnerIncarnation, RunAttempt},
@@ -149,7 +149,7 @@ async fn acp_replay_completeness_reaches_the_owner_without_changing_visible_hist
             generation: SessionGeneration::from_number(1),
             attempt: LoadAttempt(Uuid::now_v7()),
         };
-        let direct = load_fixture_binding(
+        let (_, direct) = load_fixture_binding(
             &fixture,
             &mut binding,
             owner,
@@ -275,13 +275,122 @@ fn bind_fixture(
     (owner, provider.bind(owner, Arc::new(AcceptEvents)))
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn acp_unsupported_restore_setter_refuses_before_reserving_a_full_completion_carrier() {
+    use acp_client_runtime::session_owner_task::{OwnerTaskError, SessionOwnerTask};
+    use provider_session_machines::{
+        ProviderSettingKind,
+        harness_lifecycle::{
+            LifecycleRefusal, RestoreSettingRefusal, SettingAttempt,
+            owner_event_for_restore_setting,
+        },
+        session_owner::{OwnerSetting, ReplyAdmission, WriterState},
+        session_setting_machine::{SettingApplication, SettingValueId},
+    };
+    use std::cell::Cell;
+
+    let fixture = hub_runtime_with(&["fast-on-only"]).await;
+    let tasks = TaskTracker::new();
+    let (owner, mut binding) = bind_fixture(&fixture.runtime, &tasks);
+    let run = RunAttempt {
+        generation: SessionGeneration::from_number(1),
+        attempt: LoadAttempt(Uuid::now_v7()),
+    };
+    let (readback, _) =
+        load_fixture_binding(&fixture, &mut binding, owner, run, CancellationToken::new()).await;
+    let unavailable_off = readback
+        .fast_on
+        .expect("the real ACP catalogue reads fast on");
+    let slots = NonZeroUsize::new(4).expect("completion slots");
+    let (_task, handle) = SessionOwnerTask::new(
+        owner,
+        fixture.runtime.client.runtime_clock(),
+        NonZeroUsize::MIN,
+        slots,
+    );
+    let completions = handle.completion_port();
+    let held: Vec<_> = (0..slots.get())
+        .map(|_| {
+            completions
+                .reserve(owner)
+                .expect("reserve each real owner slot")
+        })
+        .collect();
+    assert!(matches!(
+        completions.reserve(owner),
+        Err(OwnerTaskError::CompletionCapacity)
+    ));
+    let reserve_calls = Cell::new(0);
+    let mut reserve = || {
+        reserve_calls.set(reserve_calls.get() + 1);
+        match completions.reserve(owner) {
+            Ok(reply) => ReplyAdmission::Reserved(reply.map(owner_event_for_restore_setting)),
+            Err(OwnerTaskError::CompletionCapacity) => ReplyAdmission::Refused(WriterState::Full),
+            Err(OwnerTaskError::ExecutorStopped) => ReplyAdmission::Refused(WriterState::Stopped),
+        }
+    };
+    let setting = |kind, attempt, value: &str| SettingAttempt {
+        restore: run,
+        setting: OwnerSetting {
+            change: RunAttempt {
+                generation: run.generation,
+                attempt,
+            },
+            kind,
+        },
+        value: SettingValueId(value.to_owned()),
+        catalogue: readback.catalogue.clone(),
+    };
+
+    assert_eq!(
+        binding.put_setting_back(
+            setting(ProviderSettingKind::Fast, unavailable_off, "off"),
+            &mut reserve
+        ),
+        Err(RestoreSettingRefusal::Harness(
+            LifecycleRefusal::SettingValueNotOffered
+        )),
+        "a locally unsupported setter is refused while every completion slot is held",
+    );
+    assert_eq!(
+        reserve_calls.get(),
+        0,
+        "the invalid setter must not request a completion slot"
+    );
+    assert_eq!(
+        binding.put_setting_back(
+            setting(
+                ProviderSettingKind::Mode,
+                SettingApplication(Uuid::now_v7()),
+                "agent"
+            ),
+            &mut reserve
+        ),
+        Err(RestoreSettingRefusal::ReplyReservation(WriterState::Full)),
+        "a writable local setting reaches the full reply reservation",
+    );
+    assert_eq!(reserve_calls.get(), 1);
+    assert_eq!(
+        recorded_requests(&fixture.receipt, "session/set_config_option"),
+        0
+    );
+    assert_eq!(recorded_requests(&fixture.receipt, "session/set_mode"), 0);
+
+    drop(held);
+    binding.retire(run.generation);
+    drop(binding);
+    fixture.runtime.shutdown().await;
+    tasks.close();
+    tasks.wait().await;
+}
+
 async fn load_fixture_binding(
     fixture: &HubRuntime,
     binding: &mut SessionHarnessBinding,
     owner: OwnerAddress,
     run: RunAttempt<LoadAttempt>,
     stop: CancellationToken,
-) -> ReplayCompleteness {
+) -> (RestoreLoadReadback, ReplayCompleteness) {
     let (reply, answer) = oneshot::channel();
     binding
         .open(
@@ -304,13 +413,15 @@ async fn load_fixture_binding(
         .expect("real ACP load offered");
     let OpeningFact::Restored {
         run: exact,
-        opening: RestoredOpening::Loaded { replay, .. },
+        opening: RestoredOpening::Loaded {
+            readback, replay, ..
+        },
     } = answer.await.expect("real ACP opening answer")
     else {
         panic!("ACP did not report a load opening");
     };
     assert_eq!(exact, run);
-    replay
+    (readback, replay)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -345,7 +456,9 @@ async fn acp_activation_preserves_the_exact_held_and_active_attempts() {
     );
     for run in [first, second] {
         assert_eq!(
-            load_fixture_binding(&fixture, &mut binding, owner, run, stop.clone()).await,
+            load_fixture_binding(&fixture, &mut binding, owner, run, stop.clone())
+                .await
+                .1,
             ReplayCompleteness::Complete
         );
         let wrong = RunAttempt {

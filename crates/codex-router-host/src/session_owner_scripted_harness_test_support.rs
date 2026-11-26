@@ -673,7 +673,7 @@ fn setup_report() -> SetupReport<CapabilityReport, SessionSettings> {
     }
 }
 
-fn item_event(text: &str) -> SessionEvent {
+pub(super) fn item_event(text: &str) -> SessionEvent {
     SessionEvent::ItemStarted {
         item: SessionItem {
             item_id: Uuid::now_v7().to_string(),

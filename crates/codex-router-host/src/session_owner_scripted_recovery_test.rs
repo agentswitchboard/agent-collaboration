@@ -24,6 +24,8 @@ use tokio::sync::{mpsc, oneshot};
 
 #[path = "session_owner_scripted_activation_test.rs"]
 mod activation;
+#[path = "session_owner_scripted_callback_test.rs"]
+mod callback;
 #[path = "session_owner_scripted_competing_loss_test.rs"]
 mod loss;
 #[path = "session_owner_scripted_replay_test.rs"]

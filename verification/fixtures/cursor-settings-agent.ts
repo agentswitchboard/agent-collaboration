@@ -159,6 +159,9 @@ async function serveSharedSettings(peer: {
 //     <receipt>.release-load exists; other requests are answered meanwhile.
 //   saved-history: replay one user update and one agent update on session/load.
 //   malformed-saved-update and opaque-saved-update: insert one such update between them.
+//   reader-projection-error: after the first load, wait for .release-reader-error
+//     and send one live update that exceeds the projection limit.
+//   fast-on-only: the fast catalogue reads on and advertises no off value.
 const reactiveBehaviourNames = [
   "boolean-fast",
   "on-off-fast",
@@ -182,6 +185,8 @@ const reactiveBehaviourNames = [
   "saved-history",
   "malformed-saved-update",
   "opaque-saved-update",
+  "reader-projection-error",
+  "fast-on-only",
 ] as const;
 type ReactiveBehaviour = (typeof reactiveBehaviourNames)[number];
 
@@ -219,7 +224,8 @@ function reactiveOptions(
     (behaviours.has("fast-not-offered-on-fixture-b") && session.model === "fixture-b")
   )
     return result;
-  if (behaviours.has("boolean-fast"))
+  if (behaviours.has("fast-on-only")) result.push(option("fast", "model_config", ["on"], "on"));
+  else if (behaviours.has("boolean-fast"))
     result.push({
       id: "fast",
       name: "fast",
@@ -436,6 +442,7 @@ function answerReactiveLoad(
 ): void {
   // A restarted agent loads a stored session at its defaults.
   const sessionId = String(requestParameters(request).sessionId);
+  const firstLoad = !sessions.has(sessionId);
   const session = sessions.get(sessionId) ?? {
     mode: "agent",
     model: "fixture-a",
@@ -462,9 +469,28 @@ function answerReactiveLoad(
       sendUpdate("agent_message_chunk", "second saved update");
     }
     peer.reply(request, { configOptions: reactiveOptions(session, peer.behaviours, true) });
+    if (firstLoad && peer.behaviours.has("reader-projection-error"))
+      reportReaderProjectionError(peer, sessionId);
   };
   if (peer.behaviours.has("hold-load")) void fileAppears(`${peer.releasePath}-load`).then(answer);
   else answer();
+}
+
+function reportReaderProjectionError(peer: ReactivePeer, sessionId: string): void {
+  void fileAppears(`${peer.releasePath}-reader-error`).then((): void => {
+    // This exceeds the item projection limit while fitting in one ACP frame.
+    peer.send({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId,
+        update: {
+          sessionUpdate: "fixture_reader_projection_error",
+          content: { type: "text", text: "x".repeat(1024 * 1024 + 1) },
+        },
+      },
+    });
+  });
 }
 
 async function serveReactiveSettings(peer: ReactivePeer): Promise<void> {

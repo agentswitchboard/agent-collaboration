@@ -399,3 +399,5 @@ async fn a_restore_completing_after_a_native_close_registers_nothing() {
 
 #[path = "lifecycle_attempt_test.rs"]
 mod lifecycle_attempts;
+#[path = "lifecycle_ending_test.rs"]
+mod lifecycle_endings;
