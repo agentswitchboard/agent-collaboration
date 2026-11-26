@@ -241,8 +241,11 @@ impl<'fence> AdmittedSocketLane<'fence> {
     ) {
         self.registration_correlation = Some(correlation.clone());
         let connection = registered.admitted().connection.clone();
-        self.calls.registered(connection, || {
-            self.registered.send_replace(Some(registered));
+        // A reader of this watch may submit work while it holds its read guard.
+        // Take the watch lock first, then linearize the call gate under its queue lock.
+        self.registered.send_modify(|current| {
+            self.calls.registered(connection);
+            *current = Some(registered);
         });
     }
 
@@ -411,9 +414,9 @@ impl Drop for AdmittedSocketLane<'_> {
             if self.write_fence.crossed() {
                 self.start_write();
             }
-            self.calls.retire(&connection, self.call_ending, || {
-                self.registered
-                    .send_if_modified(|current| current.take().is_some());
+            self.registered.send_if_modified(|current| {
+                self.calls.retire(&connection, self.call_ending);
+                current.take().is_some()
             });
             self.admitted.send_replace(None);
             self.apply(LaneInput::Close {

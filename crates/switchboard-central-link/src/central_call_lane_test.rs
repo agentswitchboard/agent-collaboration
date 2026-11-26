@@ -40,16 +40,16 @@ async fn old_reader_cannot_refuse_the_same_correlation_on_a_new_connection() {
         receipt
     };
     let old = attempt();
-    calls.registered(old.clone(), || {});
+    calls.registered(old.clone());
     let fence = WireWriteFence::new(clock.clone());
     let old_receipt = offer();
     let correlation = old_receipt.key.correlation.clone();
     calls.begin_write(&old, now, &fence).unwrap().flushed();
-    calls.retire(&old, CallEnding::CarrierClosed(None), || {});
+    calls.retire(&old, CallEnding::CarrierClosed(None));
 
     let replacement = attempt();
     assert_ne!(old, replacement);
-    calls.registered(replacement.clone(), || {});
+    calls.registered(replacement.clone());
     let mut replacement_receipt = offer();
     calls.0.lock().entries.front_mut().unwrap().key.correlation = correlation.clone();
     replacement_receipt.key.correlation = correlation.clone();

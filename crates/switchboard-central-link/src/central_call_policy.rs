@@ -107,6 +107,7 @@ impl RefusalTag for CallPhaseRefusal {
     }
 }
 
+/// The receive path filters replies that do not fit before offering an event here.
 pub struct CallPolicy;
 
 impl StateMachine for CallPolicy {

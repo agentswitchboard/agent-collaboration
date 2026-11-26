@@ -656,8 +656,10 @@ where
                 .chain(self.registration.next_deadline())
                 .chain(delivery_stall_at)
                 .min();
-            let calls = (acquiring.is_none() && admitted_lane.is_registered(attempt))
-                .then_some((&admitted_lane.calls, attempt));
+            let calls = (acquiring.is_none()
+                && admitted_lane.is_registered(attempt)
+                && self.work_write_can_start(self.clock.monotonic_now()))
+            .then_some((&admitted_lane.calls, attempt));
             let input = control
                 .during(async {
                     tokio::select! {

@@ -24,6 +24,13 @@ where
     MakeConnector: Fn() -> Connector + Sync,
     Connector: LinkConnector,
 {
+    pub(super) fn work_write_can_start(&self, now: ClockInstant) -> bool {
+        // A staged frame cannot yield the carrier at renewal without discarding it.
+        self.state
+            .next_deadline()
+            .is_some_and(|next| link_frame_write_deadline(now) < next)
+    }
+
     pub(super) async fn write_work_call(
         &mut self,
         socket: &mut (impl Sink<Message, Error = WebSocketError> + Unpin),
@@ -39,7 +46,7 @@ where
             return Ok(false);
         };
         let renewal_fence = self.state.next_deadline().unwrap_or(authority_until);
-        if now >= renewal_fence {
+        if !self.work_write_can_start(now) {
             return Ok(true);
         }
         let Some(mut call) = lane.calls.begin_write(attempt, now, writes) else {

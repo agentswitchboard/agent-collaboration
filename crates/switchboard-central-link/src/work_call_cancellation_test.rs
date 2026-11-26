@@ -14,13 +14,17 @@ use crate::{
     central_call_lane::{
         AcceptedCentralCall, CallEnding, CallNotReached, CallSettlement, CentralCallSubmission,
     },
+    lease_source::{ApprovalServiceTarget, LeaseFailure, LeaseFuture, LeaseSource, LinkLease},
+    link_driver::DriverSettings,
     link_lane::LinkLaneHandle,
+    link_policy::{LeaseVersion, LeaseWindow},
 };
 
+use super::super::control_write::fresh_driver_with_lease;
 use super::{
     Arc, BufferedFixture, Control, DataFrame, Duration, GatedSocket, HeartbeatFixture, LinkFrame,
     Ordering, ReadyLinkLane, Role, SinkGate, SocketAttemptTiming, WebSocketStream,
-    WriteBatchCommand, WriteCheckpoint, batch, elapsed_tick, expect_advertisement, fresh_driver,
+    WriteBatchCommand, WriteCheckpoint, batch, elapsed_tick, expect_advertisement,
     link_lane_channel, mpsc, oneshot, poll_driver, read_frame, send_welcome, start_attempt,
     test_settings, watch,
 };
@@ -33,21 +37,31 @@ use std::{
 use tokio_tungstenite::tungstenite::{Message, protocol::CloseFrame};
 use workspace_model::central_mail::{CentralMailAnswer, CentralMailResult, NoticeCadence};
 
+#[path = "work_call_review_test.rs"]
+mod review;
+
 struct WorkSocket {
     clock: Arc<ManualClock>,
     lane: LinkLaneHandle,
     peer: WebSocketStream<DuplexStream>,
     write_budget: Arc<AtomicUsize>,
     crossed: Arc<AtomicUsize>,
+    write_polls: Arc<AtomicUsize>,
     transport_failed: Arc<AtomicBool>,
     gate: Arc<SinkGate>,
     turns: mpsc::UnboundedSender<oneshot::Sender<bool>>,
     shutdown: watch::Sender<bool>,
+    settings: watch::Sender<DriverSettings<u8>>,
+    renewed_from: mpsc::UnboundedReceiver<LeaseVersion>,
     task: JoinHandle<()>,
 }
 
 impl WorkSocket {
     async fn registered() -> Self {
+        Self::registered_with_lease_lifetime(200).await
+    }
+
+    async fn registered_with_lease_lifetime(lifetime_seconds: u64) -> Self {
         let BufferedFixture {
             clock,
             boundary,
@@ -55,6 +69,7 @@ impl WorkSocket {
             peer,
             remaining,
             crossed,
+            write_polls,
             fail,
             ..
         } = BufferedFixture::new(1024).await;
@@ -63,13 +78,15 @@ impl WorkSocket {
             ..HeartbeatFixture::new()
         };
         let mut peer = WebSocketStream::from_raw_socket(peer, Role::Server, None).await;
-        send_welcome(&mut peer, &fixture, 200).await;
+        send_welcome(&mut peer, &fixture, lifetime_seconds).await;
 
         let (lane, mut owner) = link_lane_channel();
         let calls = lane.central_calls();
         calls.attach_clock(clock.clone());
         let (turns, mut driver_turns) = mpsc::unbounded_channel::<oneshot::Sender<bool>>();
         let (shutdown, mut stopping) = watch::channel(false);
+        let (settings, mut updates) = watch::channel(test_settings());
+        let (renewals, renewed_from) = mpsc::unbounded_channel();
         let gate = Arc::new(SinkGate::default());
         let transport_gate = gate.clone();
         let task = tokio::spawn(async move {
@@ -77,11 +94,11 @@ impl WorkSocket {
                 socket,
                 gate: transport_gate,
             };
-            let mut driver = fresh_driver(&fixture, 1);
+            let renewal_source = WorkRenewalSource(renewals);
+            let mut driver = fresh_driver_with_lease(&fixture, 1, &renewal_source);
             let attempt = start_attempt(&mut driver, 1);
-            let (_setting_updates, mut settings) = watch::channel(test_settings());
             let mut control = Control {
-                settings: &mut settings,
+                settings: &mut updates,
                 shutdown: &mut stopping,
                 observed: test_settings(),
             };
@@ -111,10 +128,13 @@ impl WorkSocket {
             peer,
             write_budget: remaining,
             crossed,
+            write_polls,
             transport_failed: fail,
             gate,
             turns,
             shutdown,
+            settings,
+            renewed_from,
             task,
         }
     }
@@ -125,10 +145,51 @@ impl WorkSocket {
     }
 }
 
+struct WorkRenewalSource(mpsc::UnboundedSender<LeaseVersion>);
+
+impl LeaseSource<u8> for WorkRenewalSource {
+    fn registration_target(&self, _binding: &u8) -> Result<ApprovalServiceTarget, LeaseFailure> {
+        Ok(ApprovalServiceTarget {
+            organization_id: "019f0000-0000-7000-8000-000000000001"
+                .to_owned()
+                .try_into()
+                .map_err(|_| LeaseFailure::Fault)?,
+        })
+    }
+
+    fn acquire<'source>(
+        &'source self,
+        binding: &'source u8,
+        newer_than: Option<LeaseVersion>,
+    ) -> LeaseFuture<'source, u8> {
+        Box::pin(async move {
+            let prior = newer_than.unwrap();
+            self.0.send(prior).unwrap();
+            Ok(LinkLease {
+                window: LeaseWindow {
+                    binding: *binding,
+                    version: LeaseVersion(2),
+                    usable_until: elapsed_tick(600),
+                },
+                token: "renewed.synthetic.credential"
+                    .to_owned()
+                    .try_into()
+                    .unwrap(),
+            })
+        })
+    }
+
+    fn end(&self, _binding: &u8, _cause: central_link_client::EnrollmentEnd) {}
+}
+
 fn end_call() -> MacWorkCall {
+    end_call_for_session("019f0000-0000-7000-8000-000000000002")
+}
+
+fn end_call_for_session(session_id: &str) -> MacWorkCall {
     EndFleetSessionRpc::work_request(
         serde_json::from_value(json!("019f0000-0000-7000-8000-000000000001")).unwrap(),
-        serde_json::from_value(json!({"target":{"kind":"centralId","sessionId":"019f0000-0000-7000-8000-000000000002"},"cause":{"kind":"givenUp"}})).unwrap(),
+        serde_json::from_value(json!({"target":{"kind":"centralId","sessionId":session_id},"cause":{"kind":"givenUp"}})).unwrap(),
     )
 }
 
@@ -147,6 +208,7 @@ enum EndInFlight {
     Shutdown,
     DropDriver,
     TransportFailure,
+    SettingsChanged,
 }
 
 #[tokio::test]
@@ -163,13 +225,15 @@ async fn work_cancellation_preserves_the_first_byte_observation() {
             EndInFlight::Shutdown,
             EndInFlight::DropDriver,
             EndInFlight::TransportFailure,
+            EndInFlight::SettingsChanged,
         ] {
-            if matches!(end, EndInFlight::TransportFailure)
-                && !matches!(
-                    phase,
-                    WriteCheckpoint::FirstByte | WriteCheckpoint::PartialFrame
-                )
-            {
+            if matches!(
+                end,
+                EndInFlight::TransportFailure | EndInFlight::SettingsChanged
+            ) && !matches!(
+                phase,
+                WriteCheckpoint::FirstByte | WriteCheckpoint::PartialFrame
+            ) {
                 continue;
             }
             let mut fixture = WorkSocket::registered().await;
@@ -184,6 +248,7 @@ async fn work_cancellation_preserves_the_first_byte_observation() {
             if phase == WriteCheckpoint::Readiness {
                 fixture.gate.hold.set(phase).unwrap();
             }
+            let polls_before_work = fixture.write_polls.load(Ordering::Relaxed);
             let receipt = submit(&fixture.lane, elapsed_tick(2));
             if phase != WriteCheckpoint::Queued {
                 assert!(poll_driver(&fixture.turns).await);
@@ -198,6 +263,16 @@ async fn work_cancellation_preserves_the_first_byte_observation() {
                 fixture.crossed.load(Ordering::Relaxed) > 0,
                 phase.has_started()
             );
+            if matches!(
+                phase,
+                WriteCheckpoint::FirstByte | WriteCheckpoint::PartialFrame
+            ) {
+                assert!(fixture.write_polls.load(Ordering::Relaxed) > polls_before_work);
+                assert_eq!(
+                    fixture.crossed.load(Ordering::Relaxed),
+                    usize::from(phase == WriteCheckpoint::PartialFrame)
+                );
+            }
             let cause = match end {
                 EndInFlight::Deadline => {
                     fixture.clock.advance(Duration::from_secs(2)).unwrap();
@@ -218,6 +293,13 @@ async fn work_cancellation_preserves_the_first_byte_observation() {
                     fixture.transport_failed.store(true, Ordering::Relaxed);
                     assert!(!poll_driver(&fixture.turns).await);
                     CallEnding::TransportLost
+                }
+                EndInFlight::SettingsChanged => {
+                    fixture
+                        .settings
+                        .send_modify(|settings| settings.binding = Some(2));
+                    assert!(!poll_driver(&fixture.turns).await);
+                    CallEnding::SettingsChanged
                 }
             };
             let outcome = receipt.resolve().now_or_never().unwrap();

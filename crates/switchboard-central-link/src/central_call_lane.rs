@@ -236,18 +236,13 @@ impl CentralCallHandle {
         self.0.lock().apply_gate(CallGateEvent::EndEnrollment);
     }
 
-    pub(super) fn registered(&self, connection: ConnectionAttempt, announce: impl FnOnce()) {
-        let mut calls = self.0.lock();
-        calls.apply_gate(CallGateEvent::Registered(connection));
-        announce();
+    pub(super) fn registered(&self, connection: ConnectionAttempt) {
+        self.0
+            .lock()
+            .apply_gate(CallGateEvent::Registered(connection));
     }
 
-    pub(super) fn retire(
-        &self,
-        connection: &ConnectionAttempt,
-        cause: CallEnding,
-        withdraw: impl FnOnce(),
-    ) {
+    pub(super) fn retire(&self, connection: &ConnectionAttempt, cause: CallEnding) {
         let mut calls = self.0.lock();
         if matches!(&calls.gate, CallGate::Open(current) if current == connection) {
             let event = if matches!(cause, CallEnding::EnrollmentEnded(_)) {
@@ -257,7 +252,6 @@ impl CentralCallHandle {
             };
             calls.apply_gate(event);
         }
-        withdraw();
         calls.end_attempt(connection, cause);
         self.0.deadlines_changed.notify_one();
     }
