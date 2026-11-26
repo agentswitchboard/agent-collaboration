@@ -242,10 +242,18 @@ impl<Port: AcpRequestPayloads> OwnerHarnessBinding<SessionHarnessPayloads<Port::
     }
 
     fn retire(&self, generation: SessionGeneration) {
+        if let Ok(session) = self.work.session() {
+            self.approvals
+                .retire_run(session, transport_run(self.openings.owner(), generation));
+        }
         self.openings.retire(generation);
     }
 
     fn set_scope(&self, change: TurnMembership) {
+        if let Ok(session) = self.work.session() {
+            self.approvals
+                .apply_membership(session, self.openings.owner().incarnation, change);
+        }
         self.work
             .wire
             .apply_membership(self.openings.owner().incarnation, change);

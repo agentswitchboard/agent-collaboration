@@ -721,6 +721,8 @@ impl<P: AcpRequestPayloads> SessionOwnerPorts for FixturePorts<P> {
                 Ok(Some(OwnerEvent::Dispatch(self.revoke_work(authorization))))
             }
             OwnerEffect::CallbackMembership(change) => {
+                self.approvals
+                    .apply_membership(&self.id, address.incarnation, change);
                 self.wire.apply_membership(address.incarnation, change);
                 if let TurnMembership::End { turn, .. }
                 | TurnMembership::RemoveOnRevoke { turn, .. } = change

@@ -64,6 +64,9 @@ pub enum RequestDecisionRefusal {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RefusedRequestMove {
     ReturnRefusal,
+    /// Preserve the standing answer. The harness must not replace, record, or
+    /// decide it again. Its protocol determines whether the incoming frame
+    /// still needs a refusal response of its own.
     KeepExistingAnswer,
 }
 
@@ -92,6 +95,9 @@ impl RequestDecisionRefusal {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StopRequestsCause {
     TurnCancelled,
+    TurnEnded,
+    GenerationRetired,
+    ConnectionLost,
 }
 
 /// The controller selects these canonical payloads for every harness.

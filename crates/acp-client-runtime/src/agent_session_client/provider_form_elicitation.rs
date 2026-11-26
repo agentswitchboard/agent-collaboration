@@ -1,9 +1,6 @@
 //! ACP form elicitation through the canonical Session Question port.
 
-use std::{
-    collections::{HashMap, HashSet},
-    sync::{Arc, Mutex},
-};
+use std::{collections::HashSet, sync::Arc};
 
 use agent_client_protocol::schema::v1::{
     CreateElicitationRequest, ElicitationMode, ElicitationPropertySchema, ElicitationScope,
@@ -15,23 +12,22 @@ use session_event_model::{
     ChoiceOption, QuestionAnswerValue, QuestionField, QuestionFields, QuestionRequest,
     QuestionResponse,
 };
-use tokio_util::sync::CancellationToken;
 
-use super::ActiveApprovalContext;
+use super::OwnerApprovalBindings;
 use crate::{AcpRequestPayloads, AcpRequestPolicy};
 
 pub(super) struct ProviderFormElicitationHandler<P: AcpRequestPayloads> {
-    approval_contexts: Arc<Mutex<HashMap<String, ActiveApprovalContext<P>>>>,
+    approval_bindings: OwnerApprovalBindings<P>,
     request_policy: Arc<AcpRequestPolicy<P>>,
 }
 
 impl<P: AcpRequestPayloads> ProviderFormElicitationHandler<P> {
     pub(super) fn new(
-        approval_contexts: Arc<Mutex<HashMap<String, ActiveApprovalContext<P>>>>,
+        approval_bindings: OwnerApprovalBindings<P>,
         request_policy: Arc<AcpRequestPolicy<P>>,
     ) -> Self {
         Self {
-            approval_contexts,
+            approval_bindings,
             request_policy,
         }
     }
@@ -265,7 +261,8 @@ impl<P: AcpRequestPayloads> HandleDispatchFrom<Agent> for ProviderFormElicitatio
         };
         let session_id = scope.session_id.0.to_string();
         let context = self
-            .approval_contexts
+            .approval_bindings
+            .active
             .lock()
             .ok()
             .and_then(|contexts| contexts.get(&session_id).cloned());
@@ -274,48 +271,60 @@ impl<P: AcpRequestPayloads> HandleDispatchFrom<Agent> for ProviderFormElicitatio
             responder.respond(json!({"action":"cancel"}))?;
             return Ok(Handled::Yes);
         };
+        let Some(response_guard) = context.track_response(
+            "elicitation/create",
+            responder.id(),
+            responder.cancellation(),
+        ) else {
+            responder.respond(json!({"action":"cancel"}))?;
+            return Ok(Handled::Yes);
+        };
         let port = Arc::clone(&self.request_policy);
-        if let Some(refusal) = port.managed_refusal() {
-            let response_guard = context
-                .responses
-                .track("elicitation/create", responder.id());
-            connection.spawn(async move {
-                let queued = responder.respond(refusal.acp_form());
-                drop(response_guard);
-                context.cancel_after_refusal(port, refusal).await;
-                queued
-            })?;
+        let request_cancellation = responder.cancellation();
+        if let Some(refusal) = context.managed_refusal(port.as_ref()) {
+            self.approval_bindings
+                .spawn_callback(&connection, async move {
+                    let declined = json!({"action":"cancel"});
+                    let response = refusal.acp_form();
+                    let (open, queued) = response_guard.commit(|open| {
+                        (
+                            open,
+                            responder.respond(if open { response } else { declined }),
+                        )
+                    });
+                    drop(response_guard);
+                    if open && queued.is_ok() && !request_cancellation.is_cancelled() {
+                        context.cancel_after_refusal(port, refusal).await;
+                    }
+                    queued
+                })?;
             return Ok(Handled::Yes);
         }
         let canonical = match Self::question_from_form(&session_id, responder.id(), request) {
             Ok(question) => question,
             Err(error) => {
-                responder.respond_with_error(error)?;
+                let declined = json!({"action":"cancel"});
+                response_guard.commit(|open| {
+                    if open {
+                        responder.respond_with_error(error)
+                    } else {
+                        responder.respond(declined)
+                    }
+                })?;
                 return Ok(Handled::Yes);
             }
         };
         let fields = canonical.fields.clone();
-        let request_cancellation = responder.cancellation();
-        let response_guard = context
-            .responses
-            .track("elicitation/create", responder.id());
-        connection.spawn(async move {
-            let agent_cancellation = CancellationToken::new();
-            let answer =
-                context.decide_question(port.as_ref(), canonical, agent_cancellation.clone());
-            tokio::pin!(answer);
-            let response = tokio::select! {
-                biased;
-                () = request_cancellation.cancelled() => {
-                    agent_cancellation.cancel();
-                    answer.await
-                }
-                response = &mut answer => response,
-            };
-            let queued = responder.respond(elicitation_answer(response, &fields));
-            drop(response_guard);
-            queued
-        })?;
+        self.approval_bindings
+            .spawn_callback(&connection, async move {
+                let response = context
+                    .decide_question(port.as_ref(), canonical, request_cancellation)
+                    .await;
+                let response = elicitation_answer(response, &fields);
+                let declined = elicitation_answer(QuestionResponse::Cancelled, &fields);
+                response_guard
+                    .commit(|open| responder.respond(if open { response } else { declined }))
+            })?;
         Ok(Handled::Yes)
     }
 

@@ -4,14 +4,14 @@ use crate::binding_dispatch_permit::BindingUncertainty;
 use crate::session_store_lane::{
     MarkedInput, SessionStoreLane, SessionStoreLaneTask, SessionStoreOfferError, StoreLaneHandover,
 };
-use acp_client_runtime::{
-    acp_transport::{AcpTransport, SlotEvidence},
-    session_owner_task::{SessionOwnerHandle, SessionOwnerTask},
-};
+#[cfg(test)]
+use acp_client_runtime::acp_transport::{AcpTransport, SlotEvidence};
+use acp_client_runtime::session_owner_task::{SessionOwnerHandle, SessionOwnerTask};
 use collaboration_protocol::{OperationId, SessionRef};
+#[cfg(test)]
+use provider_session_machines::session_owner::DispatchAuthorization;
 use provider_session_machines::session_owner::{
-    ConnectionEpoch, DispatchAuthorization, OwnerAddress, OwnerEvidence, OwnerIncarnation,
-    OwnerInputEvidence,
+    ConnectionEpoch, OwnerAddress, OwnerEvidence, OwnerIncarnation, OwnerInputEvidence,
 };
 use router_clock::RuntimeClock;
 use session_event_model::InputId;
@@ -48,7 +48,7 @@ pub struct SessionRegistration {
     pub launch: Option<(OwnerTaskLaunch, SessionStoreLaneTask)>,
 }
 
-pub struct FailedOwnerSettlement<Evidence = Vec<(DispatchAuthorization, SlotEvidence)>> {
+pub struct FailedOwnerSettlement<Evidence = OwnerEvidence> {
     pub replacement: OwnerTaskLaunch,
     pub handover: StoreLaneHandover,
     pub slot_evidence: Evidence,
@@ -235,13 +235,17 @@ impl SessionOwnerRegistry {
     /// Called by the task monitor after the old owner stops offering effects.
     /// It fences the registry compare-and-swap, transport revocation and lane
     /// handover against a concurrent attempt to replace the same entry.
+    #[cfg(test)]
     pub fn replace_failed_session<'connection, Frame: 'connection>(
         &self,
         target: &SessionRef,
         failed: OwnerIncarnation,
         connection: ConnectionEpoch,
         transports: impl IntoIterator<Item = &'connection AcpTransport<Frame>>,
-    ) -> Result<FailedOwnerSettlement, SessionOwnerRegistryError> {
+    ) -> Result<
+        FailedOwnerSettlement<Vec<(DispatchAuthorization, SlotEvidence)>>,
+        SessionOwnerRegistryError,
+    > {
         let mut slots = Vec::new();
         let settled = self.replace_failed_with(
             target,
@@ -347,6 +351,7 @@ pub(super) fn owner_proved_unsent(evidence: Option<&OwnerInputEvidence>) -> bool
 }
 
 /// Project the complete ACP snapshot used by the raw-slot registry fixture.
+#[cfg(test)]
 fn answer_complete_acp_snapshot(
     inputs: &BTreeSet<InputId>,
     slots: &[(DispatchAuthorization, SlotEvidence)],
