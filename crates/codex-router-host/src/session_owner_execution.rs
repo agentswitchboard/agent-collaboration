@@ -29,7 +29,6 @@ use provider_session_machines::{
     },
     session_setting_machine::SettingValueId,
 };
-use std::ops::{Deref, DerefMut};
 use std::{collections::BTreeMap, sync::Arc};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
@@ -42,10 +41,7 @@ mod work_refusal_tests;
 
 pub struct SessionOwnerExecution {
     target: SessionRef,
-    #[cfg(not(test))]
     binding: SessionHarnessBinding,
-    #[cfg(test)]
-    binding: Arc<std::sync::Mutex<SessionHarnessBinding>>,
     observations: Arc<SessionOwnerLifecycleReports>,
     storage: SessionOwnerStorage,
     publisher: SessionOwnerPublisher,
@@ -90,10 +86,7 @@ impl SessionOwnerExecution {
         let tasks = storage.task_tracker();
         Self {
             target,
-            #[cfg(not(test))]
             binding,
-            #[cfg(test)]
-            binding: Arc::new(std::sync::Mutex::new(binding)),
             observations,
             storage,
             publisher,
@@ -106,32 +99,6 @@ impl SessionOwnerExecution {
             work_observer: None,
             #[cfg(any(test, feature = "test-support"))]
             preparation_fixture: Arc::default(),
-        }
-    }
-
-    fn binding(&self) -> impl Deref<Target = SessionHarnessBinding> + '_ {
-        #[cfg(not(test))]
-        {
-            &self.binding
-        }
-        #[cfg(test)]
-        {
-            self.binding
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-        }
-    }
-
-    fn binding_mut(&mut self) -> impl DerefMut<Target = SessionHarnessBinding> + '_ {
-        #[cfg(not(test))]
-        {
-            &mut self.binding
-        }
-        #[cfg(test)]
-        {
-            self.binding
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
         }
     }
 
@@ -192,11 +159,11 @@ impl SessionOwnerExecution {
         };
         let lease = match moment {
             ApprovalLeaseMoment::BeforeOffer => self
-                .binding()
+                .binding
                 .install_approval_lease_before_offer(turn, context)
                 .map_err(|refusal| refusal.0),
             ApprovalLeaseMoment::ObservedTurn => self
-                .binding()
+                .binding
                 .install_approval_lease_for_observed_turn(turn, context)
                 .map_err(|refusal| refusal.0),
         }?;
@@ -252,7 +219,7 @@ impl SessionOwnerExecution {
                 else {
                     return Ok(Some(definitely_unsent(authorization)));
                 };
-                let offered = self.binding().offer_prompt(
+                let offered = self.binding.offer_prompt(
                     authorization.clone(),
                     input.turn,
                     content.as_harness_content(),
@@ -281,7 +248,7 @@ impl SessionOwnerExecution {
                     SteerOrigin::Auto => SteerIdlePolicy::AllowOwnerPrompt,
                     SteerOrigin::Named | SteerOrigin::Notice => SteerIdlePolicy::Refuse,
                 };
-                self.binding().offer_steer(
+                self.binding.offer_steer(
                     authorization.clone(),
                     content.as_harness_content(),
                     idle,
@@ -292,7 +259,7 @@ impl SessionOwnerExecution {
                 if !self.calls.settlement_requested(setting.change.attempt.0) {
                     return Ok(Some(definitely_unsent(authorization)));
                 }
-                match self.binding().offer_setting(
+                match self.binding.offer_setting(
                     authorization.clone(),
                     setting.kind,
                     value,
@@ -310,24 +277,20 @@ impl SessionOwnerExecution {
             return Ok(Some(settle_refused_offer(
                 authorization,
                 refusal,
-                |authorization| self.binding_mut().take_back(authorization),
+                |authorization| self.binding.take_back(authorization),
             )));
         }
         #[cfg(test)]
         if named_steer && let Some(release) = self.preparation_fixture.hold_named_steer_take() {
             // Leave the offer on this binding while the owner consumes the foreground ending.
             let completion = completions.reserve(owner)?;
-            let binding = Arc::downgrade(&self.binding);
+            let take = self
+                .binding
+                .detached_take_for_test(authorization)
+                .ok_or(OwnerTaskError::ExecutorStopped)?;
             self.tasks.spawn(async move {
                 let _released = release.await;
-                let Some(binding) = binding.upgrade() else {
-                    return;
-                };
-                let result = binding
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .hand_over(&authorization, &mut || true);
-                if let Ok(result) = result {
+                if let Ok(result) = take() {
                     completion.send(OwnerEvent::Dispatch(result));
                 }
             });
@@ -338,9 +301,9 @@ impl SessionOwnerExecution {
             observer.offered(&authorization, work_kind);
         }
         let handed_over = if let Some(notice) = notice {
-            notice.take(&authorization, self.binding().as_ref())
+            notice.take(&authorization, self.binding.as_ref())
         } else {
-            self.binding()
+            self.binding
                 .hand_over(&authorization, &mut || {
                     setting_operation
                         .is_none_or(|operation| self.calls.settlement_requested(operation))
@@ -398,14 +361,14 @@ impl SessionOwnerPorts for SessionOwnerExecution {
             ),
             OwnerEffect::Wire(SessionWireRequest::Close(run)) => {
                 let completion = completions.reserve(owner)?.map(owner_event_for_close);
-                let unavailable = self.binding().close(run, completion).is_err();
+                let unavailable = self.binding.close(run, completion).is_err();
                 Ok(unavailable.then_some(OwnerEvent::Wire(SessionWireResult::CloseNotSent(run))))
             }
             OwnerEffect::Wire(SessionWireRequest::Create { .. }) => {
                 Err(OwnerTaskError::ExecutorStopped)
             }
             OwnerEffect::PrepareRoute(run) => Ok(Some(OwnerEvent::Prepare(
-                if self.binding().opening_is_held(OpenAttempt::Restore(run)) == Held::Held {
+                if self.binding.opening_is_held(OpenAttempt::Restore(run)) == Held::Held {
                     RestorePreparation::RouteReady(run)
                 } else {
                     RestorePreparation::Failed {
@@ -427,7 +390,7 @@ impl SessionOwnerPorts for SessionOwnerExecution {
                     .get(&authorization.run)
                     .map(|route| route.cancel.clone())
                     .unwrap_or_default();
-                match self.binding_mut().begin_cancel(
+                match self.binding.begin_cancel(
                     authorization.clone(),
                     &mut || completions.reserve_work_reply(owner),
                     Box::pin(stop.cancelled_owned()),
@@ -453,16 +416,16 @@ impl SessionOwnerPorts for SessionOwnerExecution {
                 } else {
                     CancelDrainWait::Drained
                 };
-                let result = self.binding_mut().send_cancel(authorization, wait);
+                let result = self.binding.send_cancel(authorization, wait);
                 Ok(Some(OwnerEvent::Dispatch(result)))
             }
             OwnerEffect::Revoke { authorization, .. } => Ok(Some(OwnerEvent::Dispatch(
                 take_back_work(authorization, |authorization| {
-                    self.binding_mut().take_back(authorization)
+                    self.binding.take_back(authorization)
                 }),
             ))),
             OwnerEffect::CallbackMembership(change) => {
-                self.binding().set_scope(change);
+                self.binding.set_scope(change);
                 if let TurnMembership::End { turn, .. } = change {
                     self.calls.end_turn(turn);
                 }
@@ -520,7 +483,7 @@ impl SessionOwnerPorts for SessionOwnerExecution {
                             ..
                         } = fact
                         {
-                            self.binding()
+                            self.binding
                                 .use_settings(*run, lifecycle_settings(accepted));
                         }
                     }
@@ -551,11 +514,11 @@ impl SessionOwnerPorts for SessionOwnerExecution {
                 if let Some(route) = self.routes.remove(&run) {
                     route.cancel.cancel();
                 }
-                self.binding().retire(run);
+                self.binding.retire(run);
                 Ok(None)
             }
             OwnerEffect::ReopenRoute(run) => {
-                self.binding().admit_again(run);
+                self.binding.admit_again(run);
                 Ok(None)
             }
             OwnerEffect::InputQueued(input) => {

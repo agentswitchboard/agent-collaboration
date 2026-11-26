@@ -250,6 +250,17 @@ impl<Port: AcpRequestPayloads> OwnerHarnessBinding<SessionHarnessPayloads<Port::
             .wire
             .apply_membership(self.openings.owner().incarnation, change);
     }
+
+    #[cfg(feature = "test-observation")]
+    fn detached_take_for_test(
+        &self,
+        authorization: DispatchAuthorization,
+    ) -> Option<switchboard_harness_contracts::DetachedTake> {
+        let wire = Arc::clone(&self.work.wire);
+        Some(Box::new(move || {
+            wire.hand_over_work(&authorization, || true)
+        }))
+    }
 }
 
 impl<Port: AcpRequestPayloads> HarnessBinding for AcpOwnerLifecycleBinding<Port> {

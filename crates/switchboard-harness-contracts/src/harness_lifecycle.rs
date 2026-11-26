@@ -10,6 +10,8 @@ use crate::{
     RestoreSettingRefusal, RunAttempt, RunRetirement, SessionGeneration, SettingAttempt,
     SettingFact, SetupReport, TurnId, TurnMembership,
 };
+#[cfg(feature = "test-support")]
+use crate::{DispatchAuthorization, DispatchResult, HandOverRefusal};
 
 #[cfg(test)]
 #[path = "harness_lifecycle_test.rs"]
@@ -101,6 +103,10 @@ pub trait HarnessProvider<Payloads: HarnessLifecyclePayloads>: HarnessOwnerRecov
     ) -> Result<(), LifecycleRefusal>;
 }
 
+/// A fixture's one deferred hand-over of an already offered authorization.
+#[cfg(feature = "test-support")]
+pub type DetachedTake = Box<dyn FnOnce() -> Result<DispatchResult, HandOverRefusal> + Send>;
+
 /// The owner holds one binding for lifecycle and work across all of its generations.
 pub trait OwnerHarnessBinding<Payloads: HarnessLifecyclePayloads>:
     HarnessBinding + ApprovalLeaseBinding<Payloads::ApprovalContext> + 'static
@@ -180,4 +186,14 @@ pub trait OwnerHarnessBinding<Payloads: HarnessLifecyclePayloads>:
 
     /// Update callback membership for the exact run and turn carried by the change.
     fn set_scope(&self, change: TurnMembership);
+
+    /// Let a fixture attempt the exact hand-over after the owner consumes other events.
+    /// Creating this handle leaves the existing offer in the harness.
+    #[cfg(feature = "test-support")]
+    fn detached_take_for_test(
+        &self,
+        _authorization: DispatchAuthorization,
+    ) -> Option<DetachedTake> {
+        None
+    }
 }
