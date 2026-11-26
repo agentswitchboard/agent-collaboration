@@ -1,6 +1,9 @@
 //! One-shot test barriers at the actual opening effect boundaries.
 
 use super::OwnerAcpWire;
+use crate::owner_opening_disposal::{
+    OpeningDisposalKind, OpeningDisposalProbe, OpeningDisposalToken,
+};
 use std::{
     collections::BTreeMap,
     sync::{Mutex, mpsc},
@@ -30,7 +33,10 @@ pub struct OpeningPause {
 }
 
 #[derive(Default)]
-pub(super) struct OpeningTestControls(Mutex<BTreeMap<OpeningPausePoint, Barrier>>);
+pub(super) struct OpeningTestControls {
+    pauses: Mutex<BTreeMap<OpeningPausePoint, Barrier>>,
+    disposals: Mutex<BTreeMap<OpeningDisposalKind, OpeningDisposalProbe>>,
+}
 
 struct Barrier {
     reached: oneshot::Sender<()>,
@@ -38,6 +44,37 @@ struct Barrier {
 }
 
 impl OwnerAcpWire {
+    pub fn watch_opening_disposal_for_test(
+        &self,
+        kind: OpeningDisposalKind,
+    ) -> OpeningDisposalProbe {
+        let probe = OpeningDisposalProbe::default();
+        let previous = self
+            .opening_test
+            .disposals
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(kind, probe.clone());
+        assert!(
+            previous.is_none(),
+            "one pending witness per opening resource kind"
+        );
+        probe
+    }
+
+    pub(crate) fn take_opening_disposal_for_test<T>(
+        &self,
+        kind: OpeningDisposalKind,
+        table: &Mutex<T>,
+    ) -> Option<OpeningDisposalToken> {
+        self.opening_test
+            .disposals
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&kind)
+            .map(|probe| probe.bind(table))
+    }
+
     #[cfg(feature = "test-observation")]
     pub fn opening_route_is_registered_for_test(
         &self,
@@ -62,7 +99,7 @@ impl OwnerAcpWire {
         let (release, wait) = mpsc::channel();
         let previous = self
             .opening_test
-            .0
+            .pauses
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(
@@ -79,7 +116,7 @@ impl OwnerAcpWire {
     pub(crate) fn at_opening_effect_for_test(&self, point: OpeningPausePoint) {
         let barrier = self
             .opening_test
-            .0
+            .pauses
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&point);

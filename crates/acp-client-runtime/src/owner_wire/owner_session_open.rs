@@ -33,6 +33,8 @@ pub struct OwnerOpenedSession {
     pub(crate) in_folder: Option<crate::in_folder_allowance::InFolderGrant>,
     #[cfg(any(test, feature = "test-observation"))]
     pub(crate) observed_tool_calls: crate::owner_session_stream::TestToolCallRecords,
+    #[cfg(any(test, feature = "test-observation"))]
+    pub(crate) opening_disposal: Option<crate::owner_opening_disposal::OpeningDisposalToken>,
 }
 
 pub(crate) enum OpenedSessionRoute {
@@ -79,6 +81,8 @@ impl OwnerOpenedSession {
             in_folder,
             #[cfg(any(test, feature = "test-observation"))]
             observed_tool_calls: config.observed_tool_calls.clone(),
+            #[cfg(any(test, feature = "test-observation"))]
+            opening_disposal: None,
         }
     }
 

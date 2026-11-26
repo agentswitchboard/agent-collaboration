@@ -18,6 +18,8 @@ impl OwnerOpenings {
         close: RunAttempt<CloseAttempt>,
         reply: LifecycleReply<CloseFact>,
     ) -> Result<(), LifecycleRefusal> {
+        #[cfg(any(test, feature = "test-observation"))]
+        let reply = self.observe_reply(crate::owner_wire::OpeningDisposalKind::CloseReply, reply);
         self.observe_health()?;
         let slot = OpeningSlot::Run(close.generation);
         let (instance, admitted, session) = {

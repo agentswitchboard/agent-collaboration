@@ -135,7 +135,27 @@ pub(super) struct HeldRestore {
 
 pub(super) struct DeferredRestore {
     pub(super) milestone: RestoreMilestone,
-    pub(super) outcome: tokio::sync::oneshot::Sender<bool>,
+    pub(super) outcome: RestoreSignal,
+}
+
+pub(super) struct RestoreSignal {
+    sender: oneshot::Sender<bool>,
+    #[cfg(any(test, feature = "test-observation"))]
+    pub(super) _disposal: Option<Box<crate::owner_opening_disposal::OpeningDisposalToken>>,
+}
+
+impl RestoreSignal {
+    pub(super) fn new(sender: oneshot::Sender<bool>) -> Self {
+        Self {
+            sender,
+            #[cfg(any(test, feature = "test-observation"))]
+            _disposal: None,
+        }
+    }
+
+    fn send(self, accepted: bool) -> Result<(), bool> {
+        self.sender.send(accepted)
+    }
 }
 
 pub(super) enum RestoreMilestone {
@@ -374,7 +394,7 @@ pub(super) enum Command {
     ActivationFailed,
     ReaderAccepted,
     ReaderStopped(ReaderEnd),
-    RestoreProgress(RestoreMilestone, Option<oneshot::Sender<bool>>),
+    RestoreProgress(RestoreMilestone, Option<RestoreSignal>),
     CloseAsked(RunAttempt<CloseAttempt>),
     CloseOffered(RunAttempt<CloseAttempt>, bool),
     CloseSettled(CloseFact),
@@ -422,7 +442,7 @@ pub(super) enum Effect {
     OfferRestore(Box<RestoreStart>),
     Fault(Box<StepFault>),
     Discarded(Box<Command>),
-    DropSignal(oneshot::Sender<bool>, Box<Effect>),
+    DropSignal(RestoreSignal, Box<Effect>),
     ReleaseBefore(Box<Effect>, Box<Effect>),
     DiscardAfter(Box<Command>, Box<Effect>),
     Readmit(LifecycleRoute, CloseAttempt),
@@ -439,10 +459,10 @@ pub(super) enum Effect {
     WithdrawSetters(Vec<PendingSetter>, Box<Effect>),
     StartReader(ReaderHandoff),
     CloseOffer(LifecycleRoute, OpeningOffer),
-    CloseConfirmed(Release, Option<oneshot::Sender<bool>>),
+    CloseConfirmed(Release, Option<DeferredRestore>),
     Deferred,
     ResolveRestore {
-        outcome: oneshot::Sender<bool>,
+        outcome: RestoreSignal,
         accepted: bool,
         release: Option<Release>,
     },
@@ -789,7 +809,7 @@ impl Effect {
             Self::CloseConfirmed(release, deferred) => {
                 release.run(wire);
                 if let Some(deferred) = deferred {
-                    let _worker_gone = deferred.send(false);
+                    let _worker_gone = deferred.outcome.send(false);
                 }
                 true
             }

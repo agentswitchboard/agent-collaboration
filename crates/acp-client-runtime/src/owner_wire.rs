@@ -7,6 +7,8 @@ pub(crate) use owner_output::{OwnerAcpOutput, PromptTerminal};
 #[cfg(any(test, feature = "test-observation"))]
 mod owner_opening_test_control;
 #[cfg(any(test, feature = "test-observation"))]
+pub use crate::owner_opening_disposal::{OpeningDisposalKind, OpeningDisposalProbe};
+#[cfg(any(test, feature = "test-observation"))]
 pub use owner_opening_test_control::{OpeningPause, OpeningPausePoint};
 pub(crate) mod owner_restore_update_router;
 pub mod owner_session_open;

@@ -51,6 +51,83 @@ async fn retirement_blanks_a_deferred_fact_and_withdraws_the_untaken_close() {
     run_close_race(CloseRace::RetiredFirst).await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn accepted_close_disposes_the_deferred_sdk_and_replies_after_unlocking() {
+    use acp_client_runtime::owner_wire::OpeningDisposalKind;
+
+    let fixture = hub_runtime_with(&["advertise-close", "hold-load"]).await;
+    let tasks = TaskTracker::new();
+    let (owner, mut binding) = bind_fixture(&fixture.runtime, &tasks);
+    let run = RunAttempt {
+        generation: SessionGeneration::from_number(1),
+        attempt: LoadAttempt(Uuid::now_v7()),
+    };
+    let close = RunAttempt {
+        generation: run.generation,
+        attempt: CloseAttempt(Uuid::now_v7()),
+    };
+    let wire = fixture.runtime.client.owner_wire();
+    let probes = [
+        OpeningDisposalKind::SdkSession,
+        OpeningDisposalKind::RestoreSignal,
+        OpeningDisposalKind::OpeningReply,
+        OpeningDisposalKind::CloseReply,
+    ]
+    .map(|kind| wire.watch_opening_disposal_for_test(kind));
+    let before_offer = wire.pause_opening_for_test(OpeningPausePoint::BeforeCloseOffer);
+    let restore_deferred = wire.pause_opening_for_test(OpeningPausePoint::RestoreDeferred);
+    let stop = CancellationToken::new();
+    let (reply, restored) = oneshot::channel();
+    binding
+        .open(
+            restore_request(&fixture, owner, run),
+            Box::new(Reply(reply)),
+            Arc::new(AcceptEvents),
+            Box::pin(stop.clone().cancelled_owned()),
+        )
+        .expect("offer the older load to the real provider");
+    let (reply, closed) = oneshot::channel();
+    let binding = Arc::new(binding);
+    let offering = tokio::task::spawn_blocking({
+        let binding = Arc::clone(&binding);
+        move || binding.close(close, Box::new(Reply(reply)))
+    });
+    before_offer
+        .reached
+        .await
+        .expect("close owns the row without a wire offer");
+    node_test_fixture::release_fixture(&fixture.receipt, ".release-load")
+        .expect("allow the provider to answer the load");
+    restore_deferred
+        .reached
+        .await
+        .expect("the successful load with the SDK session is deferred");
+    before_offer
+        .release
+        .send(())
+        .expect("let the writer take the close");
+    assert_eq!(offering.await.expect("close call completed"), Ok(()));
+    restore_deferred
+        .release
+        .send(())
+        .expect("let the restore worker process disposal");
+    assert_eq!(
+        closed.await.expect("correlated close result"),
+        CloseFact::Closed { run: close }
+    );
+    assert!(
+        restored.await.is_err(),
+        "accepted close supersedes the opening"
+    );
+    drop(binding);
+    fixture.runtime.shutdown().await;
+    tasks.close();
+    tasks.wait().await;
+    for probe in probes {
+        probe.assert_disposed_outside_table();
+    }
+}
+
 pub(super) async fn run_close_race(outcome: CloseRace) {
     let fixture = hub_runtime_with(&["advertise-close"]).await;
     let tasks = TaskTracker::new();

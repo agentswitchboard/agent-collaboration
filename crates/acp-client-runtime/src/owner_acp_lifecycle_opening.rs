@@ -418,10 +418,57 @@ fn opening_failure(error: ExternalProviderRuntimeError) -> OpeningFailure {
     }
 }
 
-fn lock<T>(value: &Mutex<T>) -> MutexGuard<'_, T> {
-    value
+#[cfg(not(any(test, feature = "test-observation")))]
+type OpeningTableGuard<'a> = MutexGuard<'a, OpeningAttempts>;
+
+#[cfg(any(test, feature = "test-observation"))]
+struct OpeningTableGuard<'a> {
+    guard: MutexGuard<'a, OpeningAttempts>,
+    _scope: crate::owner_opening_disposal::OpeningTableScope,
+}
+
+#[cfg(any(test, feature = "test-observation"))]
+impl std::ops::Deref for OpeningTableGuard<'_> {
+    type Target = OpeningAttempts;
+
+    fn deref(&self) -> &Self::Target {
+        &self.guard
+    }
+}
+
+#[cfg(any(test, feature = "test-observation"))]
+impl std::ops::DerefMut for OpeningTableGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.guard
+    }
+}
+
+fn lock(value: &Mutex<OpeningAttempts>) -> OpeningTableGuard<'_> {
+    let guard = value
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    #[cfg(any(test, feature = "test-observation"))]
+    return OpeningTableGuard {
+        guard,
+        _scope: crate::owner_opening_disposal::OpeningTableScope::enter(value),
+    };
+    #[cfg(not(any(test, feature = "test-observation")))]
+    guard
+}
+
+#[cfg(any(test, feature = "test-observation"))]
+impl OwnerOpenings {
+    fn observe_reply<Fact: 'static>(
+        &self,
+        kind: crate::owner_opening_disposal::OpeningDisposalKind,
+        reply: LifecycleReply<Fact>,
+    ) -> LifecycleReply<Fact> {
+        crate::owner_opening_disposal::observe_reply(
+            reply,
+            self.wire
+                .take_opening_disposal_for_test(kind, &self.attempts),
+        )
+    }
 }
 
 #[cfg(test)]

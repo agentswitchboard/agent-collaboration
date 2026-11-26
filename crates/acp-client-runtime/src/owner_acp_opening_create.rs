@@ -21,6 +21,8 @@ impl OwnerOpenings {
         reply: LifecycleReply<OpeningFact>,
         retired: RunRetirement,
     ) -> Result<(), LifecycleRefusal> {
+        #[cfg(any(test, feature = "test-observation"))]
+        let reply = self.observe_reply(crate::owner_wire::OpeningDisposalKind::OpeningReply, reply);
         let slot = OpeningSlot::Create(attempt);
         let opening = lock(&self.attempts).begin_create(
             self,
@@ -83,6 +85,15 @@ impl OwnerOpenings {
             };
             let fact = match result {
                 Some(Ok(Ok(session))) => {
+                    #[cfg(any(test, feature = "test-observation"))]
+                    let session = {
+                        let mut session = session;
+                        session.opening_disposal = wire.take_opening_disposal_for_test(
+                            crate::owner_wire::OpeningDisposalKind::SdkSession,
+                            &attempts,
+                        );
+                        session
+                    };
                     let provider_id = session.provider_id();
                     let accepted = {
                         let mut attempts = lock(&attempts);
@@ -153,6 +164,11 @@ impl OwnerOpenings {
         reply: LifecycleReply<SessionCreatedSetupFact>,
         retired: RunRetirement,
     ) -> Result<(), LifecycleRefusal> {
+        #[cfg(any(test, feature = "test-observation"))]
+        let reply = self.observe_reply(
+            crate::owner_wire::OpeningDisposalKind::ConfigureReply,
+            reply,
+        );
         self.observe_health()?;
         let slot = OpeningSlot::Create(attempt);
         let stopped = self.stopped.child_token();

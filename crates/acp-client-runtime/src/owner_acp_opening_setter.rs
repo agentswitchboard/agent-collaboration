@@ -55,6 +55,8 @@ impl OwnerOpenings {
                 return Err(RestoreSettingRefusal::ReplyReservation(reason));
             }
         };
+        #[cfg(any(test, feature = "test-observation"))]
+        let reply = self.observe_reply(crate::owner_wire::OpeningDisposalKind::SetterReply, reply);
         let reserved = lock(&self.attempts).apply(
             slot,
             &instance,

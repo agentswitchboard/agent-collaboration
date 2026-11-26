@@ -1,7 +1,9 @@
 //! Independent expectations for the opening declaration and owned effects.
 
+use super::super::super::{OpeningAttempts, lock};
 use super::*;
 use crate::acp_transport::ReadmitOutcome;
+use crate::owner_opening_disposal::OpeningDisposalProbe;
 use Edge as E;
 use OpeningPhase as P;
 use agent_client_protocol::{Agent, Client, ConnectionTo, schema::v1::SessionId};
@@ -12,7 +14,10 @@ use provider_session_machines::{
     session_owner::{ConnectionEpoch, OwnerAddress, OwnerIncarnation, OwnerSetting, RunAttempt},
     session_setting_machine::{SettingApplication, SettingValueId},
 };
-use std::sync::Arc;
+use std::{
+    cell::RefCell,
+    sync::{Arc, Mutex},
+};
 use switchboard_harness_contracts::{CloseUncertainty, ReservedReply};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -31,6 +36,8 @@ struct Fixture {
     setter: OpeningOffer,
     catalogue: Arc<ProviderSettingsCatalogRecord>,
     stopped: CancellationToken,
+    table: Mutex<OpeningAttempts>,
+    disposals: RefCell<Vec<OpeningDisposalProbe>>,
 }
 
 impl Fixture {
@@ -77,6 +84,8 @@ impl Fixture {
                 ..Default::default()
             }),
             stopped,
+            table: Mutex::default(),
+            disposals: RefCell::default(),
         }
     }
 
@@ -92,7 +101,30 @@ impl Fixture {
             projection: None,
             in_folder: None,
             observed_tool_calls: Arc::default(),
+            opening_disposal: Some(self.disposal_token()),
         })
+    }
+
+    fn disposal_token(&self) -> crate::owner_opening_disposal::OpeningDisposalToken {
+        let probe = OpeningDisposalProbe::default();
+        let token = probe.bind(&self.table);
+        self.disposals.borrow_mut().push(probe);
+        token
+    }
+
+    fn restore_signal(
+        &self,
+        sender: tokio::sync::oneshot::Sender<bool>,
+    ) -> super::super::RestoreSignal {
+        let mut signal = super::super::RestoreSignal::new(sender);
+        signal._disposal = Some(Box::new(self.disposal_token()));
+        signal
+    }
+
+    fn assert_disposals(&self) {
+        for probe in self.disposals.borrow_mut().drain(..) {
+            probe.assert_disposed_outside_table();
+        }
     }
 
     fn setter_request(&self) -> SettingAttempt {
@@ -348,7 +380,7 @@ impl Fixture {
             E::ReplayRejected => Command::RestoreProgress(RestoreMilestone::ReplayRejected, None),
             E::DeferRestore => Command::RestoreProgress(
                 RestoreMilestone::ReplayAdmitted,
-                Some(tokio::sync::oneshot::channel().0),
+                Some(self.restore_signal(tokio::sync::oneshot::channel().0)),
             ),
             E::OpenFailed | E::FinishOnStoppedWriter
                 if matches!(
@@ -363,9 +395,13 @@ impl Fixture {
                 attempt: Box::new(self.setter_request()),
                 session: "matrix-session".into(),
             },
-            E::SetterReserved => {
-                Command::SetterReserved(self.setter.clone(), Box::new(IgnoreSettingReply))
-            }
+            E::SetterReserved => Command::SetterReserved(
+                self.setter.clone(),
+                crate::owner_opening_disposal::observe_reply(
+                    Box::new(IgnoreSettingReply),
+                    Some(self.disposal_token()),
+                ),
+            ),
             E::SetterDone => Command::SetterDone(self.setter.clone()),
             E::AcceptSettings | E::AcceptCreatedSettings => {
                 Command::AcceptSettings(AcceptedRunSettings {
@@ -546,6 +582,8 @@ async fn every_applicable_owned_step_matches_the_independent_effect_matrix() {
                     declared.is_none(),
                     "{phase:?} + {event:?} projected as {projected:?}"
                 );
+                drop((state, command));
+                fixture.assert_disposals();
                 continue;
             }
             let instance = OpeningInstance::default();
@@ -568,7 +606,11 @@ async fn every_applicable_owned_step_matches_the_independent_effect_matrix() {
                 instance: instance.clone(),
                 state,
             };
-            match (declared, row.apply(&instance, command)) {
+            let result = {
+                let _table = lock(&fixture.table);
+                row.apply(&instance, command)
+            };
+            match (declared, result) {
                 (Some(declared), Ok((stored, effects))) => {
                     let expected_phase =
                         if matches!(declared, P::Terminal | P::RetiredAwaitingReply) {
@@ -598,6 +640,7 @@ async fn every_applicable_owned_step_matches_the_independent_effect_matrix() {
                 }
                 _ => panic!("independent owned matrix disagrees at {phase:?} + {event:?}"),
             }
+            fixture.assert_disposals();
         }
     }
 }
@@ -683,14 +726,18 @@ async fn a_deferred_load_is_applied_only_when_close_was_unoffered() {
                 offer: OpeningOffer::default(),
                 deferred: Some(DeferredRestore {
                     milestone: RestoreMilestone::held(*fixture.session(), None, None, true),
-                    outcome,
+                    outcome: fixture.restore_signal(outcome),
                 }),
             },
         };
-        let Ok((Some(row), effect)) = row.apply(
-            &instance,
-            Command::CloseOffered(fixture.close, writer_took_close),
-        ) else {
+        let result = {
+            let _table = lock(&fixture.table);
+            row.apply(
+                &instance,
+                Command::CloseOffered(fixture.close, writer_took_close),
+            )
+        };
+        let Ok((Some(row), effect)) = result else {
             panic!("exact close admission result did not settle its offer");
         };
         if writer_took_close {
@@ -706,5 +753,7 @@ async fn a_deferred_load_is_applied_only_when_close_was_unoffered() {
                 "unoffered close applies the original reply before publication"
             );
         }
+        drop((row, effect));
+        fixture.assert_disposals();
     }
 }

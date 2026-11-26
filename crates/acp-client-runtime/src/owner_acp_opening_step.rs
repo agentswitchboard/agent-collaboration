@@ -544,10 +544,7 @@ fn apply_edge(
             };
             store(
                 state,
-                Effect::CloseConfirmed(
-                    Release::new(instance, *origin, false),
-                    deferred.map(|deferred| deferred.outcome),
-                ),
+                Effect::CloseConfirmed(Release::new(instance, *origin, false), deferred),
             )
         }
         (

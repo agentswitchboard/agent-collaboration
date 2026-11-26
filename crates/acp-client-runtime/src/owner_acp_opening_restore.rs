@@ -1,6 +1,6 @@
 //! Restore receipts, replay publication, and exact held settings.
 
-use super::row::{RestoreMilestone, RestoreStart};
+use super::row::{RestoreMilestone, RestoreSignal, RestoreStart};
 use super::{
     Arc, Command, Effect, LifecycleRefusal, LifecycleReply, Mutex, OpeningAttempts, OpeningFact,
     OpeningFailure, OpeningInstance, OpeningSlot, OwnerAcpWire, OwnerOpenings, RestoreOpening,
@@ -23,6 +23,8 @@ impl OwnerOpenings {
         events: SessionLifecyclePort,
         retired: RunRetirement,
     ) -> Result<(), LifecycleRefusal> {
+        #[cfg(any(test, feature = "test-observation"))]
+        let reply = self.observe_reply(crate::owner_wire::OpeningDisposalKind::OpeningReply, reply);
         let slot = OpeningSlot::Run(opening.run.generation);
         let admitted =
             lock(&self.attempts).begin_restore(self, opening, self.stopped.child_token());
@@ -110,6 +112,13 @@ impl OwnerOpenings {
                         ));
                     }
                 };
+                #[cfg(any(test, feature = "test-observation"))]
+                {
+                    session.opening_disposal = restored.wire.take_opening_disposal_for_test(
+                        crate::owner_wire::OpeningDisposalKind::SdkSession,
+                        &restored.attempts,
+                    );
+                }
                 let replay = if via == RestoreVia::Load {
                     Some(session.prepare_replay().map_err(|_| {
                         RestoreWorkerFailure::Provider(OpeningFailure::ReplayNotKnown)
@@ -230,6 +239,19 @@ enum RestoreWorkerFailure {
 impl RestoreWorker {
     async fn advance(&self, milestone: RestoreMilestone) -> Result<bool, RestoreWorkerFailure> {
         let (outcome, deferred) = oneshot::channel();
+        let outcome = RestoreSignal::new(outcome);
+        #[cfg(any(test, feature = "test-observation"))]
+        let outcome = {
+            let mut outcome = outcome;
+            outcome._disposal = self
+                .wire
+                .take_opening_disposal_for_test(
+                    crate::owner_wire::OpeningDisposalKind::RestoreSignal,
+                    &self.attempts,
+                )
+                .map(Box::new);
+            outcome
+        };
         let admitted = lock(&self.attempts).apply(
             self.slot,
             &self.instance,
