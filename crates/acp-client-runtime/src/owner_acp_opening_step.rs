@@ -1,10 +1,11 @@
 //! The transition selected by the ACP opening declaration.
 
 use super::{
-    Command, DeferredRestore, Edge, Effect, HeldCreate, HeldRestore, LostReceipt, OpeningInstance,
-    OpeningPhase, OpeningPolicy, OpeningState, PendingSetter, ReaderEnd, ReaderHandoff, Release,
-    RestoreMilestone, RoutedRestore, SetterPlan, SetterWrite, StateMachine, StepFault,
-    StoppedReceipt,
+    Command, CreateStart, DeferredRestore, Edge, Effect, HeldCreate, HeldRestore, LostReceipt,
+    OpenCreateRequest, OpenRestoreRequest, OpeningInstance, OpeningPhase, OpeningPolicy,
+    OpeningState, PendingCreate, PendingSetter, ReaderEnd, ReaderHandoff, Release,
+    RestoreMilestone, RestoreStart, RoutedRestore, RunResources, SetterPlan, SetterWrite,
+    StateMachine, StepFault, StoppedReceipt,
 };
 use crate::{
     acp_transport::ReadmitOutcome, owner_opening_instance::OpeningOffer,
@@ -172,6 +173,8 @@ fn edge(state: &OpeningState, command: &Command, taken: bool) -> Option<Edge> {
     use OpeningState as State;
     let stopped = matches!(state, State::StoppedAwaitingReply(_));
     let event = match command {
+        Command::OpenCreate(_) => Edge::OpenCreate,
+        Command::OpenRestore(_) => Edge::OpenRestore,
         Command::WriterAccepted => Edge::WriterAccepted,
         Command::WriterRefused => Edge::WriterRefused,
         Command::Created(_)
@@ -370,6 +373,54 @@ fn apply_edge(
 ) -> Step {
     use OpeningState as State;
     match (state, command) {
+        (State::Vacant { .. }, Command::OpenCreate(request)) => {
+            let OpenCreateRequest {
+                setup,
+                requested,
+                stopped,
+            } = *request;
+            let offer = OpeningOffer::default();
+            store(
+                State::OfferingCreate {
+                    offer: offer.clone(),
+                    pending: PendingCreate {
+                        requested: Box::new(requested),
+                        stopped: stopped.clone(),
+                    },
+                },
+                Effect::OfferCreate(Box::new(CreateStart {
+                    setup,
+                    offer,
+                    stopped,
+                })),
+            )
+        }
+        (State::Vacant { .. }, Command::OpenRestore(request)) => {
+            let OpenRestoreRequest {
+                request,
+                owner,
+                stopped,
+            } = *request;
+            let offer = OpeningOffer::default();
+            let resources = RunResources {
+                route: crate::acp_transport::LifecycleRoute::new(super::super::transport_run(
+                    owner,
+                    request.run.generation,
+                )),
+                stopped,
+            };
+            store(
+                State::OfferingRestore {
+                    offer: offer.clone(),
+                    run: resources.clone(),
+                },
+                Effect::OfferRestore(Box::new(RestoreStart {
+                    request,
+                    offer,
+                    resources,
+                })),
+            )
+        }
         (State::OfferingCreate { pending, .. }, Command::WriterAccepted) => {
             store(State::AwaitingCreate(pending), Effect::None)
         }

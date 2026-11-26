@@ -547,3 +547,27 @@ async fn a_buffered_close_reply_survives_the_real_writer_stop() {
     tasks.close();
     tasks.wait().await;
 }
+
+#[tokio::test]
+async fn a_vacant_restore_offers_only_the_row_decided_by_the_step() {
+    let (openings, mut output, tasks, _retirement) = tracked_test_opening(NonZeroUsize::MIN);
+    let run = RunAttempt {
+        generation: SessionGeneration::from_number(1),
+        attempt: LoadAttempt(Uuid::now_v7()),
+    };
+    let _reply = pending_load(&openings, run);
+    assert_eq!(
+        lock(&openings.attempts)
+            .runs
+            .get(&run.generation)
+            .map(OpeningRow::phase),
+        Some(OpeningPhase::AwaitingRestore),
+        "the declared vacant restore must commit its restore row",
+    );
+    let offered = output.hold_next_frame_for_test();
+    openings.retire(run.generation);
+    drop(offered);
+    drop(openings);
+    tasks.close();
+    tasks.wait().await;
+}

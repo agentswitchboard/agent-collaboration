@@ -18,12 +18,11 @@ mod row;
 mod setter;
 
 use super::{lifecycle_transport_refusal, transport_run};
-use crate::owner_opening_instance::OpeningOffer;
 use crate::{
     ExternalProviderRuntimeError, RequestedProviderSettings,
     owner_opening_instance::OpeningInstance, owner_wire::OwnerAcpWire,
 };
-use policy::{OpeningEvent, OpeningPhase};
+use policy::OpeningPhase;
 use provider_session_machines::harness_lifecycle::{ActivationRefusal, ActivationSetup};
 use provider_session_machines::{
     SessionGeneration,
@@ -36,7 +35,10 @@ use provider_session_machines::{
     session_owner::{OwnerAddress, ProviderWireFailureKind, RunAttempt},
 };
 use router_clock::RuntimeClock;
-use row::{Command, Effect, OpeningRow, Rejected, RunResources, Slot as OpeningSlot};
+use row::{
+    Command, Effect, OpenCreateRequest, OpenRestoreRequest, OpeningRow, Rejected, RunResources,
+    Slot as OpeningSlot,
+};
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex, MutexGuard, OnceLock},
@@ -112,6 +114,16 @@ impl OpeningAttempts {
                 _command: Box::new(command),
             });
         };
+        self.commit(slot, row, instance, command)
+    }
+
+    fn commit(
+        &mut self,
+        slot: OpeningSlot,
+        row: OpeningRow,
+        instance: &OpeningInstance,
+        command: Command,
+    ) -> Result<Effect, Rejected> {
         match row.apply(instance, command) {
             Ok((next, effect)) => {
                 effect.fence();
@@ -121,7 +133,9 @@ impl OpeningAttempts {
                 Ok(effect)
             }
             Err(refused) => {
-                self.insert(slot, *refused.row);
+                if !refused.row.is_vacant() {
+                    self.insert(slot, *refused.row);
+                }
                 Err(refused.rejection)
             }
         }
@@ -131,70 +145,71 @@ impl OpeningAttempts {
         &mut self,
         opening: &OwnerOpenings,
         attempt: CreateAttempt,
-        requested: RequestedProviderSettings,
-    ) -> Result<(OpeningInstance, OpeningOffer, CancellationToken), LifecycleRefusal> {
+        request: OpenCreateRequest,
+    ) -> Result<(OpeningInstance, Effect), Rejected> {
         let identity = OpenAttempt::Create(attempt);
-        let phase = opening.idle_phase();
+        let command = Command::OpenCreate(Box::new(request));
         if !self.creates.is_empty() || !self.runs.is_empty() || self.port_refusal.is_some() {
-            return Err(opening.opening_refusal(self, identity));
+            return Err(Rejected {
+                reason: opening.opening_refusal(self, identity),
+                _command: Box::new(command),
+            });
         }
-        if !phase.accepts(OpeningEvent::OpenCreate) {
-            return Err(phase.refusal());
-        }
-        let instance = OpeningInstance::default();
-        let offer = OpeningOffer::default();
-        let stopped = opening.stopped.child_token();
-        self.insert(
-            OpeningSlot::Create(attempt),
-            OpeningRow::create(
-                identity,
-                instance.clone(),
-                offer.clone(),
-                requested,
-                stopped.clone(),
-            ),
-        );
-        Ok((instance, offer, stopped))
+        self.begin_vacant(opening, identity, command)
     }
 
     fn begin_restore(
         &mut self,
         opening: &OwnerOpenings,
-        run: RunAttempt<LoadAttempt>,
-        session: &HarnessSessionId,
-    ) -> Result<(OpeningInstance, OpeningOffer, RunResources), LifecycleRefusal> {
-        let identity = OpenAttempt::Restore(run);
-        let slot = OpeningSlot::Run(run.generation);
-        if let Some(refusal) = self.port_refusal {
-            return Err(refusal);
-        }
-        if opening
+        request: RestoreOpening,
+        stopped: CancellationToken,
+    ) -> Result<(OpeningInstance, Effect), Rejected> {
+        let identity = OpenAttempt::Restore(request.run);
+        let wrong_session = opening
             .session
             .get()
-            .is_some_and(|bound| bound != &session.0)
-        {
-            return Err(LifecycleRefusal::AttemptMismatch);
+            .is_some_and(|bound| bound != &request.session.0);
+        let command = Command::OpenRestore(Box::new(OpenRestoreRequest {
+            request,
+            owner: opening.owner,
+            stopped,
+        }));
+        if let Some(reason) = self.port_refusal {
+            return Err(Rejected {
+                reason,
+                _command: Box::new(command),
+            });
         }
-        if !self.creates.is_empty() || self.get(slot).is_some() {
-            return Err(opening.opening_refusal(self, identity));
+        if wrong_session {
+            return Err(Rejected {
+                reason: LifecycleRefusal::AttemptMismatch,
+                _command: Box::new(command),
+            });
         }
-        let mut phase = opening.idle_phase();
-        if phase.advance(OpeningEvent::BindSavedSession)
-            && opening.session.set(session.0.clone()).is_err()
-        {
-            return Err(LifecycleRefusal::AttemptMismatch);
+        if !self.creates.is_empty() || self.get(OpeningSlot::for_attempt(identity)).is_some() {
+            return Err(Rejected {
+                reason: opening.opening_refusal(self, identity),
+                _command: Box::new(command),
+            });
         }
-        if !phase.accepts(OpeningEvent::OpenRestore) {
-            return Err(phase.refusal());
-        }
+        self.begin_vacant(opening, identity, command)
+    }
+
+    fn begin_vacant(
+        &mut self,
+        opening: &OwnerOpenings,
+        identity: OpenAttempt,
+        command: Command,
+    ) -> Result<(OpeningInstance, Effect), Rejected> {
         let instance = OpeningInstance::default();
-        let offer = OpeningOffer::default();
-        let resources = RunResources::new(opening.owner, run.generation, &opening.stopped);
-        self.insert(
-            slot,
-            OpeningRow::restore(identity, instance.clone(), offer.clone(), resources.clone()),
-        );
-        Ok((instance, offer, resources))
+        let row = OpeningRow::vacant(identity, instance.clone(), opening.session.get().is_some());
+        let effect = self.commit(OpeningSlot::for_attempt(identity), row, &instance, command)?;
+        if let Effect::OfferRestore(start) = &effect {
+            opening
+                .session
+                .get_or_init(|| start.request.session.0.clone());
+        }
+        Ok((instance, effect))
     }
 
     fn begin_reader(

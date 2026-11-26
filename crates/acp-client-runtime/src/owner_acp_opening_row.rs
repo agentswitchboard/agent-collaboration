@@ -4,6 +4,7 @@
 mod reducer;
 
 use super::policy::{OpeningEvent as Edge, OpeningPhase, OpeningPolicy};
+use super::{OpenSetup, RestoreOpening};
 use crate::{
     RequestedProviderSettings,
     acp_transport::{LifecycleRoute, ReadmitOutcome},
@@ -33,6 +34,9 @@ pub(super) struct OpeningRow {
 }
 
 enum OpeningState {
+    Vacant {
+        bound: bool,
+    },
     OfferingCreate {
         offer: OpeningOffer,
         pending: PendingCreate,
@@ -206,6 +210,8 @@ impl OpeningState {
 
     fn phase(&self) -> OpeningPhase {
         match self {
+            Self::Vacant { bound: false } => OpeningPhase::UnboundIdle,
+            Self::Vacant { bound: true } => OpeningPhase::BoundIdle,
             Self::OfferingCreate { .. } => OpeningPhase::QueuedCreate,
             Self::AwaitingCreate(_) => OpeningPhase::AwaitingCreate,
             Self::HeldCreate(_) => OpeningPhase::HeldCreate,
@@ -243,7 +249,8 @@ impl OpeningState {
             | Self::HeldRestore(restore)
             | Self::PreparedRestore(restore) => Some(&restore.run),
             Self::OfferingClose { origin, .. } => origin.run(),
-            Self::OfferingCreate { .. }
+            Self::Vacant { .. }
+            | Self::OfferingCreate { .. }
             | Self::AwaitingCreate(_)
             | Self::HeldCreate(_)
             | Self::ConfiguringCreate(_)
@@ -282,6 +289,8 @@ impl OpeningState {
 }
 
 pub(super) enum Command {
+    OpenCreate(Box<OpenCreateRequest>),
+    OpenRestore(Box<OpenRestoreRequest>),
     WriterAccepted,
     WriterRefused,
     Created(Box<OwnerOpenedSession>),
@@ -316,6 +325,30 @@ pub(super) enum Command {
     RouteRemoved(LifecycleRoute),
 }
 
+pub(super) struct OpenCreateRequest {
+    pub(super) setup: OpenSetup,
+    pub(super) requested: RequestedProviderSettings,
+    pub(super) stopped: CancellationToken,
+}
+
+pub(super) struct OpenRestoreRequest {
+    pub(super) request: RestoreOpening,
+    pub(super) owner: OwnerAddress,
+    pub(super) stopped: CancellationToken,
+}
+
+pub(super) struct CreateStart {
+    pub(super) setup: OpenSetup,
+    pub(super) offer: OpeningOffer,
+    pub(super) stopped: CancellationToken,
+}
+
+pub(super) struct RestoreStart {
+    pub(super) request: RestoreOpening,
+    pub(super) offer: OpeningOffer,
+    pub(super) resources: RunResources,
+}
+
 pub(super) struct ReaderHandoff {
     pub(super) session: Box<OwnerOpenedSession>,
     pub(super) skills: Option<SkillView>,
@@ -324,6 +357,8 @@ pub(super) struct ReaderHandoff {
 }
 
 pub(super) enum Effect {
+    OfferCreate(Box<CreateStart>),
+    OfferRestore(Box<RestoreStart>),
     Fault(Box<StepFault>),
     Discarded(Box<Command>),
     DropSignal(oneshot::Sender<bool>, Box<Effect>),
@@ -506,37 +541,16 @@ impl OpeningRow {
         (route.is_removed() && self.phase() != OpeningPhase::RouteLost).then(|| route.clone())
     }
 
-    pub(super) fn create(
-        attempt: OpenAttempt,
-        instance: OpeningInstance,
-        offer: OpeningOffer,
-        requested: RequestedProviderSettings,
-        stopped: CancellationToken,
-    ) -> Self {
+    pub(super) fn vacant(attempt: OpenAttempt, instance: OpeningInstance, bound: bool) -> Self {
         Self {
             attempt,
             instance,
-            state: OpeningState::OfferingCreate {
-                offer,
-                pending: PendingCreate {
-                    requested: Box::new(requested),
-                    stopped,
-                },
-            },
+            state: OpeningState::Vacant { bound },
         }
     }
 
-    pub(super) fn restore(
-        attempt: OpenAttempt,
-        instance: OpeningInstance,
-        offer: OpeningOffer,
-        run: RunResources,
-    ) -> Self {
-        Self {
-            attempt,
-            instance,
-            state: OpeningState::OfferingRestore { offer, run },
-        }
+    pub(super) fn is_vacant(&self) -> bool {
+        matches!(self.state, OpeningState::Vacant { .. })
     }
 
     pub(super) fn apply(
@@ -684,7 +698,9 @@ impl Effect {
             | Self::ReserveSetter(_)
             | Self::WriteSetter(_)
             | Self::StartReader(_)
-            | Self::CloseOffer(_, _) => false,
+            | Self::CloseOffer(_, _)
+            | Self::OfferCreate(_)
+            | Self::OfferRestore(_) => false,
         }
     }
 }

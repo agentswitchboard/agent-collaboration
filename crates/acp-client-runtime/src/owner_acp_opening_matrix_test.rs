@@ -176,7 +176,7 @@ fn expected(from: P, event: E) -> Option<P> {
         }
         _ => match (from, event) {
             (Phase::UnboundIdle, Event::OpenCreate) => Phase::QueuedCreate,
-            (Phase::UnboundIdle, Event::BindSavedSession) => Phase::BoundIdle,
+            (Phase::UnboundIdle, Event::OpenRestore) => Phase::QueuedRestore,
             (Phase::BoundIdle, Event::OpenRestore) => Phase::QueuedRestore,
             (Phase::QueuedCreate, Event::WriterAccepted) => Phase::AwaitingCreate,
             (Phase::QueuedRestore, Event::WriterAccepted) => Phase::AwaitingRestore,
@@ -546,7 +546,6 @@ impl Fixture {
             // These are admission at the vacant table or read-only guidance
             // labels. The declaration test covers all their pairs as well.
             E::OpenCreate
-            | E::BindSavedSession
             | E::OpenRestore
             | E::WaitOpening
             | E::WaitClose

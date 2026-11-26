@@ -1,5 +1,6 @@
 //! Provisional creation and its separately admitted configuration worker.
 
+use super::row::{CreateStart, OpenCreateRequest};
 use super::{
     Arc, Command, CreateAttempt, Effect, HarnessSessionId, LifecycleRefusal, LifecycleReply, Mutex,
     OpenAttempt, OpenSetup, OpeningAttempts, OpeningFact, OpeningFailure, OpeningInstance,
@@ -21,8 +22,24 @@ impl OwnerOpenings {
         retired: RunRetirement,
     ) -> Result<(), LifecycleRefusal> {
         let slot = OpeningSlot::Create(attempt);
-        let (instance, offer, stopped) =
-            lock(&self.attempts).begin_create(self, attempt, requested)?;
+        let opening = lock(&self.attempts).begin_create(
+            self,
+            attempt,
+            OpenCreateRequest {
+                setup,
+                requested,
+                stopped: self.stopped.child_token(),
+            },
+        );
+        let (instance, effect) = opening.map_err(|rejected| rejected.reason)?;
+        let Effect::OfferCreate(start) = require_effect(Ok(effect), &self.wire)? else {
+            return Err(LifecycleRefusal::OperationNotOffered);
+        };
+        let CreateStart {
+            setup,
+            offer,
+            stopped,
+        } = *start;
         let receipt = match self
             .wire
             .offer_create(self.owner.incarnation, setup, &offer)

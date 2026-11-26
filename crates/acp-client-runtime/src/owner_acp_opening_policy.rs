@@ -60,7 +60,6 @@ impl StateTag for OpeningPhase {
 
 tagged_enum!(OpeningEvent,
     OpenCreate => "open_create",
-    BindSavedSession => "bind_saved_session",
     OpenRestore => "open_restore",
     WriterAccepted => "writer_accepted",
     WriterRefused => "writer_refused",
@@ -163,7 +162,7 @@ impl StateMachine for OpeningPolicy {
 
     opening_transitions! {
         UnboundIdle + OpenCreate => QueuedCreate;
-        UnboundIdle + BindSavedSession => BoundIdle;
+        UnboundIdle + OpenRestore => QueuedRestore;
         BoundIdle + OpenRestore => QueuedRestore;
         QueuedCreate + WriterAccepted => AwaitingCreate;
         QueuedRestore + WriterAccepted => AwaitingRestore;
@@ -322,6 +321,7 @@ impl StateMachine for OpeningPolicy {
 }
 
 impl OpeningPhase {
+    #[cfg(test)]
     pub(super) fn advance(&mut self, event: OpeningEvent) -> bool {
         if let Ok((phase, _)) = OpeningPolicy::transition(self, event) {
             *self = phase;

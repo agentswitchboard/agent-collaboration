@@ -1,6 +1,6 @@
 //! Restore receipts, replay publication, and exact held settings.
 
-use super::row::RestoreMilestone;
+use super::row::{RestoreMilestone, RestoreStart};
 use super::{
     Arc, Command, Effect, LifecycleRefusal, LifecycleReply, Mutex, OpeningAttempts, OpeningFact,
     OpeningFailure, OpeningInstance, OpeningSlot, OwnerAcpWire, OwnerOpenings, RestoreOpening,
@@ -23,16 +23,26 @@ impl OwnerOpenings {
         events: SessionLifecyclePort,
         retired: RunRetirement,
     ) -> Result<(), LifecycleRefusal> {
-        let RestoreOpening {
-            run,
-            session,
-            via,
-            setup,
-            requested_mode,
-        } = opening;
-        let slot = OpeningSlot::Run(run.generation);
-        let (instance, offer, resources) =
-            lock(&self.attempts).begin_restore(self, run, &session)?;
+        let slot = OpeningSlot::Run(opening.run.generation);
+        let admitted =
+            lock(&self.attempts).begin_restore(self, opening, self.stopped.child_token());
+        let (instance, effect) = admitted.map_err(|rejected| rejected.reason)?;
+        let Effect::OfferRestore(start) = super::create::require_effect(Ok(effect), &self.wire)?
+        else {
+            return Err(LifecycleRefusal::OperationNotOffered);
+        };
+        let RestoreStart {
+            request:
+                RestoreOpening {
+                    run,
+                    session,
+                    via,
+                    setup,
+                    requested_mode,
+                },
+            resources,
+            offer,
+        } = *start;
         let receipt = self.wire.offer_restore(
             RestoreOffer {
                 route: &resources.route,
