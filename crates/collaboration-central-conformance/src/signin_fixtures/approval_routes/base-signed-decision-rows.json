@@ -1,0 +1,66 @@
+{
+  "approval_requests": [
+    {"kind":"text","value":"019f0000-0000-7000-8000-0000000003f2"},
+    {"kind":"text","value":"019f0000-0000-7000-8000-00000000d201"},
+    {"kind":"text","value":"019f0000-0000-7000-8000-00000000c301"},
+    {"kind":"text","value":"019f0000-0000-7000-8000-00000000c302"},
+    {"kind":"text","value":"019f0000-0000-7000-8000-00000000c303"},
+    {"kind":"text","value":"019f0000-0000-7000-8000-00000000000a"},
+    {"kind":"text","value":"uS3nSalpu16NQPi7g2RqBk4ddzIpSf63QOalI2TOV4Y"},
+    {"kind":"text","value":"ended"},
+    {"kind":"text","value":"provider_approval"},
+    {"kind":"text","value":"019f0000-0000-7000-8000-00000000c304"},
+    {"kind":"text","value":"{\"kind\":\"providerApproval\",\"offer\":{\"title\":\"Read the plan\",\"description\":\"Private offer details\",\"subject\":null,\"options\":[{\"id\":1,\"label\":\"Once\",\"effect\":\"allow\",\"lasts\":{\"kind\":\"thisRequest\"}},{\"id\":2,\"label\":\"Decline\",\"effect\":\"decline\",\"lasts\":{\"kind\":\"thisRequest\"}},{\"id\":3,\"label\":\"This turn\",\"effect\":\"allow\",\"lasts\":{\"kind\":\"thisTurn\",\"kept\":\"agentMemory\"}},{\"id\":4,\"label\":\"This session\",\"effect\":\"allow\",\"lasts\":{\"kind\":\"thisSession\",\"kept\":\"agentMemory\"}},{\"id\":5,\"label\":\"Always\",\"effect\":\"allow\",\"lasts\":{\"kind\":\"keptUntilChanged\",\"kept\":\"agentRulesFile\"}},{\"id\":6,\"label\":\"Provider default\",\"effect\":\"allow\",\"lasts\":{\"kind\":\"notVerified\"}},{\"id\":8,\"label\":\"Remember decline\",\"effect\":\"decline\",\"lasts\":{\"kind\":\"keptUntilChanged\",\"kept\":\"agentRulesFile\"}},{\"id\":9,\"label\":\"Remember abort\",\"effect\":\"abort\",\"lasts\":{\"kind\":\"keptUntilChanged\",\"kept\":\"agentRulesFile\"}}]}}"},
+    {"kind":"null"},
+    {"kind":"text","value":"pending"},
+    {"kind":"text","value":"2030-03-17T17:46:30.000Z"},
+    {"kind":"integer","value":1900003590000},
+    {"kind":"null"},
+    {"kind":"null"},
+    {"kind":"text","value":"2030-03-17T17:46:40.000Z"},
+    {"kind":"text","value":"{\"requestId\":\"019f0000-0000-7000-8000-00000000000a\",\"contentsDigest\":\"uS3nSalpu16NQPi7g2RqBk4ddzIpSf63QOalI2TOV4Y\",\"ending\":{\"kind\":\"providerApproval\",\"ending\":{\"kind\":\"decided\",\"answer\":1,\"by\":{\"kind\":\"person\",\"personId\":\"019f0000-0000-7000-8000-00000000d202\"}}}}"},
+    {"kind":"text","value":"019f0000-0000-7000-8000-000000000064"},
+    {"kind":"text","value":"owed"},
+    {"kind":"text","value":"2030-03-17T17:46:30.000Z"},
+    {"kind":"text","value":"2030-03-17T17:46:40.000Z"},
+    {"kind":"integer","value":1905184000000},
+    {"kind":"text","value":"{\"kind\":\"decidedEarlier\"}"}
+  ],
+  "approval_request_destinations": [
+    {"kind":"text","value":"019f0000-0000-7000-8000-0000000007da"},
+    {"kind":"text","value":"019f0000-0000-7000-8000-0000000003f2"},
+    {"kind":"text","value":"019f0000-0000-7000-8000-00000000d201"},
+    {"kind":"text","value":"people"},
+    {"kind":"null"},
+    {"kind":"null"},
+    {"kind":"null"},
+    {"kind":"null"},
+    {"kind":"text","value":"2030-03-17T17:46:30.000Z"},
+    {"kind":"text","value":"2030-03-17T17:46:30.000Z"},
+    {"kind":"text","value":"019f0000-0000-7000-8000-00000000000a"},
+    {"kind":"integer","value":0},
+    {"kind":"null"}
+  ],
+  "actor_identities": [
+    {"kind":"text","value":"01ba60d3-3800-7340-807e-f05b88610744"},
+    {"kind":"text","value":"person"},
+    {"kind":"text","value":"m15"},
+    {"kind":"text","value":"2030-03-17T17:46:40.000Z"},
+    {"kind":"text","value":"2030-03-17T17:46:40.000Z"}
+  ],
+  "actor_persons": [
+    {"kind":"text","value":"01ba60d3-3800-7340-807e-f05b88610744"},
+    {"kind":"text","value":"019f0000-0000-7000-8000-00000000d202"},
+    {"kind":"text","value":"2030-03-17T17:46:40.000Z"},
+    {"kind":"text","value":"2030-03-17T17:46:40.000Z"}
+  ],
+  "runtime_request_log": [
+    {"kind":"text","value":"019f0000-0000-7000-8000-000000000064"},
+    {"kind":"text","value":"01ba60d3-3800-7340-807e-f05b88610744"},
+    {"kind":"text","value":"0GynANWEMI0U4e_ocPhaN3jwlhdnP1T0WbBDamZTx6U"},
+    {"kind":"text","value":"{\"kind\":\"savedDecision\",\"decision\":{\"by\":{\"kind\":\"person\",\"personId\":\"019f0000-0000-7000-8000-00000000d202\"},\"answer\":{\"kind\":\"approval\",\"optionId\":1}}}"},
+    {"kind":"text","value":"2030-03-17T17:46:40+00:00"},
+    {"kind":"text","value":"2030-03-17T17:46:40+00:00"},
+    {"kind":"text","value":"019f0000-0000-7000-8000-0000000003f2"}
+  ]
+}
