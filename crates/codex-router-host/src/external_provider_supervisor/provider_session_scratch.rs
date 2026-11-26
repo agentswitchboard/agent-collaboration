@@ -1,34 +1,20 @@
-//! The scratch folder a Claude or Cursor session is created with (R4).
-//!
-//! Each create gets `<router root>/scratch/session-<uuidv7>`, prepared the same
-//! way as a Codex session's (owner-private, stamped as used, under the scope
-//! lock the Host's sweep honours). The folder is not registered as open: as
-//! `collaboration_runtime::OpenScratchScopes` records, these sessions are kept
-//! by the use stamp and the folder's newest change.
+//! The optional scratch preparation supplied to a provider create.
 
-use std::path::{Path, PathBuf};
+use std::{path::PathBuf, sync::Arc};
 
-/// Prepares a fresh session folder under `scratch_root`; `Ok(None)` when this
-/// supervisor grants no folder.
+pub(crate) type PrepareProviderScratch = Arc<
+    dyn Fn() -> futures_util::future::BoxFuture<'static, Result<PathBuf, &'static str>>
+        + Send
+        + Sync,
+>;
+
 pub(super) async fn prepare_provider_session_scratch(
-    scratch_root: Option<&Path>,
-    clock: &dyn router_clock::RuntimeClock,
+    prepare_scratch: Option<&PrepareProviderScratch>,
 ) -> Result<Option<PathBuf>, &'static str> {
-    let Some(scratch_root) = scratch_root else {
-        return Ok(None);
-    };
-    let scope = collaboration_runtime::new_service_uuid()
-        .map_err(|_| "session scratch scope could not be minted")?;
-    let folder = scratch_root.join(format!("session-{}", String::from(scope)));
-    let prepared = folder.clone();
-    let used_at = std::time::SystemTime::from(clock.utc_now());
-    tokio::task::spawn_blocking(move || {
-        codex_native_integration::prepare_scratch_scope_used_at(&prepared, used_at)
-    })
-    .await
-    .map_err(|_| "session scratch folder preparation did not complete")?
-    .map_err(|_| "session scratch folder could not be prepared")?;
-    Ok(Some(folder))
+    match prepare_scratch {
+        Some(prepare) => prepare().await.map(Some),
+        None => Ok(None),
+    }
 }
 
 #[cfg(test)]

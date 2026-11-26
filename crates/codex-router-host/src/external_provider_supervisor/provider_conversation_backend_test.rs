@@ -50,7 +50,10 @@ async fn start_and_show_report_requested_and_actual_mode_with_the_reason() {
         }],
         std::sync::Arc::new(tokio::sync::Mutex::new(store)),
         None,
-        Some(base.join("scratch")),
+        Some(crate::provider_session_scratch::provider_scratch_preparer(
+            base.join("scratch"),
+            clock.clone(),
+        )),
         clock,
     )
     .unwrap();

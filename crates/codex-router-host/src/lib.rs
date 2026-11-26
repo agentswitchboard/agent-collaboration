@@ -32,6 +32,7 @@ mod provider_acp_route_claim;
 mod provider_create_result;
 mod provider_queue_operation_registry;
 mod provider_session_command_port;
+mod provider_session_scratch;
 mod provider_session_setup;
 #[cfg(any(test, feature = "test-support"))]
 pub mod provider_test_support;

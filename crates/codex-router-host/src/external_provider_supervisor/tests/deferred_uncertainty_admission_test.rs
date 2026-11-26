@@ -8,6 +8,7 @@
 //! records every request it reads.
 
 use super::*;
+use std::path::PathBuf;
 
 /// The text of the send each control refuses; no agent frame may carry it.
 const CONTROL_TEXT: &str = "control";
