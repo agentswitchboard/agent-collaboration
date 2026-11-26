@@ -96,6 +96,65 @@ fn steering_and_queue_share_validated_multi_block_content_codec() {
     }
 }
 
+#[test]
+fn steer_and_queue_keep_exact_profile_content_wire_bytes() {
+    const STEER: &str = concat!(
+        r#"{"sessionId":"s1","prompt":["#,
+        r#"{"type":"text","text":"start\nhere"},"#,
+        r#"{"type":"resourceLink","uri":"https://example.test/spec","name":"Spec","mimeType":"text/plain"},"#,
+        r#"{"type":"image","mimeType":"image/png","data":"eA==","uri":"file:///image.png"},"#,
+        r#"{"type":"audio","mimeType":"audio/wav","data":"eA=="},"#,
+        r#"{"type":"embeddedResource","uri":"resource://note","mimeType":"text/plain","text":"note"}"#,
+        r#"],"_meta":{"steering":{"idleBehavior":"promptRequired"}}}"#,
+    );
+    const QUEUE: &str = concat!(
+        r#"{"sessionId":"s1","prompt":["#,
+        r#"{"type":"resourceLink","uri":"https://example.test/spec","name":"Spec"},"#,
+        r#"{"type":"image","mimeType":"image/png","data":"eA=="},"#,
+        r#"{"type":"embeddedResource","uri":"resource://note","blob":"eA=="}]}"#,
+    );
+
+    let steering: SteeringRequest = serde_json::from_str(STEER).expect("decode steering bytes");
+    let queued: QueueAddRequest = serde_json::from_str(QUEUE).expect("decode queue bytes");
+    let steer_without_metadata: SteeringRequest =
+        serde_json::from_str(QUEUE).expect("decode steering bytes without metadata");
+
+    assert_eq!(
+        serde_json::to_string(&steering).expect("steering JSON"),
+        STEER
+    );
+    assert_eq!(serde_json::to_string(&queued).expect("queue JSON"), QUEUE);
+    assert_eq!(
+        serde_json::to_string(&steer_without_metadata).expect("steering JSON without metadata"),
+        QUEUE
+    );
+
+    for (block, error) in [
+        (
+            r#"{"type":"text","text":"note","extra":true}"#,
+            "unknown field",
+        ),
+        (
+            r#"{"type":"embeddedResource","uri":"resource://note","text":"note","blob":"eA=="}"#,
+            "embedded resource requires exactly one of text or blob",
+        ),
+        (
+            r#"{"type":"embeddedResource","uri":"resource://note"}"#,
+            "embedded resource requires exactly one of text or blob",
+        ),
+    ] {
+        let request = format!(r#"{{"sessionId":"s1","prompt":[{block}]}}"#);
+        let steering = serde_json::from_str::<SteeringRequest>(&request).expect_err(block);
+        let queue = serde_json::from_str::<QueueAddRequest>(&request).expect_err(block);
+        assert!(steering.to_string().contains(error), "{steering}");
+        assert!(queue.to_string().contains(error), "{queue}");
+    }
+
+    let unknown_request_field = r#"{"sessionId":"s1","prompt":[],"extra":true}"#;
+    assert!(serde_json::from_str::<SteeringRequest>(unknown_request_field).is_err());
+    assert!(serde_json::from_str::<QueueAddRequest>(unknown_request_field).is_err());
+}
+
 // R20, Program Design: queue operations carry the Session ID on every request.
 #[test]
 fn queue_requests_have_distinct_methods_and_typed_ids() {

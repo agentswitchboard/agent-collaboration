@@ -84,7 +84,7 @@ export const rows: InventoryRow[] = [
     disposition: "boundary-encoding",
   },
   {
-    file: "crates/provider-session-machines/src/provider_model_reasoning.rs",
+    file: "crates/switchboard-harness-contracts/src/provider_model_reasoning.rs",
     line: 8,
     owner: "router-extension",
     kind: "rust-type",

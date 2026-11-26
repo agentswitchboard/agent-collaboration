@@ -660,13 +660,15 @@ fn run_auto_settings(
     };
     AcceptedRunSettings {
         router_auto_requested,
-        catalogue: std::sync::Arc::new(ProviderSettingsCatalog {
-            current_mode: Some("auto".into()),
-            modes: vec![ProviderSettingChoice {
-                value: "auto".into(),
-                label: "Auto".into(),
-            }],
-            ..ProviderSettingsCatalog::default()
-        }),
+        catalogue: std::sync::Arc::new(ProviderSettingsCatalog::from_record(
+            provider_session_machines::ProviderSettingsCatalogRecord {
+                current_mode: Some("auto".into()),
+                modes: vec![ProviderSettingChoice {
+                    value: "auto".into(),
+                    label: "Auto".into(),
+                }],
+                ..Default::default()
+            },
+        )),
     }
 }

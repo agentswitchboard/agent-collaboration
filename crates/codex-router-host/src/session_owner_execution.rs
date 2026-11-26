@@ -5,9 +5,14 @@ use crate::{
     session_owner_publication::SessionOwnerPublisher,
     session_owner_storage::SessionOwnerStorage,
 };
+#[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
+use acp_client_runtime::work_call_observation::{
+    WorkWitnessEvent, WorkWitnessKind, record_host_work,
+};
 use acp_client_runtime::{
     ExternalProviderRuntimeError,
     acp_transport::TransportRun,
+    owner_acp_binding::OwnerAcpBinding,
     owner_session_open::{OwnerOpenedSession, OwnerSessionOpenSetup},
     owner_session_setting::{OwnerSettingWirePlan, RestoreSettingPlan},
     owner_session_stream::OwnerStreamTarget,
@@ -21,11 +26,13 @@ use provider_session_machines::{
     ProviderSettingKind, ProviderSettingsCatalog, SessionGeneration,
     session_lifecycle_machine::{LoadAttempt, RestoreVia},
     session_owner::{
-        AuthorizedWork, DispatchAuthorization, DispatchResult, ObservationCause, ObservedSetting,
+        AuthorizedWork, CancelDrainStart, CancelDrainWait, CancelReservationRefusal,
+        DispatchAuthorization, DispatchResult, HarnessBinding, ObservationCause, ObservedSetting,
         OwnerAddress, OwnerEffect, OwnerEvent, OwnerSetting, PreparationStage, PublicationBatch,
-        PublicationFact, RestoreFailure, RestoreLoadReadback, RestoreModeOutcome,
-        RestorePreparation, RunAttempt, SessionOwnerReply, SessionPublication, SessionWireRequest,
-        SessionWireResult, SettingEvidence, TurnMembership, WireOutcome,
+        PublicationFact, RefusedWorkMove, ReplyAdmission, ReservedWorkReply, RestoreFailure,
+        RestoreLoadReadback, RestoreModeOutcome, RestorePreparation, RunAttempt, SessionOwnerReply,
+        SessionPublication, SessionWireRequest, SessionWireResult, SettingEvidence, SettingOffer,
+        SteerIdlePolicy, TurnMembership, WireOutcome, WorkOfferRefusal, WriterState,
     },
     session_setting_machine::SettingValueId,
 };
@@ -36,14 +43,16 @@ use std::{
 };
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
+#[cfg(test)]
+#[path = "session_owner_work_refusal_test.rs"]
+mod work_refusal_tests;
+
 pub struct SessionOwnerExecution {
     target: SessionRef,
     wire: Arc<OwnerAcpWire>,
     approvals:
         acp_client_runtime::OwnerApprovalBindings<crate::acp_interaction_port::HostInteractionPort>,
-    cancel_drains: acp_client_runtime::OwnerCancelDrainExecutor<
-        crate::acp_interaction_port::HostInteractionPort,
-    >,
+    work_binding: Box<dyn HarnessBinding>,
     storage: SessionOwnerStorage,
     publisher: SessionOwnerPublisher,
     calls: Arc<SessionOwnerCalls>,
@@ -88,12 +97,17 @@ impl SessionOwnerExecution {
         work_roots: crate::provider_work_roots::ProviderWorkRoots,
     ) -> Self {
         let tasks = storage.task_tracker();
-        let cancel_drains = acp_client_runtime::OwnerCancelDrainExecutor::new(approvals.clone());
+        let work_binding = Box::new(OwnerAcpBinding::new(
+            Arc::clone(&wire),
+            String::from(target.session_id.clone()),
+            approvals.clone(),
+            tasks.clone(),
+        ));
         Self {
             target,
             wire,
             approvals,
-            cancel_drains,
+            work_binding,
             storage,
             publisher,
             calls,
@@ -333,12 +347,19 @@ impl SessionOwnerExecution {
         work: AuthorizedWork,
         completions: &OwnerCompletionPort,
     ) -> Result<Option<OwnerEvent>, OwnerTaskError> {
-        let provider_id = self.session_id();
         let notice = match &work {
             AuthorizedWork::Prompt(input) | AuthorizedWork::Steer(input) => {
                 self.calls.notice(&input.input)
             }
             AuthorizedWork::Cancel(_) | AuthorizedWork::Setting { .. } => None,
+        };
+        #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
+        let witness_kind = if notice.is_some() {
+            Some(WorkWitnessKind::ManagedNotice)
+        } else if matches!(&work, AuthorizedWork::Prompt(_)) {
+            Some(WorkWitnessKind::Prompt)
+        } else {
+            None
         };
         let setting_operation = match &work {
             AuthorizedWork::Setting { setting, .. } => Some(setting.change.attempt.0),
@@ -347,32 +368,25 @@ impl SessionOwnerExecution {
         let offered = match work {
             AuthorizedWork::Cancel(_) => return Err(OwnerTaskError::ExecutorStopped),
             AuthorizedWork::Prompt(input) => {
-                let content = self.calls.content(&input.input);
-                if let Some(content) = content {
-                    let completion = completions.reserve(owner)?;
-                    let approval = self.install_approval_for(owner, &input);
-                    let Ok(approval) = approval else {
-                        return Ok(Some(OwnerEvent::Dispatch(
-                            DispatchResult::DefinitelyUnsent(authorization),
-                        )));
-                    };
-                    let offered = self
-                        .wire
-                        .offer_prompt(
-                            authorization.clone(),
-                            input.turn,
-                            provider_id,
-                            content,
-                            completion,
-                        )
-                        .is_ok();
-                    if offered && let Some(run) = self.routes.get_mut(&input.generation) {
-                        run.approval = approval;
-                    }
-                    offered
-                } else {
-                    false
+                let Some(content) = self.calls.content(&input.input) else {
+                    return Ok(Some(definitely_unsent(authorization)));
+                };
+                let completion = reserve_work_reply(completions, owner)?;
+                let Ok(approval) = self.install_approval_for(owner, &input) else {
+                    return Ok(Some(definitely_unsent(authorization)));
+                };
+                let offered = self.work_binding.offer_prompt(
+                    authorization.clone(),
+                    input.turn,
+                    content.as_harness_content(),
+                    completion,
+                );
+                if offered.is_ok()
+                    && let Some(run) = self.routes.get_mut(&input.generation)
+                {
+                    run.approval = approval;
                 }
+                offered
             }
             AuthorizedWork::Steer(input) => {
                 let approver = self
@@ -382,63 +396,68 @@ impl SessionOwnerExecution {
                     .filter(|approval| approval.turn == input.turn)
                     .map(|approval| &approval.approver);
                 self.calls.capture_steer_target(&input, approver);
-                let content = self.calls.content(&input.input);
-                if let Some(content) = content {
-                    let completion = completions.reserve(owner)?;
-                    if notice.is_some() {
-                        self.wire
-                            .offer_exact_steer(
-                                authorization.clone(),
-                                provider_id,
-                                content,
-                                completion,
-                            )
-                            .is_ok()
-                    } else {
-                        self.wire
-                            .offer_steer(authorization.clone(), provider_id, content, completion)
-                            .is_ok()
-                    }
+                let Some(content) = self.calls.content(&input.input) else {
+                    return Ok(Some(definitely_unsent(authorization)));
+                };
+                let completion = reserve_work_reply(completions, owner)?;
+                let idle = if notice.is_some() {
+                    SteerIdlePolicy::Refuse
                 } else {
-                    false
-                }
+                    SteerIdlePolicy::AllowOwnerPrompt
+                };
+                self.work_binding.offer_steer(
+                    authorization.clone(),
+                    content.as_harness_content(),
+                    idle,
+                    completion,
+                )
             }
             AuthorizedWork::Setting { setting, value, .. } => {
                 if !self.calls.settlement_requested(setting.change.attempt.0) {
-                    return Ok(Some(OwnerEvent::Dispatch(
-                        DispatchResult::DefinitelyUnsent(authorization),
-                    )));
+                    return Ok(Some(definitely_unsent(authorization)));
                 }
-                match self.wire.offer_explicit_setting(
+                match self.work_binding.offer_setting(
                     authorization.clone(),
-                    provider_id,
                     setting.kind,
-                    value.0,
-                    completions.reserve(owner)?,
+                    value,
+                    reserve_work_reply(completions, owner)?,
                 ) {
-                    Ok(Some(outcome)) => return Ok(Some(OwnerEvent::Dispatch(outcome))),
-                    Ok(None) => true,
-                    Err(_) => false,
+                    Ok(SettingOffer::Settled(outcome)) => {
+                        return Ok(Some(OwnerEvent::Dispatch(outcome)));
+                    }
+                    Ok(SettingOffer::Offered) => Ok(()),
+                    Err(refusal) => Err(refusal),
                 }
             }
         };
-        if !offered {
-            return Ok(Some(OwnerEvent::Dispatch(
-                DispatchResult::DefinitelyUnsent(authorization),
+        if let Err(refusal) = offered {
+            return Ok(Some(settle_refused_offer(
+                authorization,
+                refusal,
+                |authorization| self.work_binding.take_back(authorization),
             )));
         }
-        if let Some(notice) = notice {
-            return Ok(notice
-                .take(&authorization, &self.wire)
-                .map(OwnerEvent::Dispatch));
+        #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
+        if let Some(work_kind) = witness_kind {
+            record_host_work(&authorization, WorkWitnessEvent::Offered { work_kind });
         }
-        Ok(self
-            .wire
-            .take_when(&authorization, || {
-                setting_operation.is_none_or(|operation| self.calls.settlement_requested(operation))
-            })
-            .ok()
-            .map(OwnerEvent::Dispatch))
+        let handed_over = if let Some(notice) = notice {
+            notice.take(&authorization, self.work_binding.as_ref())
+        } else {
+            self.work_binding
+                .hand_over(&authorization, &mut || {
+                    setting_operation
+                        .is_none_or(|operation| self.calls.settlement_requested(operation))
+                })
+                .ok()
+        };
+        #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
+        if let Some(work_kind) = witness_kind
+            && matches!(&handed_over, Some(DispatchResult::Taken(_)))
+        {
+            record_host_work(&authorization, WorkWitnessEvent::NewlyTaken { work_kind });
+        }
+        Ok(handed_over.map(OwnerEvent::Dispatch))
     }
 
     fn activate_reader(
@@ -648,26 +667,35 @@ impl SessionOwnerPorts for SessionOwnerExecution {
                     .get(&authorization.run)
                     .map(|route| route.cancel.clone())
                     .unwrap_or_default();
-                let session = self.session_id();
-                self.cancel_drains.begin(
-                    &session,
-                    authorization,
-                    owner,
-                    completions,
-                    &self.tasks,
-                    stop,
-                )
+                match self.work_binding.begin_cancel(
+                    authorization.clone(),
+                    &mut || completions.reserve_work_reply(owner),
+                    Box::pin(stop.cancelled_owned()),
+                ) {
+                    CancelDrainStart::AlreadyDrained => Ok(Some(OwnerEvent::Dispatch(
+                        DispatchResult::CancelDrainFinished(authorization),
+                    ))),
+                    CancelDrainStart::Waiting => Ok(None),
+                    CancelDrainStart::Refused(CancelReservationRefusal::Full) => {
+                        Err(OwnerTaskError::CompletionCapacity)
+                    }
+                    CancelDrainStart::Refused(CancelReservationRefusal::Stopped) => {
+                        Err(OwnerTaskError::ExecutorStopped)
+                    }
+                }
             }
             OwnerEffect::TakeCancel {
                 authorization,
                 expired,
             } => {
-                let session = self.session_id();
                 #[cfg(any(test, feature = "test-support"))]
                 let run = Self::transport_run(owner, authorization.run);
-                let result = self
-                    .cancel_drains
-                    .take(&self.wire, session, authorization, expired);
+                let wait = if expired {
+                    CancelDrainWait::Expired
+                } else {
+                    CancelDrainWait::Drained
+                };
+                let result = self.work_binding.send_cancel(authorization, wait);
                 #[cfg(any(test, feature = "test-support"))]
                 self.wire.fence_dispatch_for_test(
                     run,
@@ -675,14 +703,11 @@ impl SessionOwnerPorts for SessionOwnerExecution {
                 );
                 Ok(Some(OwnerEvent::Dispatch(result)))
             }
-            OwnerEffect::Revoke { authorization, .. } => {
-                self.cancel_drains.discard(&authorization);
-                let result = self
-                    .wire
-                    .revoke(&authorization)
-                    .unwrap_or(DispatchResult::Revoked(authorization));
-                Ok(Some(OwnerEvent::Dispatch(result)))
-            }
+            OwnerEffect::Revoke { authorization, .. } => Ok(Some(OwnerEvent::Dispatch(
+                take_back_work(authorization, |authorization| {
+                    self.work_binding.take_back(authorization)
+                }),
+            ))),
             OwnerEffect::CallbackMembership(change) => {
                 self.wire.apply_membership(owner.incarnation, change);
                 if let TurnMembership::End { turn, .. } = change {
@@ -875,4 +900,48 @@ fn lock<T>(value: &Mutex<T>) -> MutexGuard<'_, T> {
     value
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn reserve_work_reply(
+    completions: &OwnerCompletionPort,
+    owner: OwnerAddress,
+) -> Result<ReservedWorkReply, OwnerTaskError> {
+    match completions.reserve_work_reply(owner) {
+        ReplyAdmission::Reserved(reply) => Ok(reply),
+        ReplyAdmission::Refused(WriterState::Full) => Err(OwnerTaskError::CompletionCapacity),
+        ReplyAdmission::Refused(WriterState::Stopped) => Err(OwnerTaskError::ExecutorStopped),
+    }
+}
+
+fn definitely_unsent(authorization: DispatchAuthorization) -> OwnerEvent {
+    OwnerEvent::Dispatch(DispatchResult::DefinitelyUnsent(authorization))
+}
+
+fn settle_refused_offer(
+    authorization: DispatchAuthorization,
+    refusal: WorkOfferRefusal,
+    take_back: impl FnOnce(
+        &DispatchAuthorization,
+    ) -> Result<
+        DispatchResult,
+        provider_session_machines::session_owner::TakeBackRefusal,
+    >,
+) -> OwnerEvent {
+    if refusal.valid_moves().contains(&RefusedWorkMove::TakeBack) {
+        OwnerEvent::Dispatch(take_back_work(authorization, take_back))
+    } else {
+        definitely_unsent(authorization)
+    }
+}
+
+fn take_back_work(
+    authorization: DispatchAuthorization,
+    take_back: impl FnOnce(
+        &DispatchAuthorization,
+    ) -> Result<
+        DispatchResult,
+        provider_session_machines::session_owner::TakeBackRefusal,
+    >,
+) -> DispatchResult {
+    take_back(&authorization).unwrap_or(DispatchResult::Revoked(authorization))
 }

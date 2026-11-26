@@ -96,23 +96,36 @@ fn validate_definition(mut schema: Value, name: &str) -> jsonschema::Validator {
     jsonschema::validator_for(&schema).expect("draft 2020-12 validator")
 }
 
+fn export_schema(generated: &Value) -> String {
+    let mut json = serde_json::to_string(generated).expect("encoded schema");
+    // Keep each definition on its own line, like the tool success schema snapshot.
+    json = json.replace(",\"$defs\":{", ",\n\"$defs\":{\n");
+    for name in generated["$defs"].as_object().expect("definitions").keys() {
+        let definition = format!(",\"{name}\":");
+        json = json.replace(&definition, &format!(",\n\"{name}\":"));
+    }
+    format!("{json}\n")
+}
+
 // Rejects checking in an export that has drifted from the Rust wire types.
 #[test]
 fn published_schema_matches_the_rust_types() {
     let generated = generated_schema();
     if std::env::var_os("BLESS_PROVIDER_OBSERVATION_SCHEMA").is_some() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(SCHEMA_FILE);
-        let mut json = serde_json::to_string(&generated).expect("encoded schema");
-        // Keep each definition on its own line, like the tool success schema snapshot.
-        json = json.replace(",\"$defs\":{", ",\n\"$defs\":{\n");
-        for name in generated["$defs"].as_object().expect("definitions").keys() {
-            let definition = format!(",\"{name}\":");
-            json = json.replace(&definition, &format!(",\n\"{name}\":"));
-        }
-        std::fs::write(path, format!("{json}\n")).expect("write provider observation export");
+        std::fs::write(path, export_schema(&generated)).expect("write provider observation export");
         return;
     }
     assert_eq!(generated, published_schema());
+}
+
+#[test]
+fn published_observation_schema_keeps_export_bytes() {
+    let exported = export_schema(&generated_schema());
+    assert!(
+        exported == PUBLISHED,
+        "provider observation export bytes drifted"
+    );
 }
 
 // Rejects schemas that silently add or drop a record branch, or infer an open record shape.

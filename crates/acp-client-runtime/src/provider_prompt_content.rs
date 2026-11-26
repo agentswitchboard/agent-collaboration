@@ -7,56 +7,58 @@ use agent_client_protocol::schema::v1::{
     ImageContent, ResourceLink, TextContent, TextResourceContents,
 };
 use session_event_model::{PromptContent, PromptEmbeddedSource};
+use std::sync::Arc;
+use switchboard_harness_contracts::HarnessContent;
 
 pub(crate) fn join_submitted_text_blocks<'a>(blocks: impl Iterator<Item = &'a str>) -> String {
     blocks.collect()
 }
 
 /// Translate validated Session content only at the ACP client edge.
-pub(crate) fn acp_blocks_from_prompt_content(contents: Vec<PromptContent>) -> Vec<ContentBlock> {
+pub(crate) fn acp_blocks_from_prompt_content(contents: &[PromptContent]) -> Vec<ContentBlock> {
     contents
-        .into_iter()
+        .iter()
         .map(|content| match content {
             PromptContent::Text { text } => {
-                ContentBlock::Text(TextContent::new(text.into_string()))
+                ContentBlock::Text(TextContent::new(text.as_str().to_owned()))
             }
             PromptContent::ResourceLink {
                 uri,
                 name,
                 mime_type,
             } => ContentBlock::ResourceLink(
-                ResourceLink::new(name.into_string(), uri.into_string())
-                    .mime_type(mime_type.map(|value| value.into_string())),
+                ResourceLink::new(name.as_str().to_owned(), uri.as_str().to_owned())
+                    .mime_type(mime_type.as_ref().map(|value| value.as_str().to_owned())),
             ),
             PromptContent::Image {
                 mime_type,
                 data,
                 uri,
             } => ContentBlock::Image(
-                ImageContent::new(data.into_string(), mime_type.into_string())
-                    .uri(uri.map(|value| value.into_string())),
+                ImageContent::new(data.as_str().to_owned(), mime_type.as_str().to_owned())
+                    .uri(uri.as_ref().map(|value| value.as_str().to_owned())),
             ),
             PromptContent::Audio { mime_type, data } => ContentBlock::Audio(AudioContent::new(
-                data.into_string(),
-                mime_type.into_string(),
+                data.as_str().to_owned(),
+                mime_type.as_str().to_owned(),
             )),
             PromptContent::EmbeddedResource {
                 uri,
                 mime_type,
                 source,
             } => {
-                let resource_uri = uri.into_string();
-                let resource_mime_type = mime_type.map(|value| value.into_string());
+                let resource_uri = uri.as_str().to_owned();
+                let resource_mime_type = mime_type.as_ref().map(|value| value.as_str().to_owned());
                 let resource = match source {
                     PromptEmbeddedSource::Text(text) => {
                         EmbeddedResourceResource::TextResourceContents(
-                            TextResourceContents::new(text.into_string(), resource_uri)
+                            TextResourceContents::new(text.as_str().to_owned(), resource_uri)
                                 .mime_type(resource_mime_type),
                         )
                     }
                     PromptEmbeddedSource::Blob(blob) => {
                         EmbeddedResourceResource::BlobResourceContents(
-                            BlobResourceContents::new(blob.into_string(), resource_uri)
+                            BlobResourceContents::new(blob.as_str().to_owned(), resource_uri)
                                 .mime_type(resource_mime_type),
                         )
                     }
@@ -69,7 +71,7 @@ pub(crate) fn acp_blocks_from_prompt_content(contents: Vec<PromptContent>) -> Ve
 
 #[derive(Clone, Debug)]
 pub struct ProviderPromptContent {
-    blocks: Vec<ContentBlock>,
+    contents: Arc<[PromptContent]>,
     history_text: Option<String>,
     selected_skills: Vec<session_event_model::SelectedSkill>,
 }
@@ -79,49 +81,51 @@ impl ProviderPromptContent {
         contents: Vec<PromptContent>,
         capabilities: &ProviderCapabilityReport,
     ) -> Result<Self, ExternalProviderRuntimeError> {
-        Self::new(acp_blocks_from_prompt_content(contents), capabilities)
-    }
-
-    pub(crate) fn new(
-        blocks: Vec<ContentBlock>,
-        capabilities: &ProviderCapabilityReport,
-    ) -> Result<Self, ExternalProviderRuntimeError> {
-        for block in &blocks {
-            let unsupported = match block {
-                ContentBlock::Text(_) | ContentBlock::ResourceLink(_) => None,
-                ContentBlock::Image(_) if !capabilities.accepts_image => Some("image"),
-                ContentBlock::Audio(_) if !capabilities.accepts_audio => Some("audio"),
-                ContentBlock::Resource(_) if !capabilities.accepts_embedded_resource => {
+        for content in &contents {
+            let unsupported = match content {
+                PromptContent::Image { .. } if !capabilities.accepts_image => Some("image"),
+                PromptContent::Audio { .. } if !capabilities.accepts_audio => Some("audio"),
+                PromptContent::EmbeddedResource { .. }
+                    if !capabilities.accepts_embedded_resource =>
+                {
                     Some("embeddedResource")
                 }
-                ContentBlock::Image(_) | ContentBlock::Audio(_) | ContentBlock::Resource(_) => None,
-                _ => Some("unknown"),
+                PromptContent::Text { .. }
+                | PromptContent::ResourceLink { .. }
+                | PromptContent::Image { .. }
+                | PromptContent::Audio { .. }
+                | PromptContent::EmbeddedResource { .. } => None,
             };
             if let Some(content_type) = unsupported {
                 return Err(ExternalProviderRuntimeError::UnsupportedContent { content_type });
             }
         }
         let history_text =
-            join_submitted_text_blocks(blocks.iter().filter_map(|block| match block {
-                ContentBlock::Text(content) => Some(content.text.as_str()),
+            join_submitted_text_blocks(contents.iter().filter_map(|content| match content {
+                PromptContent::Text { text } => Some(text.as_str()),
                 _ => None,
             }));
         Ok(Self {
-            blocks,
+            contents: contents.into(),
             history_text: Some(history_text),
             selected_skills: Vec::new(),
         })
     }
 
-    pub(crate) fn into_blocks(self) -> Vec<ContentBlock> {
-        self.blocks
+    #[must_use]
+    pub fn as_harness_content(&self) -> HarnessContent<'_> {
+        if self.is_compaction() {
+            HarnessContent::Compaction(&self.contents)
+        } else {
+            HarnessContent::Input(&self.contents)
+        }
     }
 
     pub fn submitted_text(&self) -> Option<&str> {
         self.history_text.as_deref()
     }
 
-    pub(crate) fn is_compaction(&self) -> bool {
+    fn is_compaction(&self) -> bool {
         self.history_text.is_none()
     }
 
@@ -136,14 +140,6 @@ impl ProviderPromptContent {
     ) {
         self.history_text = text;
         self.selected_skills = selected;
-    }
-
-    #[cfg(feature = "test-observation")]
-    pub fn new_for_test(
-        blocks: Vec<ContentBlock>,
-        capabilities: &ProviderCapabilityReport,
-    ) -> Result<Self, ExternalProviderRuntimeError> {
-        Self::new(blocks, capabilities)
     }
 }
 

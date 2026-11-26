@@ -201,6 +201,88 @@ fn setting_deadline_releases_a_waiter_without_passing_an_unanswered_same_kind_fe
     )));
 }
 
+#[test]
+fn late_setting_readback_keeps_the_previously_published_catalogue() {
+    use crate::{ProviderModeObservation, ProviderSettingsCatalogRecord};
+
+    let mut state = fresh();
+    let run = restore_live(&mut state, 1);
+    let mode = |number| OwnerSetting {
+        change: RunAttempt {
+            generation: run.generation,
+            attempt: SettingApplication(uuid(number)),
+        },
+        kind: ProviderSettingKind::Mode,
+    };
+    let previous_record = Arc::new(ProviderSettingsCatalogRecord {
+        current_mode: Some("agent".into()),
+        ..Default::default()
+    });
+    let first = mode(2);
+    let authorization = setting_authorized(&mut state, first, 20);
+    apply(
+        &mut state,
+        OwnerEvent::Dispatch(DispatchResult::SettingFinished {
+            authorization,
+            observation: SettingObservation::AppliedWithReadback(Box::new(SettingReadback {
+                value: SettingValueId("agent".into()),
+                catalogue: Arc::clone(&previous_record),
+                fast: FastReadback::NotOffered,
+                mode_reason: None,
+            })),
+        }),
+    );
+    let previously_published = state
+        .ports
+        .settings_catalogue
+        .clone()
+        .expect("first catalogue");
+    let previous_projection = state.snapshot();
+    apply(
+        &mut state,
+        OwnerEvent::Store(SessionStoreResult::ConfirmedSetting {
+            setting: first,
+            outcome: EffectOutcome::Applied,
+        }),
+    );
+
+    let late = mode(3);
+    let authorization = setting_authorized(&mut state, late, 30);
+    deadline(&mut state, OwnerDeadline::SettingWire(late));
+    apply(
+        &mut state,
+        OwnerEvent::Dispatch(DispatchResult::SettingFinished {
+            authorization,
+            observation: SettingObservation::Refused {
+                current: Some(SettingValueId("ask".into())),
+                catalogue: Some(Arc::new(ProviderSettingsCatalogRecord {
+                    current_mode: Some("ask".into()),
+                    mode_observation: ProviderModeObservation::FromCatalogue,
+                    ..Default::default()
+                })),
+            },
+        }),
+    );
+
+    let updated = state
+        .ports
+        .settings_catalogue
+        .as_ref()
+        .expect("updated catalogue");
+    assert_eq!(updated.current_mode.as_deref(), Some("ask"));
+    assert_eq!(&**previously_published, previous_record.as_ref());
+    assert_eq!(previously_published.current_mode.as_deref(), Some("agent"));
+    assert_eq!(
+        previous_projection
+            .projection
+            .settings
+            .expect("previous settings")
+            .mode
+            .as_deref(),
+        Some("agent")
+    );
+}
+
 fn retired(state: &SessionOwnerState, generation: SessionGeneration) {
     assert_eq!(
         state.snapshot().lifecycle,

@@ -226,7 +226,7 @@ impl OwnerTransition {
     pub(super) fn setting_on_wire(
         &mut self,
         setting: OwnerSetting,
-        observation: SettingObservation,
+        observation: SettingObservation<ProviderSettingsCatalog>,
         mode_request: Option<bool>,
     ) -> OwnerResult {
         let current_run = matches!(self.next.lifecycle(), SessionLifecycle::Live { generation } | SessionLifecycle::Closing { generation, .. } if generation == setting.change.generation);
@@ -358,7 +358,7 @@ impl OwnerTransition {
     fn apply_confirmed_readback(
         &mut self,
         setting: OwnerSetting,
-        readback: SettingReadback,
+        readback: SettingReadback<ProviderSettingsCatalog>,
         mode_request: Option<bool>,
     ) -> OwnerResult {
         let SettingReadback {

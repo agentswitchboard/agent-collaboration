@@ -520,10 +520,12 @@ fn t5_late_restore_mode_correlation_releases_only_its_own_fence() {
 
     let current = state.snapshot();
     let current_catalogue = state.ports.settings_catalogue.clone();
-    let late_catalogue = Arc::new(ProviderSettingsCatalog {
-        current_mode: Some("auto".into()),
-        ..ProviderSettingsCatalog::default()
-    });
+    let late_catalogue = Arc::new(ProviderSettingsCatalog::from_record(
+        crate::ProviderSettingsCatalogRecord {
+            current_mode: Some("auto".into()),
+            ..Default::default()
+        },
+    ));
     let wrong_run = RunAttempt {
         generation: next.generation,
         ..first
@@ -677,16 +679,18 @@ fn late_fast_off(run: RunAttempt<LoadAttempt>, setting: OwnerSetting) -> OwnerEv
 }
 
 fn fast_catalogue(fast: bool) -> Arc<ProviderSettingsCatalog> {
-    Arc::new(ProviderSettingsCatalog {
-        config_options: vec![crate::ProviderConfigOption {
-            id: "fast".into(),
-            name: "Fast".into(),
-            category: Some(ProviderSettingKind::Fast),
-            current_value: crate::ProviderConfigValue::Boolean(fast),
-            choices: Vec::new(),
-        }],
-        ..ProviderSettingsCatalog::default()
-    })
+    Arc::new(ProviderSettingsCatalog::from_record(
+        crate::ProviderSettingsCatalogRecord {
+            config_options: vec![crate::ProviderConfigOption {
+                id: "fast".into(),
+                name: "Fast".into(),
+                category: Some(ProviderSettingKind::Fast),
+                current_value: crate::ProviderConfigValue::Boolean(fast),
+                choices: Vec::new(),
+            }],
+            ..Default::default()
+        },
+    ))
 }
 
 #[test]

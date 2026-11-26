@@ -774,6 +774,13 @@ impl SessionStoreLaneWriter {
                     .unmark_undispatched(&marked.operation, offered_at_ms)
                     .await?;
                 self.lane.state().marks.remove(&marked.operation);
+                #[cfg(test)]
+                {
+                    drop(store);
+                    if let Some(binding) = self.lane.inner.binding.get() {
+                        binding.fixture.hold_undo_receipt(&marked.operation).await;
+                    }
+                }
                 Ok(SessionStoreSettlement::Operation(Box::new(row)))
             }
             SessionStoreWrite::ReconcileLateCancelledPrompt { operation, input } => {

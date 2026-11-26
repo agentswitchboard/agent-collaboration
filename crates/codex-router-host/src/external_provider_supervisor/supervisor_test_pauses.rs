@@ -18,6 +18,21 @@ impl AdmissionTestPause {
 }
 
 impl ExternalProviderSupervisor {
+    pub(crate) fn pause_undo_receipt_for_test(
+        &self,
+        target: &collaboration_protocol::SessionRef,
+        operation: OperationId,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        self.inner
+            .uncertainty
+            .slot(&target.endpoint)
+            .fixture
+            .pause_undo_receipt(operation)
+    }
+
     pub(super) async fn pause_before_owner_prompt_for_test(&self, operation: &OperationId) {
         let pause = self
             .inner

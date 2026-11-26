@@ -66,6 +66,8 @@ fn stage_metadata() -> Value {
             registry_package("tokio-util"),
             registry_package("hegeltest"),
             registry_package("serde"),
+            registry_package("schemars"),
+            registry_package("base64"),
         ],
         "workspace_members": ["contract-id", "carrier-id"],
         "resolve": {"nodes": [
@@ -94,6 +96,79 @@ fn append(array: &mut Value, item: Value) {
 
 fn violation(result: Result<(), PolicyError>) -> Option<String> {
     result.err().map(|error| error.to_string())
+}
+
+#[test]
+fn harness_stage_accepts_contract_registry_data_dependencies() {
+    let mut metadata = stage_metadata();
+    for dependency in ["serde", "schemars", "base64"] {
+        append(
+            &mut metadata["packages"][0]["dependencies"],
+            registry_manifest(dependency, None),
+        );
+        append(
+            &mut metadata["resolve"]["nodes"][0]["deps"],
+            resolved_dependency(dependency, None),
+        );
+    }
+
+    let metadata = decode(metadata);
+    let declared = violation(check_declared(&metadata));
+    let resolved = violation(check_resolved(&metadata));
+    assert_eq!((declared, resolved), (None, None));
+}
+
+#[test]
+fn harness_stage_rejects_contract_data_dependencies_from_other_sources_or_kinds() {
+    for dependency in ["serde", "schemars", "base64"] {
+        for (kind, expected_kind, source, expected_source) in [
+            (Some("dev"), "Dev", Some(CRATES_IO), "CratesIo"),
+            (Some("build"), "Build", Some(CRATES_IO), "CratesIo"),
+            (
+                None,
+                "Normal",
+                Some("git+https://example.invalid/repo"),
+                "Other",
+            ),
+            (None, "Normal", None, "Other"),
+        ] {
+            let mut metadata = stage_metadata();
+            let mut manifest = registry_manifest(dependency, kind);
+            manifest["source"] = json!(source);
+            let target = metadata["packages"]
+                .as_array_mut()
+                .expect("fixture packages")
+                .iter_mut()
+                .find(|package| package["id"] == dependency)
+                .expect("fixture dependency package");
+            target["source"] = json!(source);
+            if source.is_none() {
+                manifest["path"] = json!(format!("/workspace/{dependency}"));
+                target["manifest_path"] = json!(format!("/workspace/{dependency}/Cargo.toml"));
+                append(&mut metadata["workspace_members"], json!(dependency));
+            }
+            append(&mut metadata["packages"][0]["dependencies"], manifest);
+            append(
+                &mut metadata["resolve"]["nodes"][0]["deps"],
+                resolved_dependency(dependency, kind),
+            );
+
+            let metadata = decode(metadata);
+            let edge = format!(
+                "{expected_kind} dependency {CONTRACT} -> {dependency} ({expected_source})"
+            );
+            assert_eq!(
+                (
+                    violation(check_declared(&metadata)),
+                    violation(check_resolved(&metadata))
+                ),
+                (
+                    Some(format!("BD1: forbidden declared {edge}")),
+                    Some(format!("BD1: forbidden resolved {edge}"))
+                ),
+            );
+        }
+    }
 }
 
 #[test]

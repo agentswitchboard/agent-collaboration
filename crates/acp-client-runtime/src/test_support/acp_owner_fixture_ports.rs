@@ -5,6 +5,7 @@ use crate::{
     InteractionPort, OwnerApprovalBindings, OwnerApprovalLease, ProviderPromptDispatchObservation,
     SessionEventSink,
     acp_transport::TransportRun,
+    owner_acp_binding::OwnerAcpBinding,
     owner_session_open::{OwnerOpenedSession, OwnerSessionOpenSetup},
     owner_session_setting::OwnerSettingWirePlan,
     owner_session_stream::{OwnerStreamTarget, ReplayedSessionFacts},
@@ -30,6 +31,10 @@ use std::{
     collections::{BTreeMap, HashMap},
     sync::{Arc, Mutex},
 };
+use switchboard_harness_contracts::{
+    CancelDrainStart, CancelDrainWait, CancelReservationRefusal, HarnessBinding, RefusedWorkMove,
+    ReplyAdmission, ReservedWorkReply, SettingOffer, SteerIdlePolicy, WriterState,
+};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use uuid::Uuid;
 
@@ -45,8 +50,7 @@ pub(super) struct FixturePorts<P: InteractionPort> {
     shared: Arc<Mutex<FixtureState<P>>>,
     wire: Arc<OwnerAcpWire>,
     approvals: OwnerApprovalBindings<P>,
-    cancel_drains: crate::OwnerCancelDrainExecutor<P>,
-    tasks: TaskTracker,
+    work_binding: OwnerAcpBinding<P>,
     sink: Arc<dyn SessionEventSink>,
     stop: CancellationToken,
     created: Option<(OwnerOpenedSession, CreatedSessionFacts)>,
@@ -65,14 +69,14 @@ impl<P: InteractionPort> FixturePorts<P> {
         stop: CancellationToken,
         created: Option<(OwnerOpenedSession, CreatedSessionFacts)>,
     ) -> Self {
-        let cancel_drains = crate::OwnerCancelDrainExecutor::new(approvals.clone());
+        let tasks = TaskTracker::new();
+        let work_binding = OwnerAcpBinding::new(wire.clone(), id.clone(), approvals.clone(), tasks);
         Self {
             id,
             shared,
             wire,
             approvals,
-            cancel_drains,
-            tasks: TaskTracker::new(),
+            work_binding,
             sink,
             stop,
             created,
@@ -245,17 +249,16 @@ impl<P: InteractionPort> FixturePorts<P> {
                         self.active_approval = Some((input.turn, lease));
                         lock(&self.shared).active_context = Some((input.turn, context));
                     }
-                    self.wire
-                        .offer_prompt(
-                            authorization.clone(),
-                            input.turn,
-                            self.id.clone(),
-                            content,
-                            completions.reserve(address)?,
-                        )
-                        .is_ok()
+                    self.work_binding.offer_prompt(
+                        authorization.clone(),
+                        input.turn,
+                        content.as_harness_content(),
+                        reserve_fixture_work_reply(completions, address)?,
+                    )
                 } else {
-                    false
+                    return Ok(Some(OwnerEvent::Dispatch(
+                        DispatchResult::DefinitelyUnsent(authorization),
+                    )));
                 }
             }
             AuthorizedWork::Steer(input) => {
@@ -264,43 +267,53 @@ impl<P: InteractionPort> FixturePorts<P> {
                     .get(&input.input)
                     .map(|stored| stored.content.clone());
                 if let Some(content) = content {
-                    self.wire
-                        .offer_steer(
-                            authorization.clone(),
-                            self.id.clone(),
-                            content,
-                            completions.reserve(address)?,
-                        )
-                        .is_ok()
+                    self.work_binding.offer_steer(
+                        authorization.clone(),
+                        content.as_harness_content(),
+                        SteerIdlePolicy::AllowOwnerPrompt,
+                        reserve_fixture_work_reply(completions, address)?,
+                    )
                 } else {
-                    false
+                    return Ok(Some(OwnerEvent::Dispatch(
+                        DispatchResult::DefinitelyUnsent(authorization),
+                    )));
                 }
             }
             AuthorizedWork::Cancel(_) => return Err(OwnerTaskError::ExecutorStopped),
             AuthorizedWork::Setting { setting, value, .. } => {
-                match self.wire.offer_explicit_setting(
+                match self.work_binding.offer_setting(
                     authorization.clone(),
-                    self.id.clone(),
                     setting.kind,
-                    value.0,
-                    completions.reserve(address)?,
+                    value,
+                    reserve_fixture_work_reply(completions, address)?,
                 ) {
-                    Ok(Some(outcome)) => return Ok(Some(OwnerEvent::Dispatch(outcome))),
-                    Ok(None) => true,
-                    Err(_) => false,
+                    Ok(SettingOffer::Settled(outcome)) => {
+                        return Ok(Some(OwnerEvent::Dispatch(outcome)));
+                    }
+                    Ok(SettingOffer::Offered) => Ok(()),
+                    Err(refusal) => Err(refusal),
                 }
             }
         };
-        if !offered {
-            return Ok(Some(OwnerEvent::Dispatch(
-                DispatchResult::DefinitelyUnsent(authorization),
-            )));
+        if let Err(refusal) = offered {
+            let result = if refusal.valid_moves().contains(&RefusedWorkMove::TakeBack) {
+                self.revoke_work(authorization)
+            } else {
+                DispatchResult::DefinitelyUnsent(authorization)
+            };
+            return Ok(Some(OwnerEvent::Dispatch(result)));
         }
         Ok(self
-            .wire
-            .take(&authorization)
+            .work_binding
+            .hand_over(&authorization, &mut || true)
             .ok()
             .map(OwnerEvent::Dispatch))
+    }
+
+    fn revoke_work(&mut self, authorization: DispatchAuthorization) -> DispatchResult {
+        self.work_binding
+            .take_back(&authorization)
+            .unwrap_or(DispatchResult::Revoked(authorization))
     }
 
     fn restore_setting(
@@ -651,30 +664,39 @@ impl<P: InteractionPort> SessionOwnerPorts for FixturePorts<P> {
                 authorization,
                 work,
             } => self.authorize(address, authorization, work, completions),
-            OwnerEffect::DrainCancel(authorization) => self.cancel_drains.begin(
-                &self.id,
-                authorization,
-                address,
-                completions,
-                &self.tasks,
-                self.stop.clone(),
-            ),
+            OwnerEffect::DrainCancel(authorization) => {
+                match self.work_binding.begin_cancel(
+                    authorization.clone(),
+                    &mut || completions.reserve_work_reply(address),
+                    Box::pin(self.stop.clone().cancelled_owned()),
+                ) {
+                    CancelDrainStart::AlreadyDrained => Ok(Some(OwnerEvent::Dispatch(
+                        DispatchResult::CancelDrainFinished(authorization),
+                    ))),
+                    CancelDrainStart::Waiting => Ok(None),
+                    CancelDrainStart::Refused(CancelReservationRefusal::Full) => {
+                        Err(OwnerTaskError::CompletionCapacity)
+                    }
+                    CancelDrainStart::Refused(CancelReservationRefusal::Stopped) => {
+                        Err(OwnerTaskError::ExecutorStopped)
+                    }
+                }
+            }
             OwnerEffect::TakeCancel {
                 authorization,
                 expired,
-            } => Ok(Some(OwnerEvent::Dispatch(self.cancel_drains.take(
-                &self.wire,
-                self.id.clone(),
-                authorization,
-                expired,
-            )))),
+            } => {
+                let wait = if expired {
+                    CancelDrainWait::Expired
+                } else {
+                    CancelDrainWait::Drained
+                };
+                Ok(Some(OwnerEvent::Dispatch(
+                    self.work_binding.send_cancel(authorization, wait),
+                )))
+            }
             OwnerEffect::Revoke { authorization, .. } => {
-                self.cancel_drains.discard(&authorization);
-                let result = self
-                    .wire
-                    .revoke(&authorization)
-                    .unwrap_or(DispatchResult::Revoked(authorization));
-                Ok(Some(OwnerEvent::Dispatch(result)))
+                Ok(Some(OwnerEvent::Dispatch(self.revoke_work(authorization))))
             }
             OwnerEffect::CallbackMembership(change) => {
                 self.wire.apply_membership(address.incarnation, change);
@@ -756,5 +778,16 @@ impl<P: InteractionPort> SessionOwnerPorts for FixturePorts<P> {
             | OwnerEffect::SettingQueued { .. }
             | OwnerEffect::ForwardTool { .. } => Ok(None),
         }
+    }
+}
+
+fn reserve_fixture_work_reply(
+    completions: &OwnerCompletionPort,
+    address: OwnerAddress,
+) -> Result<ReservedWorkReply, OwnerTaskError> {
+    match completions.reserve_work_reply(address) {
+        ReplyAdmission::Reserved(reply) => Ok(reply),
+        ReplyAdmission::Refused(WriterState::Full) => Err(OwnerTaskError::CompletionCapacity),
+        ReplyAdmission::Refused(WriterState::Stopped) => Err(OwnerTaskError::ExecutorStopped),
     }
 }

@@ -23,6 +23,7 @@ use std::{
 };
 use tokio::sync::mpsc;
 
+use switchboard_harness_contracts::HandOverRefusal;
 pub use switchboard_harness_contracts::SlotEvidence;
 
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
@@ -37,6 +38,37 @@ pub enum TransportRefusal {
     WriterFull,
     #[error("the ACP writer stopped")]
     WriterStopped,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TransportOfferRefusal {
+    RouteUnavailable,
+    Closing,
+    WorkDoesNotFitAuthorization,
+    OtherAuthorizationOffered,
+    AuthorizationSequenceOnRecord,
+}
+
+impl From<TransportOfferRefusal> for TransportRefusal {
+    fn from(refusal: TransportOfferRefusal) -> Self {
+        match refusal {
+            TransportOfferRefusal::RouteUnavailable => Self::RouteUnavailable,
+            TransportOfferRefusal::Closing => Self::Closing,
+            TransportOfferRefusal::WorkDoesNotFitAuthorization
+            | TransportOfferRefusal::OtherAuthorizationOffered
+            | TransportOfferRefusal::AuthorizationSequenceOnRecord => Self::AuthorizationMismatch,
+        }
+    }
+}
+
+impl From<HandOverRefusal> for TransportRefusal {
+    fn from(refusal: HandOverRefusal) -> Self {
+        match refusal {
+            HandOverRefusal::WriterFull => Self::WriterFull,
+            HandOverRefusal::WriterStopped => Self::WriterStopped,
+            HandOverRefusal::NoSuchOffer => Self::AuthorizationMismatch,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -103,6 +135,8 @@ impl<Frame> TransportState<Frame> {
 pub struct AcpTransport<Frame> {
     state: Mutex<TransportState<Frame>>,
     ordered: mpsc::Sender<OrderedOutput<Frame>>,
+    #[cfg(all(debug_assertions, feature = "test-observation"))]
+    pub(crate) handover_test: crate::handover_test_control::HandoverTestControl,
 }
 
 impl<Frame> AcpTransport<Frame> {
@@ -113,7 +147,15 @@ impl<Frame> AcpTransport<Frame> {
             slot: BTreeMap::new(),
             callbacks: CallbackRouter::default(),
         });
-        (Self { state, ordered }, output)
+        (
+            Self {
+                state,
+                ordered,
+                #[cfg(all(debug_assertions, feature = "test-observation"))]
+                handover_test: Default::default(),
+            },
+            output,
+        )
     }
 
     #[cfg(feature = "test-observation")]
@@ -333,29 +375,60 @@ impl<Frame> AcpTransport<Frame> {
         new_turn: Option<TurnId>,
         frame: Frame,
     ) -> Result<(), TransportRefusal> {
+        self.offer_work(authorization, new_turn, frame)
+            .map_err(TransportRefusal::from)
+    }
+
+    pub(crate) fn offer_work(
+        &self,
+        authorization: DispatchAuthorization,
+        new_turn: Option<TurnId>,
+        frame: Frame,
+    ) -> Result<(), TransportOfferRefusal> {
+        #[cfg(all(debug_assertions, feature = "test-observation"))]
+        self.handover_test.reach(
+            crate::handover_test_control::HandoverPausePoint::BeforeOffer,
+            &authorization,
+        );
         let mut state = self.state();
         let run = authorization_run(&authorization);
         let route = state
             .routes
             .get(&run)
-            .ok_or(TransportRefusal::RouteUnavailable)?;
+            .ok_or(TransportOfferRefusal::RouteUnavailable)?;
         if route.closing.is_some() {
-            return Err(TransportRefusal::Closing);
+            return Err(TransportOfferRefusal::Closing);
         }
-        if (authorization.target == AuthorizationTarget::NewTurn) != new_turn.is_some()
-            || state.slot.iter().any(|(key, slot)| {
-                authorization_run(key) == run
-                    && key.input_id == authorization.input_id
-                    && (slot.evidence() == SlotEvidence::Offered
-                        || key.authorization_seq == authorization.authorization_seq)
-            })
-        {
-            return Err(TransportRefusal::AuthorizationMismatch);
+        if (authorization.target == AuthorizationTarget::NewTurn) != new_turn.is_some() {
+            return Err(TransportOfferRefusal::WorkDoesNotFitAuthorization);
         }
+        let mut other_offer_stands = false;
+        for (key, slot) in &state.slot {
+            if authorization_run(key) != run || key.input_id != authorization.input_id {
+                continue;
+            }
+            if key.authorization_seq == authorization.authorization_seq {
+                return Err(TransportOfferRefusal::AuthorizationSequenceOnRecord);
+            }
+            other_offer_stands |= slot.evidence() == SlotEvidence::Offered;
+        }
+        if other_offer_stands {
+            return Err(TransportOfferRefusal::OtherAuthorizationOffered);
+        }
+        #[cfg(all(debug_assertions, feature = "test-observation"))]
+        let recorded_authorization = authorization.clone();
         state.slot.insert(
             authorization,
             AuthorizationSlot::Offered { frame, new_turn },
         );
+        #[cfg(all(debug_assertions, feature = "test-observation"))]
+        {
+            drop(state);
+            self.handover_test.reach(
+                crate::handover_test_control::HandoverPausePoint::AfterOffer,
+                &recorded_authorization,
+            );
+        }
         Ok(())
     }
 
@@ -373,11 +446,20 @@ impl<Frame> AcpTransport<Frame> {
         authorization: &DispatchAuthorization,
         still_requested: impl FnOnce() -> bool,
     ) -> Result<DispatchResult, TransportRefusal> {
+        self.hand_over_work(authorization, still_requested)
+            .map_err(TransportRefusal::from)
+    }
+
+    pub(crate) fn hand_over_work(
+        &self,
+        authorization: &DispatchAuthorization,
+        still_requested: impl FnOnce() -> bool,
+    ) -> Result<DispatchResult, HandOverRefusal> {
         let mut state = self.state();
         let slot = state
             .slot
             .get(authorization)
-            .ok_or(TransportRefusal::AuthorizationMismatch)?;
+            .ok_or(HandOverRefusal::NoSuchOffer)?;
         let new_turn = match slot {
             AuthorizationSlot::Taken => {
                 return Ok(DispatchResult::AlreadyTaken(authorization.clone()));
@@ -402,16 +484,29 @@ impl<Frame> AcpTransport<Frame> {
             state.revoke_slot(authorization);
             return Ok(DispatchResult::StaleTarget(authorization.clone()));
         }
-        let permit = self.ordered.try_reserve().map_err(writer_refusal)?;
+        let permit = self.ordered.try_reserve().map_err(|error| match error {
+            mpsc::error::TrySendError::Full(_) => HandOverRefusal::WriterFull,
+            mpsc::error::TrySendError::Closed(_) => HandOverRefusal::WriterStopped,
+        })?;
+        #[cfg(all(debug_assertions, feature = "test-observation"))]
+        self.handover_test.reach(
+            crate::handover_test_control::HandoverPausePoint::BeforeQuestion,
+            authorization,
+        );
         if !still_requested() {
             state.revoke_slot(authorization);
             return Ok(DispatchResult::DefinitelyUnsent(authorization.clone()));
         }
+        #[cfg(all(debug_assertions, feature = "test-observation"))]
+        self.handover_test.reach(
+            crate::handover_test_control::HandoverPausePoint::BeforePublication,
+            authorization,
+        );
         let Some(AuthorizationSlot::Offered { frame, .. }) = state
             .slot
             .insert(authorization.clone(), AuthorizationSlot::Taken)
         else {
-            return Err(TransportRefusal::AuthorizationMismatch);
+            return Err(HandOverRefusal::NoSuchOffer);
         };
         if let Some(turn) = new_turn {
             state.callbacks.take_new_turn(run, turn);

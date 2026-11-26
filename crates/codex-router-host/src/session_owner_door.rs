@@ -669,6 +669,14 @@ impl SessionOwnerAddress {
         answer.await.map_err(|_| OwnerDoorError::OwnerStopped)
     }
 
+    #[cfg(all(debug_assertions, test))]
+    pub(crate) fn expect_work_settlement_for_test(
+        &self,
+        operation: Uuid,
+    ) -> oneshot::Receiver<OwnedSettlement> {
+        self.calls.expect_settlement(operation)
+    }
+
     pub async fn admit(&self, command: SessionOwnerCommand) -> Result<(), OwnerDoorError> {
         let accepted = self.owner.handle.try_submit(self.owner.address, command)?;
         accepted

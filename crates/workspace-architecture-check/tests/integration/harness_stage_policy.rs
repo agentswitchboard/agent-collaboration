@@ -20,7 +20,10 @@ fn permits(owner: &str, kind: DependencyKind, name: &str, source: DependencySour
     use DependencySource::{CratesIo, WorkspaceContract};
 
     if owner == HARNESS_CONTRACTS.0 {
-        return (kind, name, source) == (Normal, "uuid", CratesIo);
+        return matches!(
+            (kind, name, source),
+            (Normal, "uuid" | "serde" | "schemars" | "base64", CratesIo)
+        );
     }
 
     (kind, name, source) == (Normal, HARNESS_CONTRACTS.0, WorkspaceContract)

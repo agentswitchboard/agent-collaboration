@@ -13,11 +13,16 @@ use crate::session_setting_machine::{SettingApplication, SettingValueId};
 use crate::session_turn_machine::{SessionTurn, TurnId};
 use crate::tool_ownership::{ToolObservation, ToolOwnership};
 use crate::{ProviderSettingsCatalog, SessionGeneration};
-use session_event_model::{InputId, LocalCause, StopReason, TurnOutcome};
+use session_event_model::{InputId, TurnOutcome};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 pub use switchboard_harness_contracts::RunAttempt;
+pub use switchboard_harness_contracts::{
+    CancelDrainStart, CancelDrainWait, CancelReservationRefusal, HarnessBinding, RefusedWorkMove,
+    ReplyAdmission, ReservedWorkReply, SettingOffer, SteerIdlePolicy, TakeBackRefusal,
+    WorkOfferRefusal, WriterState,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct OwnerInput {
@@ -128,20 +133,7 @@ pub enum SessionOwnerCommand {
     },
 }
 
-/// The local decision can finish while the peer's effect remains unknown.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum WireOutcome<Reply> {
-    Confirmed(Reply),
-    Refused,
-    Unknown,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PromptCompletion {
-    pub stop_reason: StopReason,
-    pub local_cause: Option<LocalCause>,
-    pub response: String,
-}
+pub use switchboard_harness_contracts::{PromptCompletion, WireOutcome};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LastLiveTurn {
@@ -180,16 +172,7 @@ pub enum RestoreModeOutcome {
     Unconfirmed,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum SettingObservation {
-    Applied(SettingValueId),
-    AppliedWithReadback(Box<SettingReadback>),
-    Refused {
-        current: Option<SettingValueId>,
-        catalogue: Option<Arc<ProviderSettingsCatalog>>,
-    },
-    Unknown,
-}
+pub use switchboard_harness_contracts::SettingObservation;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SessionWireResult {

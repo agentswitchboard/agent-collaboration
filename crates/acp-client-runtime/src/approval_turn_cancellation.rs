@@ -3,20 +3,25 @@
 //! drain through. The client's cancel and the session actor both use it.
 
 use crate::{
-    ExternalProviderRuntimeError, InteractionPort,
-    acp_transport::TransportRun,
+    ExternalProviderRuntimeError, InteractionPort, acp_transport::TransportRun,
     owner_wire::OwnerAcpWire,
-    session_owner_task::{OwnerCompletionPort, OwnerTaskError},
 };
 use provider_session_machines::session_owner::{
-    CancelDrainReport, DispatchAuthorization, DispatchResult, OwnerAddress, OwnerEvent,
-    PendingTurnResponse,
+    CancelDrainReport, DispatchAuthorization, DispatchResult, PendingTurnResponse,
 };
 use std::{
     collections::{BTreeMap, HashMap},
     sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
+use switchboard_harness_contracts::{
+    CancelDrainStart, CancelReservationRefusal, ReplyAdmission, RunRetirement, WorkReply,
+    WriterState,
+};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
+
+#[cfg(test)]
+#[path = "approval_turn_cancellation_test.rs"]
+mod tests;
 
 #[derive(Default)]
 pub(crate) struct PermissionResponseBarrier {
@@ -154,6 +159,14 @@ pub struct OwnerApprovalLease<P: InteractionPort> {
 }
 
 impl<P: InteractionPort> OwnerApprovalBindings<P> {
+    #[cfg(all(debug_assertions, feature = "test-observation"))]
+    pub fn held_turn_for_test(
+        &self,
+        provider_session_id: &str,
+    ) -> Option<provider_session_machines::session_turn_machine::TurnId> {
+        self.active.lock().ok()?.get(provider_session_id)?.turn
+    }
+
     pub(crate) fn new(
         active: Arc<Mutex<HashMap<String, ActiveApprovalContext<P>>>>,
         interaction_port: Arc<P>,
@@ -271,7 +284,7 @@ impl<P: InteractionPort> OwnerApprovalDrain<P> {
 }
 
 /// Per-owner executor for the exact turn's outstanding ACP responses.
-pub struct OwnerCancelDrainExecutor<P: InteractionPort> {
+pub(crate) struct OwnerCancelDrainExecutor<P: InteractionPort> {
     approvals: OwnerApprovalBindings<P>,
     pending: BTreeMap<DispatchAuthorization, Arc<OwnerApprovalDrain<P>>>,
 }
@@ -284,32 +297,37 @@ impl<P: InteractionPort> OwnerCancelDrainExecutor<P> {
         }
     }
 
-    pub fn begin(
+    pub(crate) fn begin_work(
         &mut self,
         session: &str,
         authorization: DispatchAuthorization,
-        owner: OwnerAddress,
-        completions: &OwnerCompletionPort,
+        reserve_reply: &mut dyn FnMut() -> ReplyAdmission<WorkReply>,
         tasks: &TaskTracker,
-        stop: CancellationToken,
-    ) -> Result<Option<OwnerEvent>, OwnerTaskError> {
+        retired: RunRetirement,
+    ) -> CancelDrainStart {
         let Some(drain) = self.approvals.begin_cancel(session, &authorization) else {
-            return Ok(Some(OwnerEvent::Dispatch(
-                DispatchResult::CancelDrainFinished(authorization),
-            )));
+            return CancelDrainStart::AlreadyDrained;
         };
-        let completion = completions.reserve(owner)?;
+        let completion = match reserve_reply() {
+            ReplyAdmission::Reserved(completion) => completion,
+            ReplyAdmission::Refused(WriterState::Full) => {
+                return CancelDrainStart::Refused(CancelReservationRefusal::Full);
+            }
+            ReplyAdmission::Refused(WriterState::Stopped) => {
+                return CancelDrainStart::Refused(CancelReservationRefusal::Stopped);
+            }
+        };
         let drain = Arc::new(drain);
         self.pending.insert(authorization.clone(), drain.clone());
         tasks.spawn(async move {
             tokio::select! {
-                () = stop.cancelled() => {}
+                () = retired => {}
                 () = drain.settle_pending_approvals() => completion.send(
-                    OwnerEvent::Dispatch(DispatchResult::CancelDrainFinished(authorization))
+                    WorkReply::Dispatch(DispatchResult::CancelDrainFinished(authorization))
                 ),
             }
         });
-        Ok(None)
+        CancelDrainStart::Waiting
     }
 
     pub fn take(
