@@ -43,7 +43,7 @@ pub(super) async fn check_repeated_welcome(visit_named_mark: bool, older_suffix:
     let mut first_welcome = new_admission(owner.machine_id.clone(), clock.clone());
     first_welcome.clock_anchor.central_time =
         Timestamp::from_timestamp_millis(MARK_MS - 2 * MINUTE_MS - 20_000).unwrap();
-    lane.admitted.send_replace(Some(first_welcome));
+    lane.set_connected(Some(first_welcome));
     let first_gate = lane.hold_next_batch();
     let mut worker = ObservedWorker::start(custody, observed.clone());
     worker
@@ -83,7 +83,7 @@ pub(super) async fn check_repeated_welcome(visit_named_mark: bool, older_suffix:
     second_welcome.clock_anchor.central_time =
         Timestamp::from_timestamp_millis(earlier_mark - 1_000).unwrap();
     let before_welcome = observed.checkpoint();
-    lane.admitted.send_replace(Some(second_welcome));
+    lane.set_connected(Some(second_welcome));
     worker
         .wait_for_timer(
             before_welcome,

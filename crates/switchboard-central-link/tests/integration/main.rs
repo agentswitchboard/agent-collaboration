@@ -44,6 +44,7 @@ mod admitted_commands;
 mod credential_diagnostics;
 mod lease_boundaries;
 mod mac_capabilities;
+mod registered_commands;
 mod renewal_endings;
 mod run_registration;
 mod settings_replay;

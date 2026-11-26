@@ -14,7 +14,7 @@ use switchboard_machine_enrollment::{
     DiscoveryAnswer, EnrollmentKey, SignInFailure, decode_discovery,
 };
 
-use central_link_protocol::{CorrelationId, DataFrame, LinkFrame};
+use central_link_protocol::{DataFrame, LinkFrame};
 use codex_router_host::{
     HostCoordinationPaths, MessageSystemObservation, MessageSystemReason, MessageSystemStatus,
 };
@@ -35,15 +35,22 @@ use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
 
 use super::{Registration, TestResult, assert_operator_observation, read_frame};
 
+mod renewal_read;
+
+use self::renewal_read::RenewalReadCheckpoint;
+
 #[derive(Clone)]
-pub(super) struct CapabilityHold(Arc<Mutex<Option<HeldCapability>>>);
+pub(super) struct RegistrationTransport {
+    capability_hold: Arc<Mutex<Option<HeldCapability>>>,
+    renewal_read: RenewalReadCheckpoint,
+}
 
 pub(super) struct HeldCapability {
     first_write: Option<oneshot::Sender<()>>,
     release: oneshot::Receiver<()>,
 }
 
-impl CapabilityHold {
+impl RegistrationTransport {
     pub(super) fn new() -> (Self, oneshot::Receiver<()>, oneshot::Sender<()>) {
         let (first_write, observed) = oneshot::channel();
         let (release, released) = oneshot::channel();
@@ -51,12 +58,19 @@ impl CapabilityHold {
             first_write: Some(first_write),
             release: released,
         };
-        (Self(Arc::new(Mutex::new(Some(hold)))), observed, release)
+        (
+            Self {
+                capability_hold: Arc::new(Mutex::new(Some(hold))),
+                renewal_read: RenewalReadCheckpoint::default(),
+            },
+            observed,
+            release,
+        )
     }
 
     pub(super) fn wrap<Writer>(&self, writer: Writer) -> CapabilityWriter<Writer> {
         CapabilityWriter {
-            hold: self.0.lock().expect("capability hold").take(),
+            hold: self.capability_hold.lock().expect("capability hold").take(),
             writer,
         }
     }
@@ -160,6 +174,7 @@ pub(super) async fn exercise_refusal_through_renewal(
     paths: &HostCoordinationPaths,
     clock: &ManualClock,
     status: &mut watch::Receiver<MessageSystemObservation>,
+    transport: &RegistrationTransport,
 ) -> TestResult {
     use central_link_protocol::{LinkCallRefusal, MachineLinkCloseCode};
     clock.advance(Duration::from_secs(5))?;
@@ -182,34 +197,21 @@ pub(super) async fn exercise_refusal_through_renewal(
         MessageSystemReason::AuthorityExpired,
     )
     .await?;
-    send_json(
-        socket,
-        serde_json::json!({
-            "kind":"machineTokenRenewal",
-            "correlationId":correlation_id,
-            "result": {
-                "kind":"renewed",
-                "centralTime":"2030-01-01T00:00:05Z",
-                "effectiveExpiresAt":"2030-01-01T00:10:05Z"
-            }
-        }),
-    )
-    .await?;
-    // The typed refusal returns after the queued renewal is processed, while
-    // the injected clock is still below the registration retry deadline.
-    let barrier = "01890f2e-7b4c-7cc0-98c4-00000000009e";
-    send_json(
-        socket,
-        serde_json::json!({
-            "kind":"callMac",
-            "correlationId":barrier,
-            "request":{"call":"fixtureObservationBarrier","envelope":{"target":"x","body":{}}}
-        }),
-    )
-    .await?;
-    assert!(matches!(read_frame(socket).await?,
-        LinkFrame::Data(DataFrame::MacCallReply { correlation_id, .. }) if correlation_id == barrier.parse::<CorrelationId>()?
-    ));
+    let renewal = serde_json::json!({
+        "kind":"machineTokenRenewal",
+        "correlationId":correlation_id,
+        "result": {
+            "kind":"renewed",
+            "centralTime":"2030-01-01T00:00:05Z",
+            "effectiveExpiresAt":"2030-01-01T00:10:05Z"
+        }
+    })
+    .to_string();
+    let resumed_read = transport.renewal_read.after_text(&renewal)?;
+    socket.send(Message::Text(renewal.into())).await?;
+    // The driver handles a complete text frame before polling the carrier again.
+    // The test clock stays below the registration retry while we observe it.
+    resumed_read.await?;
     assert_operator_observation(
         paths,
         MessageSystemStatus::RegistrationFailed,
@@ -296,7 +298,7 @@ pub(super) async fn run_loopback(
     mut driver: LinkDriver<EnrollmentKey, EnrollmentLeaseSource>,
     address: String,
     socket: SocketAddr,
-    capabilities: CapabilityHold,
+    transport: RegistrationTransport,
 ) {
     let mut discovered = driver.settings.clone();
     let project = |settings: &DriverSettings<EnrollmentKey>| DriverSettings {
@@ -309,10 +311,13 @@ pub(super) async fn run_loopback(
     let (publish, received) = watch::channel(project(&discovered.borrow_and_update()));
     driver.settings = received;
     let running = driver.run_with_test_transport(move || {
-        let capabilities = capabilities.clone();
+        let transport = transport.clone();
         async move {
             let (reader, writer) = TcpStream::connect(socket).await?.into_split();
-            Ok(tokio::io::join(reader, capabilities.wrap(writer)))
+            Ok(tokio::io::join(
+                transport.renewal_read.wrap(reader),
+                transport.wrap(writer),
+            ))
         }
     });
     tokio::pin!(running);

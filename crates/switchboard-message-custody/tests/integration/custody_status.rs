@@ -117,7 +117,7 @@ async fn request_status_and_unsent_text_are_scoped_to_the_original_caller_and_st
         ScriptedCommand::RequestStatus(RequestStatusCommand { caller: second, query: second_query, .. }),
     ] if first == &item.caller && first_query == &wrong_scope && second == &other && second_query == &query));
 
-    lane.admitted.send_replace(None);
+    lane.set_connected(None);
     assert_eq!(
         custody.request_status(other, query).await,
         CustodyRequestStatus::StatusUnavailable

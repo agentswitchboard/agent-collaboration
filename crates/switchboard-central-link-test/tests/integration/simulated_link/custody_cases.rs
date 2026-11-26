@@ -17,9 +17,20 @@ mod loss_cases;
 #[path = "recovery_cases.rs"]
 mod recovery_cases;
 
+#[path = "registration_gate_cases.rs"]
+mod registration_gate_cases;
+
+#[path = "registration_custody_recovery.rs"]
+mod registration_custody_recovery;
+
+#[cfg(debug_assertions)]
+#[path = "registration_pressure.rs"]
+mod registration_pressure;
+
 #[path = "window_cases.rs"]
 mod window_cases;
 
+use central_link_client::ReadyLinkLane;
 use central_link_protocol::{
     DataFrame, LinkFrame, ReceiptKind, ReceiptResult, ReplyPayload, RequestScope,
     RequestStatusQuery,
@@ -87,6 +98,33 @@ impl NetworkCustody {
         configure_inbox: impl FnOnce(&mut InboxStore) -> Control,
         configure_custody: impl FnOnce(CustodyLink) -> CustodyLink,
     ) -> (Self, Control) {
+        drop(
+            link.lane
+                .watch_registered()
+                .wait_for(Option::is_some)
+                .await
+                .unwrap(),
+        );
+        let (case, inbox_control) =
+            Self::start_custody(link, configure_inbox, configure_custody).await;
+        let answer = case.calls.submit(case.caller(), cadence_request(0)).await;
+        assert!(
+            matches!(
+                answer,
+                Submission::Answered(ReplyPayload::Mail(CentralMailResult::Done(
+                    CentralMailAnswer::NoticeCadenceSet { .. }
+                )))
+            ),
+            "{answer:?}"
+        );
+        (case, inbox_control)
+    }
+
+    async fn start_custody<Control>(
+        link: SimulatedLink,
+        configure_inbox: impl FnOnce(&mut InboxStore) -> Control,
+        configure_custody: impl FnOnce(CustodyLink) -> CustodyLink,
+    ) -> (Self, Control) {
         let machine_id = MACHINE_LINK_FIXTURE_MACHINE.parse().unwrap();
         let session = SessionRef {
             machine_id,
@@ -130,27 +168,6 @@ impl NetworkCustody {
             jitter,
             inbox,
         };
-        let answer = case
-            .calls
-            .submit(
-                case.caller(),
-                SubmissionPayload::Mail(CentralMailRequest {
-                    request_id: request_id(0),
-                    operation: CentralMailOperation::SetNoticeCadence {
-                        cadence: NoticeCadence::M15,
-                    },
-                }),
-            )
-            .await;
-        assert!(
-            matches!(
-                answer,
-                Submission::Answered(ReplyPayload::Mail(CentralMailResult::Done(
-                    CentralMailAnswer::NoticeCadenceSet { .. }
-                )))
-            ),
-            "{answer:?}"
-        );
         (case, inbox_control)
     }
 
@@ -234,11 +251,15 @@ impl NetworkCustody {
     async fn finish_write(&mut self, receipt: &OutboxReceipt) -> MessageId {
         let flush = self.next_write_report().await;
         assert!(flush.issues.is_empty(), "{:?}", flush.issues);
-        let answer = flush
+        let mut answers = flush
             .answered
             .iter()
-            .find(|answer| answer.request == receipt.id)
-            .unwrap();
+            .filter(|answer| answer.request == receipt.id);
+        let answer = answers.next().unwrap();
+        assert!(
+            answers.next().is_none(),
+            "the queued request must have exactly one answer"
+        );
         let ReplyPayload::Mail(CentralMailResult::Done(CentralMailAnswer::Queued { message_id })) =
             &answer.reply
         else {
@@ -458,6 +479,15 @@ impl NetworkCustody {
         self.custody_group.join().await.unwrap();
         self.link.close().await;
     }
+}
+
+fn cadence_request(request: u8) -> SubmissionPayload {
+    SubmissionPayload::Mail(CentralMailRequest {
+        request_id: request_id(request),
+        operation: CentralMailOperation::SetNoticeCadence {
+            cadence: NoticeCadence::M15,
+        },
+    })
 }
 
 fn request_id(number: u8) -> RequestId {

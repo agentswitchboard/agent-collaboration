@@ -10,8 +10,8 @@ use central_link_client::{
     LinkLaneEvent, ReadyLinkLane,
 };
 use central_link_protocol::{
-    DataFrame, FrameDirection, HandledMacCalls, LinkCallRefusal, LinkFrame, MacCapabilities,
-    ProtocolError, ReplyPayload, TypedCallResult, decode_text,
+    DataFrame, FrameDirection, LinkCallRefusal, LinkFrame, ProtocolError, ReplyPayload,
+    TypedCallResult, decode_text,
 };
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
@@ -20,9 +20,9 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
 
 use super::{
-    Fixture, acknowledge_registration,
+    Fixture,
     admitted_commands::{mail_write, send_answer},
-    machine, send_welcome, text, tick, welcome,
+    machine, registration_request, text, tick, welcome, welcome_before_registration,
 };
 
 const KNOWN_CALL: &str = "01890f2e-7b4c-7cc0-98c4-0000000000a1";
@@ -59,8 +59,15 @@ async fn ordinary_exchange(
     lane: &LinkLaneHandle,
     socket: &mut WebSocketStream<TcpStream>,
     admission: &AdmittedConnection,
-    expect_advertisement: bool,
 ) {
+    lane.watch_registered()
+        .wait_for(|registered| {
+            registered
+                .as_ref()
+                .is_some_and(|registered| registered.admitted() == admission)
+        })
+        .await
+        .unwrap();
     let request = mail_write(21);
     let correlation_id = request.correlation_id().clone();
     let answer: ReplyPayload = serde_json::from_value(json!({
@@ -77,20 +84,6 @@ async fn ordinary_exchange(
         send_before: tick(50),
         request: Box::new(request),
     });
-    if expect_advertisement {
-        let first = tokio::select! {
-            frame = text(socket) => frame,
-            disposition = &mut outcome => panic!("request ended before the first wire frame: {disposition:?}"),
-        };
-        assert_eq!(
-            decode_text(&first, FrameDirection::ToCentral).unwrap(),
-            LinkFrame::Data(DataFrame::MacCapabilities(MacCapabilities {
-                handled_calls: HandledMacCalls::default(),
-            })),
-            "the first outbound data frame after Welcome must advertise an empty call set"
-        );
-        acknowledge_registration(socket).await;
-    }
     let next = tokio::select! {
         frame = text(socket) => frame,
         disposition = &mut outcome => panic!("ordinary request ended before its wire frame: {disposition:?}"),
@@ -124,9 +117,9 @@ async fn empty_capabilities_are_first_and_once_on_each_socket() {
     let fixture = Fixture::new().await;
     let lane = fixture.inbox_events.lane.clone();
     let mut socket = fixture.accept().await;
-    send_welcome(&mut socket).await;
+    welcome(&mut socket).await;
     let first = admitted(&lane).await;
-    ordinary_exchange(&lane, &mut socket, &first, true).await;
+    ordinary_exchange(&lane, &mut socket, &first).await;
     socket.send(Message::Close(None)).await.unwrap();
     assert_eq!(
         lane.next_event().await,
@@ -138,27 +131,15 @@ async fn empty_capabilities_are_first_and_once_on_each_socket() {
     fixture.clock.advance(Duration::from_secs(1)).unwrap();
 
     let mut replacement = fixture.accept().await;
-    send_welcome(&mut replacement).await;
+    welcome(&mut replacement).await;
     let second = admitted(&lane).await;
     assert_ne!(first.connection, second.connection);
-    ordinary_exchange(&lane, &mut replacement, &second, true).await;
+    ordinary_exchange(&lane, &mut replacement, &second).await;
     fixture.stop().await;
 }
 
-async fn expect_refusal(
-    socket: &mut WebSocketStream<TcpStream>,
-    correlation_id: &str,
-    allow_advertisement: bool,
-) {
-    let mut frame = socket.next().await;
-    if allow_advertisement
-        && matches!(&frame, Some(Ok(Message::Text(text)))
-            if matches!(decode_text(text, FrameDirection::ToCentral),
-                Ok(LinkFrame::Data(DataFrame::MacCapabilities(_)))))
-    {
-        acknowledge_registration(socket).await;
-        frame = socket.next().await;
-    }
+async fn expect_refusal(socket: &mut WebSocketStream<TcpStream>, correlation_id: &str) {
+    let frame = socket.next().await;
     let Some(Ok(Message::Text(frame))) = frame else {
         panic!("expected typed refusal for {correlation_id} on the original socket, got {frame:?}");
     };
@@ -178,7 +159,7 @@ async fn both_unhandled_calls_are_refused_and_the_same_socket_carries_an_ordinar
     let fixture = Fixture::new().await;
     let lane = fixture.inbox_events.lane.clone();
     let mut socket = fixture.accept().await;
-    send_welcome(&mut socket).await;
+    welcome(&mut socket).await;
     let admission = admitted(&lane).await;
 
     let known = known_call().to_string();
@@ -187,7 +168,7 @@ async fn both_unhandled_calls_are_refused_and_the_same_socket_carries_an_ordinar
         LinkFrame::Data(DataFrame::CallMac { .. })
     ));
     socket.send(Message::Text(known.into())).await.unwrap();
-    expect_refusal(&mut socket, KNOWN_CALL, true).await;
+    expect_refusal(&mut socket, KNOWN_CALL).await;
 
     let unknown = unknown_call().to_string();
     assert!(matches!(
@@ -195,9 +176,9 @@ async fn both_unhandled_calls_are_refused_and_the_same_socket_carries_an_ordinar
         Err(ProtocolError::UnknownTypedCall { correlation_id }) if correlation_id == UNKNOWN_CALL.parse().unwrap()
     ));
     socket.send(Message::Text(unknown.into())).await.unwrap();
-    expect_refusal(&mut socket, UNKNOWN_CALL, false).await;
+    expect_refusal(&mut socket, UNKNOWN_CALL).await;
 
-    ordinary_exchange(&lane, &mut socket, &admission, false).await;
+    ordinary_exchange(&lane, &mut socket, &admission).await;
     assert_eq!(lane.watch_admitted().borrow().as_ref(), Some(&admission));
     fixture.stop().await;
 }
@@ -222,6 +203,37 @@ async fn either_call_before_welcome_remains_a_phase_fault() {
                 .watch_admitted()
                 .borrow()
                 .is_none()
+        );
+        fixture.stop().await;
+    }
+}
+
+#[tokio::test]
+async fn either_call_while_registering_closes_without_a_mac_reply() {
+    for call in [known_call(), unknown_call()] {
+        let fixture = Fixture::new().await;
+        let lane = fixture.inbox_events.lane.clone();
+        let mut socket = fixture.accept().await;
+        welcome_before_registration(&mut socket).await;
+        let _ = registration_request(&mut socket).await;
+        let admission = admitted(&lane).await;
+        assert!(lane.watch_registered().borrow().is_none());
+
+        socket
+            .send(Message::Text(call.to_string().into()))
+            .await
+            .unwrap();
+
+        let terminal = socket.next().await;
+        assert!(
+            matches!(terminal, Some(Ok(Message::Close(_))) | Some(Err(_)) | None),
+            "no application reply may precede the close for {call}: {terminal:?}"
+        );
+        assert_eq!(
+            lane.next_event().await,
+            Some(LinkLaneEvent::ConnectionNotAdmitted {
+                connection: admission.connection
+            })
         );
         fixture.stop().await;
     }

@@ -148,6 +148,12 @@ impl CustodyLink {
         self.fence_mark_drain(&admitted)?;
         let observed_at = self.clock.monotonic_now();
         let now = self.observe_shared_clock(admitted.clock_anchor, observed_at);
+        if !self
+            .registered_connection()
+            .is_some_and(|registered| registered.admitted() == &admitted)
+        {
+            return Ok(None);
+        }
         if self.outbox_driver.schedule.draining_mark() != mark_in_window(now)
             || self.outbox_driver.schedule.draining_mark().is_none()
         {
@@ -229,7 +235,10 @@ impl CustodyLink {
         can_probe: bool,
         deferred: &BTreeSet<RequestId>,
     ) -> Result<OrphanTurn, OutboxWorkError> {
-        let ready = can_probe.then(|| self.admitted_connection()).flatten();
+        let ready = can_probe
+            .then(|| self.registered_connection())
+            .flatten()
+            .map(|registered| registered.admitted().clone());
         let turn = prepare_orphan_turn(
             &mut self.outbox_driver.work,
             &mut self.outbox_driver.dispatcher,
@@ -322,11 +331,14 @@ impl CustodyLink {
         &mut self,
         report: &mut FlushReport,
     ) -> Result<Option<PreparedWriteBatch>, CustodyLinkError> {
-        let Some(admitted) = self.admitted_connection() else {
-            self.observe_unavailable()?;
+        let Some(registered) = self.registered_connection() else {
+            if self.admitted_connection().is_none() {
+                self.observe_unavailable()?;
+            }
             return Ok(None);
         };
-        self.fence_mark_drain(&admitted)?;
+        let admitted = registered.admitted();
+        self.fence_mark_drain(admitted)?;
         if self
             .outbox_driver
             .write_retry_at
@@ -391,7 +403,7 @@ impl CustodyLink {
             .await?;
             return Ok(None);
         };
-        let cause = if self.admitted_connection().as_ref() != Some(&admitted) {
+        let cause = if self.registered_connection().as_ref() != Some(&registered) {
             Some(UntouchedCommand::ConnectionUnavailable)
         } else if !self
             .outbox_driver

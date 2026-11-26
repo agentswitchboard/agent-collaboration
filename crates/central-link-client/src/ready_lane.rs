@@ -360,6 +360,7 @@ impl CheckedBatchResults {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum UntouchedCommand {
     ConnectionUnavailable,
+    RunNotRegistered,
     WriterBusy,
     SendWindowElapsed,
     FrameTooLarge,
@@ -461,6 +462,7 @@ pub enum LinkLocalFault {
 
 /// The socket owner supplies readiness, typed commands and events to link users.
 ///
+/// Work commands require registration on their exact connection. Admission is enough for intake.
 /// Once the socket owner accepts a command, it owns settlement. Dropping the waiting future
 /// withdraws the caller's interest in the result and leaves the accepted command in driver custody.
 /// The event consumer saves each offer durably to its local store and continues taking offers

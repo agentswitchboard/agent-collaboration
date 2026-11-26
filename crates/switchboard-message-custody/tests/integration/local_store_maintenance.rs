@@ -65,7 +65,7 @@ async fn maintenance_progress<Output>(
 #[tokio::test]
 async fn offline_inbox_retention_prunes_only_healthy_confirmed_rows() {
     let (root, custody, lane, clock) = limits_fixture().await;
-    lane.admitted.send_replace(None);
+    lane.set_connected(None);
     let database = root.path().join("machine_local.sqlite");
     let mut store = InboxStore::new(MachineLocalStore::open(&database).await.unwrap());
     let session = recipient_session();

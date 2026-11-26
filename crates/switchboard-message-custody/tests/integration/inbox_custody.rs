@@ -57,8 +57,7 @@ async fn a_queued_admitted_offer_is_kept_after_its_connection_closes() {
         let replacement =
             super::batch_replay::new_admission(session.machine_id.clone(), clock.clone());
         assert_ne!(old.connection, replacement.connection);
-        lane.admitted
-            .send_replace(replacement_already_admitted.then_some(replacement.clone()));
+        lane.set_connected(replacement_already_admitted.then_some(replacement.clone()));
 
         custody.observe_next_event().await.unwrap();
         let mut reopened = InboxStore::new(
@@ -80,7 +79,7 @@ async fn a_queued_admitted_offer_is_kept_after_its_connection_closes() {
         let (calls, group) = custody_task(custody, Arc::new(ObserveTask(observed)));
         assert_eq!(calls.waiting_for_session(session).await.unwrap().len(), 1);
         assert!(sent.borrow().is_empty());
-        lane.admitted.send_replace(Some(replacement.clone()));
+        lane.set_connected(Some(replacement.clone()));
         let wake = ClockInstant::ZERO + Duration::from_secs(20);
         clock.not_due_check_now(wake).await;
         assert!(
