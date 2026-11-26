@@ -26,6 +26,8 @@ use tokio::sync::{mpsc, oneshot};
 mod activation;
 #[path = "session_owner_scripted_competing_loss_test.rs"]
 mod loss;
+#[path = "session_owner_scripted_replay_test.rs"]
+mod replay;
 
 struct ScriptedSession {
     fixture: StoreFixture,

@@ -17,12 +17,13 @@ use provider_session_machines::{
         AcceptedRunSettings, ActivationRefusal, ActivationSetup, ApprovalLease,
         ApprovalLeaseBinding, ApprovalLeaseRefusalReason, BeforeOfferApprovalLeaseRefusal,
         CatalogueFact, CatalogueRequest, CloseFact, CreateAttempt, CreatedSetupFact,
-        CreatedSetupReport, ExactTurn, HarnessOwnerEvents, HarnessOwnerRecovery, HarnessProvider,
-        HarnessSessionId, Held, LifecycleRefusal, LifecycleReply, ObservedTurnApprovalLeaseRefusal,
-        OpenAttempt, OpenRequest, OpeningFact, OpeningFailure, OwnerHarnessBinding,
-        PermissionModeReport, RestoreLoadReadback, RestoreSettingRefusal, RestoredOpening,
-        RunRetirement, SessionCreatedSetupFact, SessionLifecycleFact, SessionLifecyclePort,
-        SettingAttempt, SettingFact, SetupReport, SlotEvidence, StreamTurn,
+        CreatedSetupReport, EventRefusal, ExactTurn, HarnessOwnerEvents, HarnessOwnerRecovery,
+        HarnessProvider, HarnessSessionId, Held, LifecycleRefusal, LifecycleReply,
+        ObservedTurnApprovalLeaseRefusal, OpenAttempt, OpenRequest, OpeningFact, OpeningFailure,
+        OwnerHarnessBinding, PermissionModeReport, ReplayCompleteness, RestoreLoadReadback,
+        RestoreSettingRefusal, RestoredOpening, RunRetirement, SessionCreatedSetupFact,
+        SessionLifecycleFact, SessionLifecyclePort, SettingAttempt, SettingFact, SetupReport,
+        SlotEvidence, StreamTurn,
     },
     session_lifecycle_machine::{CloseAttempt, LoadAttempt, RestoreVia},
     session_owner::{
@@ -41,7 +42,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio_util::task::TaskTracker;
 use uuid::Uuid;
 
@@ -101,9 +102,41 @@ pub(super) enum ScriptedWork {
 pub(super) struct ScriptControls {
     pub(super) work: ScriptedWork,
     pub(super) refuse_next_activation: Arc<AtomicBool>,
+    pub(super) pause_replay: Arc<Mutex<Option<oneshot::Sender<PausedReplay>>>>,
     pub(super) policy: Option<
         Arc<dyn provider_session_machines::session_owner::RequestPolicy<HostRequestPayloads>>,
     >,
+}
+
+pub(super) struct PausedReplay {
+    pub(super) run: RunAttempt<LoadAttempt>,
+    pub(super) captured: Vec<SessionEvent>,
+    readback: RestoreLoadReadback,
+    events: SessionLifecyclePort,
+    reply: LifecycleReply<OpeningFact>,
+}
+
+impl PausedReplay {
+    /// Finish the old capture and deliberately send its original reply after retirement.
+    pub(super) async fn complete_late(mut self) -> Result<(), EventRefusal> {
+        self.captured.push(item_event(REPLAY_TEXTS[1]));
+        let admission = self
+            .events
+            .send(SessionLifecycleFact::Replay {
+                run: self.run,
+                events: self.captured,
+            })
+            .await;
+        self.reply.send(OpeningFact::Restored {
+            run: self.run,
+            opening: RestoredOpening::Loaded {
+                readback: self.readback,
+                accepted_mode_fallback: None,
+                replay: ReplayCompleteness::Complete,
+            },
+        });
+        admission
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -348,6 +381,7 @@ impl OwnerHarnessBinding<OwnerHarnessPayloads> for ScriptedBinding {
                 let state = self.state.clone();
                 let journal = self.journal.clone();
                 let capture = self.replay;
+                let pause_replay = self.controls.pause_replay.clone();
                 self.tasks.spawn(async move {
                     let open = async {
                         let readback = RestoreLoadReadback {
@@ -358,6 +392,19 @@ impl OwnerHarnessBinding<OwnerHarnessPayloads> for ScriptedBinding {
                         };
                         let opening = match via {
                             RestoreVia::Load => {
+                                let pause = lock(&pause_replay).take();
+                                if let Some(pause) = pause {
+                                    let old_capture = PausedReplay {
+                                        run,
+                                        captured: vec![item_event(REPLAY_TEXTS[0])],
+                                        readback,
+                                        events,
+                                        reply,
+                                    };
+                                    let _observer_gone = pause.send(old_capture);
+                                    std::future::pending::<()>().await;
+                                    return;
+                                }
                                 let replay = match capture.capture() {
                                     Ok(replay) => replay,
                                     Err(failure) => {
@@ -380,7 +427,7 @@ impl OwnerHarnessBinding<OwnerHarnessPayloads> for ScriptedBinding {
                                 RestoredOpening::Loaded {
                                     readback,
                                     accepted_mode_fallback: None,
-                                    replay: provider_session_machines::harness_lifecycle::ReplayCompleteness::Complete,
+                                    replay: ReplayCompleteness::Complete,
                                 }
                             }
                             RestoreVia::Resume => RestoredOpening::Resumed {
