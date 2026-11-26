@@ -112,7 +112,7 @@ async fn native_send(
         .expect("native request");
 }
 
-async fn native_reply(client: &mut WebSocketStream<UnixStream>, id: u64) -> Value {
+async fn native_reply(client: &mut WebSocketStream<UnixStream>, id: u64) -> (Value, String) {
     loop {
         let frame = client
             .next()
@@ -122,7 +122,7 @@ async fn native_reply(client: &mut WebSocketStream<UnixStream>, id: u64) -> Valu
         if let Message::Text(text) = frame {
             let reply: Value = serde_json::from_str(&text).expect("native JSON");
             if reply.get("id") == Some(&json!(id)) {
-                return reply;
+                return (reply, text.to_string());
             }
         }
     }
@@ -244,7 +244,7 @@ async fn literal_native_steer_reports_idle_after_the_real_take_fence() {
     .await
     .expect("native websocket");
     native_send(&mut client, 1, "thread/list", json!({})).await;
-    let listed = native_reply(&mut client, 1).await;
+    let (listed, _) = native_reply(&mut client, 1).await;
     let thread = listed
         .pointer("/result/data/0/id")
         .and_then(Value::as_str)
@@ -254,7 +254,7 @@ async fn literal_native_steer_reports_idle_after_the_real_take_fence() {
         "input":[{"type":"text","text":"follow-up"}]})
     };
     native_send(&mut client, 2, "turn/steer", command("different-turn")).await;
-    let mismatch = native_reply(&mut client, 2).await;
+    let (mismatch, _) = native_reply(&mut client, 2).await;
     let (offered, take) = provider_runtime(&rig)
         .preparation_fixture
         .pause_named_steer_take();
@@ -265,7 +265,15 @@ async fn literal_native_steer_reports_idle_after_the_real_take_fence() {
 
     release_foreground(&rig, &foreground_gate).await;
     take.send(()).expect("allow the stale transport take");
-    let ended = native_reply(&mut client, 3).await;
+    let (ended, _) = native_reply(&mut client, 3).await;
+    native_send(
+        &mut client,
+        4,
+        "turn/interrupt",
+        json!({"threadId":thread,"turnId":started.turn_id}),
+    )
+    .await;
+    let (_, idle_interrupt) = native_reply(&mut client, 4).await;
     client.close(None).await.expect("close native client");
     server.await.expect("join native connection");
     rig.supervisor.shutdown().await.expect("fixture shutdown");
@@ -279,6 +287,11 @@ async fn literal_native_steer_reports_idle_after_the_real_take_fence() {
     assert_eq!(
         ended.get("error"),
         Some(&json!({"code": -32600,"message":"no active turn to steer"}))
+    );
+    assert_eq!(
+        idle_interrupt,
+        json!({"id":4,"error":{"code":-32000,"message":"provider session unavailable"}})
+            .to_string()
     );
     assert_peer_had_only_foreground(&rig);
 }
