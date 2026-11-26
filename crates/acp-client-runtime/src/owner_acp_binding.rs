@@ -1,8 +1,9 @@
 //! The ACP implementation of one session owner's harness work calls.
 
 use crate::{
-    InteractionPort, OwnerApprovalBindings, approval_turn_cancellation::OwnerCancelDrainExecutor,
-    owner_wire::OwnerAcpWire, provider_prompt_content::acp_blocks_from_prompt_content,
+    AcpRequestPayloads, OwnerApprovalBindings,
+    approval_turn_cancellation::OwnerCancelDrainExecutor, owner_wire::OwnerAcpWire,
+    provider_prompt_content::acp_blocks_from_prompt_content,
 };
 use std::sync::{Arc, OnceLock};
 use switchboard_harness_contracts::{
@@ -17,14 +18,14 @@ use tokio_util::task::TaskTracker;
 mod lifecycle;
 pub use lifecycle::OwnerAcpProvider;
 
-pub struct OwnerAcpBinding<Port: InteractionPort> {
+pub struct OwnerAcpBinding<Port: AcpRequestPayloads> {
     wire: Arc<OwnerAcpWire>,
     provider_session: Arc<OnceLock<String>>,
     cancel_drains: OwnerCancelDrainExecutor<Port>,
     tasks: TaskTracker,
 }
 
-impl<Port: InteractionPort> OwnerAcpBinding<Port> {
+impl<Port: AcpRequestPayloads> OwnerAcpBinding<Port> {
     #[must_use]
     pub fn new(
         wire: Arc<OwnerAcpWire>,
@@ -61,7 +62,7 @@ impl<Port: InteractionPort> OwnerAcpBinding<Port> {
     }
 }
 
-impl<Port: InteractionPort> HarnessBinding for OwnerAcpBinding<Port> {
+impl<Port: AcpRequestPayloads> HarnessBinding for OwnerAcpBinding<Port> {
     fn offer_prompt(
         &self,
         authorization: DispatchAuthorization,

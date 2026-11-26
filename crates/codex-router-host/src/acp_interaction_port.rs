@@ -1,14 +1,9 @@
 //! Managed ACP callback policy and its exact-turn cancellation port.
 
-use acp_client_runtime::{InteractionFuture, InteractionPort};
 use collaboration_protocol::OperationId;
-use provider_session_machines::{
-    SessionGeneration,
-    session_owner::{
-        ApprovalContext, ApprovalPortOutcome, Decision, ExactScope, ExactTurn, RequestCancellation,
-        RequestCancellationSignal, RequestFuture, RequestPolicy, StopRequestsCause,
-    },
-    session_turn_machine::TurnId,
+use provider_session_machines::session_owner::{
+    ApprovalContext, ApprovalPortOutcome, Decision, ExactScope, ExactTurn, RequestCancellation,
+    RequestCancellationSignal, RequestFuture, RequestPolicy, StopRequestsCause,
 };
 use session_event_model::managed_interaction_refusal::ManagedInteractionRefusal;
 use session_event_model::{ApprovalRequest, QuestionRequest, QuestionResponse};
@@ -24,7 +19,7 @@ pub(crate) trait RefusedTurnCancellation: Send + Sync {
         &self,
         session: String,
         scope: OwnerApprovalScope,
-    ) -> InteractionFuture<'_, ()>;
+    ) -> RequestFuture<'_, ()>;
 }
 
 pub(crate) struct HostInteractionPort(pub(crate) Arc<dyn RefusedTurnCancellation>);
@@ -41,7 +36,7 @@ impl RequestCancellationSignal for BindingRetirement {
     }
 }
 
-type HostRequestPayloads = (
+pub(crate) type HostRequestPayloads = (
     ExternalProviderApprovalContext,
     OperationId,
     ApprovalRequest,
@@ -114,35 +109,5 @@ impl RequestPolicy<HostRequestPayloads> for HostInteractionPort {
         _cause: StopRequestsCause,
     ) -> RequestFuture<'_, ()> {
         Box::pin(async {})
-    }
-}
-
-impl InteractionPort for HostInteractionPort {
-    type Context = ExternalProviderApprovalContext;
-    type OperationId = OperationId;
-
-    fn request_policy(&self) -> Option<&dyn RequestPolicy<HostRequestPayloads>> {
-        Some(self)
-    }
-
-    fn cancel_after_managed_refusal(&self, context: Self::Context) -> InteractionFuture<'_, ()> {
-        Box::pin(async move {
-            if let Some(scope) = context.owner_scope {
-                let session = String::from(context.target.session_id);
-                self.0.cancel_refused_turn(session, scope).await;
-            }
-        })
-    }
-
-    fn operation_id(context: &Self::Context) -> Self::OperationId {
-        context.operation_id.clone()
-    }
-
-    fn binding_retirement(context: &Self::Context) -> CancellationToken {
-        context.binding_retirement.clone()
-    }
-
-    fn bind_owner_scope(context: &mut Self::Context, run: SessionGeneration, turn: TurnId) {
-        context.owner_scope = Some(OwnerApprovalScope { run, turn });
     }
 }

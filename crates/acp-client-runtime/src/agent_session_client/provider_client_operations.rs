@@ -1,14 +1,14 @@
 //! Connection-level queries and shutdown for one ACP provider.
 use super::{
-    AgentSessionClient, CancellationToken, ExternalProviderAdmission, ExternalProviderRuntimeError,
-    InteractionPort, Ordering, PathBuf, ProviderCapabilityReport, ProviderCommand,
+    AcpRequestPayloads, AgentSessionClient, CancellationToken, ExternalProviderAdmission,
+    ExternalProviderRuntimeError, Ordering, PathBuf, ProviderCapabilityReport, ProviderCommand,
 };
 #[cfg(any(test, feature = "test-observation"))]
 use super::{
     ExternalProviderApprovalRefusalWarning, ExternalProviderPermissionObservation,
     ExternalProviderPermissionOutcome, ExternalProviderToolCall,
 };
-impl<P: InteractionPort> AgentSessionClient<P> {
+impl<P: AcpRequestPayloads> AgentSessionClient<P> {
     fn retired_operation_error(&self) -> ExternalProviderRuntimeError {
         if self.sink_closed.is_cancelled() {
             ExternalProviderRuntimeError::SinkClosed
@@ -90,7 +90,7 @@ impl<P: InteractionPort> AgentSessionClient<P> {
         self.approval_contexts.lock().ok().and_then(|contexts| {
             contexts
                 .get(provider_session_id)
-                .map(|context| P::operation_id(&context.approval))
+                .map(|context| context.operation_id.clone())
         })
     }
 

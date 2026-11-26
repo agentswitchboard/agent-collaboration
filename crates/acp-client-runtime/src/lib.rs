@@ -42,6 +42,12 @@ mod approval_presentation;
 mod approval_turn_cancellation;
 mod callback_router;
 mod external_permission_options;
+#[cfg(feature = "test-support")]
+#[path = "test_support/fixture_legacy_client.rs"]
+mod fixture_legacy_client;
+#[cfg(any(test, feature = "test-support"))]
+#[path = "test_support/fixture_policy.rs"]
+mod fixture_policy;
 #[cfg(all(debug_assertions, feature = "test-observation"))]
 pub mod handover_test_control;
 mod in_folder_allowance;
@@ -95,9 +101,13 @@ pub use approval_turn_cancellation::{
 };
 pub use external_permission_options::RefusedPermissionOption;
 pub(crate) use external_permission_options::map_permission_options;
+pub(crate) use interaction_port::AcpRequestPolicy;
 pub use interaction_port::{
-    ApprovalPortOutcome, InteractionFuture, InteractionPort, RefusedApprovalOffer,
+    AcpRequestPayloads, ApprovalPortOutcome, CanonicalRequestPayloads, InteractionFuture,
+    RefusedApprovalOffer,
 };
+#[cfg(any(test, feature = "test-support"))]
+pub use interaction_port::{FixtureCancellation, InteractionPort};
 pub use permission_mode_plan::{
     AUTO_PERMISSION_MODE, AutoPermissionMode, AutoRealization, PermissionModePlan,
     PermissionModeReason, PermissionModeRefusal, PermissionModeReport, RequestedPermissionMode,

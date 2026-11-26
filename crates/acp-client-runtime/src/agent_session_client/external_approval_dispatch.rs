@@ -4,7 +4,7 @@
 use super::ExternalProviderApprovalRefusalWarning;
 use super::{ActiveApprovalContext, ExternalProviderApprovalRefusalReason};
 use crate::{
-    ApprovalPortOutcome, InteractionPort, ProviderPersistenceTarget, RefusedApprovalOffer,
+    AcpRequestPayloads, AcpRequestPolicy, ApprovalPortOutcome, ProviderPersistenceTarget,
     map_permission_options, reviewed_approval_fields,
 };
 use agent_client_protocol::schema::v1::{
@@ -20,8 +20,28 @@ use std::{
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
-pub(super) struct PermissionDispatchState<P: InteractionPort> {
-    pub(super) interaction_port: Arc<P>,
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) type MalformedApprovalCallback<Context> = Arc<
+    dyn Fn(Context, crate::RefusedApprovalOffer) -> crate::InteractionFuture<'static, ()>
+        + Send
+        + Sync,
+>;
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) type MalformedApprovalObserver<P> = Arc<
+    Mutex<
+        Option<
+            MalformedApprovalCallback<
+                <P as switchboard_harness_contracts::RequestPolicyPayloads>::Context,
+            >,
+        >,
+    >,
+>;
+
+pub(super) struct PermissionDispatchState<P: AcpRequestPayloads> {
+    pub(super) request_policy: Arc<AcpRequestPolicy<P>>,
+    #[cfg(any(test, feature = "test-support"))]
+    pub(super) malformed_approval_observer: MalformedApprovalObserver<P>,
     pub(super) refusal_reasons:
         Arc<Mutex<HashMap<P::OperationId, ExternalProviderApprovalRefusalReason>>>,
     pub(super) endpoint_id: Arc<RwLock<Option<String>>>,
@@ -32,7 +52,7 @@ pub(super) struct PermissionDispatchState<P: InteractionPort> {
     pub(super) permission_outcome: Arc<std::sync::atomic::AtomicU8>,
 }
 
-pub(super) async fn record_permission_refusal<P: InteractionPort>(
+pub(super) async fn record_permission_refusal<P: AcpRequestPayloads>(
     state: &PermissionDispatchState<P>,
     provider_session_id: &str,
     operation_id: Option<P::OperationId>,
@@ -67,7 +87,7 @@ pub(super) async fn record_permission_refusal<P: InteractionPort>(
     }
 }
 
-pub(super) fn spawn_external_approval_dispatch<P: InteractionPort>(
+pub(super) fn spawn_external_approval_dispatch<P: AcpRequestPayloads>(
     request: RequestPermissionRequest,
     responder: Responder<RequestPermissionResponse>,
     connection: ConnectionTo<Agent>,
@@ -84,7 +104,7 @@ pub(super) fn spawn_external_approval_dispatch<P: InteractionPort>(
     });
     connection.spawn(async move {
         if let (Some(context), Some(refusal)) =
-            (context.as_ref(), state.interaction_port.managed_refusal())
+            (context.as_ref(), state.request_policy.managed_refusal())
         {
             let provider_session_id = request.session_id.0.to_string();
             let response: RequestPermissionResponse =
@@ -93,7 +113,7 @@ pub(super) fn spawn_external_approval_dispatch<P: InteractionPort>(
             record_permission_refusal(
                 &state,
                 &provider_session_id,
-                Some(P::operation_id(&context.approval)),
+                Some(context.operation_id.clone()),
                 ExternalProviderApprovalRefusalReason::Managed(refusal),
             )
             .await;
@@ -105,7 +125,7 @@ pub(super) fn spawn_external_approval_dispatch<P: InteractionPort>(
             drop(response_guard);
             context
                 .clone()
-                .cancel_after_refusal(Arc::clone(&state.interaction_port), refusal)
+                .cancel_after_refusal(Arc::clone(&state.request_policy), refusal)
                 .await;
             return queued;
         }
@@ -137,7 +157,7 @@ pub(super) fn spawn_external_approval_dispatch<P: InteractionPort>(
     })
 }
 
-async fn handle_contextual_permission_request<P: InteractionPort>(
+async fn handle_contextual_permission_request<P: AcpRequestPayloads>(
     context: ActiveApprovalContext<P>,
     request: RequestPermissionRequest,
     request_id: String,
@@ -149,20 +169,33 @@ async fn handle_contextual_permission_request<P: InteractionPort>(
     let options = match map_permission_options(request.options, state.persistence_target) {
         Ok(options) => options,
         Err(refused) => {
-            state
-                .interaction_port
-                .record_refusal(
-                    context.approval,
-                    RefusedApprovalOffer {
-                        request_id,
-                        reason: refused.reason,
-                        title: reviewed.title,
-                        description: reviewed.description,
-                        subject: reviewed.subject,
-                        options: refused.options,
-                    },
-                )
-                .await;
+            tracing::warn!(
+                reason_code = refused.reason,
+                option_count = refused.options.len(),
+                "malformed ACP permission offer refused"
+            );
+            #[cfg(any(test, feature = "test-support"))]
+            {
+                let observer = state
+                    .malformed_approval_observer
+                    .lock()
+                    .ok()
+                    .and_then(|observer| observer.clone());
+                if let Some(observer) = observer {
+                    observer(
+                        context.approval,
+                        crate::RefusedApprovalOffer {
+                            request_id,
+                            reason: refused.reason,
+                            title: reviewed.title,
+                            description: reviewed.description,
+                            subject: reviewed.subject,
+                            options: refused.options,
+                        },
+                    )
+                    .await;
+                }
+            }
             return RequestPermissionOutcome::Cancelled;
         }
     };
@@ -176,7 +209,7 @@ async fn handle_contextual_permission_request<P: InteractionPort>(
     };
     let agent_cancellation = CancellationToken::new();
     let approval = context.decide_approval(
-        state.interaction_port.as_ref(),
+        state.request_policy.as_ref(),
         canonical_request,
         agent_cancellation.clone(),
     );
@@ -198,7 +231,7 @@ async fn handle_contextual_permission_request<P: InteractionPort>(
             record_permission_refusal(
                 state,
                 &provider_session_id,
-                Some(P::operation_id(&context.approval)),
+                Some(context.operation_id),
                 ExternalProviderApprovalRefusalReason::ApprovalBrokerUnavailable,
             )
             .await;

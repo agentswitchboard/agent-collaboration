@@ -1,11 +1,12 @@
 //! Scripted ACP fixtures addressed through the session owner and ordered wire ports.
 
+pub use crate::fixture_legacy_client::FixtureClient;
 use crate::{
-    AgentSessionClient, ExternalProviderCreatedSession, ExternalProviderLaunch,
-    ExternalProviderRuntimeError, InteractionPort, ProviderBehavior, ProviderCapabilityReport,
-    ProviderModelPicker, ProviderPromptContent, ProviderPromptDispatchObservation,
-    ProviderSettingRequest, ProviderTurnInput, RequestedProviderSettings, SessionEventSink,
-    SessionRestoreSetup, SessionWorkRoots,
+    AcpRequestPayloads, AcpRequestPolicy, AgentSessionClient, ExternalProviderCreatedSession,
+    ExternalProviderLaunch, ExternalProviderRuntimeError, ProviderBehavior,
+    ProviderCapabilityReport, ProviderModelPicker, ProviderPromptContent,
+    ProviderPromptDispatchObservation, ProviderSettingRequest, ProviderTurnInput,
+    RequestedProviderSettings, SessionEventSink, SessionRestoreSetup, SessionWorkRoots,
     owner_session_open::{OwnerOpenedSession, OwnerSessionOpenSetup},
     session_owner_task::{SessionOwnerHandle, SessionOwnerTask},
 };
@@ -39,21 +40,21 @@ mod ports;
 
 type FixtureResult<T> = Result<T, ExternalProviderRuntimeError>;
 
-pub struct FixtureClient<P: InteractionPort> {
+pub struct PolicyFixtureClient<P: AcpRequestPayloads> {
     connection: AgentSessionClient<P>,
     sink: Arc<dyn SessionEventSink>,
     epoch: ConnectionEpoch,
     sessions: Mutex<HashMap<String, Arc<FixtureSession<P>>>>,
 }
 
-struct FixtureSession<P: InteractionPort> {
+struct FixtureSession<P: AcpRequestPayloads> {
     address: OwnerAddress,
     owner: SessionOwnerHandle,
     state: Arc<Mutex<FixtureState<P>>>,
     stop: CancellationToken,
 }
 
-struct FixtureState<P: InteractionPort> {
+struct FixtureState<P: AcpRequestPayloads> {
     capabilities: ProviderCapabilityReport,
     replies: HashMap<Uuid, oneshot::Sender<SessionOwnerReply>>,
     inputs: HashMap<InputId, FixtureInput<P>>,
@@ -62,13 +63,13 @@ struct FixtureState<P: InteractionPort> {
     cancel_report: tokio::sync::watch::Sender<Option<Result<CancelDrainReport, RevokeReason>>>,
 }
 
-struct FixtureInput<P: InteractionPort> {
+struct FixtureInput<P: AcpRequestPayloads> {
     content: ProviderPromptContent,
     context: Option<P::Context>,
     dispatch: Option<oneshot::Sender<ProviderPromptDispatchObservation>>,
 }
 
-impl<P: InteractionPort> Default for FixtureState<P> {
+impl<P: AcpRequestPayloads> Default for FixtureState<P> {
     fn default() -> Self {
         Self {
             capabilities: ProviderCapabilityReport::default(),
@@ -81,7 +82,7 @@ impl<P: InteractionPort> Default for FixtureState<P> {
     }
 }
 
-impl<P: InteractionPort> Deref for FixtureClient<P> {
+impl<P: AcpRequestPayloads> Deref for PolicyFixtureClient<P> {
     type Target = AgentSessionClient<P>;
 
     fn deref(&self) -> &Self::Target {
@@ -89,16 +90,16 @@ impl<P: InteractionPort> Deref for FixtureClient<P> {
     }
 }
 
-impl<P: InteractionPort> std::fmt::Debug for FixtureClient<P> {
+impl<P: AcpRequestPayloads> std::fmt::Debug for PolicyFixtureClient<P> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
-            .debug_struct("FixtureClient")
+            .debug_struct("PolicyFixtureClient")
             .field("connection", &self.connection)
             .finish_non_exhaustive()
     }
 }
 
-impl<P: InteractionPort> FixtureClient<P> {
+impl<P: AcpRequestPayloads> PolicyFixtureClient<P> {
     fn from_connection(connection: AgentSessionClient<P>, sink: Arc<dyn SessionEventSink>) -> Self {
         Self {
             connection,
@@ -110,7 +111,7 @@ impl<P: InteractionPort> FixtureClient<P> {
 
     pub async fn initialize(
         launch: ExternalProviderLaunch,
-        interactions: Arc<P>,
+        interactions: Arc<AcpRequestPolicy<P>>,
         sink: Arc<dyn SessionEventSink>,
         behavior: Arc<dyn ProviderBehavior>,
     ) -> FixtureResult<Self> {
@@ -123,7 +124,7 @@ impl<P: InteractionPort> FixtureClient<P> {
     pub async fn initialize_with_model_picker(
         launch: ExternalProviderLaunch,
         picker: ProviderModelPicker,
-        interactions: Arc<P>,
+        interactions: Arc<AcpRequestPolicy<P>>,
         sink: Arc<dyn SessionEventSink>,
         behavior: Arc<dyn ProviderBehavior>,
     ) -> FixtureResult<Self> {
@@ -147,7 +148,7 @@ impl<P: InteractionPort> FixtureClient<P> {
         picker: ProviderModelPicker,
         name: impl Into<String>,
         url: impl Into<String>,
-        interactions: Arc<P>,
+        interactions: Arc<AcpRequestPolicy<P>>,
         sink: Arc<dyn SessionEventSink>,
         behavior: Arc<dyn ProviderBehavior>,
         clock: Arc<dyn RuntimeClock>,
@@ -169,7 +170,7 @@ impl<P: InteractionPort> FixtureClient<P> {
     pub async fn initialize_in_process(
         io: tokio::io::DuplexStream,
         agent_task: tokio::task::JoinHandle<()>,
-        interactions: Arc<P>,
+        interactions: Arc<AcpRequestPolicy<P>>,
         sink: Arc<dyn SessionEventSink>,
         behavior: Arc<dyn ProviderBehavior>,
         clock: Arc<dyn RuntimeClock>,
@@ -541,7 +542,7 @@ impl<P: InteractionPort> FixtureClient<P> {
         approval: P::Context,
         dispatch: Option<oneshot::Sender<ProviderPromptDispatchObservation>>,
     ) -> FixtureResult<crate::ExternalProviderPromptOutcome> {
-        let approval_operation = P::operation_id(&approval);
+        let approval_operation = self.connection.policy_operation_id(&approval);
         let session = self.session(&id)?;
         let capabilities = lock(&session.state).capabilities.clone();
         let content = match self.prepare_owner_prompt(request, &capabilities) {
@@ -781,7 +782,9 @@ impl<P: InteractionPort> FixtureClient<P> {
                 remote: RemoteEffect::Applied,
                 ..
             } => ProviderSteeringOutcome::Injected {
-                running_operation_id: joined.as_ref().map(P::operation_id),
+                running_operation_id: joined
+                    .as_ref()
+                    .map(|context| self.connection.policy_operation_id(context)),
                 joined_turn: joined,
             },
             SessionOwnerReply::SteerStarted { .. } | SessionOwnerReply::PromptCompleted { .. } => {
@@ -906,13 +909,13 @@ fn report_prompt_refusal(
     }
 }
 
-impl<P: InteractionPort> Drop for FixtureSession<P> {
+impl<P: AcpRequestPayloads> Drop for FixtureSession<P> {
     fn drop(&mut self) {
         self.stop.cancel();
     }
 }
 
-impl<P: InteractionPort> FixtureSession<P> {
+impl<P: AcpRequestPayloads> FixtureSession<P> {
     fn generation(&self) -> FixtureResult<SessionGeneration> {
         match self.owner.snapshots().borrow().lifecycle {
             SessionLifecycle::Live { generation }

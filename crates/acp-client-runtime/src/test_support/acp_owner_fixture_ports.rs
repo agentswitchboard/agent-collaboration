@@ -2,8 +2,8 @@
 
 use super::{FixtureState, lock};
 use crate::{
-    InteractionPort, OwnerApprovalBindings, OwnerApprovalLease, ProviderPromptDispatchObservation,
-    SessionEventSink,
+    AcpRequestPayloads, OwnerApprovalBindings, OwnerApprovalLease,
+    ProviderPromptDispatchObservation, SessionEventSink,
     acp_transport::TransportRun,
     owner_acp_binding::OwnerAcpBinding,
     owner_session_open::{OwnerOpenedSession, OwnerSessionOpenSetup},
@@ -45,7 +45,7 @@ struct OpenedRestore {
     fallback: Option<String>,
 }
 
-pub(super) struct FixturePorts<P: InteractionPort> {
+pub(super) struct FixturePorts<P: AcpRequestPayloads> {
     id: String,
     shared: Arc<Mutex<FixtureState<P>>>,
     wire: Arc<OwnerAcpWire>,
@@ -59,7 +59,7 @@ pub(super) struct FixturePorts<P: InteractionPort> {
     active_approval: Option<(TurnId, OwnerApprovalLease<P>)>,
 }
 
-impl<P: InteractionPort> FixturePorts<P> {
+impl<P: AcpRequestPayloads> FixturePorts<P> {
     pub(super) fn new(
         id: String,
         shared: Arc<Mutex<FixtureState<P>>>,
@@ -532,7 +532,7 @@ impl<P: InteractionPort> FixturePorts<P> {
     }
 }
 
-impl<P: InteractionPort> SessionOwnerPorts for FixturePorts<P> {
+impl<P: AcpRequestPayloads> SessionOwnerPorts for FixturePorts<P> {
     fn execute(
         &mut self,
         address: OwnerAddress,

@@ -3,17 +3,17 @@
 use super::{AtomicU64, ExternalProviderApprovalRefusalWarning};
 
 use super::{
-    ActiveApprovalContext, AgentSessionClient, Arc, CancellationToken, Client, Duration,
-    ExternalProviderApprovalRefusalReason, ExternalProviderLaunch, ExternalProviderRuntimeError,
-    HashMap, InteractionPort, Lines, MAX_ACP_FRAME_BYTES, McpServer, Ordering,
-    PermissionDispatchState, ProviderAuthStatusHandler, ProviderCommand,
+    AcpRequestPayloads, AcpRequestPolicy, ActiveApprovalContext, AgentSessionClient, Arc,
+    CancellationToken, Client, Duration, ExternalProviderApprovalRefusalReason,
+    ExternalProviderLaunch, ExternalProviderRuntimeError, HashMap, Lines, MAX_ACP_FRAME_BYTES,
+    McpServer, Ordering, PermissionDispatchState, ProviderAuthStatusHandler, ProviderCommand,
     ProviderCursorCreatePlanHandler, ProviderCursorQuestionHandler, ProviderCursorTodoHandler,
     ProviderFormElicitationHandler, ProviderFrameObservation, ProviderRequestFallback,
     ProviderRequestSessionGuard, RequestPermissionRequest, SessionEventSink,
     initialize_provider_connection, provider_lifecycle_requests, record_permission_refusal,
     spawn_external_approval_dispatch,
 };
-impl<P: InteractionPort> AgentSessionClient<P> {
+impl<P: AcpRequestPayloads> AgentSessionClient<P> {
     #[expect(
         clippy::too_many_arguments,
         reason = "Passes the ACP connection inputs to the transport initializer."
@@ -23,7 +23,7 @@ impl<P: InteractionPort> AgentSessionClient<P> {
         model_picker: crate::ProviderModelPicker,
         initialize_timeout: Duration,
         configured_mcp_servers: Vec<McpServer>,
-        interaction_port: Arc<P>,
+        request_policy: Arc<AcpRequestPolicy<P>>,
         event_sink: Arc<dyn SessionEventSink>,
         behavior: Arc<dyn crate::ProviderBehavior>,
         clock: Arc<dyn router_clock::RuntimeClock>,
@@ -35,7 +35,7 @@ impl<P: InteractionPort> AgentSessionClient<P> {
             model_picker,
             initialize_timeout,
             configured_mcp_servers,
-            interaction_port,
+            request_policy,
             event_sink,
             behavior,
             clock,
@@ -54,7 +54,7 @@ impl<P: InteractionPort> AgentSessionClient<P> {
         model_picker: crate::ProviderModelPicker,
         initialize_timeout: Duration,
         configured_mcp_servers: Vec<McpServer>,
-        interaction_port: Arc<P>,
+        request_policy: Arc<AcpRequestPolicy<P>>,
         event_sink: Arc<dyn SessionEventSink>,
         behavior: Arc<dyn crate::ProviderBehavior>,
         clock: Arc<dyn router_clock::RuntimeClock>,
@@ -110,7 +110,11 @@ impl<P: InteractionPort> AgentSessionClient<P> {
         let permission_outcome = Arc::new(std::sync::atomic::AtomicU8::new(0));
         #[cfg(any(test, feature = "test-observation"))]
         let callback_permission_outcome = Arc::clone(&permission_outcome);
-        let callback_interaction_port = Arc::clone(&interaction_port);
+        let callback_interaction_port = Arc::clone(&request_policy);
+        #[cfg(any(test, feature = "test-support"))]
+        let malformed_approval_observer = Arc::new(std::sync::Mutex::new(None));
+        #[cfg(any(test, feature = "test-support"))]
+        let callback_malformed_approval_observer = Arc::clone(&malformed_approval_observer);
 
         let approval_contexts = Arc::new(std::sync::Mutex::new(HashMap::<
             String,
@@ -118,11 +122,11 @@ impl<P: InteractionPort> AgentSessionClient<P> {
         >::new()));
         let callback_approval_contexts = Arc::clone(&approval_contexts);
         let callback_question_contexts = Arc::clone(&approval_contexts);
-        let callback_question_port = Arc::clone(&interaction_port);
+        let callback_question_port = Arc::clone(&request_policy);
         let callback_plan_contexts = Arc::clone(&approval_contexts);
-        let callback_plan_port = Arc::clone(&interaction_port);
+        let callback_plan_port = Arc::clone(&request_policy);
         let callback_elicitation_contexts = Arc::clone(&approval_contexts);
-        let callback_elicitation_port = Arc::clone(&interaction_port);
+        let callback_elicitation_port = Arc::clone(&request_policy);
         let permission_refusal_reasons = Arc::new(std::sync::Mutex::new(HashMap::new()));
         let callback_permission_refusal_reasons = Arc::clone(&permission_refusal_reasons);
         let endpoint_id = Arc::new(tokio::sync::RwLock::new(None::<String>));
@@ -259,7 +263,9 @@ impl<P: InteractionPort> AgentSessionClient<P> {
                             );
                         }
                         let dispatch_state = PermissionDispatchState {
-                            interaction_port: Arc::clone(&callback_interaction_port),
+                            request_policy: Arc::clone(&callback_interaction_port),
+                            #[cfg(any(test, feature = "test-support"))]
+                            malformed_approval_observer: Arc::clone(&callback_malformed_approval_observer),
                             refusal_reasons: Arc::clone(&callback_permission_refusal_reasons),
                             endpoint_id: Arc::clone(&callback_endpoint_id),
                             persistence_target,
@@ -464,7 +470,9 @@ impl<P: InteractionPort> AgentSessionClient<P> {
             permission_request_count,
             #[cfg(any(test, feature = "test-observation"))]
             permission_outcome,
-            interaction_port,
+            request_policy,
+            #[cfg(any(test, feature = "test-support"))]
+            malformed_approval_observer,
             _event_sink: event_sink,
             approval_contexts,
             permission_refusal_reasons,

@@ -1,7 +1,10 @@
 use super::*;
 use crate::{
-    InteractionFuture, owner_acp_binding::OwnerAcpBinding,
-    owner_session_setting::tests::ConnectionCatalogueBehavior, owner_wire::OwnerAcpOutput,
+    InteractionFuture, InteractionPort,
+    fixture_policy::{FixturePayloads, FixturePolicy},
+    owner_acp_binding::OwnerAcpBinding,
+    owner_session_setting::tests::ConnectionCatalogueBehavior,
+    owner_wire::OwnerAcpOutput,
 };
 use std::num::NonZeroUsize;
 use switchboard_harness_contracts::{
@@ -49,7 +52,7 @@ impl ReservedReply<WorkReply> for CapturedCancelReply {
 }
 
 struct CancelFixture {
-    binding: OwnerAcpBinding<WaitingInteractionPort>,
+    binding: OwnerAcpBinding<FixturePayloads<WaitingInteractionPort>>,
     #[cfg(feature = "test-observation")]
     wire: Arc<OwnerAcpWire>,
     port: Arc<WaitingInteractionPort>,
@@ -58,14 +61,17 @@ struct CancelFixture {
     retirement: CancellationToken,
     tasks: TaskTracker,
     _output: OwnerAcpOutput,
-    _lease: OwnerApprovalLease<WaitingInteractionPort>,
+    _lease: OwnerApprovalLease<FixturePayloads<WaitingInteractionPort>>,
 }
 
 impl CancelFixture {
     fn new() -> Self {
         let port = Arc::new(WaitingInteractionPort::default());
         let active = Arc::new(Mutex::new(HashMap::new()));
-        let approvals = OwnerApprovalBindings::new(Arc::clone(&active), Arc::clone(&port));
+        let approvals = OwnerApprovalBindings::new(
+            Arc::clone(&active),
+            Arc::new(FixturePolicy(Arc::clone(&port))),
+        );
         let run = TransportRun {
             incarnation: OwnerIncarnation(Uuid::now_v7()),
             generation: SessionGeneration::from_number(1),

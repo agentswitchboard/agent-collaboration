@@ -6,18 +6,18 @@
 //! receives the client's answer.
 
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
 };
 
-use crate::acp_owner_fixture::FixtureClient as AgentSessionClient;
 use acp_client_runtime::{
     ApprovalPortOutcome, EventSinkClosed, ExternalProviderLaunch, HistoryReplayFuture,
     InteractionFuture, InteractionPort, ProviderPersistenceTarget, RefusedApprovalOffer,
     SessionEventSink,
+    acp_owner_fixture::{FixtureClient, PolicyFixtureClient},
 };
 use codex_router_test_support::node_taps::{
     CatalogRowExpectation, EdgeParty, MessageFamily, NodeStateSnapshot, ProtocolNode, RecordLayer,
@@ -53,13 +53,16 @@ struct ApprovalContext {
 
 #[derive(Default)]
 struct BrokerStandIn {
-    neutral_policy: bool,
-    neutral_approval_calls: AtomicUsize,
     accepted: Mutex<Vec<ApprovalRequest>>,
     approval_contexts: Mutex<Vec<ApprovalContext>>,
     refused: Mutex<Option<RefusedApprovalOffer>>,
     /// Every decision the stand-in handed back, whole.
     decisions: Mutex<Vec<ApprovalPortOutcome>>,
+}
+
+struct CountingPolicy {
+    broker: BrokerStandIn,
+    calls: AtomicUsize,
 }
 
 type BrokerPayloads = (
@@ -110,15 +113,17 @@ impl BrokerStandIn {
     }
 }
 
-impl RequestPolicy<BrokerPayloads> for BrokerStandIn {
+impl RequestPolicy<BrokerPayloads> for CountingPolicy {
     fn decide_approval(
         &self,
         context: ScopedApprovalContext<ApprovalContext>,
         request: ApprovalRequest,
         _cancellation: RequestCancellation,
     ) -> RequestFuture<'_, Decision<ApprovalPortOutcome>> {
-        self.neutral_approval_calls.fetch_add(1, Ordering::Relaxed);
-        Box::pin(async move { Decision::Answer(self.record_approval(context.context, request)) })
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        Box::pin(
+            async move { Decision::Answer(self.broker.record_approval(context.context, request)) },
+        )
     }
 
     fn decide_question(
@@ -167,10 +172,6 @@ impl InteractionPort for BrokerStandIn {
     type Context = ApprovalContext;
     type OperationId = u64;
 
-    fn request_policy(&self) -> Option<&dyn RequestPolicy<BrokerPayloads>> {
-        self.neutral_policy.then_some(self)
-    }
-
     fn operation_id(context: &Self::Context) -> Self::OperationId {
         context.operation
     }
@@ -186,8 +187,8 @@ impl InteractionPort for BrokerStandIn {
         &self,
         context: Self::Context,
         request: ApprovalRequest,
-        _turn_cancellation: CancellationToken,
-        _agent_cancellation: CancellationToken,
+        _turn_cancellation: acp_client_runtime::FixtureCancellation,
+        _agent_cancellation: acp_client_runtime::FixtureCancellation,
     ) -> InteractionFuture<'_, ApprovalPortOutcome> {
         Box::pin(async move { self.record_approval(context, request) })
     }
@@ -196,8 +197,8 @@ impl InteractionPort for BrokerStandIn {
         &self,
         _context: Self::Context,
         _request: session_event_model::QuestionRequest,
-        _turn_cancellation: CancellationToken,
-        _agent_cancellation: CancellationToken,
+        _turn_cancellation: acp_client_runtime::FixtureCancellation,
+        _agent_cancellation: acp_client_runtime::FixtureCancellation,
     ) -> InteractionFuture<'_, session_event_model::QuestionResponse> {
         Box::pin(async { session_event_model::QuestionResponse::Cancelled })
     }
@@ -245,44 +246,53 @@ impl SessionEventSink for DiscardingEventSink {
     }
 }
 
-async fn run_permission_fixture(
-    mode: &str,
-    operations: &[u64],
-) -> (Arc<BrokerStandIn>, Vec<CapturedFrame>) {
-    run_permission_fixture_with_broker(mode, operations, BrokerStandIn::default()).await
-}
-
 #[expect(
     clippy::expect_used,
     reason = "Invalid test fixtures must fail immediately instead of masking the failed setup."
 )]
-async fn run_permission_fixture_with_broker(
+async fn run_permission_fixture(
     mode: &str,
     operations: &[u64],
-    broker: BrokerStandIn,
 ) -> (Arc<BrokerStandIn>, Vec<CapturedFrame>) {
     let root = tempfile::tempdir().expect("fixture root");
     let receipt = root.path().join("wire.jsonl");
-    let port = Arc::new(broker);
-    let client = AgentSessionClient::initialize(
-        ExternalProviderLaunch {
-            executable: PathBuf::from("node"),
-            arguments: vec![
-                PERMISSION_FIXTURE.to_owned(),
-                mode.to_owned(),
-                receipt.to_string_lossy().into_owned(),
-            ],
-            environment: Vec::new(),
-            persistence_target: ProviderPersistenceTarget::CursorAllowlist,
-        },
+    let port = Arc::new(BrokerStandIn::default());
+    let client = FixtureClient::initialize(
+        permission_fixture_launch(mode, &receipt),
         Arc::clone(&port),
         Arc::new(DiscardingEventSink),
         Arc::new(crate::test_behavior::TestProviderBehavior),
     )
     .await
     .expect("fixture initializes");
+    run_permission_prompts(&client, root.path(), operations).await;
+    (port, read_capture(&receipt))
+}
+
+fn permission_fixture_launch(mode: &str, receipt: &Path) -> ExternalProviderLaunch {
+    ExternalProviderLaunch {
+        executable: PathBuf::from("node"),
+        arguments: vec![
+            PERMISSION_FIXTURE.to_owned(),
+            mode.to_owned(),
+            receipt.to_string_lossy().into_owned(),
+        ],
+        environment: Vec::new(),
+        persistence_target: ProviderPersistenceTarget::CursorAllowlist,
+    }
+}
+
+#[expect(
+    clippy::expect_used,
+    reason = "The wire fixture must open a session and prepare input."
+)]
+async fn run_permission_prompts(
+    client: &PolicyFixtureClient<BrokerPayloads>,
+    root: &Path,
+    operations: &[u64],
+) {
     client
-        .create_session(root.path().to_path_buf())
+        .create_session(root.to_path_buf())
         .await
         .expect("session opens");
     for &operation in operations {
@@ -306,7 +316,6 @@ async fn run_permission_fixture_with_broker(
         assert!(result.is_ok(), "prompt result: {result:?}");
     }
     client.shutdown().await;
-    (port, read_capture(&receipt))
 }
 
 /// Renders the outcome in the whole response the agent received.
@@ -330,13 +339,27 @@ async fn duplicate_callback_in_a_batch_gets_one_reply_and_keeps_its_valid_siblin
 
 #[tokio::test]
 async fn duplicate_callback_in_a_batch_invokes_the_neutral_policy_once_per_request() {
-    let broker = BrokerStandIn {
-        neutral_policy: true,
-        ..BrokerStandIn::default()
-    };
-    let (port, capture) = run_permission_fixture_with_broker("duplicate-batch", &[1], broker).await;
-    assert_duplicate_batch(&port, &capture);
-    assert_eq!(port.neutral_approval_calls.load(Ordering::Relaxed), 3);
+    let root = tempfile::tempdir().expect("fixture root");
+    let receipt = root.path().join("wire.jsonl");
+    let policy = Arc::new(CountingPolicy {
+        broker: BrokerStandIn::default(),
+        calls: AtomicUsize::new(0),
+    });
+    let client = PolicyFixtureClient::<BrokerPayloads>::initialize(
+        permission_fixture_launch("duplicate-batch", &receipt),
+        policy.clone(),
+        Arc::new(DiscardingEventSink),
+        Arc::new(crate::test_behavior::TestProviderBehavior),
+    )
+    .await
+    .expect("fixture initializes with the neutral policy");
+    run_permission_prompts(&client, root.path(), &[1]).await;
+    assert_eq!(
+        policy.calls.load(Ordering::Relaxed),
+        3,
+        "each unique wire request must invoke the neutral policy"
+    );
+    assert_duplicate_batch(&policy.broker, &read_capture(&receipt));
 }
 
 #[expect(

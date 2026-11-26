@@ -5,7 +5,7 @@ mod opening;
 
 use super::OwnerAcpBinding;
 use crate::{
-    InteractionPort, OwnerApprovalBindings,
+    AcpRequestPayloads, OwnerApprovalBindings,
     acp_transport::{TransportRefusal, TransportRun},
     owner_wire::{OwnerAcpWire, OwnerWireRefusal},
 };
@@ -39,7 +39,7 @@ use switchboard_harness_contracts::{
 };
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
-pub struct OwnerAcpProvider<Port: InteractionPort> {
+pub struct OwnerAcpProvider<Port: AcpRequestPayloads> {
     wire: Arc<OwnerAcpWire>,
     approvals: OwnerApprovalBindings<Port>,
     clock: Arc<dyn RuntimeClock>,
@@ -47,7 +47,7 @@ pub struct OwnerAcpProvider<Port: InteractionPort> {
     connection_retired: CancellationToken,
 }
 
-impl<Port: InteractionPort> OwnerAcpProvider<Port> {
+impl<Port: AcpRequestPayloads> OwnerAcpProvider<Port> {
     #[must_use]
     pub fn new(
         wire: Arc<OwnerAcpWire>,
@@ -66,13 +66,13 @@ impl<Port: InteractionPort> OwnerAcpProvider<Port> {
     }
 }
 
-impl<Port: InteractionPort> HarnessOwnerRecovery for OwnerAcpProvider<Port> {
+impl<Port: AcpRequestPayloads> HarnessOwnerRecovery for OwnerAcpProvider<Port> {
     fn give_up_owner(&self, owner: OwnerIncarnation, inputs: &BTreeSet<InputId>) -> OwnerEvidence {
         self.wire.abandon_incarnation(owner, inputs)
     }
 }
 
-impl<Port: InteractionPort> HarnessProvider<SessionHarnessPayloads<Port::Context>>
+impl<Port: AcpRequestPayloads> HarnessProvider<SessionHarnessPayloads<Port::Context>>
     for OwnerAcpProvider<Port>
 {
     fn bind(
@@ -135,7 +135,7 @@ impl<Port: InteractionPort> HarnessProvider<SessionHarnessPayloads<Port::Context
     }
 }
 
-struct AcpOwnerLifecycleBinding<Port: InteractionPort> {
+struct AcpOwnerLifecycleBinding<Port: AcpRequestPayloads> {
     work: OwnerAcpBinding<Port>,
     approvals: OwnerApprovalBindings<Port>,
     openings: OwnerOpenings,
@@ -143,7 +143,7 @@ struct AcpOwnerLifecycleBinding<Port: InteractionPort> {
     owner_stopped: CancellationToken,
 }
 
-impl<Port: InteractionPort> Drop for AcpOwnerLifecycleBinding<Port> {
+impl<Port: AcpRequestPayloads> Drop for AcpOwnerLifecycleBinding<Port> {
     fn drop(&mut self) {
         self.owner_stopped.cancel();
         self.work
@@ -152,7 +152,7 @@ impl<Port: InteractionPort> Drop for AcpOwnerLifecycleBinding<Port> {
     }
 }
 
-impl<Port: InteractionPort> OwnerHarnessBinding<SessionHarnessPayloads<Port::Context>>
+impl<Port: AcpRequestPayloads> OwnerHarnessBinding<SessionHarnessPayloads<Port::Context>>
     for AcpOwnerLifecycleBinding<Port>
 {
     fn open(
@@ -252,7 +252,7 @@ impl<Port: InteractionPort> OwnerHarnessBinding<SessionHarnessPayloads<Port::Con
     }
 }
 
-impl<Port: InteractionPort> HarnessBinding for AcpOwnerLifecycleBinding<Port> {
+impl<Port: AcpRequestPayloads> HarnessBinding for AcpOwnerLifecycleBinding<Port> {
     fn offer_prompt(
         &self,
         authorization: DispatchAuthorization,
@@ -324,7 +324,9 @@ impl<Port: InteractionPort> HarnessBinding for AcpOwnerLifecycleBinding<Port> {
     }
 }
 
-impl<Port: InteractionPort> ApprovalLeaseBinding<Port::Context> for AcpOwnerLifecycleBinding<Port> {
+impl<Port: AcpRequestPayloads> ApprovalLeaseBinding<Port::Context>
+    for AcpOwnerLifecycleBinding<Port>
+{
     fn install_approval_lease_before_offer(
         &self,
         turn: ExactTurn,
@@ -344,7 +346,7 @@ impl<Port: InteractionPort> ApprovalLeaseBinding<Port::Context> for AcpOwnerLife
     }
 }
 
-impl<Port: InteractionPort> AcpOwnerLifecycleBinding<Port> {
+impl<Port: AcpRequestPayloads> AcpOwnerLifecycleBinding<Port> {
     fn install_lease(
         &self,
         turn: ExactTurn,
