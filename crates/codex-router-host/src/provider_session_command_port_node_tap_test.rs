@@ -63,6 +63,7 @@ struct CommandPortRig {
     port: Arc<HostSessionCommandPort>,
     hub: Arc<ProviderSessionEventHub>,
     supervisor: Arc<ExternalProviderSupervisor>,
+    clock: Arc<router_clock::ManualClock>,
     board_target: BoardSessionRef,
     actor: Identity,
 }
@@ -267,7 +268,7 @@ async fn command_port_rig(fixture: AgentFixture) -> CommandPortRig {
         delivery,
         Arc::clone(&hub),
         store,
-        clock,
+        clock.clone(),
     ));
     let board_target: BoardSessionRef =
         serde_json::from_value(serde_json::to_value(&target).expect("target JSON"))
@@ -281,6 +282,7 @@ async fn command_port_rig(fixture: AgentFixture) -> CommandPortRig {
         port,
         hub,
         supervisor,
+        clock,
         board_target,
         actor,
     }

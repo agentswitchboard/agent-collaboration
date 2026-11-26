@@ -147,6 +147,8 @@ pub use switchboard_harness_contracts::{PromptCompletion, WireOutcome};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LastLiveTurn {
+    pub operation: uuid::Uuid,
+    pub generation: SessionGeneration,
     pub turn: TurnId,
     pub input: InputId,
     pub outcome: TurnOutcome,

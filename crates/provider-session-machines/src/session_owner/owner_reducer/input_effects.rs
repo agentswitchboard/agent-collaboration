@@ -687,6 +687,8 @@ impl OwnerTransition {
         self.retire_turn_tools(input.generation, input.turn);
         if let Some(observed) = observed {
             self.next.ports.last_live_turn = Some(LastLiveTurn {
+                operation: input.operation,
+                generation: input.generation,
                 turn: input.turn,
                 input: input.input.clone(),
                 outcome: observed.clone(),

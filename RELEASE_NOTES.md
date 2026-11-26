@@ -1,5 +1,9 @@
 # Release Notes
 
+## 0.1.165
+
+- A prompt sent immediately after a provider turn ends waits for that turn’s operation to finish settling, avoiding a spurious busy response.
+
 ## 0.1.164
 
 - An explicit `steer` is refused when no turn is running, including provider-backed `turn/steer` and ACP `_session/steering`. Send a prompt or use `auto` to start a turn. Prompt tools report `NoActiveTurn` (`noActiveTurn` in JSON), and ACP message delivery reports `notSubmitted` with reason `noActiveTurn`.
