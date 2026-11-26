@@ -197,6 +197,123 @@ async fn pre_owner_notice_custody_yields_to_the_human_prompt() {
 }
 
 #[tokio::test]
+async fn a_reserved_notice_refuses_the_ended_turn_holder_at_the_lane() {
+    use crate::binding_store_fixture::BindingFixtureWait;
+    use switchboard_message_custody::handover::NoticePreTakeRefusal;
+
+    let clock = Arc::new(ManualClock::new(chrono::DateTime::UNIX_EPOCH));
+    let rig = managed_notice_fixture(
+        clock.clone(),
+        NoticeScript::HumanEndBeforeDirectNotice,
+        ProviderKind::ClaudeCode,
+    )
+    .await;
+    let end = tokio::net::UnixListener::bind(rig.receipt.with_extension("end.sock"))
+        .expect("hold the human turn");
+    let (adapter, recipient, notice) =
+        prepare_notice(&rig, &clock, Arc::new(NoticeAuthority::new()));
+    let notice_operation =
+        OperationId::try_from(String::from(notice.attempt())).expect("notice operation");
+    let (reserved, release_notice) = pause_before_owner(&rig, notice_operation.clone());
+    let ready = adapter
+        .ready(&recipient)
+        .await
+        .expect("ready direct notice");
+    let offer = ready.offer(notice);
+    tokio::pin!(offer);
+    tokio::select! {
+        reached = reserved => reached.expect("notice is reserved before reaching the owner"),
+        result = &mut offer => panic!("notice answered before its pre-owner hold: {result:?}"),
+    }
+
+    let human = OperationId::generate();
+    rig.supervisor
+        .prompt_contents(human_prompt(
+            &rig,
+            human.clone(),
+            PromptBusyPolicy::RefuseBusy,
+        ))
+        .await
+        .expect("ordinary admission leaves the reserved notice aside");
+    let (held, release_terminal) = rig.supervisor.pause_terminal_write_of(&rig.target, &human);
+    let (peer, _) = end.accept().await.expect("human prompt reached the peer");
+    drop(peer);
+    held.await.expect("human terminal writer is held");
+    let owner = rig
+        .supervisor
+        .session_owner_for(&rig.target)
+        .expect("owner");
+    owner
+        .snapshots()
+        .wait_for(|snapshot| {
+            snapshot
+                .live_idle_ended_turn()
+                .is_some_and(|turn| turn.operation.to_string() == human.as_str())
+        })
+        .await
+        .expect("same human turn has ended");
+    rig.supervisor
+        .assert_only_turn_start_blocks_admission_for_test(&rig.target, &human);
+
+    let blocked = rig.supervisor.observe_turn_start_fixture(
+        &rig.target,
+        BindingFixtureWait::DirectDispatchBlocked(notice_operation.clone()),
+    );
+    let waiting = rig
+        .supervisor
+        .observe_direct_dispatch_wait_for_test(&rig.target, notice_operation.clone());
+    release_notice
+        .send(())
+        .expect("resumed notice reaches idle owner");
+    tokio::select! {
+        biased;
+        reached = blocked => reached.expect("notice refused before terminal custody was released"),
+        reached = waiting => {
+            reached.expect("notice hit the forbidden eligibility wait");
+            release_terminal.send(()).expect("release previous writer in the wrong build");
+            let outcome = offer.await;
+            panic!("notice waited on the ended turn: {outcome:?}, wire={}", rig.receipt.with_extension("late-notice").exists());
+        }
+        result = &mut offer => panic!("notice replied before the lane witness: {result:?}"),
+    }
+    assert!(rig.supervisor.live_operation_ids().contains(&human));
+    assert!(!rig.receipt.with_extension("late-notice").exists());
+    release_terminal
+        .send(())
+        .expect("release prior terminal storage after refusal decision");
+    assert_eq!(
+        offer.await,
+        NoticeWriteOutcome::DefinitelyNotWritten(NoticePreTakeRefusal::RejectedBeforeTake)
+    );
+    let refusal = rig
+        .supervisor
+        .wait(ConversationOperationWaitRequest {
+            operation_id: notice_operation.clone(),
+            timeout_seconds: PositiveSeconds::try_from(1).expect("fixture wait"),
+        })
+        .await
+        .expect_err("retained refusal of the same notice");
+    assert_eq!(refusal.kind, ConversationOperationFailureKind::Busy);
+    assert_eq!(refusal.stage, ConversationOperationFailureStage::Dispatch);
+    assert_eq!(refusal.effect, ProviderOperationEffect::None);
+    assert!(String::from(refusal.message).contains(human.as_str()));
+    let row = rig
+        .supervisor
+        .inner
+        .store
+        .lock()
+        .await
+        .inspect(&notice_operation)
+        .await
+        .expect("read notice row")
+        .expect("notice reservation persisted");
+    assert!(row.dispatched_at_ms.is_none());
+    rig.supervisor.shutdown().await.expect("drain");
+    assert_wire_script_completed(&rig, false);
+    assert!(!rig.receipt.with_extension("late-notice").exists());
+}
+
+#[tokio::test]
 async fn a_reserved_human_prompt_defers_notice_until_handoff_releases() {
     for policy in [
         PromptBusyPolicy::RefuseBusy,
