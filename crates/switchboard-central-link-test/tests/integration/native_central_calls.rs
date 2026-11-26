@@ -19,6 +19,7 @@ use serde_json::{Value, json};
 use switchboard_central_link::{
     DialAddress,
     link_driver::{DriverSettings, LinkDriver},
+    link_policy::LinkStatus,
 };
 use switchboard_machine_core_store::load_or_create_machine_id;
 use switchboard_machine_enrollment::{
@@ -55,10 +56,43 @@ async fn native_fixture() -> MachineLinkFixture {
         .unwrap()
 }
 
+struct DriverStatusControl {
+    actual: watch::Receiver<LinkStatus>,
+    publish: watch::Sender<bool>,
+}
+
+async fn forward_link_status(
+    mut actual: watch::Receiver<LinkStatus>,
+    published: watch::Sender<LinkStatus>,
+    mut publish: watch::Receiver<bool>,
+) {
+    let mut controls_open = true;
+    loop {
+        let latest = actual.borrow_and_update().clone();
+        if *publish.borrow_and_update() {
+            published.send_if_modified(|status| {
+                if *status == latest {
+                    return false;
+                }
+                *status = latest;
+                true
+            });
+        }
+        tokio::select! {
+            update = actual.changed() => {
+                if update.is_err() {
+                    return;
+                }
+            }
+            update = publish.changed(), if controls_open => controls_open = update.is_ok(),
+        }
+    }
+}
+
 async fn start_mac(
     central: &MachineLinkFixture,
     carrier: NativeWorkCarrier,
-) -> (MessageSystem, MachineEnrollmentStore) {
+) -> (MessageSystem, MachineEnrollmentStore, DriverStatusControl) {
     let clock = central.clock.clone();
     let root = central.root_path().join("typed-work");
     std::fs::DirBuilder::new()
@@ -89,6 +123,8 @@ async fn start_mac(
         .parse()
         .unwrap();
     let driver_clock = clock.clone();
+    let (driver_status, actual) = watch::channel(LinkStatus::NotEnrolled);
+    let (publish, relay) = watch::channel(true);
     let system = start_with_link_fixture(
         MessageRoots::new(root.clone(), root.join("secrets")),
         machine,
@@ -106,6 +142,9 @@ async fn start_mac(
                 let address = address.clone();
                 let carrier = carrier.clone();
                 let clock = driver_clock.clone();
+                let relay = relay.clone();
+                let published = std::mem::replace(&mut driver.status, driver_status.clone());
+                let actual = driver.status.subscribe();
                 async move {
                     let settings = {
                         let discovered = driver
@@ -120,18 +159,20 @@ async fn start_mac(
                     };
                     let (_settings, updates) = watch::channel(settings);
                     driver.settings = updates;
-                    driver
-                        .run_with_test_transport(move || {
-                            let carrier = carrier.clone();
-                            let clock = clock.clone();
-                            async move { carrier.connect(physical_address, clock).await }
-                        })
-                        .await;
+                    let run = driver.run_with_test_transport(move || {
+                        let carrier = carrier.clone();
+                        let clock = clock.clone();
+                        async move { carrier.connect(physical_address, clock).await }
+                    });
+                    tokio::select! {
+                        () = Box::pin(run) => {},
+                        () = forward_link_status(actual, published, relay) => {},
+                    }
                 }
             },
         },
     );
-    (system, store)
+    (system, store, DriverStatusControl { actual, publish })
 }
 
 #[tokio::test]
@@ -140,7 +181,7 @@ async fn typed_port_answers_session_and_approval_calls_then_refuses_an_ended_enr
     let clock = central.clock.clone();
     let carrier = NativeWorkCarrier::default();
     carrier.hold_first_registration();
-    let (system, store) = start_mac(&central, carrier.clone()).await;
+    let (system, store, _driver_status) = start_mac(&central, carrier.clone()).await;
     let mut status = system.status();
     let calls = system.central_calls();
     let deadline = clock.monotonic_now().after(Duration::from_secs(10));
@@ -321,7 +362,7 @@ async fn native_answers_held_at_the_reader_exhaust_slots_expire_and_do_not_repla
     let central = native_fixture().await;
     let clock = central.clock.clone();
     let carrier = NativeWorkCarrier::default();
-    let (system, _) = start_mac(&central, carrier.clone()).await;
+    let (system, _, mut driver_status) = start_mac(&central, carrier.clone()).await;
     let mut status = system.status();
     status
         .wait_for(|found| found.status == MessageSystemStatus::Connected)
@@ -402,7 +443,34 @@ async fn native_answers_held_at_the_reader_exhaust_slots_expire_and_do_not_repla
         waiting.remove(0).await,
         CentralWorkOutcome::AnswerLost(CallEnding::Deadline)
     ));
+    driver_status.publish.send_replace(false);
     carrier.cut();
+    driver_status
+        .actual
+        .wait_for(|status| matches!(status, LinkStatus::Connecting))
+        .await
+        .unwrap();
+    let published_before_refusal = *status.borrow();
+    assert_eq!(
+        published_before_refusal.status,
+        MessageSystemStatus::Connected
+    );
+    let mut stale_status_call = std::pin::pin!(create(12, deadline));
+    let Poll::Ready(CentralWorkOutcome::RefusedByLink(refusal)) =
+        poll_fn(|context| Poll::Ready(stale_status_call.as_mut().poll(context))).await
+    else {
+        panic!("the typed submission must refuse synchronously after the real gate closes");
+    };
+    assert_eq!(
+        refusal,
+        CentralWorkRefusal {
+            status: CentralWorkRefusalStatus::Connecting,
+            reason: MessageSystemReason::NoReason
+        }
+    );
+    assert_eq!(refusal.valid_move(), CentralWorkNextMove::Wait);
+    assert_eq!(*status.borrow(), published_before_refusal);
+    driver_status.publish.send_replace(true);
     status
         .wait_for(|found| found.status == MessageSystemStatus::Connecting)
         .await
