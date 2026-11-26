@@ -170,12 +170,12 @@ pub enum RefusedApprovalLeaseMove {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ApprovalLeaseRefusal {
+pub enum ApprovalLeaseRefusalReason {
     ContextUnavailable,
     AlreadyActive,
 }
 
-impl ApprovalLeaseRefusal {
+impl ApprovalLeaseRefusalReason {
     #[must_use]
     pub const fn reason(self) -> &'static str {
         match self {
@@ -183,26 +183,53 @@ impl ApprovalLeaseRefusal {
             Self::AlreadyActive => "this session already has an active approval context",
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BeforeOfferApprovalLeaseRefusal(pub ApprovalLeaseRefusalReason);
+
+impl BeforeOfferApprovalLeaseRefusal {
+    #[must_use]
+    pub const fn reason(self) -> &'static str {
+        self.0.reason()
+    }
 
     #[must_use]
     pub const fn valid_moves(self) -> &'static [RefusedApprovalLeaseMove] {
-        match self {
-            Self::ContextUnavailable | Self::AlreadyActive => &[
-                RefusedApprovalLeaseMove::SettleAsNotSent,
-                RefusedApprovalLeaseMove::KeepObservedTurn,
-            ],
-        }
+        &[RefusedApprovalLeaseMove::SettleAsNotSent]
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ObservedTurnApprovalLeaseRefusal(pub ApprovalLeaseRefusalReason);
+
+impl ObservedTurnApprovalLeaseRefusal {
+    #[must_use]
+    pub const fn reason(self) -> &'static str {
+        self.0.reason()
+    }
+
+    #[must_use]
+    pub const fn valid_moves(self) -> &'static [RefusedApprovalLeaseMove] {
+        &[RefusedApprovalLeaseMove::KeepObservedTurn]
     }
 }
 
 /// The harness binding addresses the session. The turn addresses the exact
 /// incarnation and generation within it.
 pub trait ApprovalLeaseBinding<Context>: Send + Sync {
-    /// Refusal before a prompt is offered allows it to finish as not sent.
-    /// When the harness already reported a turn, keep that turn.
-    fn install_approval_lease(
+    /// Install before the prompt reaches an offer. Refusal settles it as not sent.
+    fn install_approval_lease_before_offer(
         &self,
         turn: ExactTurn,
         context: Context,
-    ) -> Result<Box<dyn ApprovalLease>, ApprovalLeaseRefusal>;
+    ) -> Result<Box<dyn ApprovalLease>, BeforeOfferApprovalLeaseRefusal>;
+
+    /// Install for a turn the harness already started. A refusal leaves its
+    /// submission and turn standing.
+    fn install_approval_lease_for_observed_turn(
+        &self,
+        turn: ExactTurn,
+        context: Context,
+    ) -> Result<Box<dyn ApprovalLease>, ObservedTurnApprovalLeaseRefusal>;
 }

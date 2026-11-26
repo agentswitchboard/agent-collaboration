@@ -1,34 +1,38 @@
 //! Hand-back of a failed controller's writer custody.
 
-use crate::{DispatchAuthorization, OwnerIncarnation, SlotEvidence};
+use std::collections::{BTreeMap, BTreeSet};
 
-/// Evidence for one exact dispatch authorization.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum OwnerSlotEvidence {
-    /// Revoked proves withdrawal. Taken proves custody. An offered slot
-    /// supplies no proof of withdrawal.
-    Recorded(SlotEvidence),
-    /// The harness has positive evidence this work never reached an offer.
-    NeverOffered,
-    /// Custody could not be established for this authorization.
-    NoEvidence,
-}
+use crate::{DispatchAuthorization, InputId, OwnerIncarnation, SlotEvidence};
 
-/// What the harness knew about the failed owner's dispatch authorizations.
-/// A taken slot establishes writer custody. Its remote effect may still be unknown.
-/// An omitted authorization supplies no evidence even in a complete hand-back.
+/// The harness's answer for an input held by the failed owner.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum OwnerEvidence {
-    /// The complete record for this incarnation, including takes on retired runs.
-    Kept(Vec<(DispatchAuthorization, OwnerSlotEvidence)>),
-    /// These entries are known. An omitted authorization has unknown custody.
-    Partial(Vec<(DispatchAuthorization, OwnerSlotEvidence)>),
-    /// Custody could not be established for this incarnation.
-    Unavailable,
+pub enum OwnerInputEvidence {
+    /// The harness withdrew the input's offers and has proof none was taken.
+    Withdrawn {
+        slots: Vec<(DispatchAuthorization, SlotEvidence)>,
+    },
+    /// At least one authorization was taken. Keep all records for the input,
+    /// including those on retired runs. The remote effect may still be unknown.
+    Taken {
+        slots: Vec<(DispatchAuthorization, SlotEvidence)>,
+    },
+    /// The harness established that the input never reached an offer.
+    NeverOffered,
+    /// The harness could not establish this input's custody. Retain any
+    /// slot records it did observe.
+    NoEvidence {
+        slots: Vec<(DispatchAuthorization, SlotEvidence)>,
+    },
 }
+
+/// Exactly one answer for each requested input, keyed by its Router identity.
+/// An unavailable record is reported as `NoEvidence` for every requested input.
+pub type OwnerEvidence = BTreeMap<InputId, OwnerInputEvidence>;
 
 pub trait HarnessOwnerRecovery: Send + Sync + 'static {
     /// Withdraw this incarnation's pending offers before handing back the evidence
-    /// and retiring its routes. Preserve every recorded take.
-    fn give_up_owner(&self, owner: OwnerIncarnation) -> OwnerEvidence;
+    /// and retiring its routes. Preserve every recorded take. Answer every input
+    /// with an accepted mark or a waiting caller. The caller draws no conclusion
+    /// from an omitted entry.
+    fn give_up_owner(&self, owner: OwnerIncarnation, inputs: &BTreeSet<InputId>) -> OwnerEvidence;
 }
