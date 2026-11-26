@@ -3,8 +3,8 @@
 use crate::{
     ExternalProviderLaunch, ExternalProviderRuntimeError, InteractionPort, ProviderBehavior,
     ProviderModelPicker, SessionEventSink,
-    acp_owner_fixture::PolicyFixtureClient,
     fixture_policy::{FixturePayloads, FixturePolicy},
+    policy_fixture_client::PolicyFixtureClient,
 };
 use router_clock::RuntimeClock;
 use std::{ops::Deref, sync::Arc};

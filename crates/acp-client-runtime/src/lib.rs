@@ -33,8 +33,10 @@
 //! ```
 
 #[cfg(feature = "test-support")]
-#[path = "test_support/acp_owner_fixture.rs"]
-pub mod acp_owner_fixture;
+pub mod acp_owner_fixture {
+    pub use crate::fixture_legacy_client::FixtureClient;
+    pub use crate::policy_fixture_client::PolicyFixtureClient;
+}
 mod acp_protocol_version;
 pub mod acp_transport;
 mod agent_session_client;
@@ -58,6 +60,9 @@ mod owner_restore_updates;
 pub mod owner_session_creation;
 mod owner_session_replay;
 pub mod owner_wire;
+#[cfg(feature = "test-support")]
+#[path = "test_support/acp_owner_fixture.rs"]
+mod policy_fixture_client;
 #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
 pub mod work_call_observation;
 pub use owner_wire::{owner_session_open, owner_session_setting, owner_session_stream};

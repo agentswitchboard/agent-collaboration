@@ -1,7 +1,5 @@
 //! Scripted ACP fixtures addressed through the session owner and ordered wire ports.
 
-pub use crate::fixture_legacy_client::FixtureClient;
-
 #[path = "acp_fixture_steering.rs"]
 mod steering;
 
