@@ -13,6 +13,8 @@ use provider_session_machines::{
     session_turn_machine::SessionTurn,
 };
 use session_event_model::{InputId, SessionState, TurnLostReason, TurnOutcome};
+use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 struct PromptPorts {
     taken: mpsc::UnboundedSender<DispatchAuthorization>,
