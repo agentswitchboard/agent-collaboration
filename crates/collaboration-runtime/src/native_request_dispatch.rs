@@ -297,7 +297,9 @@ fn native_error_response(id: Value, error: &ThreadMethodError) -> Value {
         | ThreadMethodError::UnavailableThreadOrdering { .. }
         | ThreadMethodError::SettingsUnresolved
         | ThreadMethodError::CreatedWithoutSettings { .. } => -32000,
-        ThreadMethodError::Busy => -32600,
+        ThreadMethodError::Busy
+        | ThreadMethodError::NoActiveTurnToSteer
+        | ThreadMethodError::SteerTurnMismatch { .. } => -32600,
     };
     let data = match error {
         ThreadMethodError::SettingsContextChanged => {

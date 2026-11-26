@@ -812,6 +812,8 @@ pub enum ConversationOperationFailureKind {
     /// prompt was not sent, and the caller chooses to queue it or interrupt
     /// the turn (D1 R12).
     CannotSteer,
+    /// No turn is running. Send a prompt or use auto to start a turn.
+    NoActiveTurn,
 }
 
 #[derive(Clone, Debug, JsonSchema, Serialize, Deserialize)]

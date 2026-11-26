@@ -19,6 +19,8 @@ pub(crate) struct BindingStoreFixture {
     #[cfg(test)]
     undo_receipt: WritePause<OperationId>,
     #[cfg(test)]
+    steer_mark_receipt: WritePause<OperationId>,
+    #[cfg(test)]
     residue_read: WritePause<OperationId>,
     mode_write: WritePause<(SessionRef, String)>,
     waits: Mutex<BTreeMap<(SessionRef, BindingFixtureWait), oneshot::Sender<()>>>,
@@ -75,6 +77,21 @@ impl BindingStoreFixture {
     #[cfg(test)]
     pub(crate) async fn hold_undo_receipt(&self, operation: &OperationId) {
         self.undo_receipt.hold(|waiting| waiting == operation).await;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pause_steer_mark_receipt(
+        &self,
+        operation: OperationId,
+    ) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+        self.steer_mark_receipt.arm(operation)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn hold_steer_mark_receipt(&self, operation: &OperationId) {
+        self.steer_mark_receipt
+            .hold(|waiting| waiting == operation)
+            .await;
     }
 
     #[cfg(test)]

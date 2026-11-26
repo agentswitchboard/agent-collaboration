@@ -216,6 +216,7 @@ async fn assert_injected_steer_receipt(
             session_id.clone(),
             steer_input.clone(),
             session_event_model::ProviderSubmission::plain(content),
+            provider_session_machines::session_owner::SteerOrigin::Auto,
         )
         .await
         .expect("steer accepted");
@@ -288,6 +289,7 @@ async fn started_new_turn_uses_the_steer_input_id_and_ends_on_provider_idle() {
             session_event_model::ProviderSubmission::plain(vec![
                 session_event_model::PromptContent::text("Begin".to_owned()).expect("text steer"),
             ]),
+            provider_session_machines::session_owner::SteerOrigin::Auto,
         )
         .await
         .expect("steer accepted");
@@ -419,6 +421,7 @@ async fn prompt_required_preserves_steer_input_when_prompted_normally() {
             session_event_model::ProviderSubmission::plain(vec![
                 session_event_model::PromptContent::text("Hello".to_owned()).expect("text steer"),
             ]),
+            provider_session_machines::session_owner::SteerOrigin::Auto,
         )
         .await
         .expect("steer response");

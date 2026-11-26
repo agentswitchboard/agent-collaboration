@@ -32,7 +32,7 @@ use provider_session_machines::{
         PublicationFact, RefusedWorkMove, ReplyAdmission, ReservedWorkReply, RestoreFailure,
         RestoreLoadReadback, RestoreModeOutcome, RestorePreparation, RunAttempt, SessionOwnerReply,
         SessionPublication, SessionWireRequest, SessionWireResult, SettingEvidence, SettingOffer,
-        SteerIdlePolicy, TurnMembership, WireOutcome, WorkOfferRefusal, WriterState,
+        SteerIdlePolicy, SteerOrigin, TurnMembership, WireOutcome, WorkOfferRefusal, WriterState,
     },
     session_setting_machine::SettingValueId,
 };
@@ -347,8 +347,16 @@ impl SessionOwnerExecution {
         work: AuthorizedWork,
         completions: &OwnerCompletionPort,
     ) -> Result<Option<OwnerEvent>, OwnerTaskError> {
+        #[cfg(test)]
+        let named_steer = matches!(
+            &work,
+            AuthorizedWork::Steer {
+                origin: SteerOrigin::Named,
+                ..
+            }
+        );
         let notice = match &work {
-            AuthorizedWork::Prompt(input) | AuthorizedWork::Steer(input) => {
+            AuthorizedWork::Prompt(input) | AuthorizedWork::Steer { input, .. } => {
                 self.calls.notice(&input.input)
             }
             AuthorizedWork::Cancel(_) | AuthorizedWork::Setting { .. } => None,
@@ -388,7 +396,7 @@ impl SessionOwnerExecution {
                 }
                 offered
             }
-            AuthorizedWork::Steer(input) => {
+            AuthorizedWork::Steer { input, origin } => {
                 let approver = self
                     .routes
                     .get(&input.generation)
@@ -400,10 +408,9 @@ impl SessionOwnerExecution {
                     return Ok(Some(definitely_unsent(authorization)));
                 };
                 let completion = reserve_work_reply(completions, owner)?;
-                let idle = if notice.is_some() {
-                    SteerIdlePolicy::Refuse
-                } else {
-                    SteerIdlePolicy::AllowOwnerPrompt
+                let idle = match origin {
+                    SteerOrigin::Auto => SteerIdlePolicy::AllowOwnerPrompt,
+                    SteerOrigin::Named | SteerOrigin::Notice => SteerIdlePolicy::Refuse,
                 };
                 self.work_binding.offer_steer(
                     authorization.clone(),
@@ -436,6 +443,25 @@ impl SessionOwnerExecution {
                 refusal,
                 |authorization| self.work_binding.take_back(authorization),
             )));
+        }
+        #[cfg(test)]
+        if named_steer && let Some(release) = self.preparation_fixture.hold_named_steer_take() {
+            // Keep the real offer in ACP. The owner can consume the foreground
+            // ending before the test lets ACP attempt the exact transport take.
+            let completion = completions.reserve(owner)?;
+            let binding = OwnerAcpBinding::new(
+                Arc::clone(&self.wire),
+                self.session_id(),
+                self.approvals.clone(),
+                self.tasks.clone(),
+            );
+            self.tasks.spawn(async move {
+                let _released = release.await;
+                if let Ok(result) = binding.hand_over(&authorization, &mut || true) {
+                    completion.send(OwnerEvent::Dispatch(result));
+                }
+            });
+            return Ok(None);
         }
         #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
         if let Some(work_kind) = witness_kind {

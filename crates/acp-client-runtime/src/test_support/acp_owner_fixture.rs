@@ -1,5 +1,8 @@
 //! Scripted ACP fixtures addressed through the session owner and ordered wire ports.
 
+#[path = "acp_fixture_steering.rs"]
+mod steering;
+
 use crate::{
     AgentSessionClient, ExternalProviderCreatedSession, ExternalProviderLaunch,
     ExternalProviderRuntimeError, InteractionPort, ProviderBehavior, ProviderCapabilityReport,
@@ -731,71 +734,6 @@ impl<P: InteractionPort> FixtureClient<P> {
         Ok(session.effective_settings())
     }
 
-    pub async fn steer_contents_with_input(
-        &self,
-        id: String,
-        input_id: InputId,
-        submission: session_event_model::ProviderSubmission,
-    ) -> FixtureResult<crate::ProviderSteeringOutcome<P::OperationId, P::Context>> {
-        use crate::ProviderSteeringOutcome;
-        let session = self.session(&id)?;
-        let capabilities = lock(&session.state).capabilities.clone();
-        let content =
-            self.prepare_owner_prompt(ProviderTurnInput::Prompt(submission), &capabilities)?;
-        let operation = Uuid::now_v7();
-        let snapshot = session.owner.snapshots().borrow().clone();
-        let turn = match snapshot.turn {
-            SessionTurn::Running { turn } => turn,
-            _ => TurnId(Uuid::now_v7()),
-        };
-        let joined = lock(&session.state)
-            .active_context
-            .as_ref()
-            .filter(|(active, _)| *active == turn)
-            .map(|(_, context)| context.clone());
-        let input = OwnerInput {
-            generation: session.generation()?,
-            operation,
-            input: input_id,
-            turn,
-        };
-        lock(&session.state).inputs.insert(
-            input.input.clone(),
-            FixtureInput {
-                content,
-                context: None,
-                dispatch: None,
-            },
-        );
-        let reply = session
-            .settle(
-                operation,
-                SessionOwnerCommand::Steer {
-                    input,
-                    supported: capabilities.supports_steering,
-                },
-            )
-            .await?;
-        Ok(match reply {
-            SessionOwnerReply::InputFinished {
-                remote: RemoteEffect::Applied,
-                ..
-            } => ProviderSteeringOutcome::Injected {
-                running_operation_id: joined.as_ref().map(P::operation_id),
-                joined_turn: joined,
-            },
-            SessionOwnerReply::SteerStarted { .. } | SessionOwnerReply::PromptCompleted { .. } => {
-                ProviderSteeringOutcome::StartedNewTurn
-            }
-            SessionOwnerReply::SteerInvalidReply { .. } => {
-                return Err(fixture_error(
-                    "provider returned an invalid steering result",
-                ));
-            }
-            _ => ProviderSteeringOutcome::Failed,
-        })
-    }
-
     pub fn in_folder_router_auto_for_test(&self, id: &str) -> Option<bool> {
         let wire = self.owner_wire();
         wire.router_auto_grant_for_test(wire.route_for_session(id)?)
@@ -938,6 +876,8 @@ impl<P: InteractionPort> FixtureSession<P> {
                         ExternalProviderRuntimeError::SettingsContextChanged,
                     SessionOwnerRejection::Refused(SessionOwnerRefusal::CannotSteer) =>
                         ExternalProviderRuntimeError::UnsupportedSteering,
+                    SessionOwnerRejection::Refused(SessionOwnerRefusal::NoActiveTurn) =>
+                        ExternalProviderRuntimeError::LocalBusy { answer: RevokeReason::NoActiveTurn.human_phrase().into() },
                     SessionOwnerRejection::Refused(SessionOwnerRefusal::SkillSelectionChanged) =>
                         ExternalProviderRuntimeError::Behavior(crate::ProviderError::InvalidSelection),
                     SessionOwnerRejection::Refused(SessionOwnerRefusal::EffectInProgress(provider_session_machines::session_owner::EffectInProgress::TurnInProgress)) =>

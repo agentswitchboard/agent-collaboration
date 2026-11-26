@@ -155,6 +155,7 @@ async fn every_command_keeps_the_typed_actor() {
         target: session.clone(),
         input_id: session_event_model::InputId::new("input-steer").expect("input id"),
         expected_turn_id: "turn-1".into(),
+        intent: crate::SessionSteerIntent::Named,
         submission: session_event_model::ProviderSubmission::plain(content.clone()),
         actor: actor.clone(),
     })

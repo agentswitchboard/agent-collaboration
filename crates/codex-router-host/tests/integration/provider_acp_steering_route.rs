@@ -208,12 +208,48 @@ enum IdleSteeringScenario {
     AutoStartsPrompt,
 }
 
-fn idle_steering_fixture(scenario: IdleSteeringScenario) -> ExternalProviderLaunch {
+fn idle_steering_fixture(scenario: IdleSteeringScenario, wire: &Path) -> ExternalProviderLaunch {
     let mode = match scenario {
         IdleSteeringScenario::SteerOnly => "idle",
         IdleSteeringScenario::AutoStartsPrompt => "auto",
     };
-    provider_fixture_launch::launch("provider-steering-route-agent.ts", vec![mode.to_owned()])
+    provider_fixture_launch::launch(
+        "provider-steering-route-agent.ts",
+        vec![
+            mode.to_owned(),
+            "--wire-only".to_owned(),
+            wire.display().to_string(),
+        ],
+    )
+}
+
+#[expect(
+    clippy::expect_used,
+    reason = "A missing or malformed wire receipt invalidates the proof."
+)]
+pub(crate) fn peer_turn_requests(wire: &Path) -> Vec<String> {
+    #[derive(serde::Deserialize)]
+    struct CapturedFrame {
+        direction: String,
+        line: String,
+    }
+
+    std::fs::read_to_string(wire)
+        .expect("provider wire receipt")
+        .lines()
+        .filter_map(|entry| {
+            let frame: CapturedFrame = serde_json::from_str(entry).expect("wire receipt entry");
+            if frame.direction != "received" {
+                return None;
+            }
+            let line: serde_json::Value =
+                serde_json::from_str(&frame.line).expect("provider request frame");
+            match line.get("method").and_then(serde_json::Value::as_str) {
+                Some(method @ ("session/prompt" | "_session/steering")) => Some(method.to_owned()),
+                _ => None,
+            }
+        })
+        .collect()
 }
 
 #[expect(
@@ -465,34 +501,103 @@ async fn running_claude_auto_and_steer_name_the_running_operation() {
 }
 
 #[tokio::test]
-async fn idle_claude_steer_starts_a_normal_prompt() {
+async fn idle_claude_steer_is_not_submitted_and_the_same_input_can_prompt() {
     let root = tempfile::tempdir().expect("fixture root");
+    let wire = root.path().join("idle-wire.jsonl");
     let (route, supervisor, target, _, _) = prepared_route(
         root.path(),
-        idle_steering_fixture(IdleSteeringScenario::SteerOnly),
+        idle_steering_fixture(IdleSteeringScenario::SteerOnly, &wire),
     )
     .await;
     let evidence = RecordedEvidence(tokio::sync::Mutex::new(Vec::new()));
 
-    let sent = request(target, MessageDelivery::Steer);
+    let mut sent = request(target, MessageDelivery::Steer);
+    let refused_operation = OperationId::try_from(sent.attempt.as_str().to_owned())
+        .expect("refused operation identity");
     let receipt = route
         .deliver(sent.clone(), &evidence)
         .await
         .expect("idle steer");
 
-    assert!(matches!(
-        receipt.receipt().outcome,
-        DeliveryOutcome::Started
-    ));
-    assert!(matches!(
-        receipt.receipt().client,
-        Some(DeliveryClientReceipt::ProviderAcp { .. })
-    ));
+    assert_no_active_turn(&receipt);
+    assert!(peer_turn_requests(&wire).is_empty());
     assert!(matches!(evidence.0.lock().await.as_slice(),
-        [RouteEffectEvidence::ProviderAcp(before), RouteEffectEvidence::ProviderAcp(after)]
-        if before.submission == SubmissionEffect::Dispatching && after.submission == SubmissionEffect::Accepted));
+        [RouteEffectEvidence::ProviderAcp(only)] if only.submission == SubmissionEffect::NotDispatched));
+    let settled_refusal = supervisor
+        .wait(collaboration_protocol::ConversationOperationWaitRequest {
+            operation_id: refused_operation.clone(),
+            timeout_seconds: collaboration_protocol::PositiveSeconds::try_from(30)
+                .expect("wait budget"),
+        })
+        .await
+        .expect_err("the idle refusal settles as an operation failure");
+    assert_eq!(
+        settled_refusal.kind,
+        collaboration_protocol::ConversationOperationFailureKind::NoActiveTurn
+    );
+
+    // The correlation supplies the InputId. Use a fresh operation for the new placement.
+    sent.mode = MessageDelivery::Auto;
+    sent.attempt = AttemptId::generate();
+    let retry = route
+        .deliver(sent, &evidence)
+        .await
+        .expect("same input as a prompt");
+    assert_eq!(retry.receipt().outcome, DeliveryOutcome::Started);
+    let Some(DeliveryClientReceipt::ProviderAcp { operation_id }) = &retry.receipt().client else {
+        panic!("the prompt must have a provider operation receipt: {retry:?}");
+    };
+    let completed = supervisor
+        .wait(collaboration_protocol::ConversationOperationWaitRequest {
+            operation_id: operation_id.clone(),
+            timeout_seconds: collaboration_protocol::PositiveSeconds::try_from(30)
+                .expect("wait budget"),
+        })
+        .await
+        .expect("retry settles");
+    assert!(matches!(
+        completed.output,
+        collaboration_protocol::ConversationOperationWaitOutput::Available {
+            settlement: collaboration_protocol::ConversationOperationSettlement::PromptCompleted { .. },
+        }
+    ));
+    assert_eq!(peer_turn_requests(&wire), ["session/prompt"]);
     route.shutdown_queue().await;
     supervisor.shutdown().await.expect("shutdown");
+
+    let mut store = ProviderOperationStore::open(&root.path().join("operations.sqlite"))
+        .await
+        .expect("reopen authoritative operation store");
+    let refused = store
+        .inspect(&refused_operation)
+        .await
+        .expect("inspect idle refusal")
+        .expect("retained idle refusal");
+    assert_eq!(
+        refused.effect,
+        collaboration_protocol::ProviderOperationEffect::None
+    );
+    assert_eq!(
+        refused.dispatched_at_ms, None,
+        "idle refusal must never save a dispatch mark"
+    );
+}
+
+fn assert_no_active_turn(receipt: &collaboration_contracts::NativeDeliveryResult) {
+    use collaboration_contracts::{NativeRefusalCode, UnsentCause};
+
+    assert_eq!(
+        receipt.receipt().outcome,
+        DeliveryOutcome::NotSubmitted {
+            reason: "noActiveTurn".into(),
+            retryable: false,
+        }
+    );
+    assert_eq!(
+        receipt.unsent_cause(),
+        Some(UnsentCause::Refused(NativeRefusalCode::NoActiveTurn))
+    );
+    assert!(receipt.receipt().client.is_none());
 }
 
 #[tokio::test]
@@ -500,7 +605,10 @@ async fn idle_claude_auto_starts_one_normal_prompt() {
     let root = tempfile::tempdir().expect("fixture root");
     let (route, supervisor, target, _, _) = prepared_route(
         root.path(),
-        idle_steering_fixture(IdleSteeringScenario::AutoStartsPrompt),
+        idle_steering_fixture(
+            IdleSteeringScenario::AutoStartsPrompt,
+            &root.path().join("auto-wire.jsonl"),
+        ),
     )
     .await;
     let evidence = RecordedEvidence(tokio::sync::Mutex::new(Vec::new()));
@@ -523,6 +631,26 @@ async fn idle_claude_auto_starts_one_normal_prompt() {
         if before.submission == SubmissionEffect::Dispatching && after.submission == SubmissionEffect::Accepted));
     route.shutdown_queue().await;
     supervisor.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn prompt_required_for_named_claude_steer_is_not_submitted() {
+    let root = tempfile::tempdir().expect("fixture root");
+    let (route, supervisor, target) = active_steering_route(root.path(), "prompt-required").await;
+    let evidence = RecordedEvidence(tokio::sync::Mutex::new(Vec::new()));
+
+    let receipt = route
+        .deliver(request(target, MessageDelivery::Steer), &evidence)
+        .await
+        .expect("definite provider reply");
+
+    assert_no_active_turn(&receipt);
+    route.shutdown_queue().await;
+    supervisor.shutdown().await.expect("shutdown");
+    assert_eq!(
+        peer_turn_requests(&root.path().join("active-wire.jsonl")),
+        ["session/prompt", "_session/steering"]
+    );
 }
 
 #[tokio::test]

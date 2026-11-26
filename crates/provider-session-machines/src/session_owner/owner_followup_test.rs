@@ -158,6 +158,7 @@ fn pending_steer(state: &mut SessionOwnerState, foreground: &OwnerInput) -> Owne
         SessionOwnerCommand::Steer {
             input: request.clone(),
             supported: true,
+            origin: SteerOrigin::Named,
         },
     );
     request
@@ -244,6 +245,107 @@ fn t2_existing_turn_take_rejects_a_target_when_b_replaces_a_on_the_same_run() {
         }
     );
     assert_late(&state, OwnerEvent::Dispatch(DispatchResult::Taken(steer)));
+}
+
+#[test]
+fn t2_named_steer_whose_turn_ended_is_refused_before_take() {
+    for mark_returned in [false, true] {
+        let mut state = fresh();
+        let run = restore_live(&mut state, 1);
+        let foreground = input(run.generation, 2);
+        let foreground_key = send_prompt(&mut state, &foreground);
+        let request = pending_steer(&mut state, &foreground);
+
+        let already_offered =
+            mark_returned.then(|| authorization(&apply(&mut state, steer_marked(&request))));
+        end_turn(&mut state, foreground_key);
+        let undo = apply(
+            &mut state,
+            already_offered.map_or_else(
+                || steer_marked(&request),
+                |authorization| OwnerEvent::Dispatch(DispatchResult::StaleTarget(authorization)),
+            ),
+        );
+        assert!(
+            undo.contains(&OwnerEffect::Store(SessionStoreRequest::UndoDispatch(
+                request.clone()
+            )))
+        );
+        let settled = apply(
+            &mut state,
+            OwnerEvent::Store(SessionStoreResult::UndoDispatch {
+                input: request.clone(),
+                outcome: EffectOutcome::Applied,
+            }),
+        );
+
+        assert!(
+            settled.contains(&OwnerEffect::Reply(SessionOwnerReply::InputUnsent {
+                input: request,
+                reason: RevokeReason::NoActiveTurn,
+            }))
+        );
+        assert!(!undo.iter().chain(&settled).any(|effect| matches!(
+            effect,
+            OwnerEffect::Authorize { .. }
+                | OwnerEffect::Store(
+                    SessionStoreRequest::MarkDispatch(_)
+                        | SessionStoreRequest::MarkQueuedDispatch(_)
+                )
+        )));
+        assert_eq!(state.snapshot().turn, SessionTurn::Idle);
+    }
+}
+
+#[test]
+fn t2_auto_does_not_prompt_when_the_turn_ends_before_steer_mark_returns() {
+    let mut state = fresh();
+    let run = restore_live(&mut state, 1);
+    let foreground = input(run.generation, 2);
+    let foreground_key = send_prompt(&mut state, &foreground);
+    let request = OwnerInput {
+        turn: foreground.turn,
+        ..input(run.generation, 3)
+    };
+    command(
+        &mut state,
+        SessionOwnerCommand::Prompt {
+            input: request.clone(),
+            admission: PromptAdmission::Auto {
+                steering_supported: true,
+            },
+        },
+    );
+
+    end_turn(&mut state, foreground_key);
+    let undo = apply(&mut state, steer_marked(&request));
+    assert!(
+        undo.contains(&OwnerEffect::Store(SessionStoreRequest::UndoDispatch(
+            request.clone()
+        )))
+    );
+    let settled = apply(
+        &mut state,
+        OwnerEvent::Store(SessionStoreResult::UndoDispatch {
+            input: request.clone(),
+            outcome: EffectOutcome::Applied,
+        }),
+    );
+
+    assert!(
+        settled.contains(&OwnerEffect::Reply(SessionOwnerReply::InputFinished {
+            input: request,
+            remote: RemoteEffect::None
+        }))
+    );
+    assert!(!undo.iter().chain(&settled).any(|effect| matches!(
+        effect,
+        OwnerEffect::Authorize { .. }
+            | OwnerEffect::Store(
+                SessionStoreRequest::MarkDispatch(_) | SessionStoreRequest::MarkQueuedDispatch(_)
+            )
+    )));
+    assert_eq!(state.snapshot().turn, SessionTurn::Idle);
 }
 
 #[test]
@@ -544,15 +646,31 @@ fn t4_fallback_restore_setting_still_commits_with_its_actual_value() {
 }
 
 #[test]
-fn t2_explicit_steer_on_idle_uses_the_prompt_path_and_preserves_the_input() {
+fn t2_explicit_steer_on_idle_refuses_and_allows_the_same_input_as_a_prompt() {
     let mut state = fresh();
     let run = restore_live(&mut state, 1);
     let request = input(run.generation, 2);
-    let effects = command(
-        &mut state,
-        SessionOwnerCommand::Steer {
+    let refused = decide(
+        &state,
+        OwnerEvent::Command(SessionOwnerCommand::Steer {
             input: request.clone(),
             supported: true,
+            origin: SteerOrigin::Named,
+        }),
+    );
+    assert!(matches!(
+        refused,
+        Err(SessionOwnerRejection::Refused(
+            SessionOwnerRefusal::NoActiveTurn
+        ))
+    ));
+    assert_eq!(state.snapshot().turn, SessionTurn::Idle);
+
+    let effects = command(
+        &mut state,
+        SessionOwnerCommand::Prompt {
+            input: request.clone(),
+            admission: PromptAdmission::Direct,
         },
     );
     assert!(

@@ -5,8 +5,8 @@ use crate::session_owner::{
     AuthorizationStatus, AuthorizationTarget, AuthorizedWork, CancelDrainReport,
     DispatchAuthorization, DispatchResult, EffectInProgress, InputWait, OwnerDeadline, OwnerEffect,
     OwnerInput, PendingAuthorization, RevokeReason, SessionOwnerEffect, SessionOwnerRefusal,
-    SessionPublication, SessionTurn, SettingObservation, SettingReadback, TurnId, TurnMembership,
-    WireOutcome,
+    SessionPublication, SessionTurn, SettingObservation, SettingReadback, SteerOrigin, TurnId,
+    TurnMembership, WireOutcome,
 };
 use crate::{ProviderSettingsCatalog, SessionGeneration};
 use session_event_model::InputId;
@@ -19,7 +19,7 @@ mod tests;
 impl AuthorizedWork {
     fn route(&self) -> (SessionGeneration, &InputId) {
         match self {
-            Self::Prompt(input) | Self::Steer(input) | Self::Cancel(input) => {
+            Self::Prompt(input) | Self::Steer { input, .. } | Self::Cancel(input) => {
                 (input.generation, &input.input)
             }
             Self::Setting {
@@ -31,7 +31,7 @@ impl AuthorizedWork {
     fn target(&self) -> AuthorizationTarget {
         match self {
             Self::Prompt(_) => AuthorizationTarget::NewTurn,
-            Self::Steer(input) | Self::Cancel(input) => {
+            Self::Steer { input, .. } | Self::Cancel(input) => {
                 AuthorizationTarget::ExistingTurn { turn: input.turn }
             }
             Self::Setting { .. } => AuthorizationTarget::Session,
@@ -278,19 +278,34 @@ impl OwnerTransition {
                 authorization,
                 outcome,
             } => {
-                let AuthorizedWork::Steer(input) = self.take_wire_result(&authorization)? else {
+                let AuthorizedWork::Steer { input, .. } = self.take_wire_result(&authorization)?
+                else {
                     return Err(OwnerRejection::IgnoredLate);
                 };
                 self.finish_steer(&input, outcome)
             }
             DispatchResult::SteerNeedsPrompt(authorization) => {
-                let AuthorizedWork::Steer(input) = self.take_wire_result(&authorization)? else {
+                let AuthorizedWork::Steer { input, origin } =
+                    self.take_wire_result(&authorization)?
+                else {
                     return Err(OwnerRejection::IgnoredLate);
                 };
-                self.refuse_steer(&input, RevokeReason::ProviderSteerNeedsPrompt)
+                let reason = if origin != SteerOrigin::Named {
+                    RevokeReason::ProviderSteerNeedsPrompt
+                } else if self.is_live(input.generation)
+                    && self.next.turn() == (SessionTurn::Running { turn: input.turn })
+                {
+                    // The harness can report the turn's end before its terminal observation arrives.
+                    RevokeReason::NoActiveTurn
+                } else {
+                    self.named_steer_target_loss(&input)
+                        .unwrap_or(RevokeReason::ProviderSteerNeedsPrompt)
+                };
+                self.refuse_steer(&input, reason)
             }
             DispatchResult::SteerInvalidReply(authorization) => {
-                let AuthorizedWork::Steer(input) = self.take_wire_result(&authorization)? else {
+                let AuthorizedWork::Steer { input, .. } = self.take_wire_result(&authorization)?
+                else {
                     return Err(OwnerRejection::IgnoredLate);
                 };
                 if !self.steer_is_pending(&input, InputWait::Wire) {
@@ -306,7 +321,8 @@ impl OwnerTransition {
                 authorization,
                 turn,
             } => {
-                let AuthorizedWork::Steer(input) = self.take_wire_result(&authorization)? else {
+                let AuthorizedWork::Steer { input, .. } = self.take_wire_result(&authorization)?
+                else {
                     return Err(OwnerRejection::IgnoredLate);
                 };
                 self.steer_started_new_turn(input, turn)
@@ -315,9 +331,14 @@ impl OwnerTransition {
                 authorization,
                 replacement_turn,
             } => {
-                let AuthorizedWork::Steer(input) = self.take_wire_result(&authorization)? else {
+                let AuthorizedWork::Steer { input, origin } =
+                    self.take_wire_result(&authorization)?
+                else {
                     return Err(OwnerRejection::IgnoredLate);
                 };
+                if origin != SteerOrigin::Auto {
+                    return self.refuse_steer(&input, RevokeReason::ProviderSteerNeedsPrompt);
+                }
                 self.unmark_steer(&input);
                 if self.is_live(input.generation) {
                     self.next.ports.steer_replacement = Some(OwnerInput {
@@ -435,7 +456,7 @@ impl OwnerTransition {
                     self.issue_cancel(input.generation, input.turn)?;
                 }
             }
-            AuthorizedWork::Steer(_) => {
+            AuthorizedWork::Steer { .. } => {
                 if let Some(steer) = self.next.steer.as_mut() {
                     steer.wait = InputWait::Wire;
                     self.arm(
@@ -482,7 +503,15 @@ impl OwnerTransition {
                 AuthorizationStatus::Offered | AuthorizationStatus::Revoking(_),
                 Unsent::StaleTarget,
             ) if matches!(key.target, AuthorizationTarget::ExistingTurn { .. }) => {
-                RevokeReason::TurnEnded
+                match &pending.work {
+                    AuthorizedWork::Steer {
+                        input,
+                        origin: SteerOrigin::Named,
+                    } => self
+                        .named_steer_target_loss(input)
+                        .unwrap_or(RevokeReason::TurnEnded),
+                    _ => RevokeReason::TurnEnded,
+                }
             }
             (
                 AuthorizationStatus::Taken
@@ -521,7 +550,7 @@ impl OwnerTransition {
                 self.unmark_prompt(&input, reason)?;
                 self.continue_close()?;
             }
-            AuthorizedWork::Steer(input) => self.unmark_steer_unsent(&input, reason),
+            AuthorizedWork::Steer { input, .. } => self.unmark_steer_unsent(&input, reason),
             AuthorizedWork::Setting { setting, .. } => self.setting_unsent(setting)?,
             AuthorizedWork::Cancel(input) => {
                 self.effects.push(OwnerEffect::CancelNotSent {
@@ -565,10 +594,26 @@ impl OwnerTransition {
     }
 
     pub(super) fn steer_expired(&mut self, key: &DispatchAuthorization) -> OwnerResult {
-        let AuthorizedWork::Steer(input) = self.take_wire_result(key)? else {
+        let AuthorizedWork::Steer { input, .. } = self.take_wire_result(key)? else {
             return Err(OwnerRejection::IgnoredLate);
         };
         self.finish_steer(&input, WireOutcome::Unknown)
+    }
+
+    pub(super) fn named_steer_target_loss(&self, input: &OwnerInput) -> Option<RevokeReason> {
+        if self.is_live(input.generation) {
+            Some(if self.next.turn() == SessionTurn::Idle {
+                RevokeReason::NoActiveTurn
+            } else {
+                RevokeReason::TurnEnded
+            })
+        } else {
+            self.next
+                .cell
+                .run_generation()
+                .filter(|generation| *generation != input.generation)
+                .map(|_| RevokeReason::NamedSteerRunReplaced)
+        }
     }
 
     pub(super) fn abandon_taken_prompt(&mut self, input: &OwnerInput) {
@@ -603,7 +648,7 @@ impl OwnerTransition {
                     };
                     self.authorization_unsent(&key, unsent)?;
                 }
-                (AuthorizationStatus::Taken, AuthorizedWork::Steer(_)) => {
+                (AuthorizationStatus::Taken, AuthorizedWork::Steer { .. }) => {
                     self.steer_expired(&key)?
                 }
                 (
