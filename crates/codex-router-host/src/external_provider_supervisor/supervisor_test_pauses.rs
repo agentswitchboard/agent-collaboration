@@ -18,6 +18,41 @@ impl AdmissionTestPause {
 }
 
 impl ExternalProviderSupervisor {
+    pub(crate) fn hold_binding_wide_dispatch_for_test(
+        &self,
+        binding: &collaboration_protocol::ProviderBindingIdentity,
+    ) -> OperationId {
+        use super::provider_admission_policy::AdmissionMode;
+        let operation = OperationId::generate();
+        let live = super::LiveOperation::reserving(
+            binding,
+            None,
+            collaboration_protocol::ProviderOperationKind::ConversationCreate,
+            AdmissionMode::HANDOFF,
+        );
+        live.admitted();
+        live.dispatch_marked();
+        self.inner
+            .live_operations
+            .lock()
+            .expect("operation index")
+            .operations
+            .insert(operation.clone(), super::Arc::new(live));
+        operation
+    }
+
+    pub(crate) fn observe_turn_start_fixture(
+        &self,
+        target: &collaboration_protocol::SessionRef,
+        wait: crate::binding_store_fixture::BindingFixtureWait,
+    ) -> tokio::sync::oneshot::Receiver<()> {
+        self.inner
+            .uncertainty
+            .slot(&target.endpoint)
+            .fixture
+            .notice_wait(target.clone(), wait)
+    }
+
     pub(crate) fn hold_pending_dispatch_for_test(
         &self,
         target: &collaboration_protocol::SessionRef,
@@ -66,7 +101,7 @@ impl ExternalProviderSupervisor {
             )
     }
 
-    pub(crate) fn observe_ended_prompt_admission_for_test(
+    pub(crate) fn observe_ended_turn_admission_for_test(
         &self,
         target: &collaboration_protocol::SessionRef,
         holder: OperationId,
@@ -77,11 +112,11 @@ impl ExternalProviderSupervisor {
             .fixture
             .notice_wait(
                 target.clone(),
-                crate::binding_store_fixture::BindingFixtureWait::EndedPromptAdmission(holder),
+                crate::binding_store_fixture::BindingFixtureWait::EndedTurnAdmission(holder),
             )
     }
 
-    pub(crate) fn assert_only_prompt_blocks_admission_for_test(
+    pub(crate) fn assert_only_turn_start_blocks_admission_for_test(
         &self,
         target: &collaboration_protocol::SessionRef,
         holder: &OperationId,
@@ -108,7 +143,7 @@ impl ExternalProviderSupervisor {
         );
         assert_eq!(blockers.as_slice(), std::slice::from_ref(holder));
         let held = operations.operations.get(holder).expect("live holder");
-        assert!(held.is_prompt_for(target));
+        assert!(held.is_turn_start_for(target));
         assert!(held.holds_custody());
     }
 

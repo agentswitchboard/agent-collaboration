@@ -9,7 +9,7 @@ use crate::binding_dispatch_permit::{BindingUncertainty, lock};
 use crate::provider_operation_custody::LaneWriteCustody;
 use collaboration_protocol::{OperationId, ProviderOperationStage};
 use provider_session_machines::session_owner::{OwnerIncarnation, OwnerInput};
-use router_clock::RuntimeClock;
+use router_clock::{ClockInstant, RuntimeClock};
 use std::sync::Arc;
 use switchboard_session_store::ProviderOperationStoreError;
 use tokio::sync::watch;
@@ -27,7 +27,8 @@ pub(super) struct LaneDispatchOffer {
     pub(super) input: OwnerInput,
     operation: OperationId,
     kind: LaneDispatchKind,
-    ended_prompt: Option<Uuid>,
+    ended_turn: Option<Uuid>,
+    deadline: Option<ClockInstant>,
 }
 
 pub(super) struct LaneDispatchWrite {
@@ -49,7 +50,8 @@ impl SessionStoreLane {
         operation: OperationId,
         input: OwnerInput,
         kind: LaneDispatchKind,
-        ended_prompt: Option<Uuid>,
+        ended_turn: Option<Uuid>,
+        deadline: Option<ClockInstant>,
     ) -> Result<SessionStoreTicket, SessionStoreOfferError> {
         let marked = MarkedInput {
             operation: operation.clone(),
@@ -67,7 +69,8 @@ impl SessionStoreLane {
                 input,
                 operation,
                 kind,
-                ended_prompt,
+                ended_turn,
+                deadline,
             }),
         )
     }
@@ -104,7 +107,7 @@ impl SessionStoreLane {
         &self,
         operation: &OperationId,
         kind: LaneDispatchKind,
-        ended_prompt: Option<Uuid>,
+        ended_turn: Option<Uuid>,
         outcomes: &BindingOutcomes,
         binding: &BindingUncertainty,
     ) -> Result<(), SessionStoreOfferError> {
@@ -135,7 +138,7 @@ impl SessionStoreLane {
             if let Some(blocker) = binding
                 .live_dispatch_blocker
                 .get()
-                .and_then(|gate| gate(operation, &self.inner.target, ended_prompt))
+                .and_then(|gate| gate(operation, &self.inner.target, ended_turn))
             {
                 return Err(SessionStoreOfferError::DispatchBusy {
                     operation: key(&blocker.operation)?,
@@ -159,10 +162,16 @@ impl SessionStoreLane {
         self.dispatch_blocker(
             &offer.operation,
             offer.kind,
-            offer.ended_prompt,
+            offer.ended_turn,
             outcomes,
             binding,
         )?;
+        if offer
+            .deadline
+            .is_some_and(|deadline| self.inner.clock.monotonic_now() >= deadline)
+        {
+            return Err(SessionStoreOfferError::Stopped);
+        }
         let undo_mark = if offer.kind == LaneDispatchKind::Undo {
             Some(
                 state

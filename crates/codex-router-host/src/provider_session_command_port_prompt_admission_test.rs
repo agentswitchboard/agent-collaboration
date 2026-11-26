@@ -39,7 +39,7 @@ async fn assert_ended_with_live_custody(rig: &CommandPortRig, operation: &Operat
     let last = snapshot.last_live_turn.expect("last completed turn");
     assert_eq!(last.operation.to_string(), operation.as_str());
     rig.supervisor
-        .assert_only_prompt_blocks_admission_for_test(&target, operation);
+        .assert_only_turn_start_blocks_admission_for_test(&target, operation);
 }
 
 async fn begin_held_terminal(rig: &CommandPortRig) -> (OperationId, oneshot::Sender<()>) {
@@ -116,7 +116,7 @@ async fn native_follow_up_waits_for_the_ended_prompt_to_release_custody() {
 
     let waiting = rig
         .supervisor
-        .observe_ended_prompt_admission_for_test(&protocol_target("fixture-session"), operation);
+        .observe_ended_turn_admission_for_test(&protocol_target("fixture-session"), operation);
     native_send(&mut client, 4, "turn/start", params("successor")).await;
     let (started, _) = {
         let answer = native_reply(&mut client, 4);
@@ -160,7 +160,7 @@ async fn direct_follow_up_waits_for_the_ended_prompt_to_release_custody() {
     let request = direct_prompt(&rig, OperationId::generate());
     let waiting = rig
         .supervisor
-        .observe_ended_prompt_admission_for_test(&request.target, previous);
+        .observe_ended_turn_admission_for_test(&request.target, previous);
     let operation = request.operation_id.clone();
     let mut answer = rig.supervisor.prompt_contents(request);
     tokio::select! {
@@ -196,7 +196,7 @@ async fn direct_follow_up_expires_at_admission_deadline_without_sending() {
     let request = direct_prompt(&rig, OperationId::generate());
     let waiting = rig
         .supervisor
-        .observe_ended_prompt_admission_for_test(&request.target, previous);
+        .observe_ended_turn_admission_for_test(&request.target, previous);
     let operation = request.operation_id.clone();
     let mut answer = rig.supervisor.prompt_contents(request);
     tokio::select! {
@@ -270,7 +270,7 @@ async fn the_newer_prompt_blocks_while_dispatching_and_while_running() {
         previous.as_str()
     );
     rig.supervisor
-        .assert_only_prompt_blocks_admission_for_test(&target, &second);
+        .assert_only_turn_start_blocks_admission_for_test(&target, &second);
 
     let third = OperationId::generate();
     let refused = rig
@@ -316,3 +316,6 @@ async fn the_newer_prompt_blocks_while_dispatching_and_while_running() {
 
 #[path = "provider_session_command_port_prompt_tool_test.rs"]
 mod prompt_tool;
+
+#[path = "provider_session_command_port_turn_follow_up_test.rs"]
+mod turn_follow_up;

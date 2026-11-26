@@ -448,9 +448,9 @@ pub struct SessionSnapshot {
 }
 
 impl SessionSnapshot {
-    /// The exact ended prompt in the currently live, idle run.
+    /// The exact observed ending in the currently live, idle run.
     #[must_use]
-    pub fn live_idle_ended_prompt(&self) -> Option<&LastLiveTurn> {
+    pub fn live_idle_ended_turn(&self) -> Option<&LastLiveTurn> {
         let SessionLifecycle::Live { generation } = self.lifecycle else {
             return None;
         };

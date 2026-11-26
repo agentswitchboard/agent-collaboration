@@ -107,7 +107,7 @@ impl LiveOperation {
         )
     }
 
-    pub(super) fn is_prompt_for(&self, target: &SessionRef) -> bool {
+    pub(super) fn is_turn_start_for(&self, target: &SessionRef) -> bool {
         self.kind == Some(ProviderOperationKind::ConversationPrompt)
             && self.target().as_ref() == Some(target)
     }
@@ -479,20 +479,17 @@ impl LiveOperations {
         &self,
         binding: &ProviderBindingIdentity,
         request: AdmissionRequest<'_>,
-        ended_prompt: Option<uuid::Uuid>,
+        ended_turn: Option<uuid::Uuid>,
     ) -> Option<LiveDispatchConflict> {
         let mut blockers = self
             .overlapping_holders(binding, request, LiveOperation::holds_dispatch)
             .filter(|(_, holder)| !request.is_own_cancel_holder(holder.kind, holder.cancel_target));
         let (operation, holder) = blockers.next()?;
-        let wait_for_eligibility = ended_prompt.is_some_and(|ended_prompt| {
-            self.operations
-                .get(request.operation)
-                .is_some_and(|live| live.class == AdmissionClass::OwnerPlaced)
-                && uuid::Uuid::parse_str(operation.as_str()).ok() == Some(ended_prompt)
+        let wait_for_eligibility = ended_turn.is_some_and(|ended_turn| {
+            uuid::Uuid::parse_str(operation.as_str()).ok() == Some(ended_turn)
                 && request
                     .target
-                    .is_some_and(|target| holder.is_prompt_for(target))
+                    .is_some_and(|target| holder.is_turn_start_for(target))
                 && blockers.next().is_none()
         });
         Some(LiveDispatchConflict {

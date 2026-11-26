@@ -1,4 +1,4 @@
-use super::{OwnerRejection, OwnerResult, OwnerTransition};
+use super::{OwnerRejection, OwnerResult, OwnerTransition, publication_effects::LOCAL_BUDGET};
 use crate::SessionGeneration;
 use crate::queued_entry_machine::{QueuedEntryEffect, SentOutcome};
 use crate::session_cell_machine::{QueuedOperation, SessionCellEffect, SessionCellEvent};
@@ -10,7 +10,8 @@ use crate::session_owner::{
 use crate::session_owner::{
     EffectOutcome, InputWait, LastLiveTurn, OwnerInput, PendingPrompt, PromptAdmission,
     PromptCompletion, RemoteEffect, SessionDeadline, SessionOwnerEffect, SessionOwnerRefusal,
-    SessionOwnerReply, SessionPublication, SessionStoreRequest, SteerOrigin, WireOutcome,
+    SessionOwnerReply, SessionPublication, SessionStoreRequest, SteerOrigin, TurnDispatchMark,
+    WireOutcome,
 };
 use crate::session_turn_machine::{SessionTurn, TurnId};
 use session_event_model::{InputId, TurnLostReason, TurnOutcome};
@@ -284,7 +285,10 @@ impl OwnerTransition {
                 self.release(SessionOwnerEffect::Store(if pending.queued {
                     SessionStoreRequest::MarkQueuedDispatch(input)
                 } else {
-                    SessionStoreRequest::MarkDispatch(input)
+                    SessionStoreRequest::MarkDispatch(TurnDispatchMark {
+                        input,
+                        budget: LOCAL_BUDGET,
+                    })
                 }));
                 self.arm_prompt_deadline(sequence, InputWait::DispatchStore)
             }

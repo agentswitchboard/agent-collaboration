@@ -599,7 +599,9 @@ impl<P: InteractionPort> SessionOwnerPorts for FixturePorts<P> {
                     run,
                     outcome: EffectOutcome::Applied,
                 },
-                SessionStoreRequest::MarkDispatch(input)
+                SessionStoreRequest::MarkDispatch(
+                    provider_session_machines::session_owner::TurnDispatchMark { input, .. },
+                )
                 | SessionStoreRequest::MarkQueuedDispatch(input) => {
                     let completion = completions.reserve(address)?;
                     tokio::spawn(async move {

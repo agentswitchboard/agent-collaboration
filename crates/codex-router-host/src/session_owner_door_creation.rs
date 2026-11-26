@@ -374,6 +374,20 @@ impl ProvisionalCreate {
 }
 
 impl SessionOwnerPorts for ProvisionalCreate {
+    fn execute_dispatch_mark(
+        &mut self,
+        address: OwnerAddress,
+        mark: provider_session_machines::session_owner::TurnDispatchMark,
+        deadline: router_clock::ClockInstant,
+        completions: &OwnerCompletionPort,
+        caller_wakes: &mut OwnerCallerWakes,
+    ) -> Result<Option<OwnerEvent>, OwnerTaskError> {
+        self.adopted
+            .as_mut()
+            .ok_or(OwnerTaskError::ExecutorStopped)?
+            .execute_dispatch_mark(address, mark, deadline, completions, caller_wakes)
+    }
+
     fn execute(
         &mut self,
         address: OwnerAddress,
