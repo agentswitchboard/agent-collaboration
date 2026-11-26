@@ -88,12 +88,13 @@ impl OwnerTransition {
         if let SessionTurn::Running { turn } = self.next.turn() {
             match admission {
                 PromptAdmission::Auto { steering_supported } => {
-                    return self.admit_steer(OwnerInput { turn, ..input }, steering_supported);
+                    return self
+                        .admit_existing_steer(OwnerInput { turn, ..input }, steering_supported);
                 }
                 PromptAdmission::DeliveryAuto {
                     steering_supported: true,
                 } => {
-                    return self.admit_steer(OwnerInput { turn, ..input }, true);
+                    return self.admit_existing_steer(OwnerInput { turn, ..input }, true);
                 }
                 _ => {}
             }
@@ -783,9 +784,9 @@ impl OwnerTransition {
     }
 
     pub(super) fn admit_steer(&mut self, input: OwnerInput, supported: bool) -> OwnerResult {
+        self.require_live(input.generation)?;
         if self.next.turn() == SessionTurn::Idle {
-            self.require_live(input.generation)?;
-            return self.admit_prompt(input, PromptAdmission::Direct);
+            return Err(SessionOwnerRefusal::NoActiveTurn.into());
         }
         self.admit_existing_steer(input, supported)
     }

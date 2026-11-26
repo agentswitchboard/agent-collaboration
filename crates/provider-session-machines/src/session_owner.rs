@@ -559,6 +559,7 @@ pub enum SessionOwnerRefusal {
     CancelTargetInactive,
     QueueFull,
     CannotSteer,
+    NoActiveTurn,
     SkillSelectionChanged,
 }
 

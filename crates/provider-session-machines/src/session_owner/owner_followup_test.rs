@@ -544,15 +544,30 @@ fn t4_fallback_restore_setting_still_commits_with_its_actual_value() {
 }
 
 #[test]
-fn t2_explicit_steer_on_idle_uses_the_prompt_path_and_preserves_the_input() {
+fn t2_explicit_steer_on_idle_refuses_and_allows_the_same_input_as_a_prompt() {
     let mut state = fresh();
     let run = restore_live(&mut state, 1);
     let request = input(run.generation, 2);
-    let effects = command(
-        &mut state,
-        SessionOwnerCommand::Steer {
+    let refused = decide(
+        &state,
+        OwnerEvent::Command(SessionOwnerCommand::Steer {
             input: request.clone(),
             supported: true,
+        }),
+    );
+    assert!(matches!(
+        refused,
+        Err(SessionOwnerRejection::Refused(
+            SessionOwnerRefusal::NoActiveTurn
+        ))
+    ));
+    assert_eq!(state.snapshot().turn, SessionTurn::Idle);
+
+    let effects = command(
+        &mut state,
+        SessionOwnerCommand::Prompt {
+            input: request.clone(),
+            admission: PromptAdmission::Direct,
         },
     );
     assert!(
