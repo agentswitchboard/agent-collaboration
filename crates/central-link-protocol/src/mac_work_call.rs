@@ -60,6 +60,7 @@ pub enum MacReplyMismatch {
 }
 
 /// A reply whose kind, target, and request-dependent constraints have been checked.
+#[derive(Clone)]
 pub struct MacWorkReply(CentralCallReply);
 
 impl fmt::Debug for MacWorkReply {
