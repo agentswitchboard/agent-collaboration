@@ -2,10 +2,13 @@
 
 use super::{SessionOwnerAddress, SessionOwnerDoor};
 use crate::{
-    session_owner_execution::SessionOwnerExecution, session_owner_registry::FailedOwnerSettlement,
+    session_owner_execution::SessionOwnerExecution,
+    session_owner_registry::{
+        FailedOwnerSettlement, answer_complete_acp_snapshot, owner_proved_unsent,
+    },
     session_store_lane::SessionStoreSettlement,
 };
-use acp_client_runtime::{acp_transport::SlotEvidence, session_owner_task::SessionOwnerTask};
+use acp_client_runtime::session_owner_task::SessionOwnerTask;
 use collaboration_protocol::SessionRef;
 use provider_session_machines::session_owner::{RemoteEffect, RevokeReason, SessionOwnerReply};
 use std::{collections::BTreeMap, sync::Arc};
@@ -62,6 +65,12 @@ impl SessionOwnerDoor {
             return None;
         }
         let failed = previous.owner.address.incarnation;
+        let asked_inputs = previous
+            .calls
+            .outstanding_inputs()
+            .into_iter()
+            .map(|input| input.input)
+            .collect();
         let FailedOwnerSettlement {
             replacement,
             handover,
@@ -69,9 +78,18 @@ impl SessionOwnerDoor {
             ..
         } = self
             .registry
-            .replace_failed_with(target, failed, self.connection, |incarnation| {
-                self.wire.abandon_incarnation(incarnation)
-            })
+            .replace_failed_with(
+                target,
+                failed,
+                self.connection,
+                asked_inputs,
+                |incarnation, inputs| {
+                    answer_complete_acp_snapshot(
+                        inputs,
+                        &self.wire.abandon_incarnation(incarnation),
+                    )
+                },
+            )
             .ok()?;
         let registered = self
             .registry
@@ -103,19 +121,16 @@ impl SessionOwnerDoor {
                 let _test_withdrew_pause = release.await;
             }
             for input in callers.outstanding_inputs() {
-                let taken = slot_evidence.iter().any(|(authorization, effect)| {
-                    authorization.input_id == input.input && *effect == SlotEvidence::Taken
-                });
                 let saved = results.remove(&input.input).unwrap_or(false);
-                let reply = if taken {
-                    SessionOwnerReply::InputFinished {
-                        input,
-                        remote: RemoteEffect::Unknown,
-                    }
-                } else {
+                let reply = if owner_proved_unsent(slot_evidence.get(&input.input)) {
                     SessionOwnerReply::InputUnsent {
                         input,
                         reason: RevokeReason::ConnectionLost,
+                    }
+                } else {
+                    SessionOwnerReply::InputFinished {
+                        input,
+                        remote: RemoteEffect::Unknown,
                     }
                 };
                 callers.settle(reply, saved, None);

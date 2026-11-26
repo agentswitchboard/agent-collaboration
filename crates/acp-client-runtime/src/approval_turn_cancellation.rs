@@ -3,19 +3,21 @@
 //! drain through. The client's cancel and the session actor both use it.
 
 use crate::{
-    ExternalProviderRuntimeError, InteractionPort, acp_transport::TransportRun,
-    owner_wire::OwnerAcpWire,
+    ApprovalPortOutcome, ExternalProviderRuntimeError, InteractionFuture, InteractionPort,
+    acp_transport::TransportRun, interaction_port::observe_cancellation, owner_wire::OwnerAcpWire,
 };
 use provider_session_machines::session_owner::{
     CancelDrainReport, DispatchAuthorization, DispatchResult, PendingTurnResponse,
 };
+use session_event_model::{ApprovalRequest, QuestionRequest, QuestionResponse};
 use std::{
     collections::{BTreeMap, HashMap},
     sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
 use switchboard_harness_contracts::{
-    CancelDrainStart, CancelReservationRefusal, ReplyAdmission, RunRetirement, WorkReply,
-    WriterState,
+    ApprovalContext, ApprovalLease, CancelDrainStart, CancelReservationRefusal, Decision,
+    ExactScope, ExactTurn, ReplyAdmission, RequestCancellation, RunRetirement, StopRequestsCause,
+    WorkReply, WriterState,
 };
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
@@ -106,6 +108,81 @@ impl<P: InteractionPort> Clone for ActiveApprovalContext<P> {
 }
 
 impl<P: InteractionPort> ActiveApprovalContext<P> {
+    fn policy_context(&self) -> ApprovalContext<P::Context> {
+        let run = TransportRun {
+            incarnation: self.incarnation,
+            generation: self.generation,
+        };
+        ApprovalContext {
+            scope: match self.turn {
+                Some(turn) => ExactScope::Turn(ExactTurn { run, turn }),
+                None => ExactScope::Session { run },
+            },
+            context: self.approval.clone(),
+        }
+    }
+
+    fn policy_cancellation(&self, request: CancellationToken) -> RequestCancellation {
+        RequestCancellation {
+            turn: observe_cancellation(self.cancelling.clone()),
+            request: observe_cancellation(request),
+        }
+    }
+
+    pub(crate) fn decide_approval<'policy>(
+        &self,
+        port: &'policy P,
+        request: ApprovalRequest,
+        cancellation: CancellationToken,
+    ) -> InteractionFuture<'policy, ApprovalPortOutcome> {
+        let Some(policy) = port.request_policy() else {
+            return port.request_approval(
+                self.approval.clone(),
+                request,
+                self.cancelling.clone(),
+                cancellation,
+            );
+        };
+        let decision = policy.decide_approval(
+            self.policy_context(),
+            request,
+            self.policy_cancellation(cancellation),
+        );
+        Box::pin(async move {
+            match decision.await {
+                Decision::Answer(answer) => answer,
+                Decision::Refused(_) => ApprovalPortOutcome::Cancelled,
+            }
+        })
+    }
+
+    pub(crate) fn decide_question<'policy>(
+        &self,
+        port: &'policy P,
+        request: QuestionRequest,
+        cancellation: CancellationToken,
+    ) -> InteractionFuture<'policy, QuestionResponse> {
+        let Some(policy) = port.request_policy() else {
+            return port.request_question(
+                self.approval.clone(),
+                request,
+                self.cancelling.clone(),
+                cancellation,
+            );
+        };
+        let decision = policy.decide_question(
+            self.policy_context(),
+            request,
+            self.policy_cancellation(cancellation),
+        );
+        Box::pin(async move {
+            match decision.await {
+                Decision::Answer(answer) => answer,
+                Decision::Refused(_) => QuestionResponse::Cancelled,
+            }
+        })
+    }
+
     pub(crate) async fn cancel_after_refusal(
         self,
         interaction_port: Arc<P>,
@@ -116,9 +193,15 @@ impl<P: InteractionPort> ActiveApprovalContext<P> {
             reason = refusal.reason(),
             "managed provider interaction refused"
         );
-        interaction_port
-            .cancel_after_managed_refusal(self.approval)
-            .await;
+        if let Some(policy) = interaction_port.request_policy() {
+            policy
+                .cancel_after_managed_refusal(self.policy_context())
+                .await;
+        } else {
+            interaction_port
+                .cancel_after_managed_refusal(self.approval)
+                .await;
+        }
     }
 }
 
@@ -158,6 +241,8 @@ pub struct OwnerApprovalLease<P: InteractionPort> {
     _lease: ApprovalContextGuard<P>,
 }
 
+impl<P: InteractionPort> ApprovalLease for OwnerApprovalLease<P> {}
+
 impl<P: InteractionPort> OwnerApprovalBindings<P> {
     #[cfg(all(debug_assertions, feature = "test-observation"))]
     pub fn held_turn_for_test(
@@ -195,7 +280,11 @@ impl<P: InteractionPort> OwnerApprovalBindings<P> {
             ));
         }
         let operation_id = P::operation_id(&context);
-        P::bind_owner_scope(&mut context, run.generation, turn);
+        if let Some(policy) = self.interaction_port.request_policy() {
+            policy.bind_owner_scope(&mut context, ExactTurn { run, turn });
+        } else {
+            P::bind_owner_scope(&mut context, run.generation, turn);
+        }
         active.insert(
             provider_session_id.clone(),
             ActiveApprovalContext {
@@ -249,6 +338,13 @@ fn active_turn_cancellation<P: InteractionPort>(
                 && context.generation == authorization.run
                 && context.turn == Some(turn))
             .then(|| OwnerApprovalDrain {
+                turn: ExactTurn {
+                    run: TransportRun {
+                        incarnation: authorization.incarnation,
+                        generation: authorization.run,
+                    },
+                    turn,
+                },
                 cancelling: context.cancelling.clone(),
                 approval: context.approval.clone(),
                 interaction_port: Arc::clone(interaction_port),
@@ -259,6 +355,7 @@ fn active_turn_cancellation<P: InteractionPort>(
 }
 
 pub struct OwnerApprovalDrain<P: InteractionPort> {
+    turn: ExactTurn,
     pub(crate) cancelling: CancellationToken,
     pub(crate) approval: P::Context,
     pub(crate) interaction_port: Arc<P>,
@@ -271,9 +368,19 @@ impl<P: InteractionPort> OwnerApprovalDrain<P> {
     }
 
     pub async fn settle_pending_approvals(&self) {
-        self.interaction_port
-            .cancel_all(self.approval.clone(), "turnCancelled")
-            .await;
+        if let Some(policy) = self.interaction_port.request_policy() {
+            policy
+                .stop_all(
+                    self.approval.clone(),
+                    self.turn,
+                    StopRequestsCause::TurnCancelled,
+                )
+                .await;
+        } else {
+            self.interaction_port
+                .cancel_all(self.approval.clone(), "turnCancelled")
+                .await;
+        }
         self.responses.wait_drained().await;
     }
 

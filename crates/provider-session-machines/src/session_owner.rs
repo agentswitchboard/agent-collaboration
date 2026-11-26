@@ -19,6 +19,11 @@ use std::sync::Arc;
 
 pub use switchboard_harness_contracts::RunAttempt;
 pub use switchboard_harness_contracts::{
+    ApprovalContext, ApprovalPortOutcome, Decision, ExactScope, ExactTurn, OwnerEvidence,
+    OwnerInputEvidence, RequestCancellation, RequestCancellationSignal, RequestFuture,
+    RequestPolicy, StopRequestsCause,
+};
+pub use switchboard_harness_contracts::{
     CancelDrainStart, CancelDrainWait, CancelReservationRefusal, HarnessBinding, RefusedWorkMove,
     ReplyAdmission, ReservedWorkReply, SettingOffer, SteerIdlePolicy, TakeBackRefusal,
     WorkOfferRefusal, WriterState,
