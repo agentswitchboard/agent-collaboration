@@ -1,4 +1,4 @@
-//! Deterministic controls at the Host preparation and create adoption ports.
+//! Deterministic controls for Host session owner tests.
 
 use std::sync::{
     Mutex,
@@ -14,6 +14,8 @@ pub(crate) struct PreparationFixture {
     delivery_ack: Mutex<Option<DeliveryAckPause>>,
     #[cfg(test)]
     recovery_pause: Mutex<Option<PreparationPause>>,
+    #[cfg(test)]
+    named_steer_take: Mutex<Option<PreparationPause>>,
     #[cfg(test)]
     refuse_replacement: AtomicBool,
     restore_fault: AtomicBool,
@@ -148,6 +150,16 @@ impl PreparationFixture {
     #[cfg(test)]
     pub(crate) fn hold_create(&self) -> Option<oneshot::Receiver<()>> {
         Self::enter(&self.create_pause)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pause_named_steer_take(&self) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+        Self::arm(&self.named_steer_take)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hold_named_steer_take(&self) -> Option<oneshot::Receiver<()>> {
+        Self::enter(&self.named_steer_take)
     }
 
     fn arm(slot: &Mutex<Option<PreparationPause>>) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {

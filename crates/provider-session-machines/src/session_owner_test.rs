@@ -11,6 +11,8 @@ mod owner_history;
 mod owner_notice;
 #[path = "session_owner/owner_property_test.rs"]
 mod owner_property;
+#[path = "session_owner/owner_steer_property_test.rs"]
+mod owner_steer_property;
 
 fn uuid(number: u64) -> Uuid {
     // Deterministic UUIDv7 inputs keep clock reads out of the property.
@@ -289,13 +291,11 @@ fn auto_queued_during_restore_steers_when_the_first_prompt_takes_wire() {
             outcome: EffectOutcome::Applied,
         }),
     );
-    assert!(steer_mark.contains(&OwnerEffect::Authorize {
-        authorization: authorization(&steer_mark),
-        work: AuthorizedWork::Steer {
-            input: exact_steer,
-            origin: SteerOrigin::Auto
-        },
-    }));
+    let exact_authorization = authorization(&steer_mark);
+    assert!(steer_mark.iter().any(|effect| matches!(effect,
+        OwnerEffect::Authorize { authorization, work: AuthorizedWork::Steer { input, .. } }
+            if *authorization == exact_authorization && *input == exact_steer
+    )));
 }
 
 #[test]

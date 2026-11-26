@@ -2,7 +2,7 @@
 
 ## 0.1.164
 
-- An explicit `steer` is refused when no turn is running. Send a prompt or use `auto` to start a turn. Prompt tools report `NoActiveTurn` (`noActiveTurn` in JSON), and ACP message delivery reports `notSubmitted` with reason `noActiveTurn`.
+- An explicit `steer` is refused when no turn is running, including provider-backed `turn/steer` and ACP `_session/steering`. Send a prompt or use `auto` to start a turn. Prompt tools report `NoActiveTurn` (`noActiveTurn` in JSON), and ACP message delivery reports `notSubmitted` with reason `noActiveTurn`.
 
 ## 0.1.163
 

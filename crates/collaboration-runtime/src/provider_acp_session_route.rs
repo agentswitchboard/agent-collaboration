@@ -706,6 +706,7 @@ async fn serve_provider_requests(
                                     target: session,
                                     input_id: session_event_model::InputId::generate(),
                                     expected_turn_id,
+                                    intent: collaboration_contracts::SessionSteerIntent::Named,
                                     submission: session_event_model::ProviderSubmission::plain(
                                         content,
                                     ),
@@ -725,6 +726,14 @@ async fn serve_provider_requests(
                                 }
                                 Ok(SessionSteerOutcome::Failed { reason }) => {
                                     response(id, json!({"outcome":"failed","reason":reason}))
+                                }
+                                Err(error)
+                                    if matches!(
+                                        error.classification().as_ref(),
+                                        CommandFailure::NoActiveTurn
+                                    ) =>
+                                {
+                                    response(id, json!({"outcome":"promptRequired"}))
                                 }
                                 Err(error) => command_failure(id, error),
                             },

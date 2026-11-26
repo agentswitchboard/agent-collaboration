@@ -80,6 +80,7 @@ pub(crate) async fn place_busy_prompt(prompt: BusyPrompt<'_>) -> BusyPromptPlace
                     target: session.clone(),
                     input_id: InputId::generate(),
                     expected_turn_id,
+                    intent: collaboration_contracts::SessionSteerIntent::Auto,
                     submission: submission.clone(),
                     actor: actor.clone(),
                 })

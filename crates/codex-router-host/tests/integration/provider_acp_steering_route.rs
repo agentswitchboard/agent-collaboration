@@ -512,6 +512,8 @@ async fn idle_claude_steer_is_not_submitted_and_the_same_input_can_prompt() {
     let evidence = RecordedEvidence(tokio::sync::Mutex::new(Vec::new()));
 
     let mut sent = request(target, MessageDelivery::Steer);
+    let refused_operation = OperationId::try_from(sent.attempt.as_str().to_owned())
+        .expect("refused operation identity");
     let receipt = route
         .deliver(sent.clone(), &evidence)
         .await
@@ -521,6 +523,18 @@ async fn idle_claude_steer_is_not_submitted_and_the_same_input_can_prompt() {
     assert!(peer_turn_requests(&wire).is_empty());
     assert!(matches!(evidence.0.lock().await.as_slice(),
         [RouteEffectEvidence::ProviderAcp(only)] if only.submission == SubmissionEffect::NotDispatched));
+    let settled_refusal = supervisor
+        .wait(collaboration_protocol::ConversationOperationWaitRequest {
+            operation_id: refused_operation.clone(),
+            timeout_seconds: collaboration_protocol::PositiveSeconds::try_from(30)
+                .expect("wait budget"),
+        })
+        .await
+        .expect_err("the idle refusal settles as an operation failure");
+    assert_eq!(
+        settled_refusal.kind,
+        collaboration_protocol::ConversationOperationFailureKind::NoActiveTurn
+    );
 
     // The correlation supplies the InputId. Use a fresh operation for the new placement.
     sent.mode = MessageDelivery::Auto;
@@ -550,6 +564,23 @@ async fn idle_claude_steer_is_not_submitted_and_the_same_input_can_prompt() {
     assert_eq!(peer_turn_requests(&wire), ["session/prompt"]);
     route.shutdown_queue().await;
     supervisor.shutdown().await.expect("shutdown");
+
+    let mut store = ProviderOperationStore::open(&root.path().join("operations.sqlite"))
+        .await
+        .expect("reopen authoritative operation store");
+    let refused = store
+        .inspect(&refused_operation)
+        .await
+        .expect("inspect idle refusal")
+        .expect("retained idle refusal");
+    assert_eq!(
+        refused.effect,
+        collaboration_protocol::ProviderOperationEffect::None
+    );
+    assert_eq!(
+        refused.dispatched_at_ms, None,
+        "idle refusal must never save a dispatch mark"
+    );
 }
 
 fn assert_no_active_turn(receipt: &collaboration_contracts::NativeDeliveryResult) {

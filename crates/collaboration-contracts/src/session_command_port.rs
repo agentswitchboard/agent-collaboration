@@ -40,8 +40,16 @@ pub struct SteerSessionCommand {
     pub target: SessionRef,
     pub input_id: session_event_model::InputId,
     pub expected_turn_id: String,
+    pub intent: SessionSteerIntent,
     pub submission: session_event_model::ProviderSubmission,
     pub actor: Identity,
+}
+
+/// Whether the caller requested a steer or let automatic placement choose it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SessionSteerIntent {
+    Named,
+    Auto,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -122,6 +130,8 @@ pub enum CommandFailure {
     Busy,
     #[error("session has no active turn")]
     NoActiveTurn,
+    #[error("expected active turn id `{expected}` but found `{actual}`")]
+    SteerTurnMismatch { expected: String, actual: String },
     #[error("session settings are unresolved")]
     SettingsUnresolved,
     #[error("setting context changed")]

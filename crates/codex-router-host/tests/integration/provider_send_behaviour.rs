@@ -650,8 +650,7 @@ async fn mail_and_cli_outcomes_for_each_session_state() {
     }
 }
 
-/// T2 uses a normal prompt when idle. An existing turn on an agent without
-/// steering refuses the explicit steer without adding any wire input.
+/// T2 refuses an explicit steer while idle or when the running agent cannot steer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_explicit_steer_refuses_idle_and_an_unsupported_active_turn() {
     let staging = tempfile::tempdir().expect("receipt folder");
@@ -754,9 +753,13 @@ async fn an_explicit_steer_refuses_idle_and_an_unsupported_active_turn() {
 async fn named_steer_reports_no_active_turn_through_the_prompt_api() {
     use crate::provider_acp_steering_route::peer_turn_requests;
     use collaboration_protocol::{ConversationOperationFailureKind, ProviderOperationEffect};
+    use tokio::io::AsyncReadExt as _;
 
     let receipts = tempfile::tempdir().expect("provider receipts");
     let wire = receipts.path().join("wire.jsonl");
+    let foreground_socket = receipts.path().join("foreground.sock");
+    let foreground_listener =
+        tokio::net::UnixListener::bind(&foreground_socket).expect("foreground witness socket");
     let launch = ExternalProviderLaunchBinding::claude(
         node_test_fixture::node_executable().expect("Node"),
         vec![
@@ -764,7 +767,7 @@ async fn named_steer_reports_no_active_turn_through_the_prompt_api() {
                 .display()
                 .to_string(),
             "prompt-required".into(),
-            "--wire-only".into(),
+            foreground_socket.display().to_string(),
             wire.display().to_string(),
         ],
     )
@@ -784,28 +787,43 @@ async fn named_steer_reports_no_active_turn_through_the_prompt_api() {
         )
         .await;
     assert!(peer_turn_requests(&wire).is_empty());
-    let _foreground = host
-        .prompt(
+    let ended = {
+        let foreground = host.prompt_answer(
             &target,
             &actor,
             OperationId::generate(),
             "held foreground",
-            SHORT_WAIT,
-        )
-        .await;
-    while peer_turn_requests(&wire).is_empty() {
-        tokio::task::yield_now().await;
-    }
-    let ended = host
-        .prompt_answer(
-            &target,
-            &actor,
-            OperationId::generate(),
-            "\"follow-up\" · router://fixture",
-            SHORT_WAIT,
-            MessageDelivery::Steer,
-        )
-        .await;
+            Duration::from_secs(30),
+            MessageDelivery::Auto,
+        );
+        tokio::pin!(foreground);
+        let (mut active, _) = tokio::select! {
+            event = foreground_listener.accept() => event.expect("peer received the foreground prompt"),
+            answer = &mut foreground => panic!("foreground answered before reaching the peer: {answer:?}"),
+        };
+        let mut notice = [0; 6];
+        active
+            .read_exact(&mut notice)
+            .await
+            .expect("foreground take receipt");
+        assert_eq!(&notice, b"active");
+        let ended = host
+            .prompt_answer(
+                &target,
+                &actor,
+                OperationId::generate(),
+                "\"follow-up\" · router://fixture",
+                SHORT_WAIT,
+                MessageDelivery::Steer,
+            )
+            .await;
+        let foreground = foreground.await.expect("foreground completion response");
+        assert!(matches!(
+            foreground,
+            ConversationOperationResult::Completed { .. }
+        ));
+        ended
+    };
     host.runtime.shutdown().await.expect("Host shutdown");
 
     for answer in [idle, ended] {

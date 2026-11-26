@@ -29,6 +29,8 @@ use switchboard_session_store::ProviderSessionRecord;
 
 #[path = "provider_session_command_port_acp_failure_test.rs"]
 mod acp_failures;
+#[path = "provider_session_command_port_literal_steer_test.rs"]
+mod literal_steer;
 
 const SERVICE_ID: &str = "0ff962c5-7fa3-4c18-a5ca-1bbe8db09e89";
 const SCRIPTED_AGENT: &str = concat!(
@@ -58,7 +60,7 @@ impl LiveSessionOwnershipCheck for NoLivePeer {
 struct CommandPortRig {
     _root: tempfile::TempDir,
     receipt: PathBuf,
-    port: HostSessionCommandPort,
+    port: Arc<HostSessionCommandPort>,
     hub: Arc<ProviderSessionEventHub>,
     supervisor: Arc<ExternalProviderSupervisor>,
     board_target: BoardSessionRef,
@@ -130,6 +132,7 @@ enum AgentFixture {
         with_release_file: bool,
     },
     ScriptedSteering,
+    LiteralSteering(literal_steer::PeerSteerBehavior),
 }
 
 fn scripted_steering_launch(receipt: &std::path::Path) -> ExternalProviderLaunch {
@@ -175,7 +178,9 @@ async fn command_port_rig(fixture: AgentFixture) -> CommandPortRig {
             .expect("board endpoint");
     let behavior: Arc<dyn acp_client_runtime::ProviderBehavior> = match fixture {
         AgentFixture::Behavior { .. } => Arc::new(acp_provider_adapters::CursorAcpBehavior),
-        AgentFixture::ScriptedSteering => Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        AgentFixture::ScriptedSteering | AgentFixture::LiteralSteering(_) => {
+            Arc::new(acp_provider_adapters::StandardAcpBehavior)
+        }
     };
     let launch = match fixture {
         AgentFixture::Behavior {
@@ -199,6 +204,7 @@ async fn command_port_rig(fixture: AgentFixture) -> CommandPortRig {
             }
         }
         AgentFixture::ScriptedSteering => scripted_steering_launch(&receipt),
+        AgentFixture::LiteralSteering(behavior) => literal_steer::launch_peer(&receipt, behavior),
     };
     let runtime = ExternalProviderRuntime::initialize_with_mcp_http_and_hub(
         launch,
@@ -256,13 +262,13 @@ async fn command_port_rig(fixture: AgentFixture) -> CommandPortRig {
         Arc::new(NoLivePeer),
         clock.clone(),
     ));
-    let port = HostSessionCommandPort::new(
+    let port = Arc::new(HostSessionCommandPort::new(
         Arc::clone(&supervisor),
         delivery,
         Arc::clone(&hub),
         store,
         clock,
-    );
+    ));
     let board_target: BoardSessionRef =
         serde_json::from_value(serde_json::to_value(&target).expect("target JSON"))
             .expect("board target");
@@ -627,6 +633,7 @@ async fn node_tap_steer_command_reaches_the_acp_client_for_the_active_turn() {
         target: rig.board_target.clone(),
         input_id: InputId::new("n4-tap-steer-input").expect("input id"),
         expected_turn_id: started.turn_id.clone(),
+        intent: collaboration_contracts::SessionSteerIntent::Named,
         submission: ProviderSubmission::plain(vec![
             PromptContent::text("follow-up".into()).expect("text"),
         ]),
@@ -672,6 +679,7 @@ async fn node_tap_steer_for_a_stale_turn_is_refused_before_the_acp_client() {
         target: rig.board_target.clone(),
         input_id: InputId::new("n4-tap-stale-input").expect("input id"),
         expected_turn_id: "no-such-turn".into(),
+        intent: collaboration_contracts::SessionSteerIntent::Named,
         submission: ProviderSubmission::plain(vec![
             PromptContent::text("late".into()).expect("text"),
         ]),
@@ -679,7 +687,7 @@ async fn node_tap_steer_for_a_stale_turn_is_refused_before_the_acp_client() {
     };
     consumed_command(&mut case, "Steer", &command);
     let refusal = rig.port.steer(command).await;
-    assert!(matches!(refusal, Err(CommandFailure::Busy)));
+    assert!(matches!(refusal, Err(CommandFailure::NoActiveTurn)));
     record_agent_wire(&mut case, &rig);
     case.finish(&CatalogRowExpectation::new()).assert_settled();
     rig.supervisor

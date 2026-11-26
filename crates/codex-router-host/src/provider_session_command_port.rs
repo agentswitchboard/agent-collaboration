@@ -19,6 +19,7 @@ use collaboration_contracts::QueuedSessionInput;
 use collaboration_contracts::SessionCommandPort;
 use collaboration_contracts::SessionEventAttachment;
 use collaboration_contracts::SessionEventHub;
+use collaboration_contracts::SessionSteerIntent;
 use collaboration_contracts::SessionSteerOutcome;
 use collaboration_contracts::SessionTargetCommand;
 use collaboration_contracts::SessionTurnHandle;
@@ -330,21 +331,35 @@ impl SessionCommandPort for HostSessionCommandPort {
                 .attach(command.target.clone())
                 .await
                 .map_err(|_| CommandFailure::SessionNotFound)?;
-            if active_turn_id(&attachment) != Some(command.expected_turn_id.as_str()) {
-                return Err(CommandFailure::Busy);
+            let active = active_turn_id(&attachment);
+            if active != Some(command.expected_turn_id.as_str()) {
+                return Err(steer_target_failure(
+                    command.intent,
+                    &command.expected_turn_id,
+                    active,
+                ));
             }
             let expected_turn = uuid::Uuid::parse_str(&command.expected_turn_id)
                 .map(provider_session_machines::session_turn_machine::TurnId)
                 .map_err(|_| CommandFailure::Busy)?;
             let target = protocol_session(&command.target)?;
             let actor = provider_actor(&command.actor)?;
+            let origin = match command.intent {
+                SessionSteerIntent::Named => {
+                    provider_session_machines::session_owner::SteerOrigin::Named
+                }
+                SessionSteerIntent::Auto => {
+                    provider_session_machines::session_owner::SteerOrigin::Auto
+                }
+            };
             let outcome = self
                 .delivery
                 .place_steer(
                     target.clone(),
                     actor,
                     command.input_id.clone(),
-                    Some(expected_turn),
+                    expected_turn,
+                    origin,
                     command.submission,
                 )
                 .await
@@ -388,7 +403,28 @@ impl SessionCommandPort for HostSessionCommandPort {
                 }
                 InputAcceptance::Unsent {
                     reason: Some(provider_session_machines::session_owner::RevokeReason::TurnEnded),
-                } => Err(CommandFailure::Busy),
+                } => {
+                    if command.intent == SessionSteerIntent::Auto {
+                        return Err(CommandFailure::Busy);
+                    }
+                    let actual = self.supervisor.owner_session_snapshot(&target).and_then(|snapshot| {
+                        match snapshot.turn {
+                            provider_session_machines::session_turn_machine::SessionTurn::Running { turn } => Some(turn.0.to_string()),
+                            _ => None,
+                        }
+                    });
+                    Err(actual.as_deref().map_or(CommandFailure::Busy, |actual| {
+                        steer_target_failure(
+                            command.intent,
+                            &command.expected_turn_id,
+                            Some(actual),
+                        )
+                    }))
+                }
+                InputAcceptance::Unsent {
+                    reason:
+                        Some(provider_session_machines::session_owner::RevokeReason::NoActiveTurn),
+                } => Ok(SessionSteerOutcome::PromptRequired),
                 InputAcceptance::Unsent { reason } => Ok(SessionSteerOutcome::Failed {
                     reason: reason
                         .map_or_else(
@@ -622,6 +658,23 @@ fn map_prompt_failure(error: ProviderPromptContentsError) -> CommandFailure {
             CommandFailure::RestoreFailed { reason }
         }
         ProviderPromptContentsError::Operation(error) => map_operation_failure(*error),
+    }
+}
+
+fn steer_target_failure(
+    intent: SessionSteerIntent,
+    expected: &str,
+    active: Option<&str>,
+) -> CommandFailure {
+    match (intent, active) {
+        (SessionSteerIntent::Named, None) => CommandFailure::NoActiveTurn,
+        (SessionSteerIntent::Named, Some(actual)) if actual != expected => {
+            CommandFailure::SteerTurnMismatch {
+                expected: expected.into(),
+                actual: actual.into(),
+            }
+        }
+        _ => CommandFailure::Busy,
     }
 }
 

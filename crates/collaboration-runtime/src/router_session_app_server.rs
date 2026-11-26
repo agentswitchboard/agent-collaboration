@@ -133,6 +133,10 @@ enum ThreadMethodError {
     UnavailableThreadOrdering { reason: &'static str },
     #[error("provider session is busy")]
     Busy,
+    #[error("no active turn to steer")]
+    NoActiveTurnToSteer,
+    #[error("expected active turn id `{expected}` but found `{actual}`")]
+    SteerTurnMismatch { expected: String, actual: String },
     #[error("invalid thread parameters")]
     InvalidParams,
     #[error("setting context changed")]

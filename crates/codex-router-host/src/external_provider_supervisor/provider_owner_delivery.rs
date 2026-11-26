@@ -32,7 +32,10 @@ enum DeliveryAdmission {
     #[cfg(test)]
     Direct,
     Requested(MessageDelivery),
-    SteerExisting(TurnId),
+    SteerExisting {
+        turn: TurnId,
+        origin: provider_session_machines::session_owner::SteerOrigin,
+    },
     QueueOnRun(SessionQueuePlan),
     Warm(WarmRun),
     Notice(NoticeRun),
@@ -63,6 +66,7 @@ impl ExternalProviderSupervisor {
         clippy::result_large_err,
         reason = "Retains a typed conversation failure for delivery."
     )]
+    #[cfg(test)]
     pub(crate) async fn submit_owned_delivery(
         &self,
         request: ProviderPromptContentsRequest,
@@ -78,10 +82,15 @@ impl ExternalProviderSupervisor {
         &self,
         request: ProviderPromptContentsRequest,
         turn: TurnId,
+        origin: provider_session_machines::session_owner::SteerOrigin,
     ) -> Result<crate::session_owner_calls::InputAcceptance, super::ConversationOperationFailure>
     {
-        self.submit_owner_delivery_request(request, DeliveryAdmission::SteerExisting(turn), None)
-            .await
+        self.submit_owner_delivery_request(
+            request,
+            DeliveryAdmission::SteerExisting { turn, origin },
+            None,
+        )
+        .await
     }
 
     #[expect(
@@ -274,7 +283,7 @@ impl ExternalProviderSupervisor {
         let class = match admission {
             DeliveryAdmission::Requested(_)
             | DeliveryAdmission::QueueOnRun(_)
-            | DeliveryAdmission::SteerExisting(_) => AdmissionClass::OwnerPlaced,
+            | DeliveryAdmission::SteerExisting { .. } => AdmissionClass::OwnerPlaced,
             DeliveryAdmission::Warm(_) => AdmissionClass::Independent,
             DeliveryAdmission::Notice(run) => AdmissionClass::Notice {
                 placement: match run.placement {
@@ -317,7 +326,7 @@ impl ExternalProviderSupervisor {
             .is_some_and(|report| report.steer);
         let turn = match (admission, snapshot.turn) {
             (
-                DeliveryAdmission::SteerExisting(turn)
+                DeliveryAdmission::SteerExisting { turn, .. }
                 | DeliveryAdmission::Notice(NoticeRun {
                     placement: NoticePlacement::Steer(turn),
                     ..
@@ -352,10 +361,10 @@ impl ExternalProviderSupervisor {
                 supported: steering_supported,
                 origin: SteerOrigin::Named,
             },
-            DeliveryAdmission::SteerExisting(_) => SessionOwnerCommand::SteerExisting {
+            DeliveryAdmission::SteerExisting { origin, .. } => SessionOwnerCommand::SteerExisting {
                 input: input.clone(),
                 supported: steering_supported,
-                origin: SteerOrigin::Auto,
+                origin,
             },
             #[cfg(test)]
             DeliveryAdmission::Direct => SessionOwnerCommand::Prompt {
@@ -498,7 +507,7 @@ impl ExternalProviderSupervisor {
                     let refusal = if refusal.kind == ConversationOperationFailureKind::CannotSteer
                         && matches!(
                             admission,
-                            DeliveryAdmission::SteerExisting(_)
+                            DeliveryAdmission::SteerExisting { .. }
                                 | DeliveryAdmission::Requested(MessageDelivery::Steer)
                                 | DeliveryAdmission::Notice(NoticeRun { placement: NoticePlacement::Steer(_), .. })
                         ) {

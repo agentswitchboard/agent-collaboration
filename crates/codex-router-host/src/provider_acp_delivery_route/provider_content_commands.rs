@@ -196,7 +196,8 @@ impl ProviderAcpDeliveryRoute {
         target: SessionRef,
         actor: ProviderIdentity,
         input_id: session_event_model::InputId,
-        expected_turn: Option<provider_session_machines::session_turn_machine::TurnId>,
+        expected_turn: provider_session_machines::session_turn_machine::TurnId,
+        origin: provider_session_machines::session_owner::SteerOrigin,
         contents: session_event_model::ProviderSubmission,
     ) -> Result<InputAcceptance, ProviderSteerContentsError> {
         if contents.content.is_empty() {
@@ -250,13 +251,10 @@ impl ProviderAcpDeliveryRoute {
             input: acp_client_runtime::ProviderTurnInput::Prompt(contents),
             busy: crate::external_provider_supervisor::PromptBusyPolicy::Send(mode),
         };
-        let result = if let Some(turn) = expected_turn {
-            self.supervisor
-                .submit_existing_turn_steer(request, turn)
-                .await
-        } else {
-            self.supervisor.submit_owned_delivery(request, mode).await
-        };
+        let result = self
+            .supervisor
+            .submit_existing_turn_steer(request, expected_turn, origin)
+            .await;
         result.map_err(|failure| ProviderSteerContentsError::Operation(Box::new(failure)))
     }
     pub async fn queue_contents(
