@@ -11,7 +11,7 @@ use central_link_client::{
     AdmittedConnection, ClientEvent, ConnectionAttempt, LinkLaneEvent, LinkLocalFault,
     RegisteredConnection, UntouchedCommand, ValidatedDeliveryOffer, link_frame_answer_deadline,
 };
-use central_link_protocol::CorrelationId;
+use central_link_protocol::{CorrelationId, MachineLinkCloseCode};
 use router_clock::{ClockInstant, RuntimeClock};
 use state_machine_core::{StateMachine, StateMachineResult};
 use tokio::sync::{mpsc, oneshot, watch};
@@ -20,6 +20,7 @@ use crate::{
     admitted_lane_policy::{
         AdmittedLanePolicy, LaneEffect, LaneInput, LaneResult, LaneState, SocketReply,
     },
+    central_call_lane::{CallEnding, CentralCallHandle},
     link_lane::{CommandIntake, LaneRequest, LinkLaneOwner},
     wire_write_fence::WireWriteFence,
 };
@@ -42,6 +43,9 @@ pub(super) struct AdmittedSocketLane<'fence> {
     state: LaneState,
     admitted: watch::Sender<Option<AdmittedConnection>>,
     registered: watch::Sender<Option<RegisteredConnection>>,
+    registration_correlation: Option<CorrelationId>,
+    pub(super) calls: CentralCallHandle,
+    call_ending: CallEnding,
     intake: Arc<CommandIntake>,
     events: mpsc::Sender<LinkLaneEvent>,
     pending_admission: Option<AdmittedConnection>,
@@ -73,6 +77,9 @@ impl<'fence> AdmittedSocketLane<'fence> {
             state: LaneState::WaitingForAdmission,
             admitted: owner.admitted.clone(),
             registered: owner.registered.clone(),
+            registration_correlation: None,
+            calls: owner.calls.clone(),
+            call_ending: CallEnding::DriverDropped,
             intake: owner.intake.clone(),
             events: owner.events.clone(),
             pending_admission: None,
@@ -227,8 +234,36 @@ impl<'fence> AdmittedSocketLane<'fence> {
             .is_some_and(|registered| &registered.admitted().connection == attempt)
     }
 
-    pub(super) fn publish_registered(&self, registered: RegisteredConnection) {
-        self.registered.send_replace(Some(registered));
+    pub(super) fn publish_registered(
+        &mut self,
+        registered: RegisteredConnection,
+        correlation: &CorrelationId,
+    ) {
+        self.registration_correlation = Some(correlation.clone());
+        let connection = registered.admitted().connection.clone();
+        self.calls.registered(connection, || {
+            self.registered.send_replace(Some(registered));
+        });
+    }
+
+    pub(super) fn registration_answered_as(&self, correlation: &CorrelationId) -> bool {
+        self.registration_correlation.as_ref() == Some(correlation)
+    }
+
+    pub(super) fn observed_carrier_close(&mut self, code: Option<MachineLinkCloseCode>) {
+        self.call_ending = CallEnding::CarrierClosed(code);
+    }
+
+    pub(super) fn finish_call_attempt(&mut self, ending: Option<CallEnding>) {
+        self.call_ending = if let Some(ending) = ending {
+            ending
+        } else if self.local_fault.is_some() {
+            CallEnding::DeliveryConsumerStalled
+        } else if self.call_ending == CallEnding::DriverDropped {
+            CallEnding::TransportLost
+        } else {
+            self.call_ending
+        };
     }
 
     pub(super) fn reply_deadline(&self) -> Option<ClockInstant> {
@@ -376,8 +411,10 @@ impl Drop for AdmittedSocketLane<'_> {
             if self.write_fence.crossed() {
                 self.start_write();
             }
-            self.registered
-                .send_if_modified(|current| current.take().is_some());
+            self.calls.retire(&connection, self.call_ending, || {
+                self.registered
+                    .send_if_modified(|current| current.take().is_some());
+            });
             self.admitted.send_replace(None);
             self.apply(LaneInput::Close {
                 connection: connection.clone(),

@@ -11,6 +11,8 @@ use state_machine_core::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CallEnding {
     Deadline,
+    InvalidFrame,
+    WriterWindowElapsed,
     CarrierClosed(Option<MachineLinkCloseCode>),
     TransportLost,
     EnrollmentEnded(EnrollmentEnd),
@@ -126,6 +128,9 @@ impl StateMachine for CallPolicy {
             }
             (Phase::Written, Event::End(cause)) => Settlement::AnswerLost(cause),
             (Phase::Writing, Event::WriteEnded { exposure, cause }) => match exposure {
+                FrameExposure::Unwritten if cause == CallEnding::InvalidFrame => {
+                    Settlement::NotReached(CallNotReached::InvalidFrame)
+                }
                 FrameExposure::Unwritten => Settlement::NotReached(CallNotReached::Ended(cause)),
                 FrameExposure::PossiblyWritten => Settlement::AnswerLost(cause),
             },

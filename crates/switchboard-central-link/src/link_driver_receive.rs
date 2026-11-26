@@ -27,7 +27,7 @@ pub(super) enum SocketReceive {
     Close,
     AnnounceCapabilities(AdmittedConnection),
     RefuseCall(CorrelationId),
-    RegistrationReply {
+    CentralReply {
         attempt: ConnectionAttempt,
         correlation_id: CorrelationId,
         result: Box<TypedCallResult<CentralCallReply>>,
@@ -79,16 +79,39 @@ where
         match received {
             SocketReceive::Continue => Ok(true),
             SocketReceive::Close => Ok(false),
-            SocketReceive::RegistrationReply {
+            SocketReceive::CentralReply {
                 attempt,
                 correlation_id,
                 result,
-            } => Ok(self.settle_registration_reply(
-                &attempt,
-                &correlation_id,
-                &result,
-                admitted_lane,
-            )),
+            } => {
+                if !admitted_lane.is_registered(&attempt)
+                    || admitted_lane.registration_answered_as(&correlation_id)
+                    || matches!(
+                        result.as_ref(),
+                        TypedCallResult::Answered {
+                            reply: CentralCallReply::RegisterRun(_)
+                        }
+                    )
+                {
+                    return Ok(self.settle_registration_reply(
+                        &attempt,
+                        &correlation_id,
+                        &result,
+                        admitted_lane,
+                    ));
+                }
+                let now = self.clock.monotonic_now();
+                if self
+                    .state
+                    .renewal_deadline()
+                    .is_some_and(|deadline| now < deadline)
+                {
+                    admitted_lane
+                        .calls
+                        .answer(&attempt, &correlation_id, *result, now);
+                }
+                Ok(true)
+            }
             SocketReceive::AnnounceCapabilities(admission) => {
                 let frame = DataFrame::MacCapabilities(MacCapabilities {
                     handled_calls: HandledMacCalls::default(),
@@ -285,7 +308,7 @@ where
             ClientEvent::CentralCallReply {
                 correlation_id,
                 result,
-            } if admitted_lane.is_admitted() => SocketReceive::RegistrationReply {
+            } if admitted_lane.is_admitted() => SocketReceive::CentralReply {
                 attempt: attempt.clone(),
                 correlation_id,
                 result,

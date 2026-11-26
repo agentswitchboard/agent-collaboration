@@ -2,7 +2,8 @@
 
 mod admitted_lane_policy;
 mod admitted_lane_socket;
-pub mod central_call_policy;
+pub mod central_call_lane;
+mod central_call_policy;
 mod lane_writer;
 pub mod lease_source;
 pub mod link_lane;

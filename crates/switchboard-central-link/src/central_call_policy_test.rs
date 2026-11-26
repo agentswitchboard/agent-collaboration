@@ -93,10 +93,6 @@ fn writing_cannot_end_without_evidence_from_its_own_writer() {
     ));
 }
 
-#[expect(
-    clippy::panic,
-    reason = "A new link client must offer an attempt in this fixture."
-)]
 fn attempt(clock: Arc<ManualClock>) -> ConnectionAttempt {
     let machine = "019f0000-0000-7000-8000-000000000002".parse().unwrap();
     let mut client = LinkClient::new(machine, clock);

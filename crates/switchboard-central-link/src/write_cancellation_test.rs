@@ -38,6 +38,9 @@ use crate::{
     link_lane::link_lane_channel,
 };
 
+#[path = "work_call_cancellation_test.rs"]
+mod work_calls;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum WriteCheckpoint {
     Queued,

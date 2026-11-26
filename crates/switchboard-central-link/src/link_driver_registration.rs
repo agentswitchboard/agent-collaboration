@@ -31,7 +31,7 @@ where
         attempt: &ConnectionAttempt,
         correlation_id: &CorrelationId,
         result: &TypedCallResult<CentralCallReply>,
-        admitted_lane: &AdmittedSocketLane<'_>,
+        admitted_lane: &mut AdmittedSocketLane<'_>,
     ) -> bool {
         let now = self.clock.monotonic_now();
         if self
@@ -50,7 +50,7 @@ where
                 if self.client.ready(attempt).is_err() {
                     return false;
                 }
-                admitted_lane.publish_registered(*registered);
+                admitted_lane.publish_registered(*registered, correlation_id);
             }
             ReplyAction::CloseSocket => return false,
         }
