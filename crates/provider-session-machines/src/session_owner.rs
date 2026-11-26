@@ -9,7 +9,9 @@ pub use owner_ports::*;
 use crate::ProviderSettingKind;
 use crate::session_cell_machine::{SessionCell, SessionCellRefusal};
 use crate::session_lifecycle_machine::{CloseAttempt, LoadAttempt, RestoreVia, SessionLifecycle};
-use crate::session_setting_machine::{SettingApplication, SettingValueId};
+#[cfg(test)]
+use crate::session_setting_machine::SettingApplication;
+use crate::session_setting_machine::SettingValueId;
 use crate::session_turn_machine::{SessionTurn, TurnId};
 use crate::tool_ownership::{ToolObservation, ToolOwnership};
 use crate::{ProviderSettingsCatalog, SessionGeneration};
@@ -17,7 +19,6 @@ use session_event_model::{InputId, TurnOutcome};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-pub use switchboard_harness_contracts::RunAttempt;
 pub use switchboard_harness_contracts::{
     ApprovalContext, ApprovalPortOutcome, Decision, ExactScope, ExactTurn, OwnerEvidence,
     OwnerInputEvidence, RequestCancellation, RequestCancellationSignal, RequestFuture,
@@ -25,8 +26,8 @@ pub use switchboard_harness_contracts::{
 };
 pub use switchboard_harness_contracts::{
     CancelDrainStart, CancelDrainWait, CancelReservationRefusal, HarnessBinding, RefusedWorkMove,
-    ReplyAdmission, ReservedWorkReply, SettingOffer, SteerIdlePolicy, TakeBackRefusal,
-    WorkOfferRefusal, WriterState,
+    ReplyAdmission, ReservedWorkReply, RestoreModeOutcome, RestoredMode, RunAttempt, SettingOffer,
+    SteerIdlePolicy, TakeBackRefusal, WorkOfferRefusal, WriterState,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -148,34 +149,8 @@ pub struct LastLiveTurn {
     pub observed_at_ms: i64,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum RestoredMode {
-    Observed,
-    NotOffered {
-        current: Option<SettingValueId>,
-    },
-    Reapply {
-        application: SettingApplication,
-        value: SettingValueId,
-    },
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RestoreLoadReadback {
-    pub catalogue: Arc<ProviderSettingsCatalog>,
-    pub router_auto_requested: bool,
-    pub mode: RestoredMode,
-    pub fast_on: Option<SettingApplication>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum RestoreModeOutcome {
-    Confirmed(SettingValueId),
-    Refused { current: Option<SettingValueId> },
-    ReportedOther(SettingValueId),
-    FellBack(SettingValueId),
-    Unconfirmed,
-}
+pub type RestoreLoadReadback =
+    switchboard_harness_contracts::RestoreLoadReadback<ProviderSettingsCatalog>;
 
 pub use switchboard_harness_contracts::SettingObservation;
 

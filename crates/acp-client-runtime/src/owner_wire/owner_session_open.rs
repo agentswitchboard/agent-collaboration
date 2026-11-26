@@ -1,7 +1,7 @@
 //! Start SDK routing as an ordered connection effect.
 
 use crate::{
-    ExternalProviderRuntimeError, ProviderBehavior, ProviderCapabilityReport, SessionWorkRoots,
+    ExternalProviderRuntimeError, ProviderBehavior, ProviderCapabilityReport,
     owner_session_stream::{OwnerStreamTarget, ProjectionBuffer},
     provider_item_projection::ProviderItemProjection,
 };
@@ -12,16 +12,11 @@ use agent_client_protocol::{ActiveSession, Agent, ConnectionTo, Dispatch};
 use futures_util::FutureExt as _;
 use provider_session_machines::session_lifecycle_machine::{LoadAttempt, RestoreVia};
 use provider_session_machines::{ModelReasoningMetadata, ProviderSettingsCatalog};
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
-#[derive(Clone, Debug)]
-pub struct OwnerSessionOpenSetup {
-    pub cwd: PathBuf,
-    pub work_roots: SessionWorkRoots,
-    pub scratch_folder: Option<PathBuf>,
-}
+pub use switchboard_harness_contracts::OpenSetup as OwnerSessionOpenSetup;
 
 pub type OwnerSessionOpenReceipt =
     oneshot::Receiver<Result<OwnerOpenedSession, ExternalProviderRuntimeError>>;

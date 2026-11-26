@@ -1,11 +1,13 @@
 //! Provider discovery and the lifecycle of an owner's harness connections.
 
+use std::sync::Arc;
+
 use crate::{
-    AcceptedRunSettings, ActivationSetup, CatalogueFact, CatalogueRequest, CloseAttempt, CloseFact,
-    CreateAttempt, CreatedSetupFact, HarnessBinding, HarnessSessionId, Held, LifecycleEventPort,
-    LifecycleRefusal, LifecycleReply, OpenAttempt, OpenRequest, OpeningFact, OwnerAddress,
-    RunAttempt, RunRetirement, SessionGeneration, SettingAttempt, SettingFact, SetupReport, TurnId,
-    TurnMembership,
+    AcceptedRunSettings, ActivationSetup, ApprovalLeaseBinding, CatalogueFact, CatalogueRequest,
+    CloseAttempt, CloseFact, CreateAttempt, CreatedSetupFact, EventSendFuture, HarnessBinding,
+    HarnessSessionId, Held, LifecycleEventPort, LifecycleRefusal, LifecycleReply, OpenAttempt,
+    OpenRequest, OpeningFact, OwnerAddress, RunAttempt, RunRetirement, SessionGeneration,
+    SettingAttempt, SettingFact, SetupReport, TurnId, TurnMembership,
 };
 
 #[cfg(test)]
@@ -21,6 +23,7 @@ pub trait HarnessLifecyclePayloads: Send + Sync + 'static {
     type AuthStatus: Send + 'static;
     type Settings: Send + 'static;
     type SettingFailureReason: Send + 'static;
+    type ApprovalContext: Send + 'static;
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -69,18 +72,25 @@ pub trait HarnessCallbackIngress<Payloads: HarnessLifecyclePayloads>:
         session: &HarnessSessionId,
         view: Payloads::SkillView,
     ) -> CallbackAdmission;
+}
 
-    /// Report a connection-wide auth observation for this session's capability report.
-    fn report_connection_auth(
-        &self,
-        session: &HarnessSessionId,
-        status: Payloads::AuthStatus,
-    ) -> CallbackAdmission;
+/// Reports about the whole owner, addressed before it has a run or a session ID.
+pub trait HarnessOwnerEvents<AuthStatus>: Send + Sync + 'static {
+    /// Report that the owner lost its harness. The report can await ingress capacity.
+    fn report_harness_gone(&self) -> EventSendFuture<'_>;
+
+    /// Report connection auth for the owner's current capability report on the inline path.
+    fn report_connection_auth(&self, status: AuthStatus) -> CallbackAdmission;
 }
 
 pub trait HarnessProvider<Payloads: HarnessLifecyclePayloads>: Send + Sync + 'static {
     /// Create the owner's binding locally before any opening is offered.
-    fn bind(&self, owner: OwnerAddress) -> Box<dyn OwnerHarnessBinding<Payloads>>;
+    /// The caller binds `events` to this exact owner for the binding's lifetime.
+    fn bind(
+        &self,
+        owner: OwnerAddress,
+        events: Arc<dyn HarnessOwnerEvents<Payloads::AuthStatus>>,
+    ) -> Box<dyn OwnerHarnessBinding<Payloads>>;
 
     /// Return the offered catalogue for the named scope, without inventing choices.
     fn model_catalogue(
@@ -92,7 +102,7 @@ pub trait HarnessProvider<Payloads: HarnessLifecyclePayloads>: Send + Sync + 'st
 
 /// The owner holds one binding for lifecycle and work across all of its generations.
 pub trait OwnerHarnessBinding<Payloads: HarnessLifecyclePayloads>:
-    HarnessBinding + 'static
+    HarnessBinding + ApprovalLeaseBinding<Payloads::ApprovalContext> + 'static
 {
     /// Start one opening and keep its connection under the exact attempt. An immediate refusal
     /// means nothing was sent. Otherwise the opening settles through the reserved reply.
@@ -103,12 +113,7 @@ pub trait OwnerHarnessBinding<Payloads: HarnessLifecyclePayloads>:
         &mut self,
         request: OpenRequest,
         reply: LifecycleReply<OpeningFact>,
-        events: LifecycleEventPort<
-            Payloads::Event,
-            Payloads::SkillView,
-            Payloads::TurnOutcome,
-            Payloads::AuthStatus,
-        >,
+        events: LifecycleEventPort<Payloads::Event, Payloads::SkillView, Payloads::TurnOutcome>,
         retired: RunRetirement,
     ) -> Result<(), LifecycleRefusal>;
 
@@ -158,12 +163,7 @@ pub trait OwnerHarnessBinding<Payloads: HarnessLifecyclePayloads>:
         &self,
         setup: ActivationSetup,
         accepted: AcceptedRunSettings,
-        events: LifecycleEventPort<
-            Payloads::Event,
-            Payloads::SkillView,
-            Payloads::TurnOutcome,
-            Payloads::AuthStatus,
-        >,
+        events: LifecycleEventPort<Payloads::Event, Payloads::SkillView, Payloads::TurnOutcome>,
         retired: RunRetirement,
     );
 

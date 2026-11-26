@@ -73,28 +73,32 @@ impl OwnerTransition {
                             application: failed.application,
                         },
                     })?;
-                    let event = if failed.unknown {
-                        use crate::session_owner::{
-                            ObservationCause, ObservedSetting, SettingEvidence,
-                        };
-                        let observation = self.next.ports.observed.entry(failed.kind).or_insert(
-                            SettingEvidence {
-                                value: ObservedSetting::Unknown,
-                                cause: None,
-                            },
-                        );
-                        if let ObservedSetting::Confirmed(value) = &observation.value {
-                            observation.value = ObservedSetting::LastConfirmed(value.clone());
+                    let event = match failed.observation {
+                        crate::session_owner::InitialSettingObservation::Unknown => {
+                            use crate::session_owner::{
+                                ObservationCause, ObservedSetting, SettingEvidence,
+                            };
+                            let observation =
+                                self.next.ports.observed.entry(failed.kind).or_insert(
+                                    SettingEvidence {
+                                        value: ObservedSetting::Unknown,
+                                        cause: None,
+                                    },
+                                );
+                            if let ObservedSetting::Confirmed(value) = &observation.value {
+                                observation.value = ObservedSetting::LastConfirmed(value.clone());
+                            }
+                            observation.cause = Some(ObservationCause::Unconfirmed);
+                            SessionSettingEvent::OutcomeUnknown {
+                                application: failed.application,
+                            }
                         }
-                        observation.cause = Some(ObservationCause::Unconfirmed);
-                        SessionSettingEvent::OutcomeUnknown {
+                        crate::session_owner::InitialSettingObservation::Known {
+                            confirmed_current,
+                        } => SessionSettingEvent::Failed {
                             application: failed.application,
-                        }
-                    } else {
-                        SessionSettingEvent::Failed {
-                            application: failed.application,
-                            confirmed_current: failed.confirmed_current,
-                        }
+                            confirmed_current,
+                        },
                     };
                     self.cell_move(SessionCellEvent::Setting {
                         kind: failed.kind,

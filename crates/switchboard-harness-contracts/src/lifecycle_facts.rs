@@ -10,12 +10,11 @@ use crate::{
 
 pub type LifecycleReply<Fact> = Box<dyn ReservedReply<Fact>>;
 
-/// The receiver binds this port to the exact owner. Each generation-scoped observation
-/// identifies its own run within that owner.
-pub type LifecycleEventPort<Event, SkillView, TurnOutcome, AuthStatus> =
-    Arc<dyn EventPort<LifecycleFact<Event, SkillView, TurnOutcome, AuthStatus>>>;
+/// The receiver binds this port to an exact opening attempt or activated run.
+pub type LifecycleEventPort<Event, SkillView, TurnOutcome> =
+    Arc<dyn EventPort<LifecycleFact<Event, SkillView, TurnOutcome>>>;
 
-pub enum LifecycleFact<Event, SkillView, TurnOutcome, AuthStatus> {
+pub enum LifecycleFact<Event, SkillView, TurnOutcome> {
     /// Complete load history in ingress order. Empty history is valid. Unavailable
     /// replay settles the open as a failure instead of sending this fact.
     Replay {
@@ -44,11 +43,6 @@ pub enum LifecycleFact<Event, SkillView, TurnOutcome, AuthStatus> {
         run: SessionGeneration,
         turn: TurnId,
     },
-    /// The connection supplies its observed auth status. The controller applies it only
-    /// to its current live run's known capability report.
-    ConnectionAuthChanged { status: AuthStatus },
-    /// The whole owner lost its harness, even if it had no live generation yet.
-    HarnessGone,
     /// This reader can no longer observe its run. The harness may still be alive.
     RunObservationFailed { run: SessionGeneration },
 }

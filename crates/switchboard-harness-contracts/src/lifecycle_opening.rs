@@ -37,19 +37,35 @@ pub struct RequestedProviderSettings {
     pub fast: FastRequest,
 }
 
+impl RequestedProviderSettings {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.mode.is_none()
+            && self.model.is_none()
+            && self.effort.is_none()
+            && self.fast == FastRequest::Leave
+    }
+}
+
+/// What a request asks of the agent's fast option. The Router can turn it off.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum FastRequest {
+    /// Leave the current value alone.
     #[default]
     Leave,
+    /// The create default. Turn fast off when the agent offers the option.
     OffIfOffered,
+    /// Explicit fast off. A harness without the option refuses the setting.
     Off,
 }
 
-/// The harness installs the caller's folder grant according to its own capabilities.
+/// The folders a Router-started session in auto works in without asking,
+/// beyond its working folder (D1 R18).
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SessionWorkRoots {
     pub roots: Vec<PathBuf>,
     pub ask_outside_command: Option<String>,
+    /// The session starts in Router auto and requires the boundary these roots define.
     pub router_auto: bool,
 }
 
@@ -87,18 +103,25 @@ pub enum ActivationSetup {
 
 pub enum RestoredOpening {
     /// The owner accepted the complete replay before the harness published this reply.
-    Loaded { readback: RestoreLoadReadback },
+    Loaded {
+        readback: RestoreLoadReadback,
+        accepted_mode_fallback: Option<SettingValueId>,
+    },
     /// Resume provides readback without making a claim about replay.
-    Resumed { readback: RestoreLoadReadback },
+    Resumed {
+        readback: RestoreLoadReadback,
+        accepted_mode_fallback: Option<SettingValueId>,
+    },
 }
 
 /// The same projection used to decide restore preparation. The catalogue crosses as data.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RestoreLoadReadback {
-    pub catalogue: Arc<ProviderSettingsCatalogRecord>,
+pub struct RestoreLoadReadback<Catalogue = ProviderSettingsCatalogRecord> {
+    pub catalogue: Arc<Catalogue>,
     pub router_auto_requested: bool,
     pub mode: RestoredMode,
-    pub fast_off: Option<SettingApplication>,
+    /// Fast was read back on. This identifies the application that puts it back to off.
+    pub fast_on: Option<SettingApplication>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -110,7 +133,6 @@ pub enum RestoredMode {
     Reapply {
         application: SettingApplication,
         value: SettingValueId,
-        accepted_fallback: Option<SettingValueId>,
     },
 }
 

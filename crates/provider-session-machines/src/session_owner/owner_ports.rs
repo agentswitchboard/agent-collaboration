@@ -6,7 +6,7 @@ use super::{
 };
 use crate::provider_settings_catalog::ProviderSettingsUpdate;
 use crate::session_lifecycle_machine::{CloseAttempt, LoadAttempt};
-use crate::session_setting_machine::{SettingApplication, SettingValueId};
+use crate::session_setting_machine::SettingValueId;
 use crate::{ProviderSettingKind, ProviderSettingsCatalog};
 use session_event_model::{
     CapabilityReport, SessionEvent, SessionItem, SessionSettings, SessionState, SkillView,
@@ -17,8 +17,9 @@ use std::time::Duration;
 use uuid::Uuid;
 
 pub use switchboard_harness_contracts::{
-    CancelDrainReport, ConnectionEpoch, DispatchResult, FastReadback, OwnerAddress,
-    OwnerIncarnation, ProviderWireFailure, ProviderWireFailureKind, SettingReadback,
+    CancelDrainReport, ConnectionEpoch, DispatchResult, FastReadback, InitialSettingFailure,
+    InitialSettingObservation, OwnerAddress, OwnerIncarnation, ProviderWireFailure,
+    ProviderWireFailureKind, SettingReadback,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -224,15 +225,6 @@ pub struct CreatedSessionFacts {
     pub mode_reason: Option<PermissionModeReason>,
     pub keep_fast_off: bool,
     pub failed_setting: Option<InitialSettingFailure>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct InitialSettingFailure {
-    pub kind: ProviderSettingKind,
-    pub attempted: SettingValueId,
-    pub application: SettingApplication,
-    pub unknown: bool,
-    pub confirmed_current: bool,
 }
 
 pub use switchboard_harness_contracts::PermissionModeReason;
@@ -493,11 +485,8 @@ pub enum PublicationFact {
     },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AcceptedRunSettings {
-    pub catalogue: Arc<ProviderSettingsCatalog>,
-    pub router_auto_requested: bool,
-}
+pub type AcceptedRunSettings =
+    switchboard_harness_contracts::AcceptedRunSettings<ProviderSettingsCatalog>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PublicationResult {

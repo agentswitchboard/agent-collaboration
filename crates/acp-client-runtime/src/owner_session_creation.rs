@@ -12,7 +12,10 @@ use crate::{
 use agent_client_protocol::{Agent, schema::v1::CloseSessionRequest};
 use provider_session_machines::{
     ProviderSettingKind,
-    session_owner::{CreatedSessionFacts, InitialSettingFailure, ObservedSetting, SettingEvidence},
+    session_owner::{
+        CreatedSessionFacts, InitialSettingFailure, InitialSettingObservation, ObservedSetting,
+        SettingEvidence,
+    },
     session_setting_machine::{SettingApplication, SettingValueId},
 };
 use router_clock::RuntimeClock;
@@ -69,28 +72,41 @@ impl OwnerOpenedSession {
         )
         .await;
         let failed_setting = failure.as_ref().map(|failure| {
-            let (kind, attempted, unknown, confirmed_current) = match failure {
-                SettingSetupFailure::Invalid { kind, value, .. } => (*kind, value, false, false),
+            let (kind, attempted, observation) = match failure {
+                SettingSetupFailure::Invalid { kind, value, .. } => (
+                    *kind,
+                    value,
+                    InitialSettingObservation::Known {
+                        confirmed_current: false,
+                    },
+                ),
                 SettingSetupFailure::Agent {
                     kind,
                     value,
                     confirmed_current,
                     ..
-                } => (*kind, value, false, *confirmed_current),
-                SettingSetupFailure::Uncertain { kind, value, .. } => (*kind, value, true, false),
+                } => (
+                    *kind,
+                    value,
+                    InitialSettingObservation::Known {
+                        confirmed_current: *confirmed_current,
+                    },
+                ),
+                SettingSetupFailure::Uncertain { kind, value, .. } => {
+                    (*kind, value, InitialSettingObservation::Unknown)
+                }
             };
             InitialSettingFailure {
                 kind,
                 attempted: SettingValueId(attempted.clone()),
                 application: SettingApplication(Uuid::now_v7()),
-                unknown,
-                confirmed_current,
+                observation,
             }
         });
-        if failed_setting
-            .as_ref()
-            .is_some_and(|failure| failure.kind == ProviderSettingKind::Mode && failure.unknown)
-        {
+        if failed_setting.as_ref().is_some_and(|failure| {
+            failure.kind == ProviderSettingKind::Mode
+                && failure.observation == InitialSettingObservation::Unknown
+        }) {
             self.catalog.mode_observation =
                 provider_session_machines::ProviderModeObservation::Unconfirmed;
         }
