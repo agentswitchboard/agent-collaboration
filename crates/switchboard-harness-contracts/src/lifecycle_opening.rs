@@ -174,7 +174,9 @@ pub enum OpeningFailure {
     ProviderError(ProviderWireFailure),
     Disconnected,
     NoAnswer,
+    OutcomeUnknown,
     ReplayNotKnown,
+    /// A close displaced the opening. The close can still own the route.
     Closed,
     /// An uncoded diagnostic already sanitized by the harness adapter.
     Unavailable {
@@ -191,11 +193,12 @@ impl OpeningFailure {
                 LifecycleMove::CorrectRequest,
                 LifecycleMove::ReportUnavailable,
             ],
-            Self::ProviderError(_) | Self::ReplayNotKnown | Self::Closed => {
-                &[LifecycleMove::Reopen]
+            Self::ProviderError(_) | Self::ReplayNotKnown => &[LifecycleMove::Reopen],
+            Self::Disconnected => &[LifecycleMove::StopOwner],
+            Self::Closed => &[LifecycleMove::WaitForClose],
+            Self::NoAnswer | Self::OutcomeUnknown | Self::Unavailable { .. } => {
+                &[LifecycleMove::KeepOutcomeUnknown]
             }
-            Self::Disconnected => &[LifecycleMove::Reopen, LifecycleMove::KeepOutcomeUnknown],
-            Self::NoAnswer | Self::Unavailable { .. } => &[LifecycleMove::KeepOutcomeUnknown],
         }
     }
 }

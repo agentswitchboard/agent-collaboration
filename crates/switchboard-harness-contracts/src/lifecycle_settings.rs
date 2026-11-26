@@ -63,10 +63,13 @@ pub enum CreatedSettingsFailure<Reason> {
 impl<Reason> CreatedSettingsFailure<Reason> {
     #[must_use]
     pub const fn valid_moves(&self) -> &'static [LifecycleMove] {
-        &[
-            LifecycleMove::CorrectRequest,
-            LifecycleMove::KeepOutcomeUnknown,
-        ]
+        match self {
+            Self::Invalid(reason) => reason.valid_moves(),
+            Self::Partial { .. } => &[
+                LifecycleMove::CorrectRequest,
+                LifecycleMove::KeepOutcomeUnknown,
+            ],
+        }
     }
 }
 

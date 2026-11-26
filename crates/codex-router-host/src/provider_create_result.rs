@@ -79,6 +79,7 @@ fn provider_create_failure(failure: OwnerCreateFailure) -> ExternalProviderRunti
             }
             OpeningFailure::Lost { reported: None }
             | OpeningFailure::Disconnected
+            | OpeningFailure::OutcomeUnknown
             | OpeningFailure::NoAnswer
             | OpeningFailure::ReplayNotKnown
             | OpeningFailure::Closed => ExternalProviderRuntimeError::TransportFailure,

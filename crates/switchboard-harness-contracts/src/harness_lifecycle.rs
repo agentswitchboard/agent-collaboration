@@ -14,6 +14,9 @@ use crate::{
 use crate::{DispatchAuthorization, DispatchResult, HandOverRefusal};
 
 #[cfg(test)]
+#[path = "lifecycle_refusals_test.rs"]
+mod refusal_tests;
+#[cfg(test)]
 #[path = "harness_lifecycle_test.rs"]
 mod tests;
 

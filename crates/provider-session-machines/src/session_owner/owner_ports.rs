@@ -316,6 +316,7 @@ pub enum RestoreFailure {
     ProviderError(ProviderWireFailure),
     NotEnqueued,
     Disconnected,
+    OutcomeUnknown,
     NoAnswer,
     LocalPrerequisite {
         stage: PreparationStage,
@@ -363,6 +364,7 @@ impl RestoreFailure {
             Self::Disconnected => {
                 "the provider disconnected before confirming the restore, so reconnect and retry this session"
             }
+            Self::OutcomeUnknown => "the provider did not confirm whether it restored the session",
             Self::NoAnswer => {
                 "the provider did not answer the restore in time, so retry this session"
             }

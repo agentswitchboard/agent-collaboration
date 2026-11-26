@@ -217,7 +217,7 @@ impl OwnerOpenings {
                     OpeningFact::CreateFailed {
                         attempt,
                         remote: CreationEffect::Unknown,
-                        failure: OpeningFailure::Disconnected,
+                        failure: OpeningFailure::OutcomeUnknown,
                     }
                 }
             };
@@ -273,7 +273,7 @@ impl OwnerOpenings {
                 let mut session = match receipt.await {
                     Ok(Ok(session)) => session,
                     Ok(Err(error)) => return Err(opening_failure(error)),
-                    Err(_) => return Err(OpeningFailure::Disconnected),
+                    Err(_) => return Err(OpeningFailure::OutcomeUnknown),
                 };
                 let skills = if via == RestoreVia::Load {
                     let replay = session
@@ -536,8 +536,11 @@ fn opening_failure(error: ExternalProviderRuntimeError) -> OpeningFailure {
         };
     }
     match error {
+        ExternalProviderRuntimeError::RestoreDisconnected
+        | ExternalProviderRuntimeError::TransportFailure => OpeningFailure::Disconnected,
         ExternalProviderRuntimeError::RestoreNoAnswer => OpeningFailure::NoAnswer,
-        _ => OpeningFailure::Disconnected,
+        ExternalProviderRuntimeError::SessionReleased => OpeningFailure::Closed,
+        _ => OpeningFailure::OutcomeUnknown,
     }
 }
 
@@ -546,3 +549,7 @@ fn lock<T>(value: &Mutex<T>) -> MutexGuard<'_, T> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
+
+#[cfg(test)]
+#[path = "owner_acp_lifecycle_refusal_test.rs"]
+mod refusal_tests;

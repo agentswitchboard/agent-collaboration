@@ -82,6 +82,41 @@ async fn a_refused_close_cannot_revive_a_restore_retired_before_commit() {
         .await
         .expect_err("close retired the restore before Host commit");
     assert_eq!(restore_failure.effect, ProviderOperationEffect::Applied);
+    {
+        use provider_session_machines::{
+            harness_lifecycle::OpeningFailure,
+            session_lifecycle_machine::{LoadAttempt, RestoreVia, SessionLifecycle},
+            session_owner::SessionOwnerCommand,
+        };
+        assert_eq!(
+            OpeningFailure::Closed.valid_moves(),
+            &[provider_session_machines::harness_lifecycle::LifecycleMove::WaitForClose]
+        );
+        let owner = host
+            .session_owner_for(&rig.target)
+            .expect("registered owner");
+        assert!(matches!(
+            owner.snapshots().borrow().lifecycle,
+            SessionLifecycle::Closing { .. }
+        ));
+        assert!(matches!(
+            owner
+                .admit(SessionOwnerCommand::Restore {
+                    attempt: LoadAttempt(uuid::Uuid::now_v7()),
+                    via: RestoreVia::Load,
+                })
+                .await,
+            Err(crate::session_owner_door::OwnerDoorError::Refused { .. })
+        ));
+        assert_eq!(
+            rig.wire_receipt()["restores"]
+                .as_array()
+                .expect("restore calls")
+                .len(),
+            1,
+            "the route cannot reopen until the exact close settles"
+        );
+    }
     node_test_fixture::release_fixture(&rig.root.path().join("wire.json"), ".release-close")
         .expect("let ACP refuse close");
     let close_failure = host
@@ -350,6 +385,10 @@ async fn a_disconnect_during_restore_keeps_unknown_effect_and_reconnect_guidance
         .wait(wait_request(id.clone()))
         .await
         .expect_err("connection closed during restore");
+    assert_eq!(
+        provider_session_machines::harness_lifecycle::OpeningFailure::Disconnected.valid_moves(),
+        &[provider_session_machines::harness_lifecycle::LifecycleMove::StopOwner]
+    );
     assert_eq!(failure.effect, ProviderOperationEffect::Unknown);
     assert!(String::from(failure.message).contains("reconnect and retry this session"));
     let row = rig

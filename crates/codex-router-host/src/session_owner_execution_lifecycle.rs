@@ -276,8 +276,9 @@ fn restore_reply(
                 OpeningFailure::ReplayNotKnown => RestoreFailure::LocalPrerequisite {
                     stage: PreparationStage::Route,
                 },
-                OpeningFailure::Disconnected | OpeningFailure::Unavailable { .. } => {
-                    RestoreFailure::Disconnected
+                OpeningFailure::Disconnected => RestoreFailure::Disconnected,
+                OpeningFailure::OutcomeUnknown | OpeningFailure::Unavailable { .. } => {
+                    RestoreFailure::OutcomeUnknown
                 }
             },
         )),

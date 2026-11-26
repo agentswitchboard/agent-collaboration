@@ -125,7 +125,7 @@ pub enum LifecycleMove {
     WaitForClose,
     UseSavedCatalogue,
     ReportUnavailable,
-    /// The controller cannot reserve a completion and must stop executing this owner.
+    /// The owner cannot keep executing with this binding or completion path.
     StopOwner,
     KeepOutcomeUnknown,
     KeepActiveRun,
@@ -175,9 +175,8 @@ impl LifecycleRefusal {
                 &[LifecycleMove::CorrectRequest]
             }
             Self::Writer(WriterState::Full) => &[LifecycleMove::WaitForWriter],
-            Self::Writer(WriterState::Stopped) | Self::RouteUnavailable | Self::OpeningNotHeld => {
-                &[LifecycleMove::Reopen]
-            }
+            Self::Writer(WriterState::Stopped) => &[LifecycleMove::StopOwner],
+            Self::RouteUnavailable | Self::OpeningNotHeld => &[LifecycleMove::Reopen],
             Self::RouteClosing => &[LifecycleMove::WaitForClose],
             Self::CatalogueUnavailable | Self::InvalidCatalogueReply => &[
                 LifecycleMove::UseSavedCatalogue,
