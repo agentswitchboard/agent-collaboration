@@ -138,6 +138,12 @@ pub async fn run_async() -> i32 {
     ))
     .await
     {
+        #[cfg(unix)]
+        if let CliError::Central(central_command::CentralCommandError::ApprovalOutcome(status)) =
+            error
+        {
+            return status.code();
+        }
         let _ = writeln!(stderr, "{error}");
         return 2;
     }
@@ -224,6 +230,7 @@ where
                 command,
                 context.stdin_is_terminal() && context.stdout_is_terminal(),
                 stdout,
+                stderr,
             )
             .await?;
             stderr.flush().map_err(CliError::Stderr)
@@ -875,6 +882,7 @@ commands:
   central serve --config FILE   Run a self-hosted central
   central login --target FILE   Sign in to Central as a person
   central workspaces --target FILE   List an organization’s workspaces through Sign-in
+  central approvals             List, read or answer Central approvals
   enroll --organization <uuid> --sign-in <https-origin>  Enroll this Mac
   enrollment status             Show this Mac's stored enrollment
   doctor                        Diagnose local router setup

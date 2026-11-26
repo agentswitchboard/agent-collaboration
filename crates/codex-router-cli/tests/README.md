@@ -16,6 +16,12 @@ check. It also retains the ignored default-port cutover case selected by its
 separate CI job. Ordinary package runs keep that case ignored. Library and binary
 unit tests remain colocated.
 
+The colocated Central approvals tests exercise argument parsing, then run the
+command functions with an isolated TLS issuer and real Tokio Central. They
+capture text, wire JSON, exit classes and the operation ID flushed to stderr
+before a reply is lost. These tests use an in-memory credential store and
+a fixture TLS root.
+
 Case expansions and fixture data retain their existing directories. The
 compiled Host child selector derives from `module_path!()`. The enrollment
 producer journey and its Host and native child selectors were removed with

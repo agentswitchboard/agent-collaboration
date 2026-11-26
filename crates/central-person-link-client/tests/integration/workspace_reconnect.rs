@@ -2,7 +2,7 @@ use std::{sync::Arc, time::Duration};
 
 use axum::{Json, routing::get};
 use central_link_protocol::PersonLinkCloseCode;
-use central_person_link_client::{FleetTarget, PersonWorkspaceClient};
+use central_person_link_client::{FleetTarget, PersonLinkClient};
 use collaboration_central_conformance::signin_fixtures::{
     CREATE, ORGANIZATION, OWNER, OWNER_SUBJECT, POLICY, canonical, create_body, create_intent,
     fresh_request_id,
@@ -15,7 +15,8 @@ use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
-use super::{
+use super::PERSON;
+use central_person_link_client::test_support::{
     fixture_authority::{
         ADMIN_AUDIENCE, AUDIENCE, CLIENT_ID, FixtureCredential, INITIAL_SECONDS as NOW, IssuerKey,
         PUBLIC_ORIGIN, fleet_claims, sha256_url,
@@ -81,6 +82,7 @@ async fn lists_every_page_once_after_real_central_ends_authority() {
         central_origin,
         signing,
         credential.clone(),
+        PERSON,
     );
     let routes = signin.router();
     let signin_shutdown = stop.clone();
@@ -100,7 +102,7 @@ async fn lists_every_page_once_after_real_central_ends_authority() {
     )
     .unwrap();
     let mut client =
-        PersonWorkspaceClient::with_trusted_root(target, credential, clock.clone(), certificate)
+        PersonLinkClient::with_trusted_root(target, credential, clock.clone(), certificate)
             .unwrap();
 
     let first = client.list_workspaces().await.unwrap();
@@ -205,7 +207,7 @@ async fn seed_directory(
     }
 
     let owner = collaboration_central_conformance::signin_fixtures::ProofKey::generate().unwrap();
-    let mut claims = fleet_claims(issuer, NOW, &owner.thumbprint().unwrap());
+    let mut claims = fleet_claims(PERSON, issuer, NOW, &owner.thumbprint().unwrap());
     claims
         .as_object_mut()
         .unwrap()

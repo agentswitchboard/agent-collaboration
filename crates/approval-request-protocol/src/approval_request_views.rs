@@ -409,6 +409,33 @@ impl RequestView {
             | RequestViewFields::UnprovenCall { window, .. } => *window,
         }
     }
+
+    #[must_use]
+    pub const fn provider_approval_offer(&self) -> Option<&ApprovalOffer> {
+        if let RequestViewFields::ProviderApproval { offer, .. } = &self.0 {
+            Some(offer)
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    pub const fn provider_question_offer(&self) -> Option<&QuestionOffer> {
+        if let RequestViewFields::ProviderQuestion { offer, .. } = &self.0 {
+            Some(offer)
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    pub const fn unproven_call_offer(&self) -> Option<&CallOffer> {
+        if let RequestViewFields::UnprovenCall { offer, .. } = &self.0 {
+            Some(offer)
+        } else {
+            None
+        }
+    }
 }
 
 impl TryFrom<RequestViewFields> for RequestView {

@@ -1,8 +1,5 @@
+use crate::{FleetCredentialError, FleetCredentialStore, clock_uuid};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B64};
-use central_person_link_client::{FleetCredentialError, FleetCredentialStore};
-use collaboration_central_conformance::signin_fixtures::{
-    ORGANIZATION, OWNER, OWNER_SUBJECT, POLICY, SESSION, fresh_request_id,
-};
 use ring::{
     digest::{SHA256, digest},
     rand::SystemRandom,
@@ -18,13 +15,26 @@ use std::sync::{
 };
 use zeroize::Zeroizing;
 
-pub(super) const INITIAL_SECONDS: i64 = 1_900_000_000;
-pub(super) const CLIENT_ID: &str = "fixture-owner-fleet";
-pub(super) const ADMIN_AUDIENCE: &str = "https://central.example.invalid/admin";
-pub(super) const AUDIENCE: &str = "https://central.example.invalid/identity";
-pub(super) const PUBLIC_ORIGIN: &str = "https://central.example.invalid";
+pub const INITIAL_SECONDS: i64 = 1_900_000_000;
+pub const CLIENT_ID: &str = "fixture-owner-fleet";
+pub const ADMIN_AUDIENCE: &str = "https://central.example.invalid/admin";
+pub const AUDIENCE: &str = "https://central.example.invalid/identity";
+pub const PUBLIC_ORIGIN: &str = "https://central.example.invalid";
 
-pub(super) struct FixtureCredential {
+#[derive(Clone, Copy)]
+pub struct FixturePerson {
+    pub organization: &'static str,
+    pub person: &'static str,
+    pub subject: &'static str,
+    pub policy: &'static str,
+    pub session: &'static str,
+}
+
+pub(super) fn fresh_request_id(now: i64) -> String {
+    clock_uuid(now.saturating_sub(1).saturating_mul(1_000)).to_string()
+}
+
+pub struct FixtureCredential {
     stored: Mutex<Option<Zeroizing<Vec<u8>>>>,
     pub refuse_successor: AtomicBool,
     pub public_key: Vec<u8>,
@@ -48,7 +58,7 @@ impl FixtureCredential {
         let stored = json!({
             "state":"ready",
             "private_key":B64.encode(pkcs8.as_ref()),
-            "refresh_token":fresh_request_id(INITIAL_SECONDS).unwrap(),
+            "refresh_token":fresh_request_id(INITIAL_SECONDS),
         });
         Arc::new(Self {
             stored: Mutex::new(Some(Zeroizing::new(serde_json::to_vec(&stored).unwrap()))),
@@ -112,7 +122,7 @@ impl FleetCredentialStore for FixtureCredential {
     }
 }
 
-pub(super) struct IssuerKey(Ed25519KeyPair);
+pub struct IssuerKey(Ed25519KeyPair);
 
 impl IssuerKey {
     pub fn generate() -> Self {
@@ -144,12 +154,17 @@ impl IssuerKey {
     }
 }
 
-pub(super) fn authority_claims(issuer: &str, audience: &str, now: i64) -> Value {
+pub(super) fn authority_claims(
+    person: FixturePerson,
+    issuer: &str,
+    audience: &str,
+    now: i64,
+) -> Value {
     json!({
-        "iss":issuer, "aud":audience, "sub":OWNER, "iat":now, "exp":now+60,
-        "jti":fresh_request_id(now).unwrap(),
-        "organization_id":ORGANIZATION, "authorization_subject_id":OWNER_SUBJECT,
-        "person_revision":4, "organization_revision":3, "permission_policy_digest":POLICY,
+        "iss":issuer, "aud":audience, "sub":person.person, "iat":now, "exp":now+60,
+        "jti":fresh_request_id(now),
+        "organization_id":person.organization, "authorization_subject_id":person.subject,
+        "person_revision":4, "organization_revision":3, "permission_policy_digest":person.policy,
         "permissions":["organization:view", "workspace:create"],
         "session_expires_at_ms":(INITIAL_SECONDS+3_600)*1000,
         "authorization_snapshot_at_ms":now*1000,
@@ -158,12 +173,12 @@ pub(super) fn authority_claims(issuer: &str, audience: &str, now: i64) -> Value 
     })
 }
 
-pub(super) fn fleet_claims(issuer: &str, now: i64, jkt: &str) -> Value {
-    let mut claims = authority_claims(issuer, ADMIN_AUDIENCE, now);
+pub fn fleet_claims(person: FixturePerson, issuer: &str, now: i64, jkt: &str) -> Value {
+    let mut claims = authority_claims(person, issuer, ADMIN_AUDIENCE, now);
     claims.as_object_mut().unwrap().extend([
         ("exp".to_owned(), json!(now + 300)),
         ("token_profile".to_owned(), json!("person-fleet")),
-        ("sid".to_owned(), json!(SESSION)),
+        ("sid".to_owned(), json!(person.session)),
         ("client_id".to_owned(), json!(CLIENT_ID)),
         ("cnf".to_owned(), json!({"jkt":jkt})),
     ]);
@@ -189,7 +204,7 @@ pub(super) fn verify_dpop(
     )
 }
 
-pub(super) fn verify_dpop_key(
+pub fn verify_dpop_key(
     proof: &str,
     public_key: &[u8],
     jkt: &str,
@@ -223,7 +238,7 @@ pub(super) fn verify_dpop_key(
     (id.get_version_num() == 7).then_some(id)
 }
 
-pub(super) fn sha256_url(bytes: &[u8]) -> String {
+pub fn sha256_url(bytes: &[u8]) -> String {
     B64.encode(digest(&SHA256, bytes))
 }
 
@@ -231,6 +246,6 @@ fn segment(value: &Value) -> String {
     B64.encode(serde_json::to_vec(value).unwrap())
 }
 
-pub(super) fn decode_segment(value: &str) -> Option<Value> {
+pub fn decode_segment(value: &str) -> Option<Value> {
     serde_json::from_slice(&B64.decode(value).ok()?).ok()
 }
