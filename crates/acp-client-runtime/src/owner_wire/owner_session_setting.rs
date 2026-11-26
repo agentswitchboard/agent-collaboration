@@ -142,7 +142,7 @@ impl OwnerSettingWirePlan {
             .map_err(|_| OwnerWireRefusal::Encoding)
     }
 
-    pub(super) fn from_work_catalog(
+    pub(crate) fn from_work_catalog(
         session: String,
         catalog: &ProviderSettingsCatalog,
         kind: ProviderSettingKind,

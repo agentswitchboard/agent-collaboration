@@ -15,9 +15,9 @@ use provider_session_machines::{
     harness_lifecycle::{
         AcceptedRunSettings, ActivationSetup, CatalogueFact, CatalogueRequest, CloseFact,
         CreateAttempt, HarnessOwnerEvents, HarnessProvider, Held, LifecycleRefusal, LifecycleReply,
-        OpenAttempt, OpenRequest, OpeningFact, OwnerHarnessBinding, RunRetirement,
-        SessionCreatedSetupFact, SessionHarnessPayloads, SessionLifecyclePort, SettingAttempt,
-        SettingFact, SetupReport,
+        OpenAttempt, OpenRequest, OpeningFact, OwnerHarnessBinding, RestoreSettingRefusal,
+        RunRetirement, SessionCreatedSetupFact, SessionHarnessPayloads, SessionLifecyclePort,
+        SettingAttempt, SettingFact, SetupReport,
     },
     session_lifecycle_machine::CloseAttempt,
     session_owner::{OwnerAddress, RunAttempt},
@@ -147,9 +147,9 @@ impl<Port: InteractionPort> OwnerHarnessBinding<SessionHarnessPayloads<Port::Con
     fn put_setting_back(
         &self,
         attempt: SettingAttempt,
-        reply: LifecycleReply<SettingFact>,
-    ) -> Result<(), LifecycleRefusal> {
-        self.openings.put_setting_back(attempt, reply)
+        reserve_reply: &mut dyn FnMut() -> ReplyAdmission<SettingFact>,
+    ) -> Result<(), RestoreSettingRefusal> {
+        self.openings.put_setting_back(attempt, reserve_reply)
     }
 
     fn close(
@@ -283,7 +283,14 @@ impl<Port: InteractionPort> HarnessBinding for AcpOwnerLifecycleBinding<Port> {
         authorization: DispatchAuthorization,
         wait: CancelDrainWait,
     ) -> DispatchResult {
-        self.work.send_cancel(authorization, wait)
+        #[cfg(feature = "test-observation")]
+        let run = transport_run(self.openings.owner(), authorization.run);
+        let result = self.work.send_cancel(authorization, wait);
+        #[cfg(feature = "test-observation")]
+        self.work
+            .wire
+            .fence_dispatch_for_test(run, crate::owner_wire::FixtureDispatchPoint::Cancel);
+        result
     }
 }
 

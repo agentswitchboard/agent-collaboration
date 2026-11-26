@@ -41,6 +41,7 @@ mod session_owner_delivery_evidence;
 pub mod session_owner_door;
 pub mod session_owner_execution;
 mod session_owner_ingress;
+mod session_owner_lifecycle_reports;
 mod session_owner_notice;
 #[cfg(any(test, feature = "test-support"))]
 mod session_owner_preparation_fixture;

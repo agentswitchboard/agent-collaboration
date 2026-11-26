@@ -18,12 +18,13 @@ use crate::session_owner_task::OwnerCompletion;
 use agent_client_protocol::schema::v1::{CancelNotification, CloseSessionRequest, ErrorCode};
 use agent_client_protocol::{Agent, ConnectionTo, Error, JsonRpcMessage as _, UntypedMessage};
 use provider_session_machines::SessionGeneration;
-use provider_session_machines::harness_lifecycle::{CloseFact, LifecycleReply, SettingFact};
+use provider_session_machines::harness_lifecycle::{
+    CloseFact, LifecycleReply, SettingFact, owner_event_for_close, owner_event_for_restore_setting,
+};
 use provider_session_machines::session_lifecycle_machine::{CloseAttempt, LoadAttempt, RestoreVia};
 use provider_session_machines::session_owner::{
-    DispatchAuthorization, DispatchResult, OwnerEvent, OwnerIncarnation, OwnerSetting,
-    PromptCompletion, RestorePreparation, RunAttempt, SessionWireResult, TurnMembership,
-    WireOutcome,
+    DispatchAuthorization, DispatchResult, OwnerIncarnation, OwnerSetting, PromptCompletion,
+    RunAttempt, TurnMembership, WireOutcome,
 };
 use provider_session_machines::session_turn_machine::TurnId;
 use provider_session_machines::tool_ownership::{ToolObservation, ToolOwnershipEffect};
@@ -488,38 +489,12 @@ impl OwnerAcpWire {
         plan: OwnerSettingWirePlan,
         completion: OwnerCompletion,
     ) -> Result<(), TransportRefusal> {
-        let catalogue = |record| {
-            Arc::new(provider_session_machines::ProviderSettingsCatalog::from_record(record))
-        };
         self.reapply_lifecycle_setting(
             owner,
             run,
             setting,
             plan,
-            completion.map(move |fact| match fact {
-                SettingFact::Mode {
-                    restore: run,
-                    setting,
-                    outcome,
-                    catalogue: record,
-                } => OwnerEvent::Wire(SessionWireResult::RestoreMode {
-                    run,
-                    setting,
-                    outcome,
-                    catalogue: record.map(catalogue),
-                }),
-                SettingFact::FastOff {
-                    restore: run,
-                    setting,
-                    observation,
-                    catalogue: record,
-                } => OwnerEvent::Prepare(RestorePreparation::FastOff {
-                    run,
-                    setting,
-                    observation,
-                    catalogue: record.map(catalogue),
-                }),
-            }),
+            completion.map(owner_event_for_restore_setting),
         )
     }
 
@@ -619,22 +594,7 @@ impl OwnerAcpWire {
         session: String,
         completion: OwnerCompletion,
     ) -> Result<(), OwnerWireRefusal> {
-        self.enqueue_lifecycle_close(
-            owner,
-            run,
-            session,
-            completion.map(|fact| {
-                let (run, outcome) = match fact {
-                    CloseFact::Closed { run } => (run, WireOutcome::Confirmed(())),
-                    CloseFact::RefusedStillLive { run } => (run, WireOutcome::Refused),
-                    CloseFact::NotOffered { run } => {
-                        return OwnerEvent::Wire(SessionWireResult::CloseNotSent(run));
-                    }
-                    CloseFact::Unknown { run, .. } => (run, WireOutcome::Unknown),
-                };
-                OwnerEvent::Wire(SessionWireResult::Close { run, outcome })
-            }),
-        )
+        self.enqueue_lifecycle_close(owner, run, session, completion.map(owner_event_for_close))
     }
 
     pub(crate) fn enqueue_lifecycle_close(

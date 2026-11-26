@@ -5,8 +5,7 @@
 //! refused with the accepted list. The plan is pure: the caller applies it
 //! against the agent and reports the requested and actual modes.
 
-/// The router-level name every agent accepts for its auto realization.
-pub const AUTO_PERMISSION_MODE: &str = "auto";
+pub use switchboard_harness_contracts::AUTO_PERMISSION_MODE;
 
 /// How an agent's auto mode treats an action outside its granted folders (R7).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

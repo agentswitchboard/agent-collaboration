@@ -3,7 +3,7 @@
 #[path = "owner_acp_lifecycle_activation.rs"]
 mod activation;
 
-use super::{lifecycle_transport_refusal, lifecycle_wire_refusal, transport_run};
+use super::{lifecycle_transport_refusal, transport_run};
 use crate::{
     ExternalProviderRuntimeError, RequestedProviderSettings,
     owner_session_creation::catalogue_evidence,
@@ -16,7 +16,7 @@ use provider_session_machines::{
     harness_lifecycle::{
         AcceptedRunSettings, CreateAttempt, CreatedSetupFact, CreationEffect, HarnessSessionId,
         Held, LifecycleRefusal, LifecycleReply, OpenAttempt, OpenRequest, OpenSetup, OpeningFact,
-        OpeningFailure, RestoreLoadReadback, RestoredOpening, RunRetirement,
+        OpeningFailure, RestoreLoadReadback, RestoreSettingRefusal, RestoredOpening, RunRetirement,
         SessionCreatedSetupFact, SessionLifecycleFact, SessionLifecyclePort, SettingAttempt,
         SettingFact, SetupReport,
     },
@@ -30,6 +30,7 @@ use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex, MutexGuard, OnceLock},
 };
+use switchboard_harness_contracts::{ReplyAdmission, WorkOfferRefusal};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use uuid::Uuid;
 
@@ -432,23 +433,43 @@ impl OwnerOpenings {
     pub(super) fn put_setting_back(
         &self,
         attempt: SettingAttempt,
-        reply: LifecycleReply<SettingFact>,
-    ) -> Result<(), LifecycleRefusal> {
+        reserve_reply: &mut dyn FnMut() -> ReplyAdmission<SettingFact>,
+    ) -> Result<(), RestoreSettingRefusal> {
+        let refusal = RestoreSettingRefusal::Harness;
         let attempts = lock(&self.attempts);
-        let held =
-            held_restore(&attempts, attempt.restore).ok_or(LifecycleRefusal::OpeningNotHeld)?;
+        let held = held_restore(&attempts, attempt.restore)
+            .ok_or_else(|| refusal(LifecycleRefusal::OpeningNotHeld))?;
+        if attempt.setting.change.generation != attempt.restore.generation {
+            return Err(refusal(LifecycleRefusal::AttemptMismatch));
+        }
         let session = self
             .session
             .get()
-            .ok_or(LifecycleRefusal::RouteUnavailable)?;
-        let request = OwnerSettingWirePlan::from_catalog(
+            .ok_or_else(|| refusal(LifecycleRefusal::RouteUnavailable))?;
+        let request = OwnerSettingWirePlan::from_work_catalog(
             session.clone(),
             &ProviderSettingsCatalog::from_record(attempt.catalogue),
             attempt.setting.kind,
             attempt.value.0,
             held.accepted_mode_fallback.clone(),
         )
-        .map_err(lifecycle_wire_refusal)?;
+        .map_err(|reason| {
+            refusal(match reason {
+                WorkOfferRefusal::SettingValueNotOffered => {
+                    LifecycleRefusal::SettingValueNotOffered
+                }
+                WorkOfferRefusal::SettingSetterUnavailable => {
+                    LifecycleRefusal::SettingSetterUnavailable
+                }
+                _ => LifecycleRefusal::Encoding,
+            })
+        })?;
+        let reply = match reserve_reply() {
+            ReplyAdmission::Reserved(reply) => reply,
+            ReplyAdmission::Refused(reason) => {
+                return Err(RestoreSettingRefusal::ReplyReservation(reason));
+            }
+        };
         self.wire
             .reapply_lifecycle_setting(
                 self.owner.incarnation,
@@ -457,7 +478,7 @@ impl OwnerOpenings {
                 request,
                 reply,
             )
-            .map_err(lifecycle_transport_refusal)
+            .map_err(|reason| refusal(lifecycle_transport_refusal(reason)))
     }
 
     pub(super) fn retire(&self, generation: SessionGeneration) {

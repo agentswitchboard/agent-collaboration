@@ -6,8 +6,9 @@ use provider_session_machines::{
     session_lifecycle_machine::SessionLifecycle,
     session_owner::{
         AuthorizedWork, ConnectionEpoch, CreateProgress, EffectOutcome, OwnerAddress, OwnerEffect,
-        OwnerInput, PromptAdmission, PublicationBatch, PublicationResult, SessionOwnerCommand,
-        SessionSnapshot, SessionStoreRequest, SessionStoreResult, SessionWireRequest,
+        OwnerEvent, OwnerInput, PromptAdmission, PublicationBatch, PublicationResult,
+        SessionOwnerCommand, SessionSnapshot, SessionStoreRequest, SessionStoreResult,
+        SessionWireRequest,
     },
     session_turn_machine::SessionTurn,
 };

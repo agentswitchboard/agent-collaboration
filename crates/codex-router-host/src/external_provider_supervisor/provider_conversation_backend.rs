@@ -227,7 +227,7 @@ impl ProviderConversationBackend for ExternalProviderSupervisor {
                                             endpoint,
                                             session_id,
                                         };
-                                        if let Some(catalog) = completion_backend.owner_session_catalog(&target) {
+                                        if let Some(catalog) = completion_backend.owner_session_catalog(&target).await {
                                             completion_inner.record_settings_catalog(target.clone(), catalog).await;
                                         }
                                         let mut observed = effective_settings(requested_policy.clone());
@@ -277,7 +277,7 @@ impl ProviderConversationBackend for ExternalProviderSupervisor {
                                 match SessionId::try_from(provider_session_id) {
                                 Ok(session_id) => {
                                     let target = SessionRef { endpoint, session_id };
-                                    if let Some(catalog) = completion_backend.owner_session_catalog(&target) {
+                                    if let Some(catalog) = completion_backend.owner_session_catalog(&target).await {
                                         completion_inner.record_settings_catalog(target.clone(), catalog).await;
                                     }
                                     // Show keeps the requested mode and reason of a partial start too.

@@ -5,6 +5,9 @@ use crate::{
         CancelReceipt, CancelTarget, InputAcceptance, OwnedSettlement, SessionOwnerCalls,
     },
     session_owner_execution::SessionOwnerExecution,
+    session_owner_lifecycle_reports::{
+        BoundSessionHarness, SessionHarnessProvider, SessionOwnerLifecycleReports,
+    },
     session_owner_publication::SessionOwnerPublisher,
     session_owner_registry::{RegisteredOwner, SessionOwnerRegistry},
     session_owner_storage::SessionOwnerStorage,
@@ -14,6 +17,7 @@ use acp_client_runtime::{
 };
 use collaboration_protocol::SessionRef;
 use provider_session_machines::{
+    harness_lifecycle::{CatalogueFact, CatalogueRequest, ReservedReply},
     session_lifecycle_machine::{LoadAttempt, RestoreVia},
     session_owner::{
         ConnectionEpoch, OwnerEvent, OwnerInput, PromptAdmission, SessionOwnerCommand,
@@ -53,8 +57,7 @@ pub struct SessionOwnerDoor {
     clock: Arc<dyn RuntimeClock>,
     hub: Arc<ProviderSessionEventHub>,
     wire: Arc<OwnerAcpWire>,
-    approvals:
-        acp_client_runtime::OwnerApprovalBindings<crate::acp_interaction_port::HostInteractionPort>,
+    provider: Arc<SessionHarnessProvider>,
     connection: ConnectionEpoch,
     retired: CancellationToken,
     shutdown: CancellationToken,
@@ -73,6 +76,8 @@ pub struct SessionOwnerAddress {
     owner: RegisteredOwner,
     calls: Arc<SessionOwnerCalls>,
     storage: SessionOwnerStorage,
+    provider: Arc<SessionHarnessProvider>,
+    #[cfg(any(test, feature = "test-support"))]
     wire: Arc<OwnerAcpWire>,
     #[cfg(any(test, feature = "test-support"))]
     preparation_fixture: Arc<crate::session_owner_preparation_fixture::PreparationFixture>,
@@ -86,9 +91,7 @@ pub(crate) struct OwnerDeliveryHandle {
 impl SessionOwnerDoor {
     pub(crate) fn new(
         wire: Arc<OwnerAcpWire>,
-        approvals: acp_client_runtime::OwnerApprovalBindings<
-            crate::acp_interaction_port::HostInteractionPort,
-        >,
+        build_provider: impl FnOnce(TaskTracker) -> Arc<SessionHarnessProvider>,
         clock: Arc<dyn RuntimeClock>,
         store: Arc<AsyncMutex<ProviderOperationStore>>,
         hub: Arc<ProviderSessionEventHub>,
@@ -98,6 +101,8 @@ impl SessionOwnerDoor {
         >,
     ) -> Self {
         let mailbox = NonZeroUsize::new(32).unwrap_or(NonZeroUsize::MIN);
+        let tasks = TaskTracker::new();
+        let provider = build_provider(tasks.clone());
         Self {
             registry: Arc::new(SessionOwnerRegistry::new(
                 store,
@@ -108,11 +113,11 @@ impl SessionOwnerDoor {
             clock,
             hub,
             wire,
-            approvals,
+            provider,
             connection: ConnectionEpoch(Uuid::now_v7()),
             retired,
             shutdown: CancellationToken::new(),
-            tasks: TaskTracker::new(),
+            tasks,
             sessions: Mutex::default(),
             snapshot_observer: Arc::default(),
             #[cfg(any(test, feature = "test-support"))]
@@ -186,6 +191,32 @@ impl SessionOwnerDoor {
         replaced: Option<provider_session_machines::session_owner::OwnerIncarnation>,
         work_roots: crate::provider_work_roots::ProviderWorkRoots,
     ) -> Result<(Arc<SessionOwnerAddress>, SessionOwnerExecution), OwnerDoorError> {
+        let bound = self.bind(&registered.owner, self.shutdown.clone());
+        self.prepare_adopted_with_binding(target, registered, lane, replaced, work_roots, bound)
+    }
+
+    fn bind(&self, owner: &RegisteredOwner, stopped: CancellationToken) -> BoundSessionHarness {
+        let observations = Arc::new(SessionOwnerLifecycleReports::new(
+            owner.address,
+            &owner.handle,
+            stopped,
+        ));
+        let binding = self.provider.bind(owner.address, observations.clone());
+        BoundSessionHarness {
+            binding,
+            observations,
+        }
+    }
+
+    fn prepare_adopted_with_binding(
+        &self,
+        target: SessionRef,
+        registered: crate::session_owner_registry::RegisteredSession,
+        lane: Option<crate::session_store_lane::SessionStoreLaneTask>,
+        replaced: Option<provider_session_machines::session_owner::OwnerIncarnation>,
+        work_roots: crate::provider_work_roots::ProviderWorkRoots,
+        bound: BoundSessionHarness,
+    ) -> Result<(Arc<SessionOwnerAddress>, SessionOwnerExecution), OwnerDoorError> {
         let session_id = String::from(target.session_id.clone());
         let board = collaboration_protocol::ProviderIdentity::session_to_board(&target)
             .map_err(|_| OwnerDoorError::Unavailable)?;
@@ -210,8 +241,8 @@ impl SessionOwnerDoor {
         let storage = SessionOwnerStorage::new(registered.lane, self.tasks.clone());
         let ports = SessionOwnerExecution::new(
             target.clone(),
-            self.wire.clone(),
-            self.approvals.clone(),
+            bound.binding,
+            bound.observations,
             storage.clone(),
             SessionOwnerPublisher::new(inbox, self.clock.clone(), self.tasks.clone()),
             calls.clone(),
@@ -265,6 +296,8 @@ impl SessionOwnerDoor {
             owner: registered_owner,
             calls,
             storage,
+            provider: self.provider.clone(),
+            #[cfg(any(test, feature = "test-support"))]
             wire: self.wire.clone(),
             #[cfg(any(test, feature = "test-support"))]
             preparation_fixture: self.preparation_fixture.clone(),
@@ -386,13 +419,12 @@ impl SessionOwnerAddress {
     pub(crate) fn report_event(
         &self,
         event: OwnerEvent,
-    ) -> Result<(), acp_client_runtime::EventSinkClosed> {
+    ) -> Result<(), acp_client_runtime::session_owner_task::OwnerTaskError> {
         let completion = self
             .owner
             .handle
             .completion_port()
-            .reserve(self.owner.address)
-            .map_err(|_| acp_client_runtime::EventSinkClosed)?;
+            .reserve(self.owner.address)?;
         completion.send(event);
         Ok(())
     }
@@ -401,7 +433,9 @@ impl SessionOwnerAddress {
         self.owner.handle.snapshots()
     }
 
-    pub(crate) fn catalog(&self) -> Option<provider_session_machines::ProviderSettingsCatalog> {
+    pub(crate) async fn catalog(
+        &self,
+    ) -> Option<provider_session_machines::ProviderSettingsCatalog> {
         let snapshot = self.snapshots();
         let provider_session_machines::session_lifecycle_machine::SessionLifecycle::Live {
             generation,
@@ -409,11 +443,22 @@ impl SessionOwnerAddress {
         else {
             return None;
         };
-        self.wire
-            .session_catalog(acp_client_runtime::acp_transport::TransportRun {
-                incarnation: self.owner.address.incarnation,
-                generation,
-            })
+        let (reply, received) = oneshot::channel();
+        self.provider
+            .model_catalogue(
+                CatalogueRequest::Session {
+                    owner: self.owner.address,
+                    run: generation,
+                },
+                Box::new(SessionCatalogueReply(reply)),
+            )
+            .ok()?;
+        match received.await.ok()? {
+            CatalogueFact::Reported(record) => {
+                Some(provider_session_machines::ProviderSettingsCatalog::from_record(record))
+            }
+            CatalogueFact::Unavailable(_) => None,
+        }
     }
 
     pub(crate) async fn cancel_queued(
@@ -707,6 +752,14 @@ impl SessionOwnerAddress {
     }
 }
 
+struct SessionCatalogueReply(oneshot::Sender<CatalogueFact>);
+
+impl ReservedReply<CatalogueFact> for SessionCatalogueReply {
+    fn send(self: Box<Self>, fact: CatalogueFact) {
+        let _caller_gone = self.0.send(fact);
+    }
+}
+
 fn prompt_with_requirements(
     input: OwnerInput,
     admission: PromptAdmission,
@@ -729,6 +782,9 @@ mod tests;
 
 #[path = "session_owner_door_creation.rs"]
 mod creation;
+
+#[path = "session_owner_create_result.rs"]
+mod create_result;
 
 #[path = "session_owner_door_recovery.rs"]
 mod recovery;

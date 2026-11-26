@@ -204,10 +204,23 @@ impl ExternalProviderRuntime {
     ) -> Arc<crate::session_owner_door::SessionOwnerDoor> {
         self.owner_door
             .get_or_init(|| {
+                let wire = self.client.owner_wire();
+                let approvals = self.client.owner_approval_bindings();
+                let clock = self.client.runtime_clock();
+                let harness_clock = Arc::clone(&clock);
                 let door = Arc::new(crate::session_owner_door::SessionOwnerDoor::new(
-                    self.client.owner_wire(),
-                    self.client.owner_approval_bindings(),
-                    self.client.runtime_clock(),
+                    Arc::clone(&wire),
+                    move |tasks| {
+                        Arc::new(
+                            acp_client_runtime::owner_acp_binding::OwnerAcpProvider::new(
+                                wire,
+                                approvals,
+                                harness_clock,
+                                tasks,
+                            ),
+                        )
+                    },
+                    clock,
                     store,
                     hub,
                     self.retirement(),
@@ -231,7 +244,9 @@ impl ExternalProviderRuntime {
         let client = AgentSessionClient::initialize_with_clock(
             launch,
             Arc::clone(&interaction_port),
-            owner_ingress.clone(),
+            Arc::new(acp_client_runtime::HarnessCallbackEventSink::new(
+                owner_ingress.clone(),
+            )),
             behavior,
             clock,
         )
@@ -267,7 +282,9 @@ impl ExternalProviderRuntime {
             server_name,
             server_url,
             Arc::clone(&interaction_port),
-            owner_ingress.clone(),
+            Arc::new(acp_client_runtime::HarnessCallbackEventSink::new(
+                owner_ingress.clone(),
+            )),
             behavior,
             clock,
         )
@@ -308,7 +325,9 @@ impl ExternalProviderRuntime {
             server_name,
             server_url,
             Arc::clone(&interaction_port),
-            owner_ingress.clone(),
+            Arc::new(acp_client_runtime::HarnessCallbackEventSink::new(
+                owner_ingress.clone(),
+            )),
             behavior,
             clock,
         )
@@ -361,7 +380,9 @@ impl ExternalProviderRuntime {
             launch,
             initialize_timeout,
             Arc::clone(&interaction_port),
-            owner_ingress.clone(),
+            Arc::new(acp_client_runtime::HarnessCallbackEventSink::new(
+                owner_ingress.clone(),
+            )),
             behavior,
             clock,
         )
