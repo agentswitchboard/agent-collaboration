@@ -239,18 +239,15 @@ impl NoticeFixture {
 
 #[expect(
     clippy::panic,
-    reason = "The fixture identifies which durable sender projection failed."
+    reason = "A closed event channel cannot deliver the expected sender projection."
 )]
 async fn projection_event(
     events: &mut mpsc::UnboundedReceiver<CustodyTaskEvent>,
 ) -> CustodyTaskEvent {
-    tokio::select! {
-        biased;
-        Some(event) = events.recv() => event,
-        () = async { for _ in 0..50_000 { tokio::task::yield_now().await; } } => {
-            panic!("no sender projection event followed the owed work");
-        }
-    }
+    let Some(event) = events.recv().await else {
+        panic!("custody event channel closed before the expected sender projection event");
+    };
+    event
 }
 
 struct StoppingNoticeSink;
