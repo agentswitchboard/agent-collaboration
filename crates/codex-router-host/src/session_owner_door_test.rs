@@ -13,6 +13,16 @@ use provider_session_machines::{
 use session_event_model::{InputId, PromptContent, SessionState};
 use switchboard_session_store::ProviderOperationAdmission;
 
+impl SessionOwnerAddress {
+    #[allow(
+        dead_code,
+        reason = "the failed-owner lane proof is developed on the companion branch"
+    )]
+    pub(crate) fn recovery_storage_for_test(&self) -> &SessionOwnerStorage {
+        &self.storage
+    }
+}
+
 async fn operation(
     fixture: &StoreFixture,
     target: &SessionRef,
