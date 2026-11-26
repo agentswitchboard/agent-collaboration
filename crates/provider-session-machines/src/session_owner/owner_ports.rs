@@ -447,6 +447,25 @@ pub struct SessionSnapshot {
     pub queue: Vec<QueueEntrySnapshot>,
 }
 
+impl SessionSnapshot {
+    /// The exact ended prompt in the currently live, idle run.
+    #[must_use]
+    pub fn live_idle_ended_prompt(&self) -> Option<&LastLiveTurn> {
+        let SessionLifecycle::Live { generation } = self.lifecycle else {
+            return None;
+        };
+        let ended = self.last_live_turn.as_ref()?;
+        (self.turn == SessionTurn::Idle
+            && self.foreground.is_none()
+            && ended.generation == generation
+            && matches!(
+                ended.outcome,
+                session_event_model::TurnOutcome::Ended { .. }
+            ))
+        .then_some(ended)
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionProjection {
     pub state: SessionState,

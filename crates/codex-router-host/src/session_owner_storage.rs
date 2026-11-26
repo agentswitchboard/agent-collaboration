@@ -14,7 +14,8 @@ use provider_session_machines::{
     session_lifecycle_machine::LoadAttempt,
     session_owner::{
         EffectOutcome, OwnerAddress, OwnerEvent, OwnerInput, OwnerSetting, RemoteEffect,
-        RestoreDisposition, SessionOwnerReply, SessionStoreRequest, SessionStoreResult,
+        RestoreDisposition, SessionOwnerReply, SessionSnapshot, SessionStoreRequest,
+        SessionStoreResult,
     },
     session_setting_machine::SettingApplication,
 };
@@ -24,12 +25,14 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 use switchboard_session_store::ProviderSessionRecord;
+use tokio::sync::watch;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 #[derive(Clone)]
 pub struct SessionOwnerStorage {
     lane: SessionStoreLane,
     tasks: TaskTracker,
+    snapshots: watch::Receiver<SessionSnapshot>,
     setup_reads: Arc<Mutex<HashMap<LoadAttempt, Box<ProviderSessionRecord>>>>,
     explicit_setups: Arc<Mutex<HashMap<LoadAttempt, Box<ProviderSessionRecord>>>>,
     delivery_restores: Arc<Mutex<HashSet<LoadAttempt>>>,
@@ -38,10 +41,15 @@ pub struct SessionOwnerStorage {
 }
 
 impl SessionOwnerStorage {
-    pub fn new(lane: SessionStoreLane, tasks: TaskTracker) -> Self {
+    pub(crate) fn new(
+        lane: SessionStoreLane,
+        tasks: TaskTracker,
+        snapshots: watch::Receiver<SessionSnapshot>,
+    ) -> Self {
         Self {
             lane,
             tasks,
+            snapshots,
             setup_reads: Arc::default(),
             explicit_setups: Arc::default(),
             delivery_restores: Arc::default(),
@@ -197,6 +205,7 @@ impl SessionOwnerStorage {
                             operation,
                             undo_input,
                             LaneDispatchKind::Undo,
+                            None,
                         )
                     },
                     completions,
@@ -306,8 +315,8 @@ impl SessionOwnerStorage {
         let operation = operation_id(input.operation)?;
         let lane = self.lane.clone();
         let mut changes = lane.subscribe_dispatch_eligibility();
-        let offer =
-            lane.offer_dispatch(address.incarnation, operation.clone(), input.clone(), kind);
+        let snapshots = self.snapshots.clone();
+        let offer = offer_dispatch(&lane, &snapshots, address, &operation, &input, kind);
         #[cfg(any(test, feature = "test-support"))]
         if kind == LaneDispatchKind::QueuedPrompt {
             lane.notice_fixture_wait(
@@ -374,7 +383,10 @@ impl SessionOwnerStorage {
             let mut offer = offer;
             if matches!(
                 offer,
-                Err(SessionStoreOfferError::DispatchBusy { pending: true, .. })
+                Err(SessionStoreOfferError::DispatchBusy {
+                    wait_for_eligibility: true,
+                    ..
+                })
             ) && let Some(mut changes) = changes
             {
                 let waiting = async {
@@ -386,15 +398,14 @@ impl SessionOwnerStorage {
                         if clock.monotonic_now() >= deadline {
                             return Err(SessionStoreOfferError::Stopped);
                         }
-                        let reply = lane.offer_dispatch(
-                            address.incarnation,
-                            operation.clone(),
-                            input.clone(),
-                            kind,
-                        );
+                        let reply =
+                            offer_dispatch(&lane, &snapshots, address, &operation, &input, kind);
                         if !matches!(
                             reply,
-                            Err(SessionStoreOfferError::DispatchBusy { pending: true, .. })
+                            Err(SessionStoreOfferError::DispatchBusy {
+                                wait_for_eligibility: true,
+                                ..
+                            })
                         ) {
                             return reply;
                         }
@@ -413,11 +424,20 @@ impl SessionOwnerStorage {
                     return;
                 }
                 Err(SessionStoreOfferError::DispatchBusy {
-                    operation,
-                    pending: false,
+                    operation: earlier,
+                    wait_for_eligibility: false,
                 }) if kind == LaneDispatchKind::Prompt => {
+                    #[cfg(test)]
+                    lane.notice_fixture_wait(
+                        crate::binding_store_fixture::BindingFixtureWait::DirectDispatchBlocked(
+                            operation,
+                        ),
+                    );
                     completion.send(OwnerEvent::Store(
-                        SessionStoreResult::DispatchBlockedByLive { input, operation },
+                        SessionStoreResult::DispatchBlockedByLive {
+                            input,
+                            operation: earlier,
+                        },
                     ));
                     return;
                 }
@@ -467,6 +487,49 @@ impl SessionOwnerStorage {
         });
         Ok(None)
     }
+}
+
+fn offer_dispatch(
+    lane: &SessionStoreLane,
+    snapshots: &watch::Receiver<SessionSnapshot>,
+    address: OwnerAddress,
+    operation: &OperationId,
+    input: &OwnerInput,
+    kind: LaneDispatchKind,
+) -> Result<SessionStoreTicket, SessionStoreOfferError> {
+    let ended_prompt = if kind == LaneDispatchKind::Prompt {
+        let snapshot = snapshots.borrow();
+        snapshot
+            .live_idle_ended_prompt()
+            .filter(|ended| snapshot.owner == address && ended.generation == input.generation)
+            .map(|ended| ended.operation)
+    } else {
+        None
+    };
+    let attempted = lane.offer_dispatch(
+        address.incarnation,
+        operation.clone(),
+        input.clone(),
+        kind,
+        ended_prompt,
+    );
+    #[cfg(test)]
+    if kind == LaneDispatchKind::Prompt
+        && matches!(
+            attempted,
+            Err(SessionStoreOfferError::DispatchBusy {
+                wait_for_eligibility: true,
+                ..
+            })
+        )
+    {
+        lane.notice_fixture_wait(
+            crate::binding_store_fixture::BindingFixtureWait::DirectDispatchWaiting(
+                operation.clone(),
+            ),
+        );
+    }
+    attempted
 }
 
 fn lock<T>(lock: &Mutex<T>) -> MutexGuard<'_, T> {

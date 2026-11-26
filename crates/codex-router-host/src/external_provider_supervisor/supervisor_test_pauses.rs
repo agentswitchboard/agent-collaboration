@@ -18,6 +18,100 @@ impl AdmissionTestPause {
 }
 
 impl ExternalProviderSupervisor {
+    pub(crate) fn hold_pending_dispatch_for_test(
+        &self,
+        target: &collaboration_protocol::SessionRef,
+        operation: OperationId,
+    ) -> crate::binding_dispatch_permit::PendingDispatch {
+        let cell = self.inner.uncertainty.slot(&target.endpoint);
+        crate::binding_dispatch_permit::lock(cell.outcomes.get().expect("binding outcomes"))
+            .begin_dispatch(cell.clone(), operation, target.clone())
+            .expect("no earlier dispatch intent")
+    }
+
+    pub(crate) fn observe_direct_dispatch_wait_for_test(
+        &self,
+        target: &collaboration_protocol::SessionRef,
+        operation: OperationId,
+    ) -> tokio::sync::oneshot::Receiver<()> {
+        self.inner
+            .uncertainty
+            .slot(&target.endpoint)
+            .fixture
+            .notice_wait(
+                target.clone(),
+                crate::binding_store_fixture::BindingFixtureWait::DirectDispatchWaiting(operation),
+            )
+    }
+
+    pub(crate) fn wake_eligibility_for_test(&self, target: &collaboration_protocol::SessionRef) {
+        self.inner
+            .uncertainty
+            .slot(&target.endpoint)
+            .eligibility_changed();
+    }
+
+    pub(crate) fn observe_direct_dispatch_block_for_test(
+        &self,
+        target: &collaboration_protocol::SessionRef,
+        operation: OperationId,
+    ) -> tokio::sync::oneshot::Receiver<()> {
+        self.inner
+            .uncertainty
+            .slot(&target.endpoint)
+            .fixture
+            .notice_wait(
+                target.clone(),
+                crate::binding_store_fixture::BindingFixtureWait::DirectDispatchBlocked(operation),
+            )
+    }
+
+    pub(crate) fn observe_ended_prompt_admission_for_test(
+        &self,
+        target: &collaboration_protocol::SessionRef,
+        holder: OperationId,
+    ) -> tokio::sync::oneshot::Receiver<()> {
+        self.inner
+            .uncertainty
+            .slot(&target.endpoint)
+            .fixture
+            .notice_wait(
+                target.clone(),
+                crate::binding_store_fixture::BindingFixtureWait::EndedPromptAdmission(holder),
+            )
+    }
+
+    pub(crate) fn assert_only_prompt_blocks_admission_for_test(
+        &self,
+        target: &collaboration_protocol::SessionRef,
+        holder: &OperationId,
+    ) {
+        use super::provider_admission_policy::{AdmissionClass, AdmissionMode, AdmissionRequest};
+        use collaboration_protocol::ProviderOperationKind;
+
+        let cell = self.inner.uncertainty.slot(&target.endpoint);
+        let binding = cell.identity.get().expect("bound identity");
+        let outcomes = crate::binding_dispatch_permit::lock(
+            cell.outcomes.get().expect("initialized eligibility"),
+        );
+        assert!(outcomes.pending_dispatches_for(target).next().is_none());
+        assert!(outcomes.blockers(Some(target), false).is_empty());
+        let operations = self.inner.live_operations.lock().expect("operation index");
+        let blockers = operations.admission_blockers(
+            binding,
+            AdmissionRequest {
+                operation: &OperationId::generate(),
+                kind: ProviderOperationKind::ConversationPrompt,
+                target: Some(target),
+                mode: AdmissionMode::deferred(AdmissionClass::Independent),
+            },
+        );
+        assert_eq!(blockers.as_slice(), std::slice::from_ref(holder));
+        let held = operations.operations.get(holder).expect("live holder");
+        assert!(held.is_prompt_for(target));
+        assert!(held.holds_custody());
+    }
+
     pub(crate) fn pause_steer_mark_receipt_for_test(
         &self,
         target: &collaboration_protocol::SessionRef,

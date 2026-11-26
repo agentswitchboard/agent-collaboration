@@ -48,6 +48,57 @@ fn index_with(
     (index, live)
 }
 
+#[test]
+fn an_ended_prompt_conflict_is_waitable_only_when_it_is_the_sole_holder() {
+    let binding = binding();
+    let target = session("a");
+    let follow_up = OperationId::generate();
+    let request = AdmissionRequest {
+        operation: &follow_up,
+        kind: ProviderOperationKind::ConversationPrompt,
+        mode: AdmissionMode::deferred(AdmissionClass::Independent),
+        target: Some(&target),
+    };
+    let new_holder = || {
+        Arc::new(LiveOperation::reserving(
+            &binding,
+            Some(target.clone()),
+            ProviderOperationKind::ConversationPrompt,
+            AdmissionMode::deferred(AdmissionClass::OwnerPlaced),
+        ))
+    };
+    let mut index = LiveOperations::default();
+    index.operations.insert(follow_up.clone(), new_holder());
+    let ended = OperationId::generate();
+    let ended_holder = new_holder();
+    ended_holder.admitted();
+    ended_holder.dispatch_marked();
+    index.operations.insert(ended.clone(), ended_holder);
+    let ended_uuid = uuid::Uuid::parse_str(ended.as_str()).expect("ended operation UUID");
+    assert!(
+        index
+            .lane_mark_conflict(&binding, request, Some(ended_uuid))
+            .expect("ended holder")
+            .wait_for_eligibility
+    );
+
+    let newer = OperationId::generate();
+    let newer_holder = new_holder();
+    newer_holder.admitted();
+    newer_holder.dispatch_marked();
+    index.operations.insert(newer, newer_holder);
+    let first = index.lane_mark_blocker(&binding, request).expect("overlap");
+    let first_uuid = uuid::Uuid::parse_str(first.as_str()).expect("first holder UUID");
+    let conflict = index
+        .lane_mark_conflict(&binding, request, Some(first_uuid))
+        .expect("both overlap");
+    assert_eq!(conflict.operation, first);
+    assert!(
+        !conflict.wait_for_eligibility,
+        "a matching first holder cannot hide the other one"
+    );
+}
+
 /// The marked send stays in flight through recording uncertainty, until its
 /// writer settles. An undone marker stops it counting immediately.
 #[test]
