@@ -3,6 +3,7 @@
 ## 0.1.166
 
 - When the Router loses the restore receipt, it reports “the provider did not confirm whether it restored the session”. An activation refusal now fails the operation before the session is published as live.
+- The Router now reports “not enqueued” for a queued close when the writer confirms it never sent the request.
 
 ## 0.1.165
 
