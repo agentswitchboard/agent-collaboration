@@ -15,7 +15,7 @@ use switchboard_harness_contracts::{LoadAttempt, OwnerSetting, RunAttempt};
 pub use switchboard_harness_contracts::{
     AUTO_PERMISSION_MODE, AcceptedRunSettings, ActivationRefusal, ActivationSetup, ApprovalLease,
     ApprovalLeaseBinding, ApprovalLeaseRefusalReason, BeforeOfferApprovalLeaseRefusal,
-    CallbackAdmission, CatalogueFact, CatalogueRequest, CloseFact, CreateAttempt,
+    CallbackAdmission, CatalogueFact, CatalogueRequest, CloseFact, CloseUncertainty, CreateAttempt,
     CreatedSettingsFailure, CreatedSetupFact, CreatedSetupReport, CreationEffect, EventPort,
     EventRefusal, EventSendFuture, ExactTurn, FastRequest, HandOverRefusal, HarnessCallbackIngress,
     HarnessContent, HarnessLifecyclePayloads, HarnessOwnerEvents, HarnessOwnerRecovery,

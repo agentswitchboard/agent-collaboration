@@ -2,6 +2,7 @@
 
 #[cfg(feature = "test-observation")]
 use super::FixtureDispatchPoint;
+use super::writer_reply_signals::{WriterReplySignals, error_reply_lost};
 use super::{AcpFrame, ResponseKind};
 use crate::{
     acp_transport::OrderedOutput, owner_session_open::OwnerOpenConfiguration,
@@ -133,14 +134,14 @@ impl OwnerAcpOutput {
         connection: ConnectionTo<Agent>,
         configuration: OwnerOpenConfiguration,
         shutdown: CancellationToken,
-        input_ended: CancellationToken,
+        transport_ending: CancellationToken,
     ) {
-        let shutdown = shutdown.child_token();
+        let signals = WriterReplySignals::new(shutdown.child_token(), transport_ending);
         let replies = TaskTracker::new();
         loop {
             let next = tokio::select! {
                 biased;
-                () = shutdown.cancelled() => break,
+                () = signals.shutdown.cancelled() => break,
                 next = self.output.recv() => next,
             };
             let Some(OrderedOutput { frame, run }) = next else {
@@ -152,7 +153,7 @@ impl OwnerAcpOutput {
                     &connection,
                     &configuration,
                     &replies,
-                    shutdown.clone(),
+                    signals.clone(),
                     self.restore_updates.clone(),
                 ),
                 AcpFrame::Cancel(notification) => {
@@ -209,27 +210,26 @@ impl OwnerAcpOutput {
                         );
                     }
                     let request = request.block_task();
-                    let shutdown = shutdown.clone();
-                    let input_ended = input_ended.clone();
+                    let signals = signals.clone();
                     let connection = connection.clone();
+                    #[cfg(feature = "test-observation")]
+                    let reply_test_wire = configuration.reply_test_wire.clone();
                     replies.spawn(async move {
-                        let (response, connection_lost) = ResponseKind::read_reply(
-                            matches!(&correlation, ResponseKind::Prompt { .. }),
-                            request,
-                            &shutdown,
-                            |error| {
-                                connection.is_incoming_closed()
-                                    || input_ended.is_cancelled()
-                                    || agent_client_protocol::is_incoming_transport_closed(error)
-                            },
-                        )
-                        .await;
+                        #[cfg(feature = "test-observation")]
+                        if let Some(wire) = reply_test_wire {
+                            wire.before_taken_reply_for_test().await;
+                        }
+                        let (response, connection_lost) =
+                            ResponseKind::read_reply(request, &signals.shutdown, |error| {
+                                signals.transport_ended(&connection, error)
+                            })
+                            .await;
                         correlation.complete(response, connection_lost, behavior.as_ref());
                     });
                 }
             }
         }
-        self.drain_unsent(&shutdown).await;
+        self.drain_unsent(&signals.shutdown).await;
         replies.close();
         replies.wait().await;
     }
@@ -285,7 +285,6 @@ impl ResponseKind {
     }
 
     pub(super) async fn read_reply(
-        prompt_pending: bool,
         request: impl std::future::Future<Output = Result<serde_json::Value, Error>>,
         shutdown: &CancellationToken,
         incoming_lost: impl FnOnce(&Error) -> bool,
@@ -296,11 +295,9 @@ impl ResponseKind {
             () = shutdown.cancelled() => None,
         };
         let connection_lost = response.as_ref().is_none_or(|reply| {
-            reply.as_ref().is_err_and(|error| {
-                // The SDK can wake a prompt with an unmarked internal error
-                // after the process exits, before incoming EOF is observed.
-                (prompt_pending && shutdown.is_cancelled()) || incoming_lost(error)
-            })
+            reply
+                .as_ref()
+                .is_err_and(|error| error_reply_lost(shutdown, error, incoming_lost))
         });
         (response, connection_lost)
     }
@@ -311,6 +308,9 @@ impl ResponseKind {
         connection_lost: bool,
         behavior: &dyn crate::ProviderBehavior,
     ) {
+        // An error from a connection already known to be ending is
+        // missing peer evidence. Completed results stay intact.
+        let reply = if connection_lost { None } else { reply };
         match self {
             Self::Prompt {
                 authorization,
@@ -327,7 +327,7 @@ impl ResponseKind {
             }
             .route(reader, connection_lost),
             Self::Setting(setting) => {
-                setting.settle(if connection_lost { None } else { reply }, behavior);
+                setting.settle(reply, behavior);
             }
             Self::Steer {
                 authorization,

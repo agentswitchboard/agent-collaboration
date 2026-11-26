@@ -1,4 +1,5 @@
 //! Start SDK routing as an ordered connection effect.
+use super::writer_reply_signals::WriterReplySignals;
 
 use crate::{
     ExternalProviderRuntimeError, ProviderBehavior, ProviderCapabilityReport,
@@ -14,7 +15,7 @@ use provider_session_machines::session_lifecycle_machine::{LoadAttempt, RestoreV
 use provider_session_machines::{ModelReasoningMetadata, ProviderSettingsCatalog};
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
-use tokio_util::{sync::CancellationToken, task::TaskTracker};
+use tokio_util::task::TaskTracker;
 
 pub use switchboard_harness_contracts::OpenSetup as OwnerSessionOpenSetup;
 
@@ -157,6 +158,8 @@ pub(crate) struct OwnerOpenConfiguration {
     pub(crate) auth_status: Arc<tokio::sync::RwLock<session_event_model::ProviderAuthStatus>>,
     #[cfg(any(test, feature = "test-observation"))]
     pub(crate) observed_tool_calls: crate::owner_session_stream::TestToolCallRecords,
+    #[cfg(feature = "test-observation")]
+    pub(crate) reply_test_wire: Option<Arc<crate::owner_wire::OwnerAcpWire>>,
 }
 
 pub(crate) enum OpenRequest {
@@ -185,17 +188,19 @@ pub(crate) struct CreatedHandoffFault {
 }
 
 impl OpenFrame {
-    pub(crate) fn start(
+    pub(super) fn start(
         self,
         run: crate::acp_transport::TransportRun,
         connection: &ConnectionTo<Agent>,
         config: &OwnerOpenConfiguration,
         tasks: &TaskTracker,
-        shutdown: CancellationToken,
+        signals: WriterReplySignals,
         restore_updates: Arc<crate::owner_restore_updates::RestoreUpdates>,
     ) {
         use crate::provider_acp_error_mapping::{acp_load_session_error, acp_operation_error};
 
+        #[cfg(feature = "test-observation")]
+        let reply_test_wire = config.reply_test_wire.clone();
         match self.request {
             OpenRequest::New(setup) => {
                 #[cfg(feature = "test-observation")]
@@ -212,6 +217,8 @@ impl OpenFrame {
                     .additional_directories(folders.additional_directories);
                 request.meta = folders.meta;
                 let builder = connection.build_session_from(request).block_task();
+                let reply_connection = connection.clone();
+                let reply_signals = signals.clone();
                 let config = config.clone();
                 let start = async move {
                     let mut respond = Some(self.respond);
@@ -253,7 +260,9 @@ impl OpenFrame {
                             Ok(())
                         })
                         .await;
-                    if let (Some(respond), Err(error)) = (respond, result) {
+                    if let (Some(respond), Err(error)) = (respond, result)
+                        && !reply_signals.reply_lost(&reply_connection, &error)
+                    {
                         respond.deliver(Err(acp_operation_error(error)));
                     }
                 };
@@ -261,9 +270,13 @@ impl OpenFrame {
                 // The first poll enqueues the handshake in writer order.
                 if start.as_mut().now_or_never().is_none() {
                     tasks.spawn(async move {
+                        #[cfg(feature = "test-observation")]
+                        if let Some(wire) = reply_test_wire {
+                            wire.before_taken_reply_for_test().await;
+                        }
                         tokio::select! {
                             () = start => {}
-                            () = shutdown.cancelled() => {}
+                            () = signals.shutdown.cancelled() => {}
                         }
                     });
                 }
@@ -286,6 +299,7 @@ impl OpenFrame {
                 let connection = connection.clone();
                 let servers = config.mcp_servers.clone();
                 let config = config.clone();
+                let reply_signals = signals.clone();
                 let start = async move {
                     let requested_session = SessionId::new(provider_id);
                     let sdk = match via {
@@ -317,11 +331,15 @@ impl OpenFrame {
                         }
                     }
                     .map_err(|error| {
-                        acp_load_session_error(
-                            error,
-                            &requested_session.0,
-                            config.behavior.as_ref(),
-                        )
+                        if reply_signals.reply_lost(&connection, &error) {
+                            ExternalProviderRuntimeError::RestoreDisconnected
+                        } else {
+                            acp_load_session_error(
+                                error,
+                                &requested_session.0,
+                                config.behavior.as_ref(),
+                            )
+                        }
                     })?;
                     let auth_status = config.auth_status.read().await.clone();
                     let mut opened = OwnerOpenedSession::new(
@@ -345,11 +363,15 @@ impl OpenFrame {
                     restore_updates.reply_settled(run, &tap);
                 } else {
                     tasks.spawn(async move {
+                        #[cfg(feature = "test-observation")]
+                        if let Some(wire) = reply_test_wire {
+                            wire.before_taken_reply_for_test().await;
+                        }
                         // Keep this SDK request and its replay tap correlated until
                         // the wire answers. A retired owner's receiver has no successor.
                         let result = tokio::select! {
                             result = start => result,
-                            () = shutdown.cancelled() => Err(ExternalProviderRuntimeError::RestoreDisconnected),
+                            () = signals.shutdown.cancelled() => Err(ExternalProviderRuntimeError::RestoreDisconnected),
                         };
                         if !self.respond.deliver(result) {
                             tracing::debug!(?run, ?attempt, "settled retired ACP restore");

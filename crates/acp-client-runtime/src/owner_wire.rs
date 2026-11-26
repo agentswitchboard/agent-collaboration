@@ -9,6 +9,8 @@ mod owner_opening_test_control;
 #[cfg(any(test, feature = "test-observation"))]
 pub use crate::owner_opening_disposal::{OpeningDisposalKind, OpeningDisposalProbe};
 #[cfg(feature = "test-observation")]
+pub use crate::provider_transport_diagnostics::TransportEnd;
+#[cfg(feature = "test-observation")]
 pub use owner_opening_test_control::{
     OpeningAsyncPause, OrderedWriterPause, ProviderConnectionEnd, WriterExitObservation,
 };
@@ -19,6 +21,7 @@ pub mod owner_session_open;
 pub mod owner_session_setting;
 pub mod owner_session_stream;
 mod owner_work_offers;
+mod writer_reply_signals;
 
 use crate::acp_transport::{
     AcpTransport, CallbackKind, CallbackResolution, SlotEvidence, TransportRefusal, TransportRun,

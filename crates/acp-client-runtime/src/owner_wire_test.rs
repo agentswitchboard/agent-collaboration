@@ -151,7 +151,6 @@ async fn settle_prompt_error(provider_shutdown: CancellationToken) -> SessionSna
     // Both waits are ready in the shutdown case. The reply wins the worker's
     // select and enters the owner before any independent retirement event.
     let (reply, connection_lost) = ResponseKind::read_reply(
-        matches!(&correlation, ResponseKind::Prompt { .. }),
         std::future::ready(Err(Error::internal_error())),
         &provider_shutdown,
         |_| false,

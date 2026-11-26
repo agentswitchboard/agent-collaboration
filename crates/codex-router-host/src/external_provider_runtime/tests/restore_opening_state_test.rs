@@ -14,6 +14,9 @@ mod readmission;
 mod reply_custody;
 #[path = "restore_setter_claim_test.rs"]
 mod setter_claim;
+#[path = "opening_taken_reply_test.rs"]
+#[cfg(unix)]
+mod taken_reply;
 #[path = "opening_writer_lifetime_test.rs"]
 mod writer_lifetime;
 

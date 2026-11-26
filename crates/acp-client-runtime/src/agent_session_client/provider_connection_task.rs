@@ -77,6 +77,7 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
         let listing_shutdown_failed = Arc::clone(&shutdown_failed);
         let task_shutdown = shutdown.clone();
         let connection_retirement = retirement.clone();
+        let foreground_retirement = retirement.clone();
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
         let (admission_settled_tx, admission_settled_rx) = tokio::sync::oneshot::channel();
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(32);
@@ -89,6 +90,12 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
         let provider_exit_observation = Arc::clone(&owner_wire);
         #[cfg(feature = "test-observation")]
         let input_eof_control = Arc::clone(&owner_wire);
+        #[cfg(feature = "test-observation")]
+        let reply_test_wire = Arc::clone(&owner_wire);
+        #[cfg(feature = "test-observation")]
+        let fatal_callback_wire = Arc::clone(&owner_wire);
+        #[cfg(feature = "test-observation")]
+        let transport_end_observer = owner_wire.transport_end_observer_for_test();
         let callbacks = Arc::new(crate::owner_callback_routing::OwnerCallbackRouting::new(
             owner_wire.clone(),
         ));
@@ -176,19 +183,24 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
             });
             let callback_claims =
                 Arc::new(crate::provider_callback_claims::ProviderCallbackClaims::default());
+            let transport_ending = CancellationToken::new();
             let outgoing = crate::provider_transport_diagnostics::ObservedProviderSink::new(
                 futures_util::SinkExt::<String>::sink_map_err(
                     FramedWrite::new(writer, LinesCodec::new()),
                     std::io::Error::other,
                 ),
                 Arc::clone(&callback_claims),
+                transport_ending.clone(),
             );
+            #[cfg(feature = "test-observation")]
+            let outgoing = outgoing.with_end_observer(transport_end_observer.clone());
             let incoming_frame_observation = Arc::clone(&task_frame_observation);
             #[cfg(feature = "test-observation")]
             let callback_frame_observation = Arc::clone(&task_frame_observation);
-            let input_ended = CancellationToken::new();
-            let input_error = input_ended.clone();
-            let input_eof = input_ended.clone();
+            let input_error = transport_ending.clone();
+            let input_eof = transport_ending.clone();
+            #[cfg(feature = "test-observation")]
+            let read_error_observer = transport_end_observer.clone();
             let error_approvals = connection_approval_bindings.clone();
             let eof_approvals = connection_approval_bindings.clone();
             let incoming =
@@ -198,8 +210,10 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
                             crate::provider_transport_diagnostics::record_incoming_frame(frame);
                         }
                         line.map_err(|error| {
-                            error_approvals.stop_connection();
+                            #[cfg(feature = "test-observation")]
+                            read_error_observer.report(crate::owner_wire::TransportEnd::ReadError);
                             input_error.cancel();
+                            error_approvals.stop_connection();
                             crate::provider_transport_diagnostics::record_incoming_error();
                             if matches!(
                                 error,
@@ -219,8 +233,10 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
                     .chain(futures_util::stream::once(async move {
                         #[cfg(feature = "test-observation")]
                         input_eof_control.before_provider_eof_for_test().await;
-                        eof_approvals.stop_connection();
+                        #[cfg(feature = "test-observation")]
+                        transport_end_observer.report(crate::owner_wire::TransportEnd::EndOfInput);
                         input_eof.cancel();
+                        eof_approvals.stop_connection();
                         Err(std::io::Error::new(
                             std::io::ErrorKind::UnexpectedEof,
                             "provider stdout closed",
@@ -237,14 +253,14 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
                 match writer_ready.await {
                     Ok((connection, configuration)) => {
                         owner_output
-                            .run(connection, configuration, writer_shutdown, input_ended)
+                            .run(connection, configuration, writer_shutdown, transport_ending)
                             .await;
                     }
                     Err(_) => owner_output.drain_unsent(&writer_shutdown).await,
                 }
             });
 
-            let connection = Client.builder().name("codex-router-host")
+            let builder = Client.builder().name("codex-router-host")
                 .with_handler(ProviderRequestSessionGuard::new(request_routes))
                 .with_handler(crate::owner_callback_routing::OwnerToolCallHandler::new(Arc::clone(&callbacks)))
                 .with_handler(crate::owner_wire::owner_restore_update_router::OwnerRestoreUpdateRouter(restore_routes))
@@ -369,13 +385,27 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
                     task_shutdown.clone(),
                     sink_closed.clone(),
                 ))
-                .with_handler(ProviderRequestFallback)
-                .connect_with(
+                .with_handler(ProviderRequestFallback);
+            #[cfg(feature = "test-observation")]
+            let builder = {
+                let fatal_callback_bindings = connection_approval_bindings.clone();
+                builder.with_spawned(move |connection| async move {
+                    fatal_callback_wire
+                        .fatal_callback_requested_for_test()
+                        .await;
+                    let _registered = fatal_callback_bindings.spawn_callback(&connection, async {
+                        Err(agent_client_protocol::Error::internal_error())
+                    });
+                    Ok(())
+                })
+            };
+            let connection = builder.connect_with(
                 Lines::new(outgoing, incoming),
                 async move |connection| {
                     let initialized = tokio::select! {
                         biased;
                         () = task_shutdown.cancelled() => {
+                            foreground_retirement.cancel();
                             return Ok(());
                         }
                         response = router_clock::timeout_at(
@@ -404,6 +434,8 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
                                 auth_status: open_auth_status,
                                 #[cfg(any(test, feature = "test-observation"))]
                                 observed_tool_calls,
+                                #[cfg(feature = "test-observation")]
+                                reply_test_wire: Some(reply_test_wire),
                             };
                             let _writer_gone = start_writer.send((connection.clone(), configuration));
                             let _reader_gone = ready_tx.send(Ok((admission, capabilities)));
@@ -442,6 +474,7 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
                             if result.is_err() { listing_shutdown_failed.store(true, Ordering::Relaxed); }
                         }
                     }
+                    foreground_retirement.cancel();
                     Ok(())
                 },
             );
@@ -449,6 +482,7 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
             let (child_exited, sdk_failed) = tokio::select! {
                 result = &mut connection => (false, result.is_err()),
                 () = lifetime.exited() => {
+                    connection_retirement.cancel();
                     // The exited child may have flushed its initialize response into stdout.
                     // Let the connection settle admission before retiring it.
                     tokio::select! {
@@ -461,6 +495,8 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
             // The SDK may drop its foreground and its listing tasks. The
             // ordered writer is joined by this task after the SDK is gone.
             drop(connection);
+            #[cfg(feature = "test-observation")]
+            provider_exit_observation.after_sdk_drop_for_test().await;
             connection_approval_bindings.stop_connection();
             connection_retirement.cancel();
             #[cfg(feature = "test-observation")]

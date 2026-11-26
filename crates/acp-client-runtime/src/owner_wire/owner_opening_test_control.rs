@@ -69,6 +69,28 @@ impl AsyncBarrier {
 }
 
 #[cfg(feature = "test-observation")]
+fn arm_async_pause(slot: &Mutex<Option<AsyncBarrier>>) -> OpeningAsyncPause {
+    let (pause, barrier) = OpeningAsyncPause::new();
+    let prior = slot
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .replace(barrier);
+    assert!(prior.is_none(), "one pending pause at this boundary");
+    pause
+}
+
+#[cfg(feature = "test-observation")]
+async fn pause_async_gate(slot: &Mutex<Option<AsyncBarrier>>) {
+    let barrier = slot
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    if let Some(barrier) = barrier {
+        barrier.pause().await;
+    }
+}
+
+#[cfg(feature = "test-observation")]
 pub struct OrderedWriterPause {
     pub before_dequeue: OpeningAsyncPause,
     pub during_drain: OpeningAsyncPause,
@@ -116,6 +138,14 @@ pub(super) struct OpeningTestControls {
     provider_end: Mutex<Option<oneshot::Sender<ProviderConnectionEnd>>>,
     #[cfg(feature = "test-observation")]
     writer_exit: Mutex<WriterExitSignals>,
+    #[cfg(feature = "test-observation")]
+    before_taken_reply: Mutex<Option<AsyncBarrier>>,
+    #[cfg(feature = "test-observation")]
+    after_sdk_drop: Mutex<Option<AsyncBarrier>>,
+    #[cfg(feature = "test-observation")]
+    fatal_callback: tokio_util::sync::CancellationToken,
+    #[cfg(feature = "test-observation")]
+    transport_end: crate::provider_transport_diagnostics::TransportEndObserver,
 }
 
 struct Barrier {
@@ -124,6 +154,48 @@ struct Barrier {
 }
 
 impl OwnerAcpWire {
+    #[cfg(feature = "test-observation")]
+    pub(crate) fn transport_end_observer_for_test(
+        &self,
+    ) -> crate::provider_transport_diagnostics::TransportEndObserver {
+        self.opening_test.transport_end.clone()
+    }
+
+    #[cfg(feature = "test-observation")]
+    pub fn observe_transport_end_for_test(&self) -> oneshot::Receiver<super::TransportEnd> {
+        self.opening_test.transport_end.observe()
+    }
+
+    #[cfg(feature = "test-observation")]
+    pub fn hold_taken_reply_for_test(&self) -> OpeningAsyncPause {
+        arm_async_pause(&self.opening_test.before_taken_reply)
+    }
+
+    #[cfg(feature = "test-observation")]
+    pub(crate) async fn before_taken_reply_for_test(&self) {
+        pause_async_gate(&self.opening_test.before_taken_reply).await;
+    }
+
+    #[cfg(feature = "test-observation")]
+    pub fn hold_sdk_drop_before_retirement_for_test(&self) -> OpeningAsyncPause {
+        arm_async_pause(&self.opening_test.after_sdk_drop)
+    }
+
+    #[cfg(feature = "test-observation")]
+    pub(crate) async fn after_sdk_drop_for_test(&self) {
+        pause_async_gate(&self.opening_test.after_sdk_drop).await;
+    }
+
+    #[cfg(feature = "test-observation")]
+    pub fn trigger_fatal_callback_for_test(&self) {
+        self.opening_test.fatal_callback.cancel();
+    }
+
+    #[cfg(feature = "test-observation")]
+    pub(crate) async fn fatal_callback_requested_for_test(&self) {
+        self.opening_test.fatal_callback.cancelled().await;
+    }
+
     #[cfg(feature = "test-observation")]
     pub fn hold_ordered_writer_for_test(
         &self,
@@ -201,28 +273,12 @@ impl OwnerAcpWire {
 
     #[cfg(feature = "test-observation")]
     pub fn hold_provider_eof_for_test(&self) -> OpeningAsyncPause {
-        let (pause, barrier) = OpeningAsyncPause::new();
-        let prior = self
-            .opening_test
-            .before_input_eof
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .replace(barrier);
-        assert!(prior.is_none(), "one pending provider EOF pause");
-        pause
+        arm_async_pause(&self.opening_test.before_input_eof)
     }
 
     #[cfg(feature = "test-observation")]
     pub(crate) async fn before_provider_eof_for_test(&self) {
-        let barrier = self
-            .opening_test
-            .before_input_eof
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
-        if let Some(barrier) = barrier {
-            barrier.pause().await;
-        }
+        pause_async_gate(&self.opening_test.before_input_eof).await;
     }
 
     #[cfg(feature = "test-observation")]

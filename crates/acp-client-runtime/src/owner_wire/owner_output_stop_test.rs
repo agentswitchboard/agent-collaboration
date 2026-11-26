@@ -51,6 +51,8 @@ pub(crate) fn configuration() -> OwnerOpenConfiguration {
         reasoning: Default::default(),
         auth_status: Arc::default(),
         observed_tool_calls: Arc::default(),
+        #[cfg(feature = "test-observation")]
+        reply_test_wire: None,
     }
 }
 

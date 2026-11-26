@@ -292,10 +292,13 @@ impl<P: AcpRequestPayloads> OwnerApprovalBindings<P> {
         callback: impl Future<Output = Result<(), agent_client_protocol::Error>> + Send + 'static,
     ) -> Result<(), agent_client_protocol::Error> {
         let tracked = self.tasks.spawn(callback);
+        let retirement = self.retirement.clone();
         connection.spawn(async move {
-            tracked
-                .await
-                .map_err(|_| agent_client_protocol::Error::internal_error())?
+            let result = match tracked.await {
+                Ok(result) => result,
+                Err(_) => Err(agent_client_protocol::Error::internal_error()),
+            };
+            result.inspect_err(|_| retirement.cancel())
         })
     }
 
