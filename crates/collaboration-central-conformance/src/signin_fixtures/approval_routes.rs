@@ -3,28 +3,25 @@ use central_storage::SqlValue;
 use serde_json::{Value, json};
 
 use super::approval_rows::{InitialApproval, id, seed, text, time};
-use super::{NOW_SECONDS, ORGANIZATION, OWNER, OWNER_SUBJECT, Person, fresh_request_id};
+use super::{NOW_SECONDS, ORGANIZATION, OWNER, OWNER_SUBJECT, Person};
 use crate::ConformanceResult;
 
 pub use super::{approval_harness::PersonApprovalHarness, approval_rows::AnswerClass};
 
+mod base_decision_replay;
 mod expanded_coverage;
-#[cfg(feature = "session-link-test-support")]
 mod holder_delivery;
 mod request;
 mod retained_cases;
 mod retention_page;
-#[cfg(feature = "session-link-test-support")]
 mod socket_cases;
-pub use expanded_coverage::{ClockBoundary, ExpandedCase, SignedMutation};
-#[cfg(feature = "session-link-test-support")]
-use request::decide_in_organization;
-use request::{READ, decide, list, read};
+use super::approval_socket::SocketApprovalReply;
+pub use expanded_coverage::ExpandedCase;
+use request::{decide, list, read};
 pub use retained_cases::RetainedCase;
 
-#[cfg(feature = "session-link-test-support")]
 pub use holder_delivery::{
-    check_signed_holder_delivery_after_publication_failure, check_socket_holder_delivery,
+    check_socket_holder_delivery, check_socket_holder_delivery_after_publication_failure,
 };
 
 const REVISIONS: &str = "/internal/organization-authorization-revisions";
@@ -46,17 +43,12 @@ pub enum Case {
     Replay(ReplayCase),
     Expanded(ExpandedCase),
     Retained(RetainedCase),
-    BadAddress,
-    Authentication(AuthenticationCase),
-    ReplayedProof,
     Admission(AdmissionCase),
-    #[cfg(feature = "session-link-test-support")]
     SocketRoundTrip,
-    #[cfg(feature = "session-link-test-support")]
     SocketAuthority,
-    #[cfg(feature = "session-link-test-support")]
-    SocketRetainedSignedAnswer,
-    #[cfg(feature = "session-link-test-support")]
+    SocketRetainedAnswer,
+    BaseRetainedDecision,
+    FreshDecisionMatchesBase,
     SocketExpiryAtApplyingSample,
 }
 
@@ -66,18 +58,9 @@ pub enum ReplayCase {
     AfterPermissionLoss,
 }
 
-pub enum AuthenticationCase {
-    MissingProof,
-    BadProof,
-    ExpiredToken,
-    ForeignOrganization,
-}
-
 pub enum AdmissionCase {
-    MissingPermission,
     OutdatedFloor,
     MissingFloor,
-    Watermark,
     InactivePerson,
 }
 
@@ -100,7 +83,6 @@ pub async fn check(host: &impl PersonApprovalHarness, case: Case) -> Conformance
             };
             expect(
                 page,
-                200,
                 json!({"kind":"page","items":[
                 summary(&latest,"providerQuestion")?,summary(&first,"providerApproval")?
             ],"next":null}),
@@ -108,21 +90,19 @@ pub async fn check(host: &impl PersonApprovalHarness, case: Case) -> Conformance
             let earlier = self::list("all", Some(&latest)).send(host, &owner).await?;
             expect(
                 earlier,
-                200,
                 json!({"kind":"page","items":[summary(&first,"providerApproval")?],"next":null}),
             )?;
             assert_count(host, "SELECT COUNT(*) FROM actor_persons", 0).await?;
-            assert_proof_count(host, 2).await?;
+            assert_no_proof_rows(host).await?;
             assert_count(host, "SELECT COUNT(*) FROM approval_applying_time", 0).await?;
         }
         Case::ListDeadlinePrecedence => {
             let expired = seed(host, 10, AnswerClass::Once, InitialApproval::PastDeadline).await?;
             let page = list("waiting", None).send(host, &owner).await?;
-            expect(page, 200, json!({"kind":"page","items":[],"next":null}))?;
+            expect(page, json!({"kind":"page","items":[],"next":null}))?;
             let all = list("all", None).send(host, &owner).await?;
             expect(
                 all,
-                200,
                 json!({"kind":"page","items":[{"requestId":expired,
                 "kind":"providerApproval","state":{"kind":"ended","ending":"timedOut"},
                 "raisedAt":time(-3600)?,"deadline":time(0)?}],"next":null}),
@@ -130,7 +110,7 @@ pub async fn check(host: &impl PersonApprovalHarness, case: Case) -> Conformance
         }
         Case::ReadRequest => {
             let request = seed(host, 10, AnswerClass::Once, InitialApproval::Waiting).await?;
-            let view = expect_status(read(&request).send(host, &owner).await?, 200)?;
+            let view = read(&request).send(host, &owner).await?.answer()?;
             let view: Value = serde_json::from_slice(&view)?;
             require(
                 view.get("kind").and_then(Value::as_str) == Some("request")
@@ -140,11 +120,11 @@ pub async fn check(host: &impl PersonApprovalHarness, case: Case) -> Conformance
             )?;
             require(view.to_string().contains("Private offer details"), &view)?;
             assert_count(host, "SELECT COUNT(*) FROM actor_persons", 0).await?;
-            assert_proof_count(host, 1).await?;
+            assert_no_proof_rows(host).await?;
         }
         Case::ReadDeadlinePrecedence => {
             let request = seed(host, 10, AnswerClass::Once, InitialApproval::PastDeadline).await?;
-            let view = expect_status(read(&request).send(host, &owner).await?, 200)?;
+            let view = read(&request).send(host, &owner).await?.answer()?;
             let view: Value = serde_json::from_slice(&view)?;
             require(
                 view.get("kind").and_then(Value::as_str) == Some("request")
@@ -177,7 +157,7 @@ pub async fn check(host: &impl PersonApprovalHarness, case: Case) -> Conformance
                 hidden_reply == missing_reply,
                 &json!({"expected":"identical visibility replies"}),
             )?;
-            expect(hidden_reply, 200, json!({"kind":"notVisible"}))?;
+            expect(hidden_reply, json!({"kind":"notVisible"}))?;
             assert_count(host, "SELECT COUNT(*) FROM actor_persons", 0).await?;
             assert_count(host, "SELECT COUNT(*) FROM runtime_request_log", 0).await?;
             if matches!(case, Case::DecideNotVisible) {
@@ -185,7 +165,7 @@ pub async fn check(host: &impl PersonApprovalHarness, case: Case) -> Conformance
                 let retry = decide(&missing, &id(101), &answer)
                     .send(host, &owner)
                     .await?;
-                let body: Value = serde_json::from_slice(&expect_status(retry, 200)?)?;
+                let body: Value = serde_json::from_slice(&retry.answer()?)?;
                 assert_eq!(
                     body.get("kind").and_then(Value::as_str),
                     Some("savedDecision")
@@ -208,7 +188,7 @@ pub async fn check(host: &impl PersonApprovalHarness, case: Case) -> Conformance
                 InitialApproval::CancelledAt(ending),
             )
             .await?;
-            let read_before = expect_status(read(&request).send(host, &owner).await?, 200)?;
+            let read_before = read(&request).send(host, &owner).await?.answer()?;
             assert_eq!(
                 serde_json::from_slice::<Value>(&read_before)?
                     .get("kind")
@@ -216,11 +196,7 @@ pub async fn check(host: &impl PersonApprovalHarness, case: Case) -> Conformance
                 Some("request")
             );
             let retry = decide(&request, &operation, &answer);
-            expect(
-                retry.send(host, &owner).await?,
-                200,
-                json!({"kind":"tooLate"}),
-            )?;
+            expect(retry.send(host, &owner).await?, json!({"kind":"tooLate"}))?;
             assert_count(
                 host,
                 "SELECT COUNT(*) FROM runtime_request_log WHERE approval_row_id IS NOT NULL",
@@ -230,12 +206,10 @@ pub async fn check(host: &impl PersonApprovalHarness, case: Case) -> Conformance
 
             let other = seed(host, 11, AnswerClass::Once, InitialApproval::Waiting).await?;
             let collision_op = id(102);
-            let result = expect_status(
-                decide(&other, &collision_op, &answer)
-                    .send(host, &owner)
-                    .await?,
-                200,
-            )?;
+            let result = decide(&other, &collision_op, &answer)
+                .send(host, &owner)
+                .await?
+                .answer()?;
             let body: Value = serde_json::from_slice(&result)?;
             assert_eq!(
                 body.get("kind").and_then(Value::as_str),
@@ -247,17 +221,16 @@ pub async fn check(host: &impl PersonApprovalHarness, case: Case) -> Conformance
             )
             .await?;
 
-            let headers = retry.headers(&owner, &fresh_request_id(NOW_SECONDS)?, &|_| {})?;
+            let mut socket = host.person_socket().connect(&owner).await?;
             let exact_cutoff = host
-                .post_after_verification(retry.path, &retry.body, headers, 1000)
+                .advance_at_approval_sample(retry.call(&mut socket), 1000)
                 .await?;
-            expect(exact_cutoff, 200, json!({"kind":"notVisible"}))?;
+            expect(exact_cutoff, json!({"kind":"notVisible"}))?;
             expect(
                 read(&request).send(host, &owner).await?,
-                200,
                 json!({"kind":"notVisible"}),
             )?;
-            let page = expect_status(list("all", None).send(host, &owner).await?, 200)?;
+            let page = list("all", None).send(host, &owner).await?.answer()?;
             let page: Value = serde_json::from_slice(&page)?;
             let items = page
                 .get("items")
@@ -278,7 +251,7 @@ pub async fn check(host: &impl PersonApprovalHarness, case: Case) -> Conformance
                 .send(host, &owner)
                 .await?;
             assert_eq!(collision, never);
-            expect(collision, 200, json!({"kind":"notVisible"}))?;
+            expect(collision, json!({"kind":"notVisible"}))?;
             host.write("DELETE FROM runtime_request_log WHERE approval_row_id=(SELECT approval_row_id FROM approval_requests WHERE request_id=?)", vec![text(&request)]).await?;
             host.write(
                 "DELETE FROM approval_request_destinations WHERE request_id=?",
@@ -294,14 +267,12 @@ pub async fn check(host: &impl PersonApprovalHarness, case: Case) -> Conformance
                 decide(&request, &collision_op, &answer)
                     .send(host, &owner)
                     .await?,
-                200,
                 json!({"kind":"notVisible"}),
             )?;
             expect(
                 decide(&request, &id(103), &answer)
                     .send(host, &owner)
                     .await?,
-                200,
                 json!({"kind":"notVisible"}),
             )?;
             assert_count(
@@ -323,7 +294,6 @@ pub async fn check(host: &impl PersonApprovalHarness, case: Case) -> Conformance
                 decide(&request, &operation, &answer)
                     .send(host, &owner)
                     .await?,
-                200,
                 json!({"kind":"tooLate"}),
             )?;
             assert_count(
@@ -348,7 +318,6 @@ pub async fn check(host: &impl PersonApprovalHarness, case: Case) -> Conformance
                 decide(&request, &operation, &answer)
                     .send(host, &owner)
                     .await?,
-                200,
                 json!({"kind":"tooLate"}),
             )?;
             let ended = host.read("SELECT ended_at FROM approval_requests").await?;
@@ -356,7 +325,7 @@ pub async fn check(host: &impl PersonApprovalHarness, case: Case) -> Conformance
                 ended == vec![vec![text(stored_at)]],
                 &json!({"expected":"ending at the retained approval floor"}),
             )?;
-            assert_proof_count(host, 1).await?;
+            assert_no_proof_rows(host).await?;
         }
         Case::AlreadyDecided => {
             let request = seed(host, 10, AnswerClass::Once, InitialApproval::Waiting).await?;
@@ -364,14 +333,12 @@ pub async fn check(host: &impl PersonApprovalHarness, case: Case) -> Conformance
                 decide(&request, &operation, &answer)
                     .send(host, &owner)
                     .await?,
-                200,
                 saved(&answer),
             )?;
             expect(
                 decide(&request, &id(101), &json!({"kind":"approval","optionId":2}))
                     .send(host, &owner)
                     .await?,
-                200,
                 json!({
                     "kind":"alreadyDecided","by":{"kind":"person","personId":OWNER},"at":time(0)?
                 }),
@@ -383,7 +350,7 @@ pub async fn check(host: &impl PersonApprovalHarness, case: Case) -> Conformance
             let request = seed(host, 10, AnswerClass::Once, InitialApproval::Waiting).await?;
             let unknown_option = json!({"kind":"approval","optionId":7});
             let call = decide(&request, &operation, &unknown_option);
-            let invalid = expect_status(call.send(host, &owner).await?, 200)?;
+            let invalid = call.send(host, &owner).await?.answer()?;
             let invalid_value: Value = serde_json::from_slice(&invalid)?;
             require(
                 invalid_value.get("kind").and_then(Value::as_str) == Some("invalid")
@@ -393,7 +360,7 @@ pub async fn check(host: &impl PersonApprovalHarness, case: Case) -> Conformance
                         == Some("invalidAnswer"),
                 &invalid_value,
             )?;
-            let replay = expect_status(call.send(host, &owner).await?, 200)?;
+            let replay = call.send(host, &owner).await?.answer()?;
             require(invalid == replay, &invalid_value)?;
             assert_count(
                 host,
@@ -406,110 +373,16 @@ pub async fn check(host: &impl PersonApprovalHarness, case: Case) -> Conformance
         Case::Replay(case) => {
             check_replay(host, owner, case, &operation, &answer).await?;
         }
-        Case::BadAddress => {
-            let request = read(&id(10));
-            let headers = request.headers(&owner, &fresh_request_id(NOW_SECONDS)?, &|_| {})?;
-            let body = expect_status(
-                host.post(READ, &json!({"requestId":id(10)}), headers)
-                    .await?,
-                400,
-            )?;
-            require(body.is_empty(), &json!({"expected":"empty 400 body"}))?;
-            assert_proof_count(host, 0).await?;
+        Case::BaseRetainedDecision => base_decision_replay::replay_base_rows(host).await?,
+        Case::FreshDecisionMatchesBase => {
+            base_decision_replay::fresh_write_matches_base(host).await?
         }
-        Case::Authentication(case) => {
-            let request = read(&id(10));
-            let headers = match case {
-                AuthenticationCase::MissingProof => Vec::new(),
-                AuthenticationCase::BadProof => {
-                    let mut headers =
-                        request.headers(&owner, &fresh_request_id(NOW_SECONDS)?, &|_| {})?;
-                    if let Some((_, value)) = headers.iter_mut().find(|(name, _)| *name == "dpop") {
-                        *value = "broken".to_owned();
-                    }
-                    headers
-                }
-                AuthenticationCase::ExpiredToken => {
-                    request.headers(&owner, &fresh_request_id(NOW_SECONDS)?, &|claims| {
-                        claims["exp"] = json!(NOW_SECONDS);
-                    })?
-                }
-                AuthenticationCase::ForeignOrganization => {
-                    let person =
-                        Person::owner("019f0000-0000-7000-8000-00000000e201", NOW_SECONDS)?;
-                    request.headers(&person, &fresh_request_id(NOW_SECONDS)?, &|_| {})?
-                }
-            };
-            let body = expect_status(host.post(request.path, &request.body, headers).await?, 401)?;
-            require(body.is_empty(), &json!({"expected":"empty 401 body"}))?;
-            assert_proof_count(host, 0).await?;
-        }
-        Case::ReplayedProof => {
-            let request = read(&id(10));
-            let headers = request.headers(&owner, &fresh_request_id(NOW_SECONDS)?, &|_| {})?;
-            expect(
-                host.post(READ, &request.body, headers.clone()).await?,
-                200,
-                json!({"kind":"notVisible"}),
-            )?;
-            expect(
-                host.post(READ, &request.body, headers).await?,
-                200,
-                refusal("requestReused"),
-            )?;
-            assert_proof_count(host, 1).await?;
-        }
-        Case::Admission(case) => {
-            let mut owner = owner;
-            let reason = match case {
-                AdmissionCase::MissingPermission => {
-                    owner
-                        .permissions
-                        .retain(|permission| permission != "approval:decide");
-                    "notPermitted"
-                }
-                AdmissionCase::OutdatedFloor => {
-                    owner.revision -= 1;
-                    "refreshRequired"
-                }
-                AdmissionCase::MissingFloor => {
-                    host.write(
-                        "DELETE FROM signin_person_authorization_floors WHERE person_id=?1",
-                        vec![text(OWNER)],
-                    )
-                    .await?;
-                    "authorizationSyncRequired"
-                }
-                AdmissionCase::Watermark => {
-                    host.write(
-                        "UPDATE signin_authorization_floors SET request_reject_through_ms=?1",
-                        vec![SqlValue::Integer((NOW_SECONDS * 1000).try_into()?)],
-                    )
-                    .await?;
-                    "requestTime"
-                }
-                AdmissionCase::InactivePerson => {
-                    publish_person_floor(host, 5, "inactive").await?;
-                    owner.revision = 5;
-                    "notPermitted"
-                }
-            };
-            expect(
-                read(&id(10)).send(host, &owner).await?,
-                200,
-                refusal(reason),
-            )?;
-            assert_proof_count(host, 0).await?;
-        }
+        Case::Admission(case) => socket_cases::admission(host, owner, case).await?,
         Case::Expanded(case) => expanded_coverage::check_expanded(host, owner, case).await?,
         Case::Retained(case) => retained_cases::run_retained_case(host, &owner, case).await?,
-        #[cfg(feature = "session-link-test-support")]
         Case::SocketRoundTrip => socket_cases::one_connection(host).await?,
-        #[cfg(feature = "session-link-test-support")]
         Case::SocketAuthority => socket_cases::scoped_authority(host).await?,
-        #[cfg(feature = "session-link-test-support")]
-        Case::SocketRetainedSignedAnswer => socket_cases::shared_retained_answer(host).await?,
-        #[cfg(feature = "session-link-test-support")]
+        Case::SocketRetainedAnswer => socket_cases::shared_retained_answer(host).await?,
         Case::SocketExpiryAtApplyingSample => {
             socket_cases::expired_at_applying_sample(host).await?
         }
@@ -533,18 +406,14 @@ async fn check_replay(
     let first = call.send(host, &owner).await?;
     match case {
         ReplayCase::AfterPermissionLoss => {
-            let lost = expect_status(first, 503)?;
-            require(
-                lost.is_empty(),
-                &json!({"expected":"no decision delivered"}),
-            )?;
+            assert_lost_reply(first)?;
             assert_count(
                 host,
                 "SELECT COUNT(*) FROM approval_requests WHERE record_state='ended'",
                 1,
             )
             .await?;
-            assert_proof_count(host, 1).await?;
+            assert_no_proof_rows(host).await?;
             let rows = host.read("SELECT answer FROM runtime_request_log").await?;
             let [row] = rows.as_slice() else {
                 return Err("expected the only retained answer".into());
@@ -559,32 +428,27 @@ async fn check_replay(
                 .retain(|permission| permission != "approval:decide");
             let retry = call.send(host, &owner).await?;
             require(
-                retry.1 == retained.as_bytes(),
+                retry.clone().answer()? == retained.as_bytes(),
                 &json!({"expected":"exact retained response bytes"}),
             )?;
-            expect(retry, 200, saved(answer))?;
+            expect(retry, saved(answer))?;
             let altered = decide(
                 &request,
                 operation,
                 &json!({"kind":"approval","optionId":2}),
             );
-            expect(
-                altered.send(host, &owner).await?,
-                200,
-                refusal("notPermitted"),
-            )?;
-            expect(
+            assert_eq!(altered.send(host, &owner).await?, not_permitted());
+            assert_eq!(
                 decide(&request, &id(101), answer)
                     .send(host, &owner)
                     .await?,
-                200,
-                refusal("notPermitted"),
-            )?;
+                not_permitted()
+            );
         }
         ReplayCase::Exact => {
             let retry = call.send(host, &owner).await?;
             require(first == retry, &json!({"expected":"exact saved response"}))?;
-            expect(retry, 200, saved(answer))?;
+            expect(retry, saved(answer))?;
         }
         ReplayCase::OperationConflict => {
             let different = decide(
@@ -594,7 +458,6 @@ async fn check_replay(
             );
             expect(
                 different.send(host, &owner).await?,
-                200,
                 json!({"kind":"operationConflict"}),
             )?;
             let retry = call.send(host, &owner).await?;
@@ -615,26 +478,12 @@ async fn publish_person_floor(
 ) -> ConformanceResult<()> {
     let body = json!({"kind":"person","organizationId":ORGANIZATION,"personId":OWNER,
         "subjectId":OWNER_SUBJECT,"revision":revision,"state":state});
-    expect_status(host.post(REVISIONS, &body, Vec::new()).await?, 200)?;
+    expect_http_status(host.post_revision(&body).await?, 200)?;
     Ok(())
 }
 
-async fn assert_proof_count(
-    host: &impl PersonApprovalHarness,
-    signed_count: i64,
-) -> ConformanceResult<()> {
-    #[cfg(feature = "session-link-test-support")]
-    let signed_count = if host.person_socket().is_some() {
-        0
-    } else {
-        signed_count
-    };
-    assert_count(
-        host,
-        "SELECT COUNT(*) FROM admin_used_requests",
-        signed_count,
-    )
-    .await
+async fn assert_no_proof_rows(host: &impl PersonApprovalHarness) -> ConformanceResult<()> {
+    assert_count(host, "SELECT COUNT(*) FROM admin_used_requests", 0).await
 }
 
 async fn assert_count(
@@ -654,8 +503,18 @@ fn saved(answer: &Value) -> Value {
     json!({"kind":"savedDecision","decision":{"by":{"kind":"person","personId":OWNER},"answer":answer}})
 }
 
-fn refusal(reason: &str) -> Value {
-    json!({"result":"refused","reason":reason})
+fn not_permitted() -> SocketApprovalReply {
+    SocketApprovalReply::Refused {
+        reason: "notPermitted".to_owned(),
+    }
+}
+
+fn assert_lost_reply(reply: SocketApprovalReply) -> ConformanceResult<()> {
+    match reply {
+        SocketApprovalReply::Refused { reason } if reason == "centralFault" => Ok(()),
+        SocketApprovalReply::Closed { code: 1011 } => Ok(()),
+        other => Err(format!("expected no decision reply, got {other:?}").into()),
+    }
 }
 
 fn require(condition: bool, evidence: &Value) -> ConformanceResult<()> {
@@ -666,7 +525,7 @@ fn require(condition: bool, evidence: &Value) -> ConformanceResult<()> {
     }
 }
 
-fn expect_status(reply: (u16, Vec<u8>), expected: u16) -> ConformanceResult<Vec<u8>> {
+fn expect_http_status(reply: (u16, Vec<u8>), expected: u16) -> ConformanceResult<()> {
     if reply.0 != expected {
         return Err(format!(
             "expected HTTP {expected}, got {} {}",
@@ -675,11 +534,11 @@ fn expect_status(reply: (u16, Vec<u8>), expected: u16) -> ConformanceResult<Vec<
         )
         .into());
     }
-    Ok(reply.1)
+    Ok(())
 }
 
-fn expect(reply: (u16, Vec<u8>), status: u16, expected: Value) -> ConformanceResult<()> {
-    let actual: Value = serde_json::from_slice(&expect_status(reply, status)?)?;
+fn expect(reply: SocketApprovalReply, expected: Value) -> ConformanceResult<()> {
+    let actual: Value = serde_json::from_slice(&reply.answer()?)?;
     require(
         actual == expected,
         &json!({"expected":expected,"actual":actual}),

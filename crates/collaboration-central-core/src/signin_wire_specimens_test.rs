@@ -235,32 +235,14 @@ pub(super) fn invalid_specimens() -> Vec<(&'static str, WireSpecimen)> {
             .into_iter()
             .map(|(name, _, invalid)| (name, invalid)),
     )
-    .chain([
-        (
-            "ApprovalListReply",
-            wire_specimen(
-                "C3 list reply without next",
-                Serialize,
-                json!({"kind":"page","items":[]}),
-            ),
+    .chain([(
+        "FleetPermission",
+        wire_specimen(
+            "unknown organization permission",
+            Deserialize,
+            json!("organization:unknown"),
         ),
-        (
-            "ApprovalListReply",
-            wire_specimen(
-                "C3 list reply reader without next",
-                Deserialize,
-                json!({"kind":"page","items":[]}),
-            ),
-        ),
-        (
-            "FleetPermission",
-            wire_specimen(
-                "unknown organization permission",
-                Deserialize,
-                json!("organization:unknown"),
-            ),
-        ),
-    ])
+    )])
     .chain(allowance_record_negatives())
     .collect()
 }
@@ -379,4 +361,31 @@ pub(super) fn signed_intent_vector() {
         .unwrap();
     }
     assert_eq!(read_contract_json::<Value>(&path), actual);
+}
+
+pub fn fleet_permission_specimens(name: &str) -> Vec<WireSpecimen> {
+    use fleet_signin::FleetPermission;
+    assert_eq!(name, "FleetPermission");
+    [
+        FleetPermission::CreateWorkspace,
+        FleetPermission::AllowMachine,
+        FleetPermission::WithdrawMachine,
+        FleetPermission::RemoveSession,
+        FleetPermission::EnrollMachine,
+        FleetPermission::RevokeMachine,
+        FleetPermission::SetMachineTokenLifetime,
+        FleetPermission::ViewOrganization,
+        FleetPermission::ReadOrganizationAudit,
+        FleetPermission::DecideApproval,
+        FleetPermission::RepairWork,
+    ]
+    .into_iter()
+    .map(|permission| json!(permission.as_str()))
+    .enumerate()
+    .map(|(index, value)| WireSpecimen {
+        phase: Deserialize,
+        label: format!("{name} {}", index + 1),
+        value,
+    })
+    .collect()
 }

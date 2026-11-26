@@ -2,16 +2,15 @@
 #![forbid(unsafe_code)]
 
 mod approval_person_admission;
-pub mod approval_person_wire;
+pub mod approval_person_commands;
 pub mod authorization_floor_store;
 mod fleet_permission;
 pub mod person_proof_store;
 
 pub use approval_person_admission::{
     AdmittedApprovalCommand, AdmittedApprovalFacts, AdmittedApprovalPersonOperation,
-    ApprovalPersonAdmission, ApprovalPersonTransaction, ApprovalPersonVerificationInput,
-    RetainedDecisionRequest, VerifiedApprovalDecideRetry, VerifiedApprovalPersonRequest,
-    admit_person_link_approval,
+    ApprovalPersonAdmission, ApprovalPersonTransaction, RetainedDecisionRequest,
+    VerifiedApprovalDecideRetry, admit_person_link_approval,
 };
 pub use fleet_permission::FleetPermission;
 

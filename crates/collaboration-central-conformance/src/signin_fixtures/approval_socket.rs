@@ -54,7 +54,7 @@ pub struct PersonApprovalSocket {
     now_seconds: i64,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SocketApprovalReply {
     Answer(Vec<u8>),
     Refused { reason: String },

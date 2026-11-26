@@ -1,12 +1,11 @@
-//! Independent boundary assertions for the signed C3 routes on both hosts.
+//! Approval decision and time-boundary assertions on both hosts.
 use central_storage::SqlValue;
 use serde_json::{Value, json};
 
-use super::request::{decide, decide_in_organization, list, read};
+use super::request::{decide, list, read};
 use super::{
     AnswerClass, InitialApproval, NOW_SECONDS, ORGANIZATION, Person, PersonApprovalHarness,
-    REVISIONS, assert_count, assert_proof_count, expect, expect_status, fresh_request_id, id,
-    refusal, require, saved, seed, time,
+    assert_count, assert_no_proof_rows, expect, expect_http_status, id, require, saved, seed, time,
 };
 use crate::ConformanceResult;
 use crate::signin_fixtures::approval_rows::seed_in_organization;
@@ -16,29 +15,11 @@ const OTHER_PERSON: &str = "019f0000-0000-7000-8000-00000000e202";
 const OTHER_SUBJECT: &str = "019f0000-0000-7000-8000-00000000e203";
 
 pub enum ExpandedCase {
-    Binding(SignedMutation),
     SparseWaitingPage,
     OtherDestinationAnswer,
     StoredMilliseconds,
     SignedInDecisions,
-    Applying(ClockBoundary),
-}
-
-#[derive(Clone, Copy)]
-pub enum SignedMutation {
-    Option,
-    RequestId,
-    Organization,
-    OperationId,
-    Route,
-    Filter,
-    Cursor,
-}
-
-#[derive(Clone, Copy)]
-pub enum ClockBoundary {
-    TokenExpiry,
-    DeadlineCutoff,
+    ApplyingDeadline,
 }
 
 pub(super) async fn check_expanded(
@@ -47,98 +28,12 @@ pub(super) async fn check_expanded(
     case: ExpandedCase,
 ) -> ConformanceResult<()> {
     match case {
-        ExpandedCase::Binding(mutation) => check_binding(host, &owner, mutation).await,
         ExpandedCase::SparseWaitingPage => check_sparse_page(host, &owner).await,
         ExpandedCase::OtherDestinationAnswer => check_other_destination(host, &owner).await,
         ExpandedCase::StoredMilliseconds => check_stored_milliseconds(host, &owner).await,
         ExpandedCase::SignedInDecisions => check_signed_in_decisions(host, owner).await,
-        ExpandedCase::Applying(boundary) => check_applying_boundary(host, owner, boundary).await,
+        ExpandedCase::ApplyingDeadline => check_applying_deadline(host, &owner).await,
     }
-}
-
-async fn check_binding(
-    host: &impl PersonApprovalHarness,
-    owner: &Person,
-    case: SignedMutation,
-) -> ConformanceResult<()> {
-    let request = seed(host, 10, AnswerClass::Once, InitialApproval::Waiting).await?;
-    let second = seed(host, 11, AnswerClass::Once, InitialApproval::Waiting).await?;
-    let operation = id(100);
-    let answer = AnswerClass::Once.answer();
-    let mut call = match case {
-        SignedMutation::Organization => {
-            decide_in_organization(FOREIGN_ORGANIZATION, &request, &operation, &answer)
-        }
-        SignedMutation::Route => read(&request),
-        SignedMutation::Filter => list("waiting", None),
-        SignedMutation::Cursor => list("waiting", Some(&second)),
-        SignedMutation::Option | SignedMutation::RequestId | SignedMutation::OperationId => {
-            decide(&request, &operation, &answer)
-        }
-    };
-    let actual_path = call.path;
-    if matches!(case, SignedMutation::Route) {
-        // Sign the same valid read intent and body for a different private route.
-        call.path = list("waiting", None).path;
-    }
-    let headers = call.headers(owner, &fresh_request_id(NOW_SECONDS)?, &|_| {})?;
-    call.path = actual_path;
-
-    let field_change = match case {
-        SignedMutation::Option => Some(("answer", json!({"kind":"approval","optionId":2}))),
-        SignedMutation::RequestId => Some(("requestId", json!(second))),
-        SignedMutation::Organization => Some(("organization", json!(ORGANIZATION))),
-        SignedMutation::OperationId => Some(("operationId", json!(id(101)))),
-        SignedMutation::Filter => Some(("filter", json!("all"))),
-        SignedMutation::Cursor => Some(("cursor", json!(request))),
-        SignedMutation::Route => None,
-    };
-    let mut changed = call.body.clone();
-    if let Some((name, value)) = field_change {
-        changed
-            .as_object_mut()
-            .ok_or("fixture request must be an object")?
-            .insert(name.to_owned(), value);
-    }
-
-    let before = snapshot(host).await?;
-    let reply = host.post(actual_path, &changed, headers.clone()).await?;
-    require(
-        reply == (401, Vec::new()),
-        &json!({"expectedStatus":401, "actualStatus":reply.0, "bodyBytes":reply.1.len()}),
-    )?;
-    require_unchanged(host, before).await?;
-
-    // The matching request succeeds. For route and organization, sign the
-    // correct target; the other cases can spend the exact rejected proof.
-    let control = match case {
-        SignedMutation::Organization => {
-            decide(&request, &operation, &answer)
-                .send(host, owner)
-                .await?
-        }
-        SignedMutation::Route => call.send(host, owner).await?,
-        SignedMutation::Option
-        | SignedMutation::RequestId
-        | SignedMutation::OperationId
-        | SignedMutation::Filter
-        | SignedMutation::Cursor => host.post(call.path, &call.body, headers).await?,
-    };
-    let body = expect_status(control, 200)?;
-    let reply: Value = serde_json::from_slice(&body)?;
-    let kind = match case {
-        SignedMutation::Route => "request",
-        SignedMutation::Filter | SignedMutation::Cursor => "page",
-        SignedMutation::Option
-        | SignedMutation::RequestId
-        | SignedMutation::Organization
-        | SignedMutation::OperationId => "savedDecision",
-    };
-    require(
-        reply.get("kind").and_then(Value::as_str) == Some(kind),
-        &reply,
-    )?;
-    assert_proof_count(host, 1).await
 }
 
 async fn check_sparse_page(
@@ -178,12 +73,10 @@ async fn check_sparse_page(
     let first_page = list("waiting", None).send(host, owner).await?;
     expect(
         first_page,
-        200,
         json!({"kind":"page","items":first_items,"next":id(2)}),
     )?;
     expect(
         list("waiting", Some(&id(2))).send(host, owner).await?,
-        200,
         json!({"kind":"page","items":[summary(1)],"next":null}),
     )?;
     let ended = host
@@ -195,7 +88,7 @@ async fn check_sparse_page(
     )?;
     assert_count(host, "SELECT COUNT(*) FROM actor_persons", 0).await?;
     assert_count(host, "SELECT COUNT(*) FROM runtime_request_log", 0).await?;
-    assert_proof_count(host, 2).await
+    assert_no_proof_rows(host).await
 }
 
 async fn check_other_destination(
@@ -206,12 +99,10 @@ async fn check_other_destination(
     let mut giver = Person::owner(ORGANIZATION, NOW_SECONDS)?;
     giver.id = OTHER_PERSON.to_owned();
     giver.subject = OTHER_SUBJECT.to_owned();
-    expect_status(
-        host.post(
-            REVISIONS,
+    expect_http_status(
+        host.post_revision(
             &json!({"kind":"person","organizationId":ORGANIZATION,"personId":OTHER_PERSON,
                 "subjectId":OTHER_SUBJECT,"revision":giver.revision,"state":"active"}),
-            Vec::new(),
         )
         .await?,
         200,
@@ -223,7 +114,6 @@ async fn check_other_destination(
         decide(&request, &id(100), &answer)
             .send(host, &giver)
             .await?,
-        200,
         json!({"kind":"savedDecision","decision":{"answer":answer,"by":by}}),
     )?;
     let view = |ending| -> ConformanceResult<Value> {
@@ -237,12 +127,10 @@ async fn check_other_destination(
     };
     expect(
         read(&request).send(host, owner).await?,
-        200,
         view(json!({"kind":"standing","ending":{"kind":"decided","by":by}}))?,
     )?;
     expect(
         read(&request).send(host, &giver).await?,
-        200,
         view(
             json!({"kind":"giver","decision":{"by":by,"answer":{"kind":"answered",
             "fields":[{"fieldId":1,"value":{"kind":"boolean","value":true}}]}}}),
@@ -250,86 +138,29 @@ async fn check_other_destination(
     )?;
     assert_count(host, "SELECT COUNT(*) FROM actor_persons", 1).await?;
     assert_count(host, "SELECT COUNT(*) FROM runtime_request_log", 1).await?;
-    assert_proof_count(host, 3).await
+    assert_no_proof_rows(host).await
 }
 
-async fn check_applying_boundary(
+async fn check_applying_deadline(
     host: &impl PersonApprovalHarness,
-    owner: Person,
-    case: ClockBoundary,
+    owner: &Person,
 ) -> ConformanceResult<()> {
-    let (answer_class, initial, advance_ms, expected) = match case {
-        ClockBoundary::TokenExpiry => (
-            AnswerClass::Once,
-            InitialApproval::Waiting,
-            1_000,
-            refusal("expired"),
-        ),
-        ClockBoundary::DeadlineCutoff => (
-            AnswerClass::Once,
-            InitialApproval::DeadlineInOneSecond,
-            1_000,
-            json!({"kind":"tooLate"}),
-        ),
-    };
-
-    let request = seed(host, 10, answer_class, initial).await?;
+    let answer_class = AnswerClass::Once;
+    let request = seed(host, 10, answer_class, InitialApproval::DeadlineInOneSecond).await?;
     let call = decide(&request, &id(100), &answer_class.answer());
-    let headers = call.headers(&owner, &fresh_request_id(NOW_SECONDS)?, &|claims| {
-        if matches!(case, ClockBoundary::TokenExpiry)
-            && let Some(fields) = claims.as_object_mut()
-        {
-            fields.insert("exp".to_owned(), json!(NOW_SECONDS + 1));
-        }
-    })?;
-    let before = snapshot(host).await?;
+    let mut socket = host.person_socket().connect(owner).await?;
     let reply = host
-        .post_after_verification(call.path, &call.body, headers, advance_ms)
+        .advance_at_approval_sample(call.call(&mut socket), 1_000)
         .await?;
-    expect(reply, 200, expected)?;
-
-    match case {
-        ClockBoundary::TokenExpiry => require_unchanged(host, before).await,
-        ClockBoundary::DeadlineCutoff => {
-            assert_count(
-                host,
-                "SELECT COUNT(*) FROM approval_requests WHERE record_state='ended' AND decided_operation_id IS NULL AND delivery_state='owed'",
-                1,
-            )
-            .await?;
-            assert_proof_count(host, 1).await?;
-            assert_count(host, "SELECT COUNT(*) FROM runtime_request_log", 1).await
-        }
-    }
-}
-
-/// Compare both domain rows and proof, actor, and operation-log writes.
-type ApplySnapshot = [Vec<Vec<SqlValue>>; 3];
-
-async fn snapshot(host: &impl PersonApprovalHarness) -> ConformanceResult<ApplySnapshot> {
-    Ok([
-        host.read("SELECT * FROM approval_requests ORDER BY request_id")
-            .await?,
-        host.read("SELECT * FROM approval_request_destinations ORDER BY approval_destination_id")
-            .await?,
-        host.read(
-            "SELECT (SELECT COUNT(*) FROM admin_used_requests),
-                    (SELECT COUNT(*) FROM runtime_request_log),
-                    (SELECT COUNT(*) FROM actor_persons),
-                    (SELECT COUNT(*) FROM approval_applying_time)",
-        )
-        .await?,
-    ])
-}
-
-async fn require_unchanged(
-    host: &impl PersonApprovalHarness,
-    before: ApplySnapshot,
-) -> ConformanceResult<()> {
-    require(
-        snapshot(host).await? == before,
-        &json!({"expected":"no approval, proof, actor, operation-log, or floor write"}),
+    expect(reply, json!({"kind":"tooLate"}))?;
+    assert_count(
+        host,
+        "SELECT COUNT(*) FROM approval_requests WHERE record_state='ended' AND decided_operation_id IS NULL AND delivery_state='owed'",
+        1,
     )
+    .await?;
+    assert_no_proof_rows(host).await?;
+    assert_count(host, "SELECT COUNT(*) FROM runtime_request_log", 1).await
 }
 
 async fn check_signed_in_decisions(
@@ -353,7 +184,6 @@ async fn check_signed_in_decisions(
             decide(&request, &operation, &answer)
                 .send(host, &owner)
                 .await?,
-            200,
             saved(&answer),
         )?;
     }
@@ -363,7 +193,7 @@ async fn check_signed_in_decisions(
         6,
     )
     .await?;
-    assert_proof_count(host, 6).await?;
+    assert_no_proof_rows(host).await?;
     assert_count(host, "SELECT COUNT(*) FROM runtime_request_log", 6).await?;
     assert_count(host, "SELECT COUNT(*) FROM actor_persons", 1).await
 }
@@ -387,13 +217,13 @@ async fn check_stored_milliseconds(
     .await?;
     let answer = class.answer();
     let decide_now = decide(&request, &id(100), &answer);
-    let headers = decide_now.headers(owner, &fresh_request_id(NOW_SECONDS)?, &|_| {})?;
+    let mut socket = host.person_socket().connect(owner).await?;
 
-    // Advance only after the valid signed call reaches the applying hold.
+    // Advance only after the socket call reaches the applying hold.
     let first = host
-        .post_after_verification(decide_now.path, &decide_now.body, headers, 456)
+        .advance_at_approval_sample(decide_now.call(&mut socket), 456)
         .await?;
-    expect(first, 200, saved(&answer))?;
+    expect(first, saved(&answer))?;
     let stored = host
         .read("SELECT first_saved_at, deadline_ms, ended_at FROM approval_requests")
         .await?;
@@ -409,7 +239,6 @@ async fn check_stored_milliseconds(
 
     expect(
         list("all", None).send(host, owner).await?,
-        200,
         json!({"kind":"page","items":[{
             "requestId":request, "kind":"unprovenCall", "state":{"kind":"ended","ending":"decided"},
             "raisedAt":RAISED_AT, "deadline":DEADLINE
@@ -417,7 +246,6 @@ async fn check_stored_milliseconds(
     )?;
     expect(
         read(&request).send(host, owner).await?,
-        200,
         json!({"kind":"request", "view":{
             "kind":"unprovenCall", "requestId":request,
             "offer":{"operation":{"kind":"endSessionForGood","sessionId":"019f0000-0000-7000-8000-00000000c304"}},
@@ -431,7 +259,6 @@ async fn check_stored_milliseconds(
     let earlier_decision = losing_decide.send(host, owner).await?;
     expect(
         earlier_decision.clone(),
-        200,
         json!({"kind":"alreadyDecided","by":{"kind":"person","personId":owner.id},"at":ENDED_AT}),
     )?;
     require(

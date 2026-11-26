@@ -4,11 +4,15 @@ use crate::ConformanceResult;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use ring::signature::{Ed25519KeyPair, KeyPair};
 use serde_json::{Value, json};
+#[cfg(feature = "session-link-test-support")]
 mod approval_case_registration;
+#[cfg(feature = "session-link-test-support")]
 mod approval_harness;
-mod approval_preflight;
-pub use approval_preflight::check_approval_preflight;
+mod removed_approval_routes;
+pub use removed_approval_routes::check_removed_approval_routes;
+#[cfg(feature = "session-link-test-support")]
 pub mod approval_routes;
+#[cfg(feature = "session-link-test-support")]
 mod approval_rows;
 #[cfg(feature = "session-link-test-support")]
 pub mod approval_socket;

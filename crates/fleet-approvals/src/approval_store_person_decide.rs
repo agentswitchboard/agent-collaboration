@@ -11,9 +11,7 @@ use fleet_request_log::{
 use fleet_runtime_ports::{stored_values::json, workspace_decode_error::corrupt};
 use fleet_signin::{
     ApprovalPersonAdmission, VerifiedApprovalDecideRetry,
-    approval_person_wire::{
-        ApprovalDecideReply, ApprovalDecideRequest, ApprovalInvalidReason, ApprovalPersonOperation,
-    },
+    approval_person_commands::{ApprovalDecideReply, ApprovalDecideRequest, ApprovalInvalidReason},
 };
 use workspace_ids::RequestId;
 
@@ -86,9 +84,8 @@ where
         {
             return Err(corrupt("approval_store.person_organization").into());
         }
-        let digest = ApprovalPersonOperation::Decide(request.clone())
-            .intent()
-            .digest()
+        let digest = request
+            .intent_digest()
             .map_err(|_| corrupt("runtime_request_log.approval_intent"))?;
         let address = reply_address(admission);
         let at = self.sample_applying_time()?;

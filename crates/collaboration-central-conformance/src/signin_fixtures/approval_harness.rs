@@ -1,4 +1,4 @@
-//! Shared harness for driving the signed approval routes and reading their owning rows.
+//! Shared harness for driving the person approval socket and reading their owning rows.
 use std::future::Future;
 
 use central_storage::SqlValue;
@@ -7,16 +7,11 @@ use serde_json::Value;
 use crate::ConformanceResult;
 
 pub trait PersonApprovalHarness {
-    #[cfg(feature = "session-link-test-support")]
-    fn person_socket(&self) -> Option<super::approval_socket::PersonApprovalEndpoint<'_>> {
-        None
-    }
+    fn person_socket(&self) -> super::approval_socket::PersonApprovalEndpoint<'_>;
 
-    fn post(
+    fn post_revision(
         &self,
-        path: &str,
         body: &Value,
-        headers: Vec<(&'static str, String)>,
     ) -> impl Future<Output = ConformanceResult<(u16, Vec<u8>)>>;
 
     /// Advance the injected clock between transport admission and the applying sample.
@@ -25,16 +20,6 @@ pub trait PersonApprovalHarness {
         send: impl Future<Output = ConformanceResult<Reply>>,
         advance_ms: u64,
     ) -> impl Future<Output = ConformanceResult<Reply>>;
-
-    fn post_after_verification(
-        &self,
-        path: &str,
-        body: &Value,
-        headers: Vec<(&'static str, String)>,
-        advance_ms: u64,
-    ) -> impl Future<Output = ConformanceResult<(u16, Vec<u8>)>> {
-        self.advance_at_approval_sample(self.post(path, body, headers), advance_ms)
-    }
 
     fn write(
         &self,

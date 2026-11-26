@@ -1,5 +1,9 @@
 # Release Notes
 
+## 0.1.162
+
+- Central serves a person's approval list, read, and decide calls over their own WebSocket connection. The signed HTTP approval routes have been removed.
+
 ## 0.1.161
 
 - A Router sends only housekeeping on a connection to Central until Central acknowledges its run registration. Outgoing messages, receipts, status questions, and recovery probes are sent only after registration.

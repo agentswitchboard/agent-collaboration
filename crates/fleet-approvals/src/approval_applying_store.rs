@@ -35,13 +35,13 @@ mod notice_recovery;
 mod parent_reads;
 pub use notice_recovery::{ApprovalNoticeCursor, ApprovalNoticeRecovery};
 pub use parent_reads::SessionReadApply;
+#[path = "approval_store_person_application.rs"]
+mod person_application;
 #[path = "approval_store_person_commands.rs"]
 mod person_commands;
 #[path = "approval_store_person_decide.rs"]
 mod person_decide;
-#[path = "approval_store_signed_person.rs"]
-mod signed_person;
-pub use signed_person::{
+pub use person_application::{
     PersonApprovalStoreOutput, PersonApprovalStoreReply, apply_person_command,
 };
 #[path = "approval_store_run_commands.rs"]

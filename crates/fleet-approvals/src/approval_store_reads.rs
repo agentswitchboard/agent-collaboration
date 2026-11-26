@@ -8,7 +8,7 @@ use fleet_engine::owner_sql::CheckedStorage;
 use fleet_engine::{checked_engine_statement, checked_subject_projection};
 use fleet_identity_protocol::OrganizationId;
 use fleet_runtime_ports::workspace_decode_error::corrupt;
-use fleet_signin::approval_person_wire::ApprovalListFilter;
+use fleet_signin::approval_person_commands::ApprovalListFilter;
 use workspace_ids::{ApprovalRequestId, RouterRunId};
 
 use crate::{
