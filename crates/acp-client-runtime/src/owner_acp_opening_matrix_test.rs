@@ -16,225 +16,9 @@ use switchboard_harness_contracts::{CloseUncertainty, ReservedReply};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-// The expected machine is expressed by lifecycle responsibility, independently
-// of the declaration macro and without using a production transition adapter.
-fn expected(from: P, event: E) -> Option<P> {
-    use E as Event;
-    use P as Phase;
-    let phase = match event {
-        Event::ConnectionRetired
-            if !matches!(
-                from,
-                Phase::UnboundIdle | Phase::BoundIdle | Phase::Terminal
-            ) =>
-        {
-            Phase::Terminal
-        }
-        Event::RouteRemoved
-            if matches!(
-                from,
-                Phase::QueuedRestore
-                    | Phase::AwaitingRestore
-                    | Phase::CapturingReplay
-                    | Phase::HeldRestore
-                    | Phase::PreparedRestore
-                    | Phase::StartingReader
-                    | Phase::Active
-                    | Phase::OfferingClose
-                    | Phase::ClosingRestore
-                    | Phase::ClosingLive
-                    | Phase::CloseRefusedLive
-                    | Phase::Readmitting
-            ) =>
-        {
-            Phase::RouteLost
-        }
-        Event::Retire => match from {
-            Phase::AwaitingCreate | Phase::AwaitingRestore | Phase::ClosingRestore => {
-                Phase::RetiredAwaitingReply
-            }
-            Phase::UnboundIdle
-            | Phase::BoundIdle
-            | Phase::RetiredAwaitingReply
-            | Phase::Terminal => return None,
-            _ => Phase::Terminal,
-        },
-        Event::WriterStopped => match from {
-            Phase::AwaitingCreate
-            | Phase::AwaitingRestore
-            | Phase::ConfiguringCreate
-            | Phase::ClosingRestore
-            | Phase::ClosingLive
-            | Phase::RouteLost => Phase::StoppedAwaitingReply,
-            Phase::QueuedCreate
-            | Phase::QueuedRestore
-            | Phase::HeldCreate
-            | Phase::ConfiguredCreate
-            | Phase::CapturingReplay
-            | Phase::HeldRestore
-            | Phase::PreparedRestore
-            | Phase::StartingReader
-            | Phase::Active
-            | Phase::OfferingClose
-            | Phase::CloseRefusedLive
-            | Phase::Readmitting => Phase::Terminal,
-            Phase::RetiredAwaitingReply => from,
-            _ => return None,
-        },
-        Event::WriterStoppedAfterOffer
-            if matches!(
-                from,
-                Phase::QueuedCreate | Phase::QueuedRestore | Phase::OfferingClose
-            ) =>
-        {
-            Phase::StoppedAwaitingReply
-        }
-        Event::WriterStoppedWithoutReceipt if from == Phase::RouteLost => Phase::Terminal,
-        Event::WaitOpening
-            if matches!(
-                from,
-                Phase::QueuedCreate
-                    | Phase::QueuedRestore
-                    | Phase::AwaitingCreate
-                    | Phase::ConfiguringCreate
-                    | Phase::AwaitingRestore
-                    | Phase::CapturingReplay
-                    | Phase::StartingReader
-            ) =>
-        {
-            from
-        }
-        Event::WaitClose
-            if matches!(
-                from,
-                Phase::OfferingClose
-                    | Phase::ClosingRestore
-                    | Phase::ClosingLive
-                    | Phase::Readmitting
-            ) =>
-        {
-            from
-        }
-        Event::CloseAsked
-            if matches!(
-                from,
-                Phase::AwaitingRestore
-                    | Phase::CapturingReplay
-                    | Phase::HeldRestore
-                    | Phase::PreparedRestore
-                    | Phase::Active
-            ) =>
-        {
-            Phase::OfferingClose
-        }
-        Event::CloseConfirmed | Event::CloseUnknown
-            if matches!(
-                from,
-                Phase::ClosingRestore | Phase::ClosingLive | Phase::RouteLost
-            ) =>
-        {
-            Phase::Terminal
-        }
-        Event::CloseRefused if matches!(from, Phase::ClosingRestore | Phase::RouteLost) => {
-            Phase::Terminal
-        }
-        Event::ReaderStopped
-            if matches!(
-                from,
-                Phase::ClosingLive | Phase::OfferingClose | Phase::Readmitting
-            ) =>
-        {
-            Phase::RouteLost
-        }
-        Event::OpenFailed
-            if matches!(
-                from,
-                Phase::AwaitingCreate | Phase::AwaitingRestore | Phase::CapturingReplay
-            ) =>
-        {
-            Phase::Terminal
-        }
-        Event::WorkerExited if matches!(from, Phase::AwaitingCreate | Phase::AwaitingRestore) => {
-            Phase::RetiredAwaitingReply
-        }
-        Event::WorkerExited
-            if matches!(from, Phase::ConfiguringCreate | Phase::CapturingReplay) =>
-        {
-            Phase::Terminal
-        }
-        Event::OpenFailed | Event::WorkerExited if from == Phase::RouteLost => Phase::RouteLost,
-        Event::ActivationFailed
-            if matches!(
-                from,
-                Phase::ConfiguredCreate | Phase::PreparedRestore | Phase::StartingReader
-            ) =>
-        {
-            Phase::Terminal
-        }
-        Event::Activate if matches!(from, Phase::ConfiguredCreate | Phase::PreparedRestore) => {
-            Phase::StartingReader
-        }
-        _ => match (from, event) {
-            (Phase::UnboundIdle, Event::OpenCreate) => Phase::QueuedCreate,
-            (Phase::UnboundIdle, Event::OpenRestore) => Phase::QueuedRestore,
-            (Phase::BoundIdle, Event::OpenRestore) => Phase::QueuedRestore,
-            (Phase::QueuedCreate, Event::WriterAccepted) => Phase::AwaitingCreate,
-            (Phase::QueuedRestore, Event::WriterAccepted) => Phase::AwaitingRestore,
-            (Phase::QueuedCreate | Phase::QueuedRestore, Event::WriterRefused) => Phase::Terminal,
-            (Phase::AwaitingCreate, Event::ProviderCreated) => Phase::HeldCreate,
-            (Phase::HeldCreate, Event::Configure) => Phase::ConfiguringCreate,
-            (Phase::ConfiguringCreate, Event::Configured) => Phase::ConfiguredCreate,
-            (Phase::ConfiguringCreate, Event::ClosedDuringConfigure) => Phase::Terminal,
-            (Phase::ConfiguredCreate, Event::AcceptCreatedSettings) => from,
-            (Phase::AwaitingRestore, Event::RestoreLoadReply) => Phase::CapturingReplay,
-            (Phase::AwaitingRestore, Event::RestoreResumeReply) => Phase::HeldRestore,
-            (Phase::CapturingReplay, Event::ReplayAdmitted) => Phase::HeldRestore,
-            (Phase::CapturingReplay, Event::ReplayRejected) => Phase::Terminal,
-            (
-                Phase::HeldRestore,
-                Event::PutSettingBack | Event::SetterReserved | Event::SetterDone,
-            ) => from,
-            (Phase::HeldRestore, Event::AcceptSettings) => Phase::PreparedRestore,
-            (Phase::StartingReader, Event::ReaderAccepted) => Phase::Active,
-            (Phase::Active, Event::KeepActive) => from,
-            (Phase::Active, Event::ReaderStopped) => Phase::Terminal,
-            (Phase::ClosingLive, Event::CloseRefused) => Phase::CloseRefusedLive,
-            (Phase::ClosingRestore, Event::LateOpenReply) => from,
-            (Phase::OfferingClose, Event::CloseAcceptedRestore) => Phase::ClosingRestore,
-            (Phase::OfferingClose, Event::CloseAcceptedLive) => Phase::ClosingLive,
-            (Phase::OfferingClose, Event::DeferRestore) => from,
-            (Phase::OfferingClose, Event::CloseUnsentAwaiting) => Phase::AwaitingRestore,
-            (Phase::OfferingClose, Event::CloseUnsentReplay) => Phase::CapturingReplay,
-            (Phase::OfferingClose, Event::CloseUnsentHeld) => Phase::HeldRestore,
-            (Phase::OfferingClose, Event::CloseUnsentPrepared) => Phase::PreparedRestore,
-            (Phase::OfferingClose, Event::CloseUnsentActive) => Phase::Active,
-            (Phase::CloseRefusedLive, Event::AdmitAgain) => Phase::Readmitting,
-            (Phase::Readmitting, Event::Readmitted) => Phase::Active,
-            (Phase::Readmitting, Event::ReadmitFailed) => Phase::CloseRefusedLive,
-            (Phase::RetiredAwaitingReply, Event::LateOpenReply) => Phase::Terminal,
-            (Phase::RouteLost, Event::ReportRouteLost) => from,
-            (Phase::StoppedAwaitingReply, Event::FinishOnStoppedWriter) => Phase::Terminal,
-            (Phase::StoppedAwaitingReply, Event::WriterAccepted | Event::StopOnWriterLoss) => from,
-            _ => return None,
-        },
-    };
-    Some(phase)
-}
-
-#[test]
-fn every_declared_pair_matches_the_independent_opening_matrix() {
-    for &phase in P::ALL {
-        for &edge in E::ALL {
-            assert_eq!(
-                OpeningPolicy::transition(&phase, edge)
-                    .ok()
-                    .map(|(next, _)| next),
-                expected(phase, edge),
-                "independent declaration for {phase:?} + {edge:?}",
-            );
-        }
-    }
-}
+#[path = "owner_acp_opening_matrix_expectations.rs"]
+mod expectations;
+use expectations::{expected, expected_actions};
 
 struct Fixture {
     connection: ConnectionTo<Agent>,
@@ -410,7 +194,51 @@ impl Fixture {
                     E::CloseUnsentReplay => S::PublishingReplay(self.owned_restore()),
                     E::CloseUnsentHeld => S::HeldRestore(self.owned_restore()),
                     E::CloseUnsentPrepared => S::PreparedRestore(self.owned_restore()),
-                    _ => S::AwaitingRestore(run),
+                    E::OpenCreate
+                    | E::OpenRestore
+                    | E::WriterAccepted
+                    | E::WriterRefused
+                    | E::ProviderCreated
+                    | E::Configure
+                    | E::Configured
+                    | E::ClosedDuringConfigure
+                    | E::RestoreLoadReply
+                    | E::RestoreResumeReply
+                    | E::ReplayAdmitted
+                    | E::ReplayRejected
+                    | E::OpenFailed
+                    | E::PutSettingBack
+                    | E::SetterReserved
+                    | E::SetterDone
+                    | E::AcceptSettings
+                    | E::AcceptCreatedSettings
+                    | E::Activate
+                    | E::ReaderAccepted
+                    | E::ActivationFailed
+                    | E::CloseAsked
+                    | E::CloseAcceptedRestore
+                    | E::DeferRestore
+                    | E::CloseUnsentAwaiting
+                    | E::CloseConfirmed
+                    | E::CloseRefused
+                    | E::CloseUnknown
+                    | E::AdmitAgain
+                    | E::Readmitted
+                    | E::ReadmitFailed
+                    | E::Retire
+                    | E::RouteRemoved
+                    | E::FinishOnStoppedWriter
+                    | E::LateOpenReply
+                    | E::WorkerExited
+                    | E::WriterStopped
+                    | E::WriterStoppedAfterOffer
+                    | E::WriterStoppedWithoutReceipt
+                    | E::ConnectionRetired
+                    | E::WaitOpening
+                    | E::WaitClose
+                    | E::KeepActive
+                    | E::ReportRouteLost
+                    | E::StopOnWriterLoss => S::AwaitingRestore(run),
                 };
                 S::OfferingClose {
                     origin: Box::new(origin),
@@ -441,7 +269,52 @@ impl Fixture {
                         LostReceipt::Close(self.close.attempt)
                     }
                     E::WriterStoppedWithoutReceipt | E::ReportRouteLost => LostReceipt::None,
-                    _ => LostReceipt::Open,
+                    E::OpenCreate
+                    | E::OpenRestore
+                    | E::WriterAccepted
+                    | E::WriterRefused
+                    | E::ProviderCreated
+                    | E::Configure
+                    | E::Configured
+                    | E::ClosedDuringConfigure
+                    | E::RestoreLoadReply
+                    | E::RestoreResumeReply
+                    | E::ReplayAdmitted
+                    | E::ReplayRejected
+                    | E::OpenFailed
+                    | E::PutSettingBack
+                    | E::SetterReserved
+                    | E::SetterDone
+                    | E::AcceptSettings
+                    | E::AcceptCreatedSettings
+                    | E::Activate
+                    | E::ReaderAccepted
+                    | E::ReaderStopped
+                    | E::ActivationFailed
+                    | E::CloseAsked
+                    | E::CloseAcceptedRestore
+                    | E::CloseAcceptedLive
+                    | E::DeferRestore
+                    | E::CloseUnsentAwaiting
+                    | E::CloseUnsentReplay
+                    | E::CloseUnsentHeld
+                    | E::CloseUnsentPrepared
+                    | E::CloseUnsentActive
+                    | E::AdmitAgain
+                    | E::Readmitted
+                    | E::ReadmitFailed
+                    | E::Retire
+                    | E::RouteRemoved
+                    | E::FinishOnStoppedWriter
+                    | E::LateOpenReply
+                    | E::WorkerExited
+                    | E::WriterStopped
+                    | E::WriterStoppedAfterOffer
+                    | E::ConnectionRetired
+                    | E::WaitOpening
+                    | E::WaitClose
+                    | E::KeepActive
+                    | E::StopOnWriterLoss => LostReceipt::Open,
                 };
                 S::RouteLost { run, receipt }
             }
@@ -576,31 +449,6 @@ enum Action {
     Discard,
 }
 
-fn expected_actions(phase: P, event: E, next: P) -> Vec<Action> {
-    use Action as A;
-    match event {
-        E::Configure => vec![A::Configure],
-        E::AcceptSettings => vec![A::FenceSetter, A::ReportSettings],
-        E::AcceptCreatedSettings => vec![A::ReportSettings],
-        E::PutSettingBack => vec![A::ReserveSetter],
-        E::SetterReserved => vec![A::SendSetter],
-        E::SetterDone => vec![A::FenceSetter, A::Hold],
-        E::Activate => vec![A::Reader],
-        E::ReaderStopped => vec![A::ReaderEnded],
-        E::CloseAsked if phase == P::HeldRestore => vec![A::FenceSetter, A::OfferClose],
-        E::CloseAsked => vec![A::OfferClose],
-        E::CloseAcceptedLive | E::CloseAcceptedRestore => vec![A::ConfirmClose],
-        E::DeferRestore => vec![A::Wait],
-        E::AdmitAgain => vec![A::Readmit],
-        E::LateOpenReply => vec![A::Discard],
-        E::OpenFailed | E::WorkerExited if phase == P::RouteLost => vec![A::Discard],
-        E::RouteRemoved => vec![A::Remove],
-        _ if next == P::StoppedAwaitingReply && event != E::WriterAccepted => vec![A::ReleaseAfter],
-        _ if matches!(next, P::Terminal | P::RetiredAwaitingReply) => vec![A::Remove],
-        _ => vec![A::Hold],
-    }
-}
-
 fn actual_actions(effect: &Effect, fixture: &Fixture, instance: &OpeningInstance) -> Vec<Action> {
     use Action as A;
     match effect {
@@ -663,7 +511,14 @@ fn actual_actions(effect: &Effect, fixture: &Fixture, instance: &OpeningInstance
         Effect::Deferred => vec![A::Wait],
         Effect::Discarded(_) => vec![A::Discard],
         Effect::DropSignal(_, next) => actual_actions(next, fixture, instance),
-        _ => panic!("unstated effect in owned matrix"),
+        Effect::OfferCreate(_)
+        | Effect::OfferRestore(_)
+        | Effect::Fault(_)
+        | Effect::ReleaseBefore(..)
+        | Effect::DiscardAfter(..)
+        | Effect::Rollback(_)
+        | Effect::RefuseSetter(_)
+        | Effect::ResolveRestore { .. } => panic!("unstated effect in owned matrix"),
     }
 }
 

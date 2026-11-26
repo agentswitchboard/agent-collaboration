@@ -1,3 +1,5 @@
+#![deny(clippy::wildcard_enum_match_arm)]
+
 //! One owned step at the ACP opening boundary.
 
 #[path = "owner_acp_opening_step.rs"]
@@ -200,11 +202,28 @@ pub(super) enum StoppedReceipt {
 }
 
 impl OpeningState {
-    fn reader_alive(&self) -> bool {
+    fn live_reader(&self) -> Option<&RunResources> {
         match self {
-            Self::Active(_) | Self::ClosingLive { .. } | Self::Readmitting { .. } => true,
-            Self::OfferingClose { origin, .. } => matches!(**origin, Self::Active(_)),
-            _ => false,
+            Self::Active(run)
+            | Self::ClosingLive { run, .. }
+            | Self::CloseRefusedLive { run, .. }
+            | Self::Readmitting { run, .. } => Some(run),
+            Self::OfferingClose { origin, .. } => origin.live_reader(),
+            Self::Vacant { .. }
+            | Self::OfferingCreate { .. }
+            | Self::AwaitingCreate(_)
+            | Self::HeldCreate(_)
+            | Self::ConfiguringCreate(_)
+            | Self::ConfiguredCreate(_)
+            | Self::OfferingRestore { .. }
+            | Self::AwaitingRestore(_)
+            | Self::PublishingReplay(_)
+            | Self::HeldRestore(_)
+            | Self::PreparedRestore(_)
+            | Self::StartingReader(_)
+            | Self::ClosingRestore { .. }
+            | Self::RouteLost { .. }
+            | Self::StoppedAwaitingReply(_) => None,
         }
     }
 
@@ -269,7 +288,49 @@ impl OpeningState {
             Self::OfferingRestore { offer, .. }
             | Self::OfferingCreate { offer, .. }
             | Self::OfferingClose { offer, .. } => Some(offer),
-            _ => None,
+            Self::Vacant { .. }
+            | Self::AwaitingCreate(_)
+            | Self::HeldCreate(_)
+            | Self::ConfiguringCreate(_)
+            | Self::ConfiguredCreate(_)
+            | Self::AwaitingRestore(_)
+            | Self::PublishingReplay(_)
+            | Self::HeldRestore(_)
+            | Self::PreparedRestore(_)
+            | Self::StartingReader(_)
+            | Self::Active(_)
+            | Self::ClosingRestore { .. }
+            | Self::ClosingLive { .. }
+            | Self::CloseRefusedLive { .. }
+            | Self::Readmitting { .. }
+            | Self::RouteLost { .. }
+            | Self::StoppedAwaitingReply(_) => None,
+        }
+    }
+
+    fn held_session(&self) -> Option<&OwnerOpenedSession> {
+        match self {
+            Self::HeldCreate(held) => Some(&held.session),
+            Self::ConfiguredCreate(session) => Some(session),
+            Self::HeldRestore(restore) | Self::PreparedRestore(restore) => {
+                Some(&restore.held.session)
+            }
+            Self::Vacant { .. }
+            | Self::OfferingCreate { .. }
+            | Self::AwaitingCreate(_)
+            | Self::ConfiguringCreate(_)
+            | Self::OfferingRestore { .. }
+            | Self::AwaitingRestore(_)
+            | Self::PublishingReplay(_)
+            | Self::StartingReader(_)
+            | Self::Active(_)
+            | Self::OfferingClose { .. }
+            | Self::ClosingRestore { .. }
+            | Self::ClosingLive { .. }
+            | Self::CloseRefusedLive { .. }
+            | Self::Readmitting { .. }
+            | Self::RouteLost { .. }
+            | Self::StoppedAwaitingReply(_) => None,
         }
     }
 
@@ -461,7 +522,23 @@ impl Release {
                 | OpeningState::StoppedAwaitingReply(
                     StoppedReceipt::OpenCreate(stopped) | StoppedReceipt::Configure(stopped),
                 ) => stopped.cancel(),
-                _ => {}
+                OpeningState::Vacant { .. }
+                | OpeningState::HeldCreate(_)
+                | OpeningState::ConfiguredCreate(_)
+                | OpeningState::OfferingRestore { .. }
+                | OpeningState::AwaitingRestore(_)
+                | OpeningState::PublishingReplay(_)
+                | OpeningState::HeldRestore(_)
+                | OpeningState::PreparedRestore(_)
+                | OpeningState::StartingReader(_)
+                | OpeningState::Active(_)
+                | OpeningState::OfferingClose { .. }
+                | OpeningState::ClosingRestore { .. }
+                | OpeningState::ClosingLive { .. }
+                | OpeningState::CloseRefusedLive { .. }
+                | OpeningState::Readmitting { .. }
+                | OpeningState::RouteLost { .. }
+                | OpeningState::StoppedAwaitingReply(_) => {}
             }
         }
         if let OpeningState::OfferingClose {
@@ -527,13 +604,7 @@ impl OpeningRow {
     }
 
     pub(super) fn held(&self) -> bool {
-        matches!(
-            self.state,
-            OpeningState::HeldCreate(_)
-                | OpeningState::ConfiguredCreate(_)
-                | OpeningState::HeldRestore(_)
-                | OpeningState::PreparedRestore(_)
-        )
+        self.state.held_session().is_some()
     }
 
     pub(super) fn removed_route(&self) -> Option<LifecycleRoute> {
@@ -575,11 +646,35 @@ impl OpeningRow {
         } = self;
         let seal_offer = match &command {
             Command::WriterStopped => true,
-            Command::ReaderStopped(_) => state.reader_alive(),
+            Command::ReaderStopped(_) => state.live_reader().is_some(),
             Command::RouteRemoved(route) => {
                 state.run().is_some_and(|run| run.route.is_same_as(route))
             }
-            _ => false,
+            Command::OpenCreate(_)
+            | Command::OpenRestore(_)
+            | Command::WriterAccepted
+            | Command::WriterRefused
+            | Command::Created(_)
+            | Command::OpenFailed
+            | Command::WorkerExited
+            | Command::Configure(_)
+            | Command::Configured(_)
+            | Command::ConfigureClosed
+            | Command::AcceptSettings(_)
+            | Command::PutSettingBack { .. }
+            | Command::SetterReserved(..)
+            | Command::SetterDone(_)
+            | Command::Activate { .. }
+            | Command::ActivationFailed
+            | Command::ReaderAccepted
+            | Command::RestoreProgress(..)
+            | Command::CloseAsked(_)
+            | Command::CloseOffered(..)
+            | Command::CloseSettled(_)
+            | Command::AdmitAgain(_)
+            | Command::ReadmitResult(..)
+            | Command::Retire
+            | Command::ConnectionRetired => false,
         };
         let taken = seal_offer
             && state
@@ -614,7 +709,26 @@ impl Effect {
         match self {
             Self::Fault(_) => true,
             Self::DropSignal(_, next) | Self::DiscardAfter(_, next) => next.faulted(),
-            _ => false,
+            Self::OfferCreate(_)
+            | Self::OfferRestore(_)
+            | Self::Discarded(_)
+            | Self::ReleaseBefore(..)
+            | Self::Readmit(..)
+            | Self::Rollback(_)
+            | Self::None
+            | Self::Configure { .. }
+            | Self::Settings(_)
+            | Self::RefuseSetter(_)
+            | Self::ReserveSetter(_)
+            | Self::WriteSetter(_)
+            | Self::WithdrawSetters(..)
+            | Self::StartReader(_)
+            | Self::CloseOffer(..)
+            | Self::CloseConfirmed(..)
+            | Self::Deferred
+            | Self::ResolveRestore { .. }
+            | Self::Release(_)
+            | Self::ReaderEnded { .. } => false,
         }
     }
 
@@ -636,7 +750,24 @@ impl Effect {
             Self::DropSignal(_, next)
             | Self::DiscardAfter(_, next)
             | Self::ReleaseBefore(_, next) => next.fence(),
-            _ => {}
+            Self::OfferCreate(_)
+            | Self::OfferRestore(_)
+            | Self::Discarded(_)
+            | Self::Readmit(..)
+            | Self::Rollback(_)
+            | Self::None
+            | Self::Configure { .. }
+            | Self::Settings(_)
+            | Self::RefuseSetter(_)
+            | Self::ReserveSetter(_)
+            | Self::WriteSetter(_)
+            | Self::StartReader(_)
+            | Self::CloseOffer(..)
+            | Self::CloseConfirmed(..)
+            | Self::Deferred
+            | Self::ResolveRestore { .. }
+            | Self::Release(_)
+            | Self::ReaderEnded { .. } => {}
         }
     }
 

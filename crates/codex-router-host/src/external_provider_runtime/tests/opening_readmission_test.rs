@@ -10,6 +10,16 @@ async fn readmission_commits_before_the_exact_wire_marker_is_cleared() {
 }
 
 pub(super) async fn readmission_schedule(lose_route: bool) {
+    exercise_readmission(lose_route, false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+async fn a_reader_that_ends_after_refused_close_cannot_be_readmitted() {
+    exercise_readmission(false, true).await;
+    exercise_readmission(false, false).await;
+}
+
+async fn exercise_readmission(lose_route: bool, reader_stops: bool) {
     let fixture = hub_runtime_with_launch(|receipt| {
         crate::external_provider_runtime::acp_scripted_fixture::launch_fixture_agent(
             "permission-mode-agent.ts",
@@ -40,12 +50,13 @@ pub(super) async fn readmission_schedule(lose_route: bool) {
     binding
         .accept_settings(OpenAttempt::Restore(run), &accepted)
         .expect("prepare real ACP");
+    let retired = CancellationToken::new();
     binding
         .activate(
             ActivationSetup::Restored(run),
             accepted,
             Arc::new(AcceptEvents),
-            Box::pin(std::future::pending()),
+            Box::pin(retired.clone().cancelled_owned()),
         )
         .expect("activate one restore");
 
@@ -69,6 +80,32 @@ pub(super) async fn readmission_schedule(lose_route: bool) {
         generation: run.generation,
     };
     let wire = fixture.runtime.client.owner_wire();
+    if reader_stops {
+        let ended = wire.pause_opening_for_test(OpeningPausePoint::ReaderStoppedDelivered);
+        retired.cancel();
+        ended
+            .reached
+            .await
+            .expect("deliver the actual reader ending after the close refusal");
+        binding.admit_again(close);
+        assert_eq!(
+            binding.opening_is_held(OpenAttempt::Restore(run)),
+            Held::NotHeld(LifecycleRefusal::BoundRouteUnavailable),
+            "a refused close no longer owns a live reader after its ending"
+        );
+        assert_eq!(
+            wire.closing_marker_for_test(route),
+            Some(close.attempt),
+            "retirement must not reopen the wire marker"
+        );
+        ended.release.send(()).expect("finish reader disposal");
+        binding.retire(run.generation);
+        drop(binding);
+        fixture.runtime.shutdown().await;
+        tasks.close();
+        tasks.wait().await;
+        return;
+    }
     let paused = wire.pause_opening_for_test(OpeningPausePoint::BeforeReadmitWire);
     let binding = Arc::new(binding);
     let admission = tokio::task::spawn_blocking({

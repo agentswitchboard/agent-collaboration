@@ -1,3 +1,5 @@
+#![deny(clippy::wildcard_enum_match_arm)]
+
 //! Declared ACP opening transitions and the owner actions derived from them.
 
 use provider_session_machines::harness_lifecycle::{ActivationRefusal, LifecycleRefusal};
@@ -214,6 +216,7 @@ impl StateMachine for OpeningPolicy {
         PreparedRestore + Retire => Terminal;
         Active + ReaderStopped => Terminal;
         ClosingLive + ReaderStopped => RouteLost;
+        CloseRefusedLive + ReaderStopped => RouteLost;
         OfferingClose + ReaderStopped => RouteLost;
         Readmitting + ReaderStopped => RouteLost;
         Active + KeepActive => Active;
@@ -382,6 +385,20 @@ pub(super) fn activation_refusal(refusal: LifecycleRefusal) -> ActivationRefusal
         LifecycleRefusal::OpeningNotHeld => ActivationRefusal::OpeningNotHeld,
         LifecycleRefusal::OpeningInProgress => ActivationRefusal::OpeningInProgress,
         LifecycleRefusal::OpeningAlreadyHeld(kind) => ActivationRefusal::OpeningAlreadyHeld(kind),
-        other => ActivationRefusal::OpeningState(other),
+        other @ LifecycleRefusal::Encoding
+        | other @ LifecycleRefusal::Writer(_)
+        | other @ LifecycleRefusal::RouteUnavailable
+        | other @ LifecycleRefusal::BoundRouteUnavailable
+        | other @ LifecycleRefusal::RouteClosing
+        | other @ LifecycleRefusal::BoundSessionNotLoaded
+        | other @ LifecycleRefusal::OpeningPrepared
+        | other @ LifecycleRefusal::OpeningActive
+        | other @ LifecycleRefusal::CloseAlreadyRefused
+        | other @ LifecycleRefusal::OpeningEnded
+        | other @ LifecycleRefusal::SettingValueNotOffered
+        | other @ LifecycleRefusal::SettingSetterUnavailable
+        | other @ LifecycleRefusal::CatalogueUnavailable
+        | other @ LifecycleRefusal::InvalidCatalogueReply
+        | other @ LifecycleRefusal::OperationNotOffered => ActivationRefusal::OpeningState(other),
     }
 }

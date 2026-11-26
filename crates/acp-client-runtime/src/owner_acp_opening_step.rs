@@ -1,4 +1,10 @@
+#![deny(clippy::wildcard_enum_match_arm)]
+
 //! The transition selected by the ACP opening declaration.
+
+#[path = "owner_acp_opening_edge.rs"]
+mod selector;
+use selector::edge;
 
 use super::{
     Command, CreateStart, DeferredRestore, Edge, Effect, HeldCreate, HeldRestore, LostReceipt,
@@ -38,7 +44,34 @@ pub(super) fn step(
         Command::RestoreProgress(payload, signal) if edge != Edge::DeferRestore => {
             (Command::RestoreProgress(payload, None), signal)
         }
-        other => (other, None),
+        other @ Command::OpenCreate(_)
+        | other @ Command::OpenRestore(_)
+        | other @ Command::WriterAccepted
+        | other @ Command::WriterRefused
+        | other @ Command::Created(_)
+        | other @ Command::OpenFailed
+        | other @ Command::WorkerExited
+        | other @ Command::Configure(_)
+        | other @ Command::Configured(_)
+        | other @ Command::ConfigureClosed
+        | other @ Command::AcceptSettings(_)
+        | other @ Command::PutSettingBack { .. }
+        | other @ Command::SetterReserved(..)
+        | other @ Command::SetterDone(_)
+        | other @ Command::Activate { .. }
+        | other @ Command::ActivationFailed
+        | other @ Command::ReaderAccepted
+        | other @ Command::ReaderStopped(_)
+        | other @ Command::RestoreProgress(..)
+        | other @ Command::CloseAsked(_)
+        | other @ Command::CloseOffered(..)
+        | other @ Command::CloseSettled(_)
+        | other @ Command::AdmitAgain(_)
+        | other @ Command::ReadmitResult(..)
+        | other @ Command::Retire
+        | other @ Command::WriterStopped
+        | other @ Command::ConnectionRetired
+        | other @ Command::RouteRemoved(_) => (other, None),
     };
     let previous_run = state.run().cloned();
     let previous_offer = state.offer().cloned();
@@ -169,201 +202,6 @@ fn finish(state: OpeningState, instance: &OpeningInstance) -> Step {
     Ok((None, Effect::Release(Release::new(instance, state, true))))
 }
 
-fn edge(state: &OpeningState, command: &Command, taken: bool) -> Option<Edge> {
-    use OpeningState as State;
-    let stopped = matches!(state, State::StoppedAwaitingReply(_));
-    let event = match command {
-        Command::OpenCreate(_) => Edge::OpenCreate,
-        Command::OpenRestore(_) => Edge::OpenRestore,
-        Command::WriterAccepted => Edge::WriterAccepted,
-        Command::WriterRefused => Edge::WriterRefused,
-        Command::Created(_)
-            if matches!(
-                state,
-                State::StoppedAwaitingReply(StoppedReceipt::OpenCreate(_))
-            ) =>
-        {
-            Edge::FinishOnStoppedWriter
-        }
-        Command::Created(_) => Edge::ProviderCreated,
-        Command::OpenFailed
-            if matches!(
-                state,
-                State::StoppedAwaitingReply(StoppedReceipt::OpenCreate(_))
-            ) =>
-        {
-            Edge::FinishOnStoppedWriter
-        }
-        Command::OpenFailed if matches!(state, State::AwaitingCreate(_)) => Edge::OpenFailed,
-        Command::OpenFailed => return None,
-        Command::WorkerExited
-            if matches!(
-                state,
-                State::StoppedAwaitingReply(
-                    StoppedReceipt::OpenCreate(_) | StoppedReceipt::Configure(_)
-                )
-            ) =>
-        {
-            Edge::FinishOnStoppedWriter
-        }
-        Command::WorkerExited
-            if matches!(
-                state,
-                State::AwaitingCreate(_) | State::ConfiguringCreate(_)
-            ) =>
-        {
-            Edge::WorkerExited
-        }
-        Command::WorkerExited => return None,
-        Command::Configure(_) => Edge::Configure,
-        Command::Configured(_) | Command::ConfigureClosed
-            if matches!(
-                state,
-                State::StoppedAwaitingReply(StoppedReceipt::Configure(_))
-            ) =>
-        {
-            Edge::FinishOnStoppedWriter
-        }
-        Command::Configured(_) => Edge::Configured,
-        Command::ConfigureClosed => Edge::ClosedDuringConfigure,
-        Command::AcceptSettings(_) if matches!(state, State::ConfiguredCreate(_)) => {
-            Edge::AcceptCreatedSettings
-        }
-        Command::AcceptSettings(_) => Edge::AcceptSettings,
-        Command::PutSettingBack { .. } => Edge::PutSettingBack,
-        Command::SetterReserved(_, _) => Edge::SetterReserved,
-        Command::SetterDone(_) => Edge::SetterDone,
-        Command::Activate { .. } => Edge::Activate,
-        Command::ActivationFailed => Edge::ActivationFailed,
-        Command::ReaderAccepted => Edge::ReaderAccepted,
-        Command::ReaderStopped(_) if state.reader_alive() => Edge::ReaderStopped,
-        Command::ReaderStopped(_) => return None,
-        Command::RestoreProgress(milestone, _) => match state {
-            State::RouteLost {
-                receipt: LostReceipt::None | LostReceipt::Close(_),
-                ..
-            } => return None,
-            State::OfferingClose { deferred: None, .. } => Edge::DeferRestore,
-            State::ClosingRestore { .. }
-                if matches!(
-                    milestone,
-                    RestoreMilestone::Loaded(_)
-                        | RestoreMilestone::Resumed(_)
-                        | RestoreMilestone::Failed
-                ) =>
-            {
-                Edge::LateOpenReply
-            }
-            State::StoppedAwaitingReply(StoppedReceipt::OpenRestore(_))
-                if matches!(
-                    milestone,
-                    RestoreMilestone::Failed | RestoreMilestone::WorkerExited
-                ) =>
-            {
-                Edge::FinishOnStoppedWriter
-            }
-            _ => milestone.event(),
-        },
-        Command::CloseAsked(_) => Edge::CloseAsked,
-        Command::CloseOffered(close, accepted) => {
-            let State::OfferingClose {
-                origin, attempt, ..
-            } = state
-            else {
-                return None;
-            };
-            if *attempt != close.attempt {
-                return None;
-            }
-            if *accepted {
-                if origin.phase() == OpeningPhase::Active {
-                    Edge::CloseAcceptedLive
-                } else {
-                    Edge::CloseAcceptedRestore
-                }
-            } else {
-                match origin.phase() {
-                    OpeningPhase::AwaitingRestore => Edge::CloseUnsentAwaiting,
-                    OpeningPhase::CapturingReplay => Edge::CloseUnsentReplay,
-                    OpeningPhase::HeldRestore => Edge::CloseUnsentHeld,
-                    OpeningPhase::PreparedRestore => Edge::CloseUnsentPrepared,
-                    OpeningPhase::Active => Edge::CloseUnsentActive,
-                    _ => return None,
-                }
-            }
-        }
-        Command::CloseSettled(fact) => {
-            let (close, answer) = match fact {
-                CloseFact::Closed { run } => (run, Edge::CloseConfirmed),
-                CloseFact::RefusedStillLive { run } => (run, Edge::CloseRefused),
-                CloseFact::Unknown { run, .. } | CloseFact::NotOffered { run } => {
-                    (run, Edge::CloseUnknown)
-                }
-            };
-            let owed = match state {
-                State::ClosingRestore { attempt, .. }
-                | State::ClosingLive { attempt, .. }
-                | State::RouteLost {
-                    receipt: LostReceipt::Close(attempt),
-                    ..
-                }
-                | State::StoppedAwaitingReply(StoppedReceipt::Close(_, attempt)) => attempt,
-                _ => return None,
-            };
-            if *owed != close.attempt
-                || state
-                    .run()
-                    .is_none_or(|run| run.route.run.generation != close.generation)
-            {
-                return None;
-            }
-            if stopped {
-                Edge::FinishOnStoppedWriter
-            } else {
-                answer
-            }
-        }
-        Command::AdmitAgain(attempt) => {
-            if !matches!(state, State::CloseRefusedLive { attempt: owed, .. } if owed == attempt) {
-                return None;
-            }
-            Edge::AdmitAgain
-        }
-        Command::ReadmitResult(attempt, outcome) => {
-            if !matches!(state, State::Readmitting { attempt: owed, .. } if owed == attempt) {
-                return None;
-            }
-            match outcome {
-                ReadmitOutcome::Reopened => Edge::Readmitted,
-                ReadmitOutcome::RouteLost => Edge::RouteRemoved,
-                ReadmitOutcome::StaleMarker => Edge::ReadmitFailed,
-            }
-        }
-        Command::Retire => Edge::Retire,
-        Command::WriterStopped if taken => Edge::WriterStoppedAfterOffer,
-        Command::WriterStopped
-            if matches!(
-                state,
-                State::RouteLost {
-                    receipt: LostReceipt::None,
-                    ..
-                }
-            ) =>
-        {
-            Edge::WriterStoppedWithoutReceipt
-        }
-        Command::WriterStopped => Edge::WriterStopped,
-        Command::ConnectionRetired => Edge::ConnectionRetired,
-        Command::RouteRemoved(route) => {
-            if state.run().is_none_or(|run| !run.route.is_same_as(route)) {
-                return None;
-            }
-            Edge::RouteRemoved
-        }
-    };
-    Some(event)
-}
-
 fn apply_edge(
     state: OpeningState,
     command: Command,
@@ -478,7 +316,13 @@ fn apply_edge(
                     WorkOfferRefusal::SettingSetterUnavailable => {
                         LifecycleRefusal::SettingSetterUnavailable
                     }
-                    _ => LifecycleRefusal::Encoding,
+                    WorkOfferRefusal::PreparationFailed
+                    | WorkOfferRefusal::SettingCatalogueUnavailable
+                    | WorkOfferRefusal::RouteUnavailable
+                    | WorkOfferRefusal::RouteClosing
+                    | WorkOfferRefusal::WorkDoesNotFitAuthorization
+                    | WorkOfferRefusal::OtherAuthorizationOffered
+                    | WorkOfferRefusal::AuthorizationSequenceOnRecord => LifecycleRefusal::Encoding,
                 })
             } else {
                 Err(LifecycleRefusal::AttemptMismatch)
@@ -643,7 +487,25 @@ fn apply_edge(
             let offer = OpeningOffer::default();
             let setters = match &mut origin {
                 State::HeldRestore(restore) => std::mem::take(&mut restore.held.setters),
-                _ => Vec::new(),
+                State::Vacant { .. }
+                | State::OfferingCreate { .. }
+                | State::AwaitingCreate(_)
+                | State::HeldCreate(_)
+                | State::ConfiguringCreate(_)
+                | State::ConfiguredCreate(_)
+                | State::OfferingRestore { .. }
+                | State::AwaitingRestore(_)
+                | State::PublishingReplay(_)
+                | State::PreparedRestore(_)
+                | State::StartingReader(_)
+                | State::Active(_)
+                | State::OfferingClose { .. }
+                | State::ClosingRestore { .. }
+                | State::ClosingLive { .. }
+                | State::CloseRefusedLive { .. }
+                | State::Readmitting { .. }
+                | State::RouteLost { .. }
+                | State::StoppedAwaitingReply(_) => Vec::new(),
             };
             store(
                 State::OfferingClose {
@@ -802,7 +664,21 @@ fn stop_writer(state: OpeningState, instance: &OpeningInstance, edge: Edge) -> S
             run,
             receipt: LostReceipt::Open,
         } => StoppedReceipt::OpenRestore(run.clone()),
-        _ => return finish(state, instance),
+        State::Vacant { .. }
+        | State::OfferingCreate { .. }
+        | State::HeldCreate(_)
+        | State::ConfiguredCreate(_)
+        | State::OfferingRestore { .. }
+        | State::PublishingReplay(_)
+        | State::HeldRestore(_)
+        | State::PreparedRestore(_)
+        | State::StartingReader(_)
+        | State::Active(_)
+        | State::OfferingClose { .. }
+        | State::CloseRefusedLive { .. }
+        | State::Readmitting { .. }
+        | State::RouteLost { .. }
+        | State::StoppedAwaitingReply(_) => return finish(state, instance),
     };
     store(
         State::StoppedAwaitingReply(receipt),
@@ -841,19 +717,34 @@ fn lost_receipt(state: &OpeningState, taken: bool) -> LostReceipt {
     match state {
         State::OfferingRestore { .. } if taken => LostReceipt::Open,
         State::AwaitingRestore(_) => LostReceipt::Open,
-        State::ClosingRestore { attempt, .. }
-        | State::ClosingLive { attempt, .. }
-        | State::OfferingClose { attempt, .. }
-            if taken || !matches!(state, State::OfferingClose { .. }) =>
-        {
+        State::ClosingRestore { attempt, .. } | State::ClosingLive { attempt, .. } => {
             LostReceipt::Close(*attempt)
         }
+        State::OfferingClose { attempt, .. } if taken => LostReceipt::Close(*attempt),
         State::OfferingClose {
             origin,
             deferred: None,
             ..
-        } if matches!(**origin, State::AwaitingRestore(_)) => LostReceipt::Open,
-        _ => LostReceipt::None,
+        } => lost_receipt(origin, false),
+        State::Vacant { .. }
+        | State::OfferingCreate { .. }
+        | State::AwaitingCreate(_)
+        | State::HeldCreate(_)
+        | State::ConfiguringCreate(_)
+        | State::ConfiguredCreate(_)
+        | State::OfferingRestore { .. }
+        | State::PublishingReplay(_)
+        | State::HeldRestore(_)
+        | State::PreparedRestore(_)
+        | State::StartingReader(_)
+        | State::Active(_)
+        | State::OfferingClose {
+            deferred: Some(_), ..
+        }
+        | State::CloseRefusedLive { .. }
+        | State::Readmitting { .. }
+        | State::RouteLost { .. }
+        | State::StoppedAwaitingReply(_) => LostReceipt::None,
     }
 }
 

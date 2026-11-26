@@ -53,7 +53,14 @@ fn event_for(phase: Phase, action: Move) -> Event {
         Move::AdmitAgain => Event::AdmitAgain,
         Move::Retire => Event::Retire,
         Move::StopOwner => Event::StopOnWriterLoss,
-        other => panic!("unexpected phase guidance: {other:?} for {phase:?}"),
+        other @ Move::CorrectRequest
+        | other @ Move::WaitForWriter
+        | other @ Move::CreateFromSavedSetup
+        | other @ Move::UseSavedCatalogue
+        | other @ Move::ReportUnavailable
+        | other @ Move::KeepOutcomeUnknown => {
+            panic!("unexpected phase guidance: {other:?} for {phase:?}")
+        }
     }
 }
 
