@@ -251,11 +251,15 @@ impl NetworkCustody {
     async fn finish_write(&mut self, receipt: &OutboxReceipt) -> MessageId {
         let flush = self.next_write_report().await;
         assert!(flush.issues.is_empty(), "{:?}", flush.issues);
-        let answer = flush
+        let mut answers = flush
             .answered
             .iter()
-            .find(|answer| answer.request == receipt.id)
-            .unwrap();
+            .filter(|answer| answer.request == receipt.id);
+        let answer = answers.next().unwrap();
+        assert!(
+            answers.next().is_none(),
+            "the queued request must have exactly one answer"
+        );
         let ReplyPayload::Mail(CentralMailResult::Done(CentralMailAnswer::Queued { message_id })) =
             &answer.reply
         else {

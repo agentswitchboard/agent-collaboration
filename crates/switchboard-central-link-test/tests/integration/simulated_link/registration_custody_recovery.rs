@@ -253,11 +253,21 @@ async fn custody_survives_registration_ending(
         CustodyRequestStatus::NotFound
     );
     let received = trace.snapshot();
-    let batches: Vec<_> = received.iter().filter_map(|entry| {
-        matches!(application_frame(entry), Some(LinkFrame::Data(DataFrame::Batch { requests })) if
-            requests.requests().iter().any(|request| request.payload().write_request_id() == Some(&outgoing.id)))
-            .then_some((entry.at, entry.port))
-    }).collect();
+    let batches: Vec<_> = received
+        .iter()
+        .filter_map(|entry| {
+            let Some(LinkFrame::Data(DataFrame::Batch { requests })) = application_frame(entry)
+            else {
+                return None;
+            };
+            let count = requests
+                .requests()
+                .iter()
+                .filter(|request| request.payload().write_request_id() == Some(&outgoing.id))
+                .count();
+            (count > 0).then_some((entry.at, entry.port, count))
+        })
+        .collect();
     let receipts: Vec<_> = received
         .iter()
         .filter_map(|entry| {
@@ -274,7 +284,7 @@ async fn custody_survives_registration_ending(
             (count > 0).then_some((entry.at, entry.port, count))
         })
         .collect();
-    assert_eq!(batches, [(send_at, success.connection_port)]);
+    assert_eq!(batches, [(send_at, success.connection_port, 1)]);
     assert_eq!(receipts, [(send_at, success.connection_port, 1)]);
     case.close().await;
 }
