@@ -7,7 +7,6 @@ use crate::acp_transport::ReadmitOutcome;
 
 pub(super) fn edge(state: &OpeningState, command: &Command, taken: bool) -> Option<Edge> {
     use OpeningState as State;
-    let stopped = matches!(state, State::StoppedAwaitingReply(_));
     let event = match command {
         Command::OpenCreate(_) => Edge::OpenCreate,
         Command::OpenRestore(_) => Edge::OpenRestore,
@@ -21,55 +20,12 @@ pub(super) fn edge(state: &OpeningState, command: &Command, taken: bool) -> Opti
         }
         Command::WriterAccepted => Edge::WriterAccepted,
         Command::WriterRefused => Edge::WriterRefused,
-        Command::Created(_)
-            if matches!(
-                state,
-                State::StoppedAwaitingReply(StoppedReceipt::OpenCreate(_))
-            ) =>
-        {
-            Edge::FinishOnStoppedWriter
-        }
-        Command::Created(_) => Edge::ProviderCreated,
-        Command::OpenFailed
-            if matches!(
-                state,
-                State::StoppedAwaitingReply(StoppedReceipt::OpenCreate(_))
-            ) =>
-        {
-            Edge::FinishOnStoppedWriter
-        }
-        Command::OpenFailed if matches!(state, State::AwaitingCreate(_)) => Edge::OpenFailed,
-        Command::OpenFailed => return None,
-        Command::WorkerExited
-            if matches!(
-                state,
-                State::StoppedAwaitingReply(
-                    StoppedReceipt::OpenCreate(_) | StoppedReceipt::Configure(_)
-                )
-            ) =>
-        {
-            Edge::FinishOnStoppedWriter
-        }
-        Command::WorkerExited
-            if matches!(
-                state,
-                State::AwaitingCreate(_) | State::ConfiguringCreate(_)
-            ) =>
-        {
-            Edge::WorkerExited
-        }
-        Command::WorkerExited => return None,
+        Command::Created(_) => worker_edge(state, CreateWorkerFact::Created)?,
+        Command::OpenFailed => worker_edge(state, CreateWorkerFact::OpenFailed)?,
+        Command::WorkerExited => worker_edge(state, CreateWorkerFact::Exited)?,
         Command::Configure(_) => Edge::Configure,
-        Command::Configured(_) | Command::ConfigureClosed
-            if matches!(
-                state,
-                State::StoppedAwaitingReply(StoppedReceipt::Configure(_))
-            ) =>
-        {
-            Edge::FinishOnStoppedWriter
-        }
-        Command::Configured(_) => Edge::Configured,
-        Command::ConfigureClosed => Edge::ClosedDuringConfigure,
+        Command::Configured(_) => worker_edge(state, CreateWorkerFact::Configured)?,
+        Command::ConfigureClosed => worker_edge(state, CreateWorkerFact::ConfigureClosed)?,
         Command::AcceptSettings(_) if matches!(state, State::ConfiguredCreate(_)) => {
             Edge::AcceptCreatedSettings
         }
@@ -191,14 +147,16 @@ pub(super) fn edge(state: &OpeningState, command: &Command, taken: bool) -> Opti
                     (run, Edge::CloseUnknown)
                 }
             };
-            let owed = match state {
+            let (owed, answer) = match state {
                 State::ClosingRestore { attempt, .. }
                 | State::ClosingLive { attempt, .. }
                 | State::RouteLost {
                     receipt: LostReceipt::Close(attempt),
                     ..
+                } => (attempt, answer),
+                State::StoppedAwaitingReply(StoppedReceipt::Close(_, attempt)) => {
+                    (attempt, Edge::FinishOnStoppedWriter)
                 }
-                | State::StoppedAwaitingReply(StoppedReceipt::Close(_, attempt)) => attempt,
                 State::Vacant { .. }
                 | State::OfferingCreate { .. }
                 | State::AwaitingCreate(_)
@@ -225,11 +183,7 @@ pub(super) fn edge(state: &OpeningState, command: &Command, taken: bool) -> Opti
             {
                 return None;
             }
-            if stopped {
-                Edge::FinishOnStoppedWriter
-            } else {
-                answer
-            }
+            answer
         }
         Command::AdmitAgain(attempt) => {
             if !matches!(state, State::CloseRefusedLive { attempt: owed, .. } if owed == attempt) {
@@ -290,6 +244,66 @@ pub(super) fn edge(state: &OpeningState, command: &Command, taken: bool) -> Opti
         }
     };
     Some(event)
+}
+
+#[derive(Clone, Copy)]
+enum CreateWorkerFact {
+    Created,
+    OpenFailed,
+    Configured,
+    ConfigureClosed,
+    Exited,
+}
+
+fn worker_edge(state: &OpeningState, fact: CreateWorkerFact) -> Option<Edge> {
+    use CreateWorkerFact as Fact;
+    use OpeningState as State;
+    match state {
+        State::AwaitingCreate(_) => match fact {
+            Fact::Created => Some(Edge::ProviderCreated),
+            Fact::OpenFailed => Some(Edge::OpenFailed),
+            Fact::Exited => Some(Edge::WorkerExited),
+            Fact::Configured | Fact::ConfigureClosed => None,
+        },
+        State::ConfiguringCreate(_) => match fact {
+            Fact::Configured => Some(Edge::Configured),
+            Fact::ConfigureClosed => Some(Edge::ClosedDuringConfigure),
+            Fact::Exited => Some(Edge::WorkerExited),
+            Fact::Created | Fact::OpenFailed => None,
+        },
+        State::StoppedAwaitingReply(receipt) => match receipt {
+            StoppedReceipt::OpenCreate(_) => match fact {
+                Fact::Created | Fact::OpenFailed | Fact::Exited => {
+                    Some(Edge::FinishOnStoppedWriter)
+                }
+                Fact::Configured | Fact::ConfigureClosed => None,
+            },
+            StoppedReceipt::Configure(_) => match fact {
+                Fact::Configured | Fact::ConfigureClosed | Fact::Exited => {
+                    Some(Edge::FinishOnStoppedWriter)
+                }
+                Fact::Created | Fact::OpenFailed => None,
+            },
+            StoppedReceipt::OpenRestore(..) | StoppedReceipt::Close(..) => None,
+        },
+        State::Vacant { .. }
+        | State::OfferingCreate { .. }
+        | State::HeldCreate(_)
+        | State::ConfiguredCreate(_)
+        | State::OfferingRestore { .. }
+        | State::AwaitingRestore(_)
+        | State::PublishingReplay(_)
+        | State::HeldRestore(_)
+        | State::PreparedRestore(_)
+        | State::StartingReader(_)
+        | State::Active(_)
+        | State::OfferingClose { .. }
+        | State::ClosingRestore { .. }
+        | State::ClosingLive { .. }
+        | State::CloseRefusedLive { .. }
+        | State::Readmitting { .. }
+        | State::RouteLost { .. } => None,
+    }
 }
 
 fn connection_loss_edge(state: &OpeningState, taken: bool) -> Edge {

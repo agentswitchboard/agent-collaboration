@@ -70,6 +70,9 @@ impl OwnerOpenings {
         #[cfg(any(test, feature = "test-observation"))]
         self.wire
             .at_opening_effect_for_test(crate::owner_wire::OpeningPausePoint::BeforeSetterTake);
+        // Once enqueue succeeds the ordered carrier owns the reserved reply.
+        // SetterDone removes the local plan. The writer settles the reply
+        // even when it stops before taking the queued frame.
         let written = self.wire.reapply_exact_setting(
             &write.route,
             write.restore,
