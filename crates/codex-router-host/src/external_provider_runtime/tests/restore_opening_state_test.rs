@@ -6,6 +6,8 @@ mod close_race;
 mod model;
 #[path = "opening_reader_retirement_test.rs"]
 mod reader_retirement;
+#[path = "opening_readmission_test.rs"]
+mod readmission;
 #[path = "restore_setter_claim_test.rs"]
 mod setter_claim;
 

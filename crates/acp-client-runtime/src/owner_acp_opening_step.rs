@@ -7,8 +7,8 @@ use super::{
     StoppedReceipt,
 };
 use crate::{
-    owner_opening_instance::OpeningOffer, owner_session_open::OwnerOpenedSession,
-    owner_session_setting::OwnerSettingWirePlan,
+    acp_transport::ReadmitOutcome, owner_opening_instance::OpeningOffer,
+    owner_session_open::OwnerOpenedSession, owner_session_setting::OwnerSettingWirePlan,
 };
 use provider_session_machines::{
     ProviderSettingsCatalog,
@@ -286,14 +286,14 @@ fn edge(state: &OpeningState, command: &Command, taken: bool) -> Option<Edge> {
             }
             Edge::AdmitAgain
         }
-        Command::ReadmitResult(attempt, succeeded) => {
+        Command::ReadmitResult(attempt, outcome) => {
             if !matches!(state, State::Readmitting { attempt: owed, .. } if owed == attempt) {
                 return None;
             }
-            if *succeeded {
-                Edge::Readmitted
-            } else {
-                Edge::ReadmitFailed
+            match outcome {
+                ReadmitOutcome::Reopened => Edge::Readmitted,
+                ReadmitOutcome::RouteLost => Edge::RouteRemoved,
+                ReadmitOutcome::StaleMarker => Edge::ReadmitFailed,
             }
         }
         Command::Retire => Edge::Retire,
@@ -614,14 +614,20 @@ fn apply_edge(
                 Effect::Readmit(route, attempt),
             )
         }
-        (State::Readmitting { run, .. }, Command::ReadmitResult(_, true)) => {
+        (State::Readmitting { run, .. }, Command::ReadmitResult(_, ReadmitOutcome::Reopened)) => {
             store(State::Active(run), Effect::None)
         }
-        (State::Readmitting { run, attempt }, Command::ReadmitResult(_, false)) => {
-            store(State::CloseRefusedLive { run, attempt }, Effect::None)
-        }
+        (
+            State::Readmitting { run, attempt },
+            Command::ReadmitResult(_, ReadmitOutcome::StaleMarker),
+        ) => store(State::CloseRefusedLive { run, attempt }, Effect::None),
         (state, Command::WriterStopped) => stop_writer(state, instance, edge),
-        (state, command @ (Command::RouteRemoved(_) | Command::ReaderStopped(_))) => {
+        (
+            state,
+            command @ (Command::RouteRemoved(_)
+            | Command::ReaderStopped(_)
+            | Command::ReadmitResult(_, ReadmitOutcome::RouteLost)),
+        ) => {
             let report_loss = matches!(
                 command,
                 Command::ReaderStopped(ReaderEnd::Failed | ReaderEnd::HandoffClosed)

@@ -6,7 +6,7 @@ mod reducer;
 use super::policy::{OpeningEvent as Edge, OpeningPhase, OpeningPolicy};
 use crate::{
     RequestedProviderSettings,
-    acp_transport::LifecycleRoute,
+    acp_transport::{LifecycleRoute, ReadmitOutcome},
     owner_opening_instance::{OpeningInstance, OpeningOffer},
     owner_session_open::OwnerOpenedSession,
     owner_session_setting::OwnerSettingWirePlan,
@@ -309,7 +309,7 @@ pub(super) enum Command {
     CloseOffered(RunAttempt<CloseAttempt>, bool),
     CloseSettled(CloseFact),
     AdmitAgain(CloseAttempt),
-    ReadmitResult(CloseAttempt, bool),
+    ReadmitResult(CloseAttempt, ReadmitOutcome),
     Retire,
     WriterStopped,
     ConnectionRetired,
@@ -675,7 +675,7 @@ impl Effect {
                 drop(previous);
                 next.finish(wire)
             }
-            Self::Readmit(route, close) => wire.reopen_opening_route(&route, close),
+            Self::Readmit(_, _) => false,
             Self::Deferred
             | Self::Rollback(Some(_))
             | Self::Configure { .. }

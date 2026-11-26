@@ -131,8 +131,11 @@ impl OwnerOpenings {
             (instance, admitted)
         };
         match admitted {
-            Ok(effect @ Effect::Readmit(_, _)) => {
-                let reopened = effect.finish(&self.wire);
+            Ok(Effect::Readmit(route, attempt)) => {
+                #[cfg(any(test, feature = "test-observation"))]
+                self.wire
+                    .at_opening_effect_for_test(OpeningPausePoint::BeforeReadmitWire);
+                let reopened = self.wire.reopen_opening_route(&route, attempt);
                 let result = lock(&self.attempts).apply(
                     slot,
                     &instance,

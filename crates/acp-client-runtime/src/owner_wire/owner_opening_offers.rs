@@ -2,7 +2,7 @@
 
 use super::{AcpFrame, OpenRequest, OwnerAcpWire, OwnerWireRefusal, ResponseKind};
 use crate::{
-    acp_transport::{LifecycleRoute, TransportRefusal, TransportRun},
+    acp_transport::{LifecycleRoute, ReadmitOutcome, TransportRefusal, TransportRun},
     owner_opening_instance::{OpeningInstance, OpeningOffer},
     owner_session_open::{OwnerSessionOpenReceipt, OwnerSessionOpenSetup},
 };
@@ -88,8 +88,17 @@ impl OwnerAcpWire {
         self.transport.install_lifecycle_folders(route, grant);
     }
 
-    pub(crate) fn reopen_opening_route(&self, route: &LifecycleRoute, close: CloseAttempt) -> bool {
+    pub(crate) fn reopen_opening_route(
+        &self,
+        route: &LifecycleRoute,
+        close: CloseAttempt,
+    ) -> ReadmitOutcome {
         self.transport.reopen_lifecycle_route(route, close)
+    }
+
+    #[cfg(any(test, feature = "test-observation"))]
+    pub fn closing_marker_for_test(&self, run: TransportRun) -> Option<CloseAttempt> {
+        self.transport.closing_marker_for_test(run)
     }
 
     pub(crate) fn offer_create(
