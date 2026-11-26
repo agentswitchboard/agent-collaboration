@@ -62,8 +62,8 @@ impl InteractionPort for CancellingApprovals {
         &self,
         _context: Self::Context,
         _request: ApprovalRequest,
-        _turn: CancellationToken,
-        _agent: CancellationToken,
+        _turn: acp_client_runtime::FixtureCancellation,
+        _agent: acp_client_runtime::FixtureCancellation,
     ) -> InteractionFuture<'_, ApprovalPortOutcome> {
         Box::pin(async { ApprovalPortOutcome::Cancelled })
     }
@@ -71,8 +71,8 @@ impl InteractionPort for CancellingApprovals {
         &self,
         _context: Self::Context,
         _request: session_event_model::QuestionRequest,
-        _turn: CancellationToken,
-        _agent: CancellationToken,
+        _turn: acp_client_runtime::FixtureCancellation,
+        _agent: acp_client_runtime::FixtureCancellation,
     ) -> InteractionFuture<'_, session_event_model::QuestionResponse> {
         Box::pin(async { session_event_model::QuestionResponse::Cancelled })
     }

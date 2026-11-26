@@ -21,7 +21,8 @@ use tokio_util::sync::CancellationToken;
 #[cfg(test)]
 use crate::{ProviderSessionActivity, ProviderSteeringOutcome};
 use crate::{
-    acp_interaction_port::HostInteractionPort, session_owner_ingress::SessionOwnerIngress,
+    acp_interaction_port::{HostInteractionPort, HostRequestPayloads},
+    session_owner_ingress::SessionOwnerIngress,
 };
 #[cfg(test)]
 use acp_client_runtime::{
@@ -91,7 +92,7 @@ mod prompt_projection_tests;
 mod initialization_authentication_tests;
 
 pub struct ExternalProviderRuntime {
-    client: AgentSessionClient<HostInteractionPort>,
+    client: AgentSessionClient<HostRequestPayloads>,
     owner_ingress: Arc<SessionOwnerIngress>,
     owner_door: std::sync::OnceLock<Arc<crate::session_owner_door::SessionOwnerDoor>>,
     #[cfg(any(test, feature = "test-support"))]
@@ -244,10 +245,10 @@ impl ExternalProviderRuntime {
         clock: Arc<dyn router_clock::RuntimeClock>,
     ) -> Result<Self, ExternalProviderRuntimeError> {
         let owner_ingress = Arc::new(SessionOwnerIngress::default());
-        let interaction_port = Arc::new(HostInteractionPort(owner_ingress.clone()));
+        let request_policy = Arc::new(HostInteractionPort(owner_ingress.clone()));
         let client = AgentSessionClient::initialize_with_clock(
             launch,
-            Arc::clone(&interaction_port),
+            request_policy,
             Arc::new(acp_client_runtime::HarnessCallbackEventSink::new(
                 owner_ingress.clone(),
             )),
@@ -279,13 +280,13 @@ impl ExternalProviderRuntime {
         clock: Arc<dyn router_clock::RuntimeClock>,
     ) -> Result<Self, ExternalProviderRuntimeError> {
         let owner_ingress = Arc::new(SessionOwnerIngress::default());
-        let interaction_port = Arc::new(HostInteractionPort(owner_ingress.clone()));
+        let request_policy = Arc::new(HostInteractionPort(owner_ingress.clone()));
         let client = AgentSessionClient::initialize_with_mcp_http(
             launch,
             model_picker,
             server_name,
             server_url,
-            Arc::clone(&interaction_port),
+            request_policy,
             Arc::new(acp_client_runtime::HarnessCallbackEventSink::new(
                 owner_ingress.clone(),
             )),
@@ -322,13 +323,13 @@ impl ExternalProviderRuntime {
         clock: Arc<dyn router_clock::RuntimeClock>,
     ) -> Result<Self, ExternalProviderRuntimeError> {
         let owner_ingress = Arc::new(SessionOwnerIngress::default());
-        let interaction_port = Arc::new(HostInteractionPort(owner_ingress.clone()));
+        let request_policy = Arc::new(HostInteractionPort(owner_ingress.clone()));
         let client = AgentSessionClient::initialize_with_mcp_http(
             launch,
             model_picker,
             server_name,
             server_url,
-            Arc::clone(&interaction_port),
+            request_policy,
             Arc::new(acp_client_runtime::HarnessCallbackEventSink::new(
                 owner_ingress.clone(),
             )),
@@ -379,11 +380,11 @@ impl ExternalProviderRuntime {
         clock: Arc<dyn router_clock::RuntimeClock>,
     ) -> Result<Self, ExternalProviderRuntimeError> {
         let owner_ingress = Arc::new(SessionOwnerIngress::default());
-        let interaction_port = Arc::new(HostInteractionPort(owner_ingress.clone()));
+        let request_policy = Arc::new(HostInteractionPort(owner_ingress.clone()));
         let client = AgentSessionClient::initialize_with_timeout(
             launch,
             initialize_timeout,
-            Arc::clone(&interaction_port),
+            request_policy,
             Arc::new(acp_client_runtime::HarnessCallbackEventSink::new(
                 owner_ingress.clone(),
             )),

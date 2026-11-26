@@ -46,8 +46,8 @@ impl InteractionPort for PlanPort {
         &self,
         _context: Self::Context,
         request: ApprovalRequest,
-        _turn_cancellation: CancellationToken,
-        _agent_cancellation: CancellationToken,
+        _turn_cancellation: acp_client_runtime::FixtureCancellation,
+        _agent_cancellation: acp_client_runtime::FixtureCancellation,
     ) -> InteractionFuture<'_, ApprovalPortOutcome> {
         self.order.lock().expect("order").push("approval");
         *self.captured.lock().expect("approval capture") = Some(request);
@@ -58,8 +58,8 @@ impl InteractionPort for PlanPort {
         &self,
         _context: Self::Context,
         _request: QuestionRequest,
-        _turn_cancellation: CancellationToken,
-        _agent_cancellation: CancellationToken,
+        _turn_cancellation: acp_client_runtime::FixtureCancellation,
+        _agent_cancellation: acp_client_runtime::FixtureCancellation,
     ) -> InteractionFuture<'_, QuestionResponse> {
         Box::pin(async { QuestionResponse::Cancelled })
     }

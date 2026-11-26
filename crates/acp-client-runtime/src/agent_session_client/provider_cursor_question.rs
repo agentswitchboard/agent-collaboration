@@ -15,7 +15,7 @@ use session_event_model::{
 use tokio_util::sync::CancellationToken;
 
 use super::ActiveApprovalContext;
-use crate::{InteractionPort, owner_callback_routing::OwnerCallbackRouting};
+use crate::{AcpRequestPayloads, AcpRequestPolicy, owner_callback_routing::OwnerCallbackRouting};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -41,22 +41,22 @@ struct CursorChoice {
     label: String,
 }
 
-pub(super) struct ProviderCursorQuestionHandler<P: InteractionPort> {
+pub(super) struct ProviderCursorQuestionHandler<P: AcpRequestPayloads> {
     tool_registry: Arc<OwnerCallbackRouting>,
     approval_contexts: Arc<Mutex<HashMap<String, ActiveApprovalContext<P>>>>,
-    interaction_port: Arc<P>,
+    request_policy: Arc<AcpRequestPolicy<P>>,
 }
 
-impl<P: InteractionPort> ProviderCursorQuestionHandler<P> {
+impl<P: AcpRequestPayloads> ProviderCursorQuestionHandler<P> {
     pub(super) fn new(
         tool_registry: Arc<OwnerCallbackRouting>,
         approval_contexts: Arc<Mutex<HashMap<String, ActiveApprovalContext<P>>>>,
-        interaction_port: Arc<P>,
+        request_policy: Arc<AcpRequestPolicy<P>>,
     ) -> Self {
         Self {
             tool_registry,
             approval_contexts,
-            interaction_port,
+            request_policy,
         }
     }
 
@@ -144,7 +144,7 @@ fn answers_in_field_order(
         .collect()
 }
 
-impl<P: InteractionPort> HandleDispatchFrom<Agent> for ProviderCursorQuestionHandler<P> {
+impl<P: AcpRequestPayloads> HandleDispatchFrom<Agent> for ProviderCursorQuestionHandler<P> {
     async fn handle_dispatch_from(
         &mut self,
         message: Dispatch,
@@ -194,7 +194,7 @@ impl<P: InteractionPort> HandleDispatchFrom<Agent> for ProviderCursorQuestionHan
             responder.respond(json!({"outcome":{"outcome":"cancelled"}}))?;
             return Ok(Handled::Yes);
         };
-        let port = Arc::clone(&self.interaction_port);
+        let port = Arc::clone(&self.request_policy);
         if let Some(refusal) = port.managed_refusal() {
             let response_guard = context
                 .responses

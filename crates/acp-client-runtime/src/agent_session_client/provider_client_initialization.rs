@@ -3,8 +3,8 @@
 #[cfg(any(test, feature = "test-observation"))]
 use super::Duration;
 use super::{
-    AgentSessionClient, Arc, ExternalProviderLaunch, ExternalProviderRuntimeError,
-    INITIALIZE_TIMEOUT, InteractionPort, McpServer, McpServerHttp, SessionEventSink,
+    AcpRequestPayloads, AcpRequestPolicy, AgentSessionClient, Arc, ExternalProviderLaunch,
+    ExternalProviderRuntimeError, INITIALIZE_TIMEOUT, McpServer, McpServerHttp, SessionEventSink,
 };
 
 pub(super) fn provider_protocol_admission(
@@ -36,14 +36,14 @@ pub(super) fn provider_protocol_admission(
     Ok((admission, report))
 }
 
-impl<P: InteractionPort> AgentSessionClient<P> {
+impl<P: AcpRequestPayloads> AgentSessionClient<P> {
     /// Native model-setting proof uses the production transport and picker
     /// negotiation without injecting an unrelated collaboration MCP server.
     #[cfg(feature = "test-observation")]
     pub async fn initialize_with_model_picker(
         launch: ExternalProviderLaunch,
         model_picker: crate::ProviderModelPicker,
-        interaction_port: Arc<P>,
+        request_policy: Arc<AcpRequestPolicy<P>>,
         event_sink: Arc<dyn SessionEventSink>,
         behavior: Arc<dyn crate::ProviderBehavior>,
     ) -> Result<Self, ExternalProviderRuntimeError> {
@@ -52,7 +52,7 @@ impl<P: InteractionPort> AgentSessionClient<P> {
             model_picker,
             INITIALIZE_TIMEOUT,
             Vec::new(),
-            interaction_port,
+            request_policy,
             event_sink,
             behavior,
             Arc::new(router_clock::SystemRuntimeClock::new()),
@@ -62,13 +62,13 @@ impl<P: InteractionPort> AgentSessionClient<P> {
 
     pub async fn initialize(
         launch: ExternalProviderLaunch,
-        interaction_port: Arc<P>,
+        request_policy: Arc<AcpRequestPolicy<P>>,
         event_sink: Arc<dyn SessionEventSink>,
         behavior: Arc<dyn crate::ProviderBehavior>,
     ) -> Result<Self, ExternalProviderRuntimeError> {
         Self::initialize_with_clock(
             launch,
-            interaction_port,
+            request_policy,
             event_sink,
             behavior,
             Arc::new(router_clock::SystemRuntimeClock::new()),
@@ -78,7 +78,7 @@ impl<P: InteractionPort> AgentSessionClient<P> {
 
     pub async fn initialize_with_clock(
         launch: ExternalProviderLaunch,
-        interaction_port: Arc<P>,
+        request_policy: Arc<AcpRequestPolicy<P>>,
         event_sink: Arc<dyn SessionEventSink>,
         behavior: Arc<dyn crate::ProviderBehavior>,
         clock: Arc<dyn router_clock::RuntimeClock>,
@@ -88,7 +88,7 @@ impl<P: InteractionPort> AgentSessionClient<P> {
             crate::ProviderModelPicker::Standard,
             INITIALIZE_TIMEOUT,
             Vec::new(),
-            interaction_port,
+            request_policy,
             event_sink,
             behavior,
             clock,
@@ -105,7 +105,7 @@ impl<P: InteractionPort> AgentSessionClient<P> {
         model_picker: crate::ProviderModelPicker,
         server_name: impl Into<String>,
         server_url: impl Into<String>,
-        interaction_port: Arc<P>,
+        request_policy: Arc<AcpRequestPolicy<P>>,
         event_sink: Arc<dyn SessionEventSink>,
         behavior: Arc<dyn crate::ProviderBehavior>,
         clock: Arc<dyn router_clock::RuntimeClock>,
@@ -115,7 +115,7 @@ impl<P: InteractionPort> AgentSessionClient<P> {
             model_picker,
             INITIALIZE_TIMEOUT,
             vec![McpServer::Http(McpServerHttp::new(server_name, server_url))],
-            interaction_port,
+            request_policy,
             event_sink,
             behavior,
             clock,
@@ -127,7 +127,7 @@ impl<P: InteractionPort> AgentSessionClient<P> {
     pub async fn initialize_with_timeout(
         launch: ExternalProviderLaunch,
         initialize_timeout: Duration,
-        interaction_port: Arc<P>,
+        request_policy: Arc<AcpRequestPolicy<P>>,
         event_sink: Arc<dyn SessionEventSink>,
         behavior: Arc<dyn crate::ProviderBehavior>,
         clock: Arc<dyn router_clock::RuntimeClock>,
@@ -137,7 +137,7 @@ impl<P: InteractionPort> AgentSessionClient<P> {
             crate::ProviderModelPicker::Standard,
             initialize_timeout,
             Vec::new(),
-            interaction_port,
+            request_policy,
             event_sink,
             behavior,
             clock,
@@ -146,7 +146,7 @@ impl<P: InteractionPort> AgentSessionClient<P> {
     }
 }
 
-impl<P: InteractionPort> AgentSessionClient<P> {
+impl<P: AcpRequestPayloads> AgentSessionClient<P> {
     /// A connection to an in-process agent, for scenario tests (design note
     /// §11.8): the same connection as `initialize`, over the client's end of
     /// a duplex pair, with `agent` serving the other end, instead of a
@@ -155,7 +155,7 @@ impl<P: InteractionPort> AgentSessionClient<P> {
     pub async fn initialize_in_process(
         connection: tokio::io::DuplexStream,
         agent: tokio::task::JoinHandle<()>,
-        interaction_port: Arc<P>,
+        request_policy: Arc<AcpRequestPolicy<P>>,
         event_sink: Arc<dyn SessionEventSink>,
         behavior: Arc<dyn crate::ProviderBehavior>,
         clock: Arc<dyn router_clock::RuntimeClock>,
@@ -166,7 +166,7 @@ impl<P: InteractionPort> AgentSessionClient<P> {
             crate::ProviderModelPicker::Standard,
             INITIALIZE_TIMEOUT,
             Vec::new(),
-            interaction_port,
+            request_policy,
             event_sink,
             behavior,
             clock,

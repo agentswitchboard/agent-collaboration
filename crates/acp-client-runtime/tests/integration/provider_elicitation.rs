@@ -40,8 +40,8 @@ impl InteractionPort for QuestionPort {
         &self,
         _context: Self::Context,
         _request: ApprovalRequest,
-        _turn_cancellation: CancellationToken,
-        _agent_cancellation: CancellationToken,
+        _turn_cancellation: acp_client_runtime::FixtureCancellation,
+        _agent_cancellation: acp_client_runtime::FixtureCancellation,
     ) -> InteractionFuture<'_, ApprovalPortOutcome> {
         Box::pin(async { ApprovalPortOutcome::Cancelled })
     }
@@ -54,8 +54,8 @@ impl InteractionPort for QuestionPort {
         &self,
         _context: Self::Context,
         request: QuestionRequest,
-        _turn_cancellation: CancellationToken,
-        _agent_cancellation: CancellationToken,
+        _turn_cancellation: acp_client_runtime::FixtureCancellation,
+        _agent_cancellation: acp_client_runtime::FixtureCancellation,
     ) -> InteractionFuture<'_, QuestionResponse> {
         *self.captured.lock().expect("capture") = Some(request);
         let response = self.response.clone();

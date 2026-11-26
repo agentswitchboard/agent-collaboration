@@ -70,8 +70,8 @@ impl InteractionPort for NoopInteractionPort {
         &self,
         _: (),
         _: ApprovalRequest,
-        _: CancellationToken,
-        _: CancellationToken,
+        _: acp_client_runtime::FixtureCancellation,
+        _: acp_client_runtime::FixtureCancellation,
     ) -> InteractionFuture<'_, ApprovalPortOutcome> {
         Box::pin(async { ApprovalPortOutcome::Cancelled })
     }
@@ -79,8 +79,8 @@ impl InteractionPort for NoopInteractionPort {
         &self,
         _: (),
         _: session_event_model::QuestionRequest,
-        _: CancellationToken,
-        _: CancellationToken,
+        _: acp_client_runtime::FixtureCancellation,
+        _: acp_client_runtime::FixtureCancellation,
     ) -> InteractionFuture<'_, session_event_model::QuestionResponse> {
         Box::pin(async { session_event_model::QuestionResponse::Cancelled })
     }

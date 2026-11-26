@@ -18,21 +18,21 @@ use session_event_model::{
 use tokio_util::sync::CancellationToken;
 
 use super::ActiveApprovalContext;
-use crate::InteractionPort;
+use crate::{AcpRequestPayloads, AcpRequestPolicy};
 
-pub(super) struct ProviderFormElicitationHandler<P: InteractionPort> {
+pub(super) struct ProviderFormElicitationHandler<P: AcpRequestPayloads> {
     approval_contexts: Arc<Mutex<HashMap<String, ActiveApprovalContext<P>>>>,
-    interaction_port: Arc<P>,
+    request_policy: Arc<AcpRequestPolicy<P>>,
 }
 
-impl<P: InteractionPort> ProviderFormElicitationHandler<P> {
+impl<P: AcpRequestPayloads> ProviderFormElicitationHandler<P> {
     pub(super) fn new(
         approval_contexts: Arc<Mutex<HashMap<String, ActiveApprovalContext<P>>>>,
-        interaction_port: Arc<P>,
+        request_policy: Arc<AcpRequestPolicy<P>>,
     ) -> Self {
         Self {
             approval_contexts,
-            interaction_port,
+            request_policy,
         }
     }
 
@@ -226,7 +226,7 @@ fn elicitation_answer(response: QuestionResponse, fields: &QuestionFields) -> Va
     }
 }
 
-impl<P: InteractionPort> HandleDispatchFrom<Agent> for ProviderFormElicitationHandler<P> {
+impl<P: AcpRequestPayloads> HandleDispatchFrom<Agent> for ProviderFormElicitationHandler<P> {
     async fn handle_dispatch_from(
         &mut self,
         message: Dispatch,
@@ -274,7 +274,7 @@ impl<P: InteractionPort> HandleDispatchFrom<Agent> for ProviderFormElicitationHa
             responder.respond(json!({"action":"cancel"}))?;
             return Ok(Handled::Yes);
         };
-        let port = Arc::clone(&self.interaction_port);
+        let port = Arc::clone(&self.request_policy);
         if let Some(refusal) = port.managed_refusal() {
             let response_guard = context
                 .responses

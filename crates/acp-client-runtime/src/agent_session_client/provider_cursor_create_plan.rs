@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 use super::ActiveApprovalContext;
 use crate::provider_cursor_plan_items::{CursorPlanDefinition, CursorPlanItems, CursorTodo};
 use crate::{
-    ApprovalPortOutcome, InteractionPort, SessionEventSink,
+    AcpRequestPayloads, AcpRequestPolicy, ApprovalPortOutcome, SessionEventSink,
     owner_callback_routing::OwnerCallbackRouting,
 };
 
@@ -32,23 +32,23 @@ struct CursorCreatePlan {
     todos: Vec<CursorTodo>,
 }
 
-pub(super) struct ProviderCursorCreatePlanHandler<P: InteractionPort> {
+pub(super) struct ProviderCursorCreatePlanHandler<P: AcpRequestPayloads> {
     tool_registry: Arc<OwnerCallbackRouting>,
     plan_items: Arc<CursorPlanItems>,
     event_sink: Arc<dyn SessionEventSink>,
     approval_contexts: Arc<Mutex<HashMap<String, ActiveApprovalContext<P>>>>,
-    interaction_port: Arc<P>,
+    request_policy: Arc<AcpRequestPolicy<P>>,
     shutdown: CancellationToken,
     sink_closed: CancellationToken,
 }
 
-impl<P: InteractionPort> ProviderCursorCreatePlanHandler<P> {
+impl<P: AcpRequestPayloads> ProviderCursorCreatePlanHandler<P> {
     pub(super) fn new(
         tool_registry: Arc<OwnerCallbackRouting>,
         plan_items: Arc<CursorPlanItems>,
         event_sink: Arc<dyn SessionEventSink>,
         approval_contexts: Arc<Mutex<HashMap<String, ActiveApprovalContext<P>>>>,
-        interaction_port: Arc<P>,
+        request_policy: Arc<AcpRequestPolicy<P>>,
         shutdown: CancellationToken,
         sink_closed: CancellationToken,
     ) -> Self {
@@ -57,7 +57,7 @@ impl<P: InteractionPort> ProviderCursorCreatePlanHandler<P> {
             plan_items,
             event_sink,
             approval_contexts,
-            interaction_port,
+            request_policy,
             shutdown,
             sink_closed,
         }
@@ -120,7 +120,7 @@ fn cursor_plan_decision(outcome: ApprovalPortOutcome) -> serde_json::Value {
     }
 }
 
-impl<P: InteractionPort> HandleDispatchFrom<Agent> for ProviderCursorCreatePlanHandler<P> {
+impl<P: AcpRequestPayloads> HandleDispatchFrom<Agent> for ProviderCursorCreatePlanHandler<P> {
     async fn handle_dispatch_from(
         &mut self,
         message: Dispatch,
@@ -201,7 +201,7 @@ impl<P: InteractionPort> HandleDispatchFrom<Agent> for ProviderCursorCreatePlanH
             responder.respond(json!({"outcome":"cancelled"}))?;
             return Ok(Handled::Yes);
         }
-        let port = Arc::clone(&self.interaction_port);
+        let port = Arc::clone(&self.request_policy);
         let request_cancellation = responder.cancellation();
         let response_guard = context
             .responses
