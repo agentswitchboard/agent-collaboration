@@ -18,6 +18,7 @@ const stepSchema = z.discriminatedUnion("action", [
     promptTextContains: z.string().optional(),
     requestName: z.string(),
     recordPath: z.string().optional(),
+    exitOnEof: z.boolean().optional(),
   }),
   z.object({ action: z.literal("expect_message"), message: z.unknown() }),
   z.object({ action: z.literal("expect_messages_unordered"), messages: z.array(z.unknown()) }),
@@ -44,12 +45,6 @@ function mismatch(stepNumber: number, expected: unknown, actual: unknown): Fixtu
   return new FixtureMismatch(
     `ACP fixture step ${stepNumber} mismatch\nexpected: ${wireJson(expected, true)}\nactual:   ${wireJson(actual, true)}`,
   );
-}
-
-async function readMessage(io: AcpStdio, stepNumber: number): Promise<Record<string, unknown>> {
-  const request = await io.readRequest();
-  if (request === undefined) throw mismatch(stepNumber, "JSON-RPC message", "EOF");
-  return request;
 }
 
 async function readMessageFrame(
@@ -84,9 +79,13 @@ async function expectRequest(
     readonly stepNumber: number;
     readonly step: Extract<z.infer<typeof stepSchema>, { action: "expect_request" }>;
   },
-): Promise<void> {
+): Promise<"matched" | "eof"> {
   const { stepNumber, step } = input;
-  const actual = await readMessage(io, stepNumber);
+  const actual = await io.readRequest();
+  if (actual === undefined) {
+    if (step.exitOnEof) return "eof";
+    throw mismatch(stepNumber, "JSON-RPC message", "EOF");
+  }
   const expected = { jsonrpc: "2.0", method: step.method, params: step.params };
   const exactParams =
     !step.exactParams ||
@@ -103,6 +102,7 @@ async function expectRequest(
     throw mismatch(stepNumber, expected, actual);
   requestIds.set(step.requestName, actual.id);
   if (step.recordPath !== undefined) appendFileSync(step.recordPath, `${wireJson(actual)}\n`);
+  return "matched";
 }
 
 export async function main(): Promise<void> {
@@ -114,7 +114,7 @@ export async function main(): Promise<void> {
       const stepNumber = index + 1;
       switch (step.action) {
         case "expect_request": {
-          await expectRequest(io, requestIds, { stepNumber, step });
+          if ((await expectRequest(io, requestIds, { stepNumber, step })) === "eof") return;
           break;
         }
         case "expect_message": {
