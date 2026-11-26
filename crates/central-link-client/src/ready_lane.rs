@@ -360,6 +360,7 @@ impl CheckedBatchResults {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum UntouchedCommand {
     ConnectionUnavailable,
+    RunNotRegistered,
     WriterBusy,
     SendWindowElapsed,
     FrameTooLarge,
