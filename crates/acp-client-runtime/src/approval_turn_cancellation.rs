@@ -15,9 +15,9 @@ use std::{
     sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
 use switchboard_harness_contracts::{
-    ApprovalContext, ApprovalLease, CancelDrainStart, CancelReservationRefusal, Decision,
-    ExactScope, ExactTurn, ReplyAdmission, RequestCancellation, RunRetirement, StopRequestsCause,
-    WorkReply, WriterState,
+    ApprovalContext, ApprovalLease, ApprovalLeaseRefusalReason, CancelDrainStart,
+    CancelReservationRefusal, Decision, ExactScope, ExactTurn, ReplyAdmission, RequestCancellation,
+    RunRetirement, StopRequestsCause, WorkReply, WriterState,
 };
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
@@ -267,17 +267,37 @@ impl<P: InteractionPort> OwnerApprovalBindings<P> {
         provider_session_id: String,
         run: TransportRun,
         turn: provider_session_machines::session_turn_machine::TurnId,
-        mut context: P::Context,
+        context: P::Context,
     ) -> Result<OwnerApprovalLease<P>, ExternalProviderRuntimeError> {
-        let mut active = self.active.lock().map_err(|_| {
-            ExternalProviderRuntimeError::Operation(
-                "provider approval context unavailable".to_owned(),
-            )
-        })?;
+        self.install_lease(provider_session_id, run, turn, context)
+            .map_err(|reason| {
+                ExternalProviderRuntimeError::Operation(
+                    match reason {
+                        ApprovalLeaseRefusalReason::ContextUnavailable => {
+                            "provider approval context unavailable"
+                        }
+                        ApprovalLeaseRefusalReason::AlreadyActive => {
+                            "a provider approval context is already active"
+                        }
+                    }
+                    .to_owned(),
+                )
+            })
+    }
+
+    pub(crate) fn install_lease(
+        &self,
+        provider_session_id: String,
+        run: TransportRun,
+        turn: provider_session_machines::session_turn_machine::TurnId,
+        mut context: P::Context,
+    ) -> Result<OwnerApprovalLease<P>, ApprovalLeaseRefusalReason> {
+        let mut active = self
+            .active
+            .lock()
+            .map_err(|_| ApprovalLeaseRefusalReason::ContextUnavailable)?;
         if active.contains_key(&provider_session_id) {
-            return Err(ExternalProviderRuntimeError::Operation(
-                "a provider approval context is already active".to_owned(),
-            ));
+            return Err(ApprovalLeaseRefusalReason::AlreadyActive);
         }
         let operation_id = P::operation_id(&context);
         if let Some(policy) = self.interaction_port.request_policy() {

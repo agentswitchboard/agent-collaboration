@@ -2,15 +2,17 @@
 
 use super::{SessionOwnerAddress, SessionOwnerDoor};
 use crate::{
+    session_owner_calls::SessionOwnerCalls,
     session_owner_execution::SessionOwnerExecution,
-    session_owner_registry::{
-        FailedOwnerSettlement, answer_complete_acp_snapshot, owner_proved_unsent,
-    },
+    session_owner_registry::{FailedOwnerSettlement, owner_proved_unsent},
     session_store_lane::SessionStoreSettlement,
 };
 use acp_client_runtime::session_owner_task::SessionOwnerTask;
 use collaboration_protocol::SessionRef;
-use provider_session_machines::session_owner::{RemoteEffect, RevokeReason, SessionOwnerReply};
+use provider_session_machines::session_owner::{
+    OwnerEvidence, RemoteEffect, RevokeReason, SessionOwnerReply,
+};
+use session_event_model::InputId;
 use std::{collections::BTreeMap, sync::Arc};
 
 impl SessionOwnerDoor {
@@ -83,12 +85,7 @@ impl SessionOwnerDoor {
                 failed,
                 self.connection,
                 asked_inputs,
-                |incarnation, inputs| {
-                    answer_complete_acp_snapshot(
-                        inputs,
-                        &self.wire.abandon_incarnation(incarnation),
-                    )
-                },
+                |incarnation, inputs| self.provider.give_up_owner(incarnation, inputs),
             )
             .ok()?;
         let registered = self
@@ -120,25 +117,42 @@ impl SessionOwnerDoor {
             if let Some(release) = pause.hold_recovery() {
                 let _test_withdrew_pause = release.await;
             }
-            for input in callers.outstanding_inputs() {
-                let saved = results.remove(&input.input).unwrap_or(false);
-                let reply = if owner_proved_unsent(slot_evidence.get(&input.input)) {
-                    SessionOwnerReply::InputUnsent {
-                        input,
-                        reason: RevokeReason::ConnectionLost,
-                    }
-                } else {
-                    SessionOwnerReply::InputFinished {
-                        input,
-                        remote: RemoteEffect::Unknown,
-                    }
-                };
-                callers.settle(reply, saved, None);
-            }
-            callers.stop();
+            settle_recovered_callers(&callers, &slot_evidence, results);
         });
         Some((replacement.task, ports, successor))
     }
+
+    #[cfg(test)]
+    pub(crate) fn settle_recovered_callers_for_test(
+        callers: &Arc<SessionOwnerCalls>,
+        evidence: &OwnerEvidence,
+        saved: BTreeMap<InputId, bool>,
+    ) {
+        settle_recovered_callers(callers, evidence, saved);
+    }
+}
+
+fn settle_recovered_callers(
+    callers: &Arc<SessionOwnerCalls>,
+    evidence: &OwnerEvidence,
+    mut saved_by_input: BTreeMap<InputId, bool>,
+) {
+    for input in callers.outstanding_inputs() {
+        let saved = saved_by_input.remove(&input.input).unwrap_or(false);
+        let reply = if owner_proved_unsent(evidence.get(&input.input)) {
+            SessionOwnerReply::InputUnsent {
+                input,
+                reason: RevokeReason::ConnectionLost,
+            }
+        } else {
+            SessionOwnerReply::InputFinished {
+                input,
+                remote: RemoteEffect::Unknown,
+            }
+        };
+        callers.settle(reply, saved, None);
+    }
+    callers.stop();
 }
 
 impl Drop for SessionOwnerDoor {

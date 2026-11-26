@@ -12,9 +12,9 @@ use crate::{
     session_owner_registry::{RegisteredOwner, SessionOwnerRegistry},
     session_owner_storage::SessionOwnerStorage,
 };
-use acp_client_runtime::{
-    ProviderPromptContent, owner_wire::OwnerAcpWire, session_owner_task::OwnerMailboxUnavailable,
-};
+#[cfg(any(test, feature = "test-support"))]
+use acp_client_runtime::owner_wire::OwnerAcpWire;
+use acp_client_runtime::{ProviderPromptContent, session_owner_task::OwnerMailboxUnavailable};
 use collaboration_protocol::SessionRef;
 use provider_session_machines::{
     harness_lifecycle::{CatalogueFact, CatalogueRequest, ReservedReply},
@@ -56,6 +56,7 @@ pub struct SessionOwnerDoor {
     registry: Arc<SessionOwnerRegistry>,
     clock: Arc<dyn RuntimeClock>,
     hub: Arc<ProviderSessionEventHub>,
+    #[cfg(any(test, feature = "test-support"))]
     wire: Arc<OwnerAcpWire>,
     provider: Arc<SessionHarnessProvider>,
     connection: ConnectionEpoch,
@@ -90,7 +91,7 @@ pub(crate) struct OwnerDeliveryHandle {
 
 impl SessionOwnerDoor {
     pub(crate) fn new(
-        wire: Arc<OwnerAcpWire>,
+        #[cfg(any(test, feature = "test-support"))] wire: Arc<OwnerAcpWire>,
         build_provider: impl FnOnce(TaskTracker) -> Arc<SessionHarnessProvider>,
         clock: Arc<dyn RuntimeClock>,
         store: Arc<AsyncMutex<ProviderOperationStore>>,
@@ -112,6 +113,7 @@ impl SessionOwnerDoor {
             )),
             clock,
             hub,
+            #[cfg(any(test, feature = "test-support"))]
             wire,
             provider,
             connection: ConnectionEpoch(Uuid::now_v7()),
@@ -250,18 +252,6 @@ impl SessionOwnerDoor {
         );
         #[cfg(any(test, feature = "test-support"))]
         let ports = ports.with_preparation_fixture(self.preparation_fixture.clone());
-        let retired = self.retired.clone();
-        let stop = self.shutdown.clone();
-        let completion = registered_owner.handle.completion_port();
-        let address = registered_owner.address;
-        self.tasks.spawn(async move {
-            tokio::select! {
-                () = stop.cancelled() => {}
-                () = retired.cancelled() => {
-                    let _owner_gone = completion.send_stream(address, OwnerEvent::ConnectionLost, &stop).await;
-                }
-            }
-        });
         let mut snapshots = registered_owner.handle.snapshots();
         let mut previous = snapshots.borrow_and_update().clone();
         let observer = Arc::clone(&self.snapshot_observer);

@@ -17,14 +17,14 @@ use provider_session_machines::{
     tool_ownership::{ToolObservation, ToolOwnershipEffect},
 };
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     num::NonZeroUsize,
     sync::{Mutex, MutexGuard},
 };
 use tokio::sync::mpsc;
 
-use switchboard_harness_contracts::HandOverRefusal;
 pub use switchboard_harness_contracts::SlotEvidence;
+use switchboard_harness_contracts::{HandOverRefusal, InputId, OwnerEvidence, OwnerInputEvidence};
 
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum TransportRefusal {
@@ -530,10 +530,52 @@ impl<Frame> AcpTransport<Frame> {
         &self,
         incarnation: OwnerIncarnation,
     ) -> Vec<(DispatchAuthorization, SlotEvidence)> {
+        Self::revoke_owner_slots(&mut self.state(), incarnation)
+    }
+
+    /// Withdraw pending offers and answer each asked input using the same locked ledger.
+    pub(crate) fn give_up_owner(
+        &self,
+        incarnation: OwnerIncarnation,
+        asked_inputs: &BTreeSet<InputId>,
+    ) -> OwnerEvidence {
         let mut state = self.state();
+        let mut by_input = BTreeMap::<InputId, Vec<_>>::new();
+        for (authorization, evidence) in Self::revoke_owner_slots(&mut state, incarnation) {
+            if asked_inputs.contains(&authorization.input_id) {
+                by_input
+                    .entry(authorization.input_id.clone())
+                    .or_default()
+                    .push((authorization, evidence));
+            }
+        }
+        let answers = asked_inputs
+            .iter()
+            .map(|input| {
+                let answer = match by_input.remove(input) {
+                    None => OwnerInputEvidence::NeverOffered,
+                    Some(slots) if slots.iter().any(|(_, slot)| *slot == SlotEvidence::Taken) => {
+                        OwnerInputEvidence::Taken { slots }
+                    }
+                    Some(slots) if slots.iter().all(|(_, slot)| *slot == SlotEvidence::Revoked) => {
+                        OwnerInputEvidence::Withdrawn { slots }
+                    }
+                    Some(slots) => OwnerInputEvidence::NoEvidence { slots },
+                };
+                (input.clone(), answer)
+            })
+            .collect();
+        drop(state);
+        answers
+    }
+
+    fn revoke_owner_slots(
+        state: &mut TransportState<Frame>,
+        incarnation: OwnerIncarnation,
+    ) -> Vec<(DispatchAuthorization, SlotEvidence)> {
         let TransportState {
             slot, callbacks, ..
-        } = &mut *state;
+        } = state;
         slot.iter_mut()
             .filter(|(key, _)| key.incarnation == incarnation)
             .map(|(key, entry)| {
@@ -553,7 +595,8 @@ impl<Frame> AcpTransport<Frame> {
             .collect()
     }
 
-    /// Called after terminal settlement no longer needs the slot's evidence.
+    /// Production retains slots across route retirement and until owner recovery.
+    /// Removing one would make an earlier offer look never offered at hand-back.
     pub fn forget(&self, authorization: &DispatchAuthorization) {
         self.state().slot.remove(authorization);
     }

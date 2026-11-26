@@ -346,10 +346,8 @@ pub(super) fn owner_proved_unsent(evidence: Option<&OwnerInputEvidence>) -> bool
     )
 }
 
-/// Temporary projection of ACP's complete, locked revocation snapshot until
-/// its shared owner wire answers the recovery query directly. ACP retains
-/// every offered slot until recovery, including those from retired runs.
-pub(super) fn answer_complete_acp_snapshot(
+/// Project the complete ACP snapshot used by the raw-slot registry fixture.
+fn answer_complete_acp_snapshot(
     inputs: &BTreeSet<InputId>,
     slots: &[(DispatchAuthorization, SlotEvidence)],
 ) -> OwnerEvidence {

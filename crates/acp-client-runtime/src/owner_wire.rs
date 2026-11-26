@@ -30,13 +30,13 @@ use provider_session_machines::session_turn_machine::TurnId;
 use provider_session_machines::tool_ownership::{ToolObservation, ToolOwnershipEffect};
 use session_event_model::ProviderAuthStatus;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     num::NonZeroUsize,
     sync::{Arc, Mutex, Weak},
 };
 use switchboard_harness_contracts::{
-    CloseUncertainty, HandOverRefusal, HarnessOwnerEvents, ReservedWorkReply, SteerIdlePolicy,
-    WorkReply,
+    CloseUncertainty, HandOverRefusal, HarnessOwnerEvents, InputId, OwnerEvidence,
+    ReservedWorkReply, SteerIdlePolicy, WorkReply,
 };
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
@@ -579,8 +579,9 @@ impl OwnerAcpWire {
     pub fn abandon_incarnation(
         &self,
         owner: OwnerIncarnation,
-    ) -> Vec<(DispatchAuthorization, SlotEvidence)> {
-        let evidence = self.revoke_incarnation(owner);
+        asked_inputs: &BTreeSet<InputId>,
+    ) -> OwnerEvidence {
+        let evidence = self.transport.give_up_owner(owner, asked_inputs);
         for generation in self.transport.runs_of(owner) {
             self.apply_membership(owner, TurnMembership::Retire(generation));
         }

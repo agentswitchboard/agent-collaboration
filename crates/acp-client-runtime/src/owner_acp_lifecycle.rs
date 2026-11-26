@@ -5,7 +5,7 @@ mod opening;
 
 use super::OwnerAcpBinding;
 use crate::{
-    InteractionPort, OwnerApprovalBindings, OwnerApprovalLease,
+    InteractionPort, OwnerApprovalBindings,
     acp_transport::{TransportRefusal, TransportRun},
     owner_wire::{OwnerAcpWire, OwnerWireRefusal},
 };
@@ -24,22 +24,27 @@ use provider_session_machines::{
 };
 use router_clock::RuntimeClock;
 use session_event_model::{CapabilityReport, ProviderAuthStatus, SessionSettings};
-use std::sync::{Arc, OnceLock};
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, OnceLock},
+};
 use switchboard_harness_contracts::{
     ApprovalLease, ApprovalLeaseBinding, ApprovalLeaseRefusalReason,
     BeforeOfferApprovalLeaseRefusal, CancelDrainStart, CancelDrainWait, DispatchAuthorization,
     DispatchResult, ExactTurn, HandOverRefusal, HarnessBinding, HarnessContent,
-    ObservedTurnApprovalLeaseRefusal, ProviderSettingKind, ReplyAdmission, ReservedWorkReply,
-    SettingOffer, SettingValueId, SteerIdlePolicy, TakeBackRefusal, TurnId, TurnMembership,
-    WorkOfferRefusal, WorkReply, WriterState,
+    HarnessOwnerRecovery, InputId, ObservedTurnApprovalLeaseRefusal, OwnerEvidence,
+    OwnerIncarnation, ProviderSettingKind, ReplyAdmission, ReservedWorkReply, SettingOffer,
+    SettingValueId, SteerIdlePolicy, TakeBackRefusal, TurnId, TurnMembership, WorkOfferRefusal,
+    WorkReply, WriterState,
 };
-use tokio_util::task::TaskTracker;
+use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 pub struct OwnerAcpProvider<Port: InteractionPort> {
     wire: Arc<OwnerAcpWire>,
     approvals: OwnerApprovalBindings<Port>,
     clock: Arc<dyn RuntimeClock>,
     tasks: TaskTracker,
+    connection_retired: CancellationToken,
 }
 
 impl<Port: InteractionPort> OwnerAcpProvider<Port> {
@@ -49,13 +54,21 @@ impl<Port: InteractionPort> OwnerAcpProvider<Port> {
         approvals: OwnerApprovalBindings<Port>,
         clock: Arc<dyn RuntimeClock>,
         tasks: TaskTracker,
+        connection_retired: CancellationToken,
     ) -> Self {
         Self {
             wire,
             approvals,
             clock,
             tasks,
+            connection_retired,
         }
+    }
+}
+
+impl<Port: InteractionPort> HarnessOwnerRecovery for OwnerAcpProvider<Port> {
+    fn give_up_owner(&self, owner: OwnerIncarnation, inputs: &BTreeSet<InputId>) -> OwnerEvidence {
+        self.wire.abandon_incarnation(owner, inputs)
     }
 }
 
@@ -82,11 +95,26 @@ impl<Port: InteractionPort> HarnessProvider<SessionHarnessPayloads<Port::Context
             self.tasks.clone(),
         );
         self.wire.register_owner_events(owner.incarnation, &events);
+        let owner_stopped = CancellationToken::new();
+        let stopped = owner_stopped.clone();
+        let connection_retired = self.connection_retired.clone();
+        let reports = Arc::clone(&events);
+        self.tasks.spawn(async move {
+            tokio::select! {
+                biased;
+                () = stopped.cancelled() => {}
+                () = async {
+                    connection_retired.cancelled().await;
+                    let _owner_stopped = reports.report_harness_gone().await;
+                } => {}
+            }
+        });
         Box::new(AcpOwnerLifecycleBinding {
             work,
             approvals: self.approvals.clone(),
             openings,
             owner_events: events,
+            owner_stopped,
         })
     }
 
@@ -112,10 +140,12 @@ struct AcpOwnerLifecycleBinding<Port: InteractionPort> {
     approvals: OwnerApprovalBindings<Port>,
     openings: OwnerOpenings,
     owner_events: Arc<dyn HarnessOwnerEvents<ProviderAuthStatus>>,
+    owner_stopped: CancellationToken,
 }
 
 impl<Port: InteractionPort> Drop for AcpOwnerLifecycleBinding<Port> {
     fn drop(&mut self) {
+        self.owner_stopped.cancel();
         self.work
             .wire
             .unregister_owner_events(self.openings.owner().incarnation, &self.owner_events);
@@ -294,8 +324,6 @@ impl<Port: InteractionPort> HarnessBinding for AcpOwnerLifecycleBinding<Port> {
     }
 }
 
-impl<Port: InteractionPort> ApprovalLease for OwnerApprovalLease<Port> {}
-
 impl<Port: InteractionPort> ApprovalLeaseBinding<Port::Context> for AcpOwnerLifecycleBinding<Port> {
     fn install_approval_lease_before_offer(
         &self,
@@ -330,9 +358,8 @@ impl<Port: InteractionPort> AcpOwnerLifecycleBinding<Port> {
             .session()
             .map_err(|_| ApprovalLeaseRefusalReason::ContextUnavailable)?;
         self.approvals
-            .install(session.clone(), turn.run, turn.turn, context)
+            .install_lease(session.clone(), turn.run, turn.turn, context)
             .map(|lease| Box::new(lease) as Box<dyn ApprovalLease>)
-            .map_err(|_| ApprovalLeaseRefusalReason::ContextUnavailable)
     }
 }
 

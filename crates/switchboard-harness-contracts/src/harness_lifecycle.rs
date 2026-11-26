@@ -5,10 +5,10 @@ use std::sync::Arc;
 use crate::{
     AcceptedRunSettings, ActivationSetup, ApprovalLeaseBinding, CatalogueFact, CatalogueRequest,
     CloseAttempt, CloseFact, CreateAttempt, CreatedSetupFact, EventSendFuture, HarnessBinding,
-    HarnessSessionId, Held, LifecycleEventPort, LifecycleRefusal, LifecycleReply, OpenAttempt,
-    OpenRequest, OpeningFact, OwnerAddress, ReplyAdmission, RestoreSettingRefusal, RunAttempt,
-    RunRetirement, SessionGeneration, SettingAttempt, SettingFact, SetupReport, TurnId,
-    TurnMembership,
+    HarnessOwnerRecovery, HarnessSessionId, Held, LifecycleEventPort, LifecycleRefusal,
+    LifecycleReply, OpenAttempt, OpenRequest, OpeningFact, OwnerAddress, ReplyAdmission,
+    RestoreSettingRefusal, RunAttempt, RunRetirement, SessionGeneration, SettingAttempt,
+    SettingFact, SetupReport, TurnId, TurnMembership,
 };
 
 #[cfg(test)]
@@ -84,7 +84,7 @@ pub trait HarnessOwnerEvents<AuthStatus>: Send + Sync + 'static {
     fn report_connection_auth(&self, status: AuthStatus) -> CallbackAdmission;
 }
 
-pub trait HarnessProvider<Payloads: HarnessLifecyclePayloads>: Send + Sync + 'static {
+pub trait HarnessProvider<Payloads: HarnessLifecyclePayloads>: HarnessOwnerRecovery {
     /// Create the owner's binding locally before any opening is offered.
     /// The caller binds `events` to this exact owner for the binding's lifetime.
     fn bind(
