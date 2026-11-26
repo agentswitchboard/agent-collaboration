@@ -29,6 +29,6 @@ pub use provider_setting_choice::ProviderSettingChoice;
 pub use provider_setting_kind::ProviderSettingKind;
 pub use provider_settings_catalog::{
     EffectiveProviderSettings, FastObserved, ProviderConfigOption, ProviderConfigValue,
-    ProviderModeObservation, ProviderSettingsCatalog,
+    ProviderModeObservation, ProviderSettingsCatalog, ProviderSettingsCatalogRecord,
 };
 pub use session_generation::SessionGeneration;

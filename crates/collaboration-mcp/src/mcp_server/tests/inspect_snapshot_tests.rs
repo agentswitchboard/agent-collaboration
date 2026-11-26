@@ -57,14 +57,11 @@ async fn inspect_without_a_codex_backend_is_a_typed_unavailable_error() {
     assert_eq!(structured["effect"], "none");
 }
 
-#[test]
-fn success_schema_branches_match_main_golden_snapshot() {
-    // Set UPDATE_MAIN_SUCCESS_SCHEMA_SNAPSHOT=1 to refresh from the resolved tool catalog.
-    let expected: std::collections::BTreeMap<String, Value> =
-        serde_json::from_str(include_str!("../snapshots/main_success_schemas.json"))
-            .expect("main success schema snapshot");
+const MAIN_SUCCESS_SCHEMA_SNAPSHOT: &str = include_str!("../snapshots/main_success_schemas.json");
+
+fn resolved_success_schemas() -> std::collections::BTreeMap<String, Value> {
     let server = CollaborationMcpServer::catalog_only();
-    let actual = server
+    server
         .resolved_tools()
         .into_iter()
         .filter_map(|tool| {
@@ -103,26 +100,38 @@ fn success_schema_branches_match_main_golden_snapshot() {
                 (tool.name.to_string(), Value::Object(success))
             })
         })
-        .collect::<std::collections::BTreeMap<_, _>>();
+        .collect::<std::collections::BTreeMap<_, _>>()
+}
+
+fn export_success_schemas(schemas: &std::collections::BTreeMap<String, Value>) -> String {
+    let entries = schemas
+        .iter()
+        .enumerate()
+        .map(|(index, (name, schema))| {
+            let comma = if index + 1 < schemas.len() { "," } else { "" };
+            format!(
+                "{}:{}{}",
+                serde_json::to_string(name).expect("tool name JSON"),
+                serde_json::to_string(schema).expect("tool schema JSON"),
+                comma
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("{{\n{entries}\n}}\n")
+}
+
+#[test]
+fn success_schema_branches_match_main_golden_snapshot() {
+    // Set UPDATE_MAIN_SUCCESS_SCHEMA_SNAPSHOT=1 to refresh from the resolved tool catalog.
+    let expected: std::collections::BTreeMap<String, Value> =
+        serde_json::from_str(MAIN_SUCCESS_SCHEMA_SNAPSHOT).expect("main success schema snapshot");
+    let actual = resolved_success_schemas();
     if std::env::var_os("UPDATE_MAIN_SUCCESS_SCHEMA_SNAPSHOT").is_some() {
-        let entries = actual
-            .iter()
-            .enumerate()
-            .map(|(index, (name, schema))| {
-                let comma = if index + 1 < actual.len() { "," } else { "" };
-                format!(
-                    "{}:{}{}",
-                    serde_json::to_string(name).expect("tool name JSON"),
-                    serde_json::to_string(schema).expect("tool schema JSON"),
-                    comma
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        let snapshot = format!("{{\n{entries}\n}}\n");
         let snapshot_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("src/mcp_server/snapshots/main_success_schemas.json");
-        std::fs::write(snapshot_path, snapshot).expect("write resolved MCP success schemas");
+        std::fs::write(snapshot_path, export_success_schemas(&actual))
+            .expect("write resolved MCP success schemas");
         return;
     }
     assert_eq!(actual.len(), 24);
@@ -130,4 +139,13 @@ fn success_schema_branches_match_main_golden_snapshot() {
     for (name, success) in actual {
         assert_eq!(success, expected[&name], "{name} success schema drifted");
     }
+}
+
+#[test]
+fn main_success_schema_keeps_export_bytes() {
+    let exported = export_success_schemas(&resolved_success_schemas());
+    assert!(
+        exported == MAIN_SUCCESS_SCHEMA_SNAPSHOT,
+        "main success schema export bytes drifted"
+    );
 }

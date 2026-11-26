@@ -3,7 +3,7 @@ use session_event_model::{ConfigValue, ConfigValueState};
 
 #[test]
 fn current_config_values_preserve_select_and_boolean_kinds() {
-    let catalog = ProviderSettingsCatalog {
+    let catalog = ProviderSettingsCatalog::from_record(ProviderSettingsCatalogRecord {
         config_options: vec![
             ProviderConfigOption {
                 id: "model".to_owned(),
@@ -20,8 +20,8 @@ fn current_config_values_preserve_select_and_boolean_kinds() {
                 choices: Vec::new(),
             },
         ],
-        ..ProviderSettingsCatalog::default()
-    };
+        ..Default::default()
+    });
     let settings = catalog.to_session_settings();
     assert_eq!(settings.model.as_deref(), Some("model-a"));
     assert_eq!(

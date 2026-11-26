@@ -152,13 +152,13 @@ fn prompt_content_gate_matches_advertised_optional_types() {
     // image, audio and embedded resources require promptCapabilities.
     use acp_client_runtime::ProviderCapabilityReport;
     use acp_client_runtime::ProviderPromptContent;
-    use agent_client_protocol::schema::v1::ContentBlock;
+    use session_event_model::PromptContent;
 
     let examples = [
         ("text", serde_json::json!({"type": "text", "text": "hello"})),
         (
             "resourceLink",
-            serde_json::json!({"type": "resource_link", "name": "reference", "uri": "file:///tmp/reference"}),
+            serde_json::json!({"type": "resourceLink", "name": "reference", "uri": "file:///tmp/reference"}),
         ),
         (
             "image",
@@ -170,7 +170,7 @@ fn prompt_content_gate_matches_advertised_optional_types() {
         ),
         (
             "embeddedResource",
-            serde_json::json!({"type": "resource", "resource": {"uri": "file:///tmp/reference", "text": "content"}}),
+            serde_json::json!({"type": "embeddedResource", "uri": "file:///tmp/reference", "text": "content"}),
         ),
     ];
     for advertised_mask in 0_u8..8 {
@@ -181,9 +181,9 @@ fn prompt_content_gate_matches_advertised_optional_types() {
             ..ProviderCapabilityReport::default()
         };
         for (content_type, wire_block) in &examples {
-            let block: ContentBlock =
-                serde_json::from_value(wire_block.clone()).expect("ACP content example");
-            let result = ProviderPromptContent::new_for_test(vec![block], &report);
+            let block: PromptContent =
+                serde_json::from_value(wire_block.clone()).expect("canonical content example");
+            let result = ProviderPromptContent::from_session_contents(vec![block], &report);
             let accepted = match *content_type {
                 "text" | "resourceLink" => true,
                 "image" => report.accepts_image,

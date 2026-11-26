@@ -80,7 +80,9 @@ pub(super) async fn inspect(
         state: state_tag(state),
         capabilities,
         history,
-        settings_catalog: catalog.map(|catalog| catalog_view(catalog, confirmed_mode)),
+        settings_catalog: catalog
+            .as_ref()
+            .map(|catalog| catalog_view(catalog, confirmed_mode)),
         requested_mode,
         mode_reason: snapshot
             .as_ref()
@@ -91,41 +93,43 @@ pub(super) async fn inspect(
 }
 
 fn catalog_view(
-    catalog: provider_session_machines::ProviderSettingsCatalog,
+    catalog: &provider_session_machines::ProviderSettingsCatalog,
     current_mode: Option<String>,
 ) -> ProviderSettingsCatalogView {
     ProviderSettingsCatalogView {
         current_mode,
-        modes: catalog.modes.into_iter().map(choice_view).collect(),
+        modes: catalog.modes.iter().map(choice_view).collect(),
         config_options: catalog
             .config_options
-            .into_iter()
+            .iter()
             .map(|option| ProviderConfigOptionView {
-                id: option.id,
-                name: option.name,
+                id: option.id.clone(),
+                name: option.name.clone(),
                 category: option
                     .category
                     .map(crate::provider_operation_settlement::provider_setting_name),
-                current_value: match option.current_value {
+                current_value: match &option.current_value {
                     provider_session_machines::ProviderConfigValue::Select(value) => {
-                        ProviderConfigValueView::Select { value }
+                        ProviderConfigValueView::Select {
+                            value: value.clone(),
+                        }
                     }
                     provider_session_machines::ProviderConfigValue::Boolean(value) => {
-                        ProviderConfigValueView::Boolean { value }
+                        ProviderConfigValueView::Boolean { value: *value }
                     }
                 },
-                choices: option.choices.into_iter().map(choice_view).collect(),
+                choices: option.choices.iter().map(choice_view).collect(),
             })
             .collect(),
     }
 }
 
 fn choice_view(
-    choice: provider_session_machines::ProviderSettingChoice,
+    choice: &provider_session_machines::ProviderSettingChoice,
 ) -> ProviderSettingChoiceView {
     ProviderSettingChoiceView {
-        value: choice.value,
-        label: choice.label,
+        value: choice.value.clone(),
+        label: choice.label.clone(),
     }
 }
 

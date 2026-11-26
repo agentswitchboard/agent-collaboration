@@ -10,7 +10,7 @@ use std::{
     num::NonZeroUsize,
     sync::Arc,
 };
-use switchboard_harness_contracts::WriterState;
+use switchboard_harness_contracts::{ReplyAdmission, WorkReply, WriterState};
 use switchboard_harness_shared_mechanics::{
     CarrierReceiver, CarrierReply, CarrierSender, reply_carrier,
 };
@@ -110,6 +110,10 @@ impl OwnerCompletionPort {
             })
     }
 
+    pub fn reserve_work_reply(&self, address: OwnerAddress) -> ReplyAdmission<WorkReply> {
+        self.carrier.reserve(address, owner_event_for_work_reply)
+    }
+
     /// A run's SDK reader can yield for its own completion channel and stop
     /// if that run is retired.
     pub async fn send_stream(
@@ -128,6 +132,13 @@ impl OwnerCompletionPort {
 impl OwnerCompletion {
     pub fn send(self, event: OwnerEvent) {
         self.reply.send(event);
+    }
+}
+
+fn owner_event_for_work_reply(reply: WorkReply) -> OwnerEvent {
+    match reply {
+        WorkReply::Dispatch(result) => OwnerEvent::Dispatch(result),
+        WorkReply::ConnectionLost => OwnerEvent::ConnectionLost,
     }
 }
 

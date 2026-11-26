@@ -82,6 +82,93 @@ fn foreground(transport: &AcpTransport<&str>, run: TransportRun, label: &'static
 }
 
 #[test]
+fn offer_record_distinguishes_scope_conflict_and_existing_sequence() {
+    let (transport, mut writer) = new_transport(2);
+    let run = route(1);
+    transport.open_route(run, "session".into());
+    transport.activate_route(run);
+    let accepted = authorization(run, AuthorizationTarget::Session);
+    let wrong_scope = authorization(run, AuthorizationTarget::NewTurn);
+    let other_sequence = DispatchAuthorization {
+        authorization_seq: 2,
+        ..accepted.clone()
+    };
+    let other_target = DispatchAuthorization {
+        target: AuthorizationTarget::ExistingTurn {
+            turn: TurnId(Uuid::now_v7()),
+        },
+        ..accepted.clone()
+    };
+    transport
+        .offer_work(accepted.clone(), None, "original")
+        .expect("record the first offer");
+
+    assert_eq!(
+        transport.offer_work(wrong_scope.clone(), None, "wrong scope"),
+        Err(TransportOfferRefusal::WorkDoesNotFitAuthorization),
+    );
+    assert_eq!(
+        transport.offer_work(other_sequence.clone(), None, "other sequence"),
+        Err(TransportOfferRefusal::OtherAuthorizationOffered),
+    );
+    assert_eq!(
+        transport.offer_work(accepted.clone(), None, "repeat"),
+        Err(TransportOfferRefusal::AuthorizationSequenceOnRecord),
+    );
+    for missing in [&wrong_scope, &other_sequence, &other_target] {
+        assert_eq!(
+            transport.hand_over_work(missing, || true),
+            Err(HandOverRefusal::NoSuchOffer),
+        );
+    }
+    assert_eq!(
+        transport.hand_over_work(&accepted, || true),
+        Ok(DispatchResult::Taken(accepted.clone())),
+    );
+    assert_eq!(
+        transport.offer_work(other_target.clone(), None, "other target"),
+        Err(TransportOfferRefusal::AuthorizationSequenceOnRecord),
+    );
+    assert_eq!(
+        transport.revoke(&other_target),
+        Err(TransportRefusal::AuthorizationMismatch),
+    );
+    assert_eq!(
+        writer
+            .try_recv()
+            .expect("only the first offer was taken")
+            .frame,
+        "original"
+    );
+    assert!(matches!(writer.try_recv(), Err(TryRecvError::Empty)));
+}
+
+#[test]
+fn a_stopped_writer_leaves_the_offer_until_it_is_taken_back() {
+    let (transport, writer) = new_transport(1);
+    let run = route(1);
+    transport.open_route(run, "session".into());
+    transport.activate_route(run);
+    let key = authorization(run, AuthorizationTarget::Session);
+    drop(writer);
+    transport
+        .offer_work(key.clone(), None, "never written")
+        .expect("offer was recorded");
+
+    let outcome = transport.hand_over_work(&key, || panic!("no writer permit for the question"));
+
+    assert_eq!(outcome, Err(HandOverRefusal::WriterStopped));
+    assert_eq!(
+        transport.revoke(&key),
+        Ok(DispatchResult::Revoked(key.clone()))
+    );
+    assert_eq!(
+        transport.hand_over_work(&key, || panic!("taken-back work has no question")),
+        Ok(DispatchResult::DefinitelyUnsent(key)),
+    );
+}
+
+#[test]
 fn held_steer_cannot_enqueue_on_a_successor_turn_on_the_same_run() {
     let (transport, mut writer) = new_transport(1);
     let run = route(1);

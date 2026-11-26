@@ -1,8 +1,8 @@
 use super::{
-    InputId, LastLiveTurn, OwnerInput, OwnerSetting, PromptCompletion, RunAttempt,
-    SessionGeneration, SessionLifecycle, SessionOwnerCommand, SessionOwnerReply,
-    SessionPublication, SessionStoreRequest, SessionStoreResult, SessionTurn, SessionWireRequest,
-    SessionWireResult, TurnId,
+    InputId, LastLiveTurn, OwnerInput, OwnerSetting, RunAttempt, SessionGeneration,
+    SessionLifecycle, SessionOwnerCommand, SessionOwnerReply, SessionPublication,
+    SessionStoreRequest, SessionStoreResult, SessionTurn, SessionWireRequest, SessionWireResult,
+    TurnId,
 };
 use crate::provider_settings_catalog::ProviderSettingsUpdate;
 use crate::session_lifecycle_machine::{CloseAttempt, LoadAttempt};
@@ -16,7 +16,10 @@ use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
 
-pub use switchboard_harness_contracts::{ConnectionEpoch, OwnerAddress, OwnerIncarnation};
+pub use switchboard_harness_contracts::{
+    CancelDrainReport, ConnectionEpoch, DispatchResult, FastReadback, OwnerAddress,
+    OwnerIncarnation, ProviderWireFailure, ProviderWireFailureKind, SettingReadback,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnerMailboxEvent {
@@ -74,29 +77,7 @@ pub enum OwnerEvent {
     },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub struct DispatchAuthorization {
-    pub incarnation: OwnerIncarnation,
-    pub run: SessionGeneration,
-    pub input_id: InputId,
-    pub authorization_seq: u64,
-    pub target: AuthorizationTarget,
-}
-
-pub use switchboard_harness_contracts::AuthorizationTarget;
-
-impl DispatchAuthorization {
-    /// Check the route under the same transport lock as identity comparison
-    /// and enqueue. A successful check alone does not authorize a wire send.
-    #[must_use]
-    pub fn matches_route(&self, run: SessionGeneration, current_turn: Option<TurnId>) -> bool {
-        self.run == run
-            && match self.target {
-                AuthorizationTarget::ExistingTurn { turn } => current_turn == Some(turn),
-                AuthorizationTarget::NewTurn | AuthorizationTarget::Session => true,
-            }
-    }
-}
+pub use switchboard_harness_contracts::{AuthorizationTarget, DispatchAuthorization};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AuthorizedWork {
@@ -191,62 +172,7 @@ pub fn earlier_send_in_flight_answer(operations: impl std::fmt::Display) -> Stri
     format!("{EARLIER_SEND_IN_FLIGHT}; wait for {operations}")
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DispatchResult {
-    CancelDrainFinished(DispatchAuthorization),
-    CancelTaken {
-        authorization: DispatchAuthorization,
-        drain: CancelDrainReport,
-    },
-    Taken(DispatchAuthorization),
-    Revoked(DispatchAuthorization),
-    AlreadyTaken(DispatchAuthorization),
-    PromptRequired {
-        authorization: DispatchAuthorization,
-        replacement_turn: TurnId,
-    },
-    DefinitelyUnsent(DispatchAuthorization),
-    StaleTarget(DispatchAuthorization),
-    PromptFinished {
-        authorization: DispatchAuthorization,
-        outcome: super::WireOutcome<PromptCompletion>,
-    },
-    PromptFailed {
-        authorization: DispatchAuthorization,
-        failure: ProviderWireFailure,
-    },
-    SteerFinished {
-        authorization: DispatchAuthorization,
-        outcome: super::WireOutcome<()>,
-    },
-    SteerInvalidReply(DispatchAuthorization),
-    SteerNeedsPrompt(DispatchAuthorization),
-    SteerStartedNewTurn {
-        authorization: DispatchAuthorization,
-        turn: TurnId,
-    },
-    SettingFinished {
-        authorization: DispatchAuthorization,
-        observation: super::SettingObservation,
-    },
-    SettingKept {
-        authorization: DispatchAuthorization,
-        reason: Option<PermissionModeReason>,
-    },
-}
-
 pub use switchboard_harness_contracts::PendingTurnResponse;
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum CancelDrainReport {
-    Drained,
-    Expired { pending: Vec<PendingTurnResponse> },
-}
-
-impl CancelDrainReport {
-    pub const EXPIRED_SUMMARY: &'static str =
-        "cancel sent; some pending approval replies may reach the harness after it";
-}
 
 pub use switchboard_harness_contracts::TurnMembership;
 
@@ -310,24 +236,6 @@ pub struct InitialSettingFailure {
 }
 
 pub use switchboard_harness_contracts::PermissionModeReason;
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SettingReadback {
-    pub value: SettingValueId,
-    pub catalogue: Arc<ProviderSettingsCatalog>,
-    pub fast: FastReadback,
-    pub mode_reason: Option<PermissionModeReason>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum FastReadback {
-    NotOffered,
-    Off,
-    On {
-        application: SettingApplication,
-        input: InputId,
-    },
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ModelFastOutcome {
@@ -435,41 +343,6 @@ impl RestoreFailure {
             }
             Self::Closed => "load or resume the session again if still needed",
         }
-    }
-}
-
-/// Correlation for a coded reply, with no provider-controlled message text.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ProviderWireFailure {
-    pub kind: ProviderWireFailureKind,
-    pub code: i64,
-    pub correlation_id: Uuid,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ProviderWireFailureKind {
-    AuthenticationRequired,
-    SessionNotFound,
-    ResourceNotFound,
-    UnsupportedMethod,
-    InvalidParams,
-    RequestCancelled,
-    Rejected,
-    RestoreFailed,
-    RestoreRefused,
-}
-
-impl ProviderWireFailure {
-    #[must_use]
-    pub const fn definitely_no_effect(self) -> bool {
-        matches!(
-            self.kind,
-            ProviderWireFailureKind::AuthenticationRequired
-                | ProviderWireFailureKind::SessionNotFound
-                | ProviderWireFailureKind::ResourceNotFound
-                | ProviderWireFailureKind::UnsupportedMethod
-                | ProviderWireFailureKind::InvalidParams
-        )
     }
 }
 

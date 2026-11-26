@@ -9,6 +9,9 @@ use std::{
 use tokio_util::sync::CancellationToken;
 const BOUND: Duration = Duration::from_secs(3);
 
+#[path = "provider_behavior_work_frames.rs"]
+mod work_frames;
+
 struct NoopInteractions;
 impl InteractionPort for NoopInteractions {
     type Context = u64;

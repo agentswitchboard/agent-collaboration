@@ -25,6 +25,7 @@ dependencies = [
  "serde",
  "serde_json",
  "session-event-model",
+ "sha2 0.10.9",
  "state-machine-core",
  "switchboard-harness-contracts",
  "switchboard-harness-shared-mechanics",
@@ -5501,12 +5502,11 @@ dependencies = [
 name = "session-event-model"
 version = "0.1.160"
 dependencies = [
- "base64 0.22.1",
  "message-board",
  "schemars 1.2.2",
  "serde",
  "serde_json",
- "uuid",
+ "switchboard-harness-contracts",
 ]
 
 [[package]]
@@ -6107,6 +6107,9 @@ dependencies = [
 name = "switchboard-harness-contracts"
 version = "0.1.160"
 dependencies = [
+ "base64 0.22.1",
+ "schemars 1.2.2",
+ "serde",
  "uuid",
 ]
 

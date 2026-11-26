@@ -1,14 +1,20 @@
 use super::{OwnerRejection, OwnerResult, OwnerTransition};
-use crate::SessionGeneration;
 use crate::queued_entry_machine::SentOutcome;
 use crate::session_cell_machine::SessionCellEvent;
 use crate::session_owner::{
     AuthorizationStatus, AuthorizationTarget, AuthorizedWork, CancelDrainReport,
     DispatchAuthorization, DispatchResult, EffectInProgress, InputWait, OwnerDeadline, OwnerEffect,
     OwnerInput, PendingAuthorization, RevokeReason, SessionOwnerEffect, SessionOwnerRefusal,
-    SessionPublication, SessionTurn, TurnId, TurnMembership, WireOutcome,
+    SessionPublication, SessionTurn, SettingObservation, SettingReadback, TurnId, TurnMembership,
+    WireOutcome,
 };
+use crate::{ProviderSettingsCatalog, SessionGeneration};
 use session_event_model::InputId;
+use std::sync::Arc;
+
+#[cfg(test)]
+#[path = "dispatch_effects_test.rs"]
+mod tests;
 
 impl AuthorizedWork {
     fn route(&self) -> (SessionGeneration, &InputId) {
@@ -37,6 +43,34 @@ enum Unsent {
     Revoked,
     Transport,
     StaleTarget,
+}
+
+fn wrap_setting_catalogue(
+    observation: SettingObservation,
+) -> SettingObservation<ProviderSettingsCatalog> {
+    let rebuild = |record| Arc::new(ProviderSettingsCatalog::from_record(record));
+    match observation {
+        SettingObservation::Applied(value) => SettingObservation::Applied(value),
+        SettingObservation::AppliedWithReadback(readback) => {
+            let SettingReadback {
+                value,
+                catalogue,
+                fast,
+                mode_reason,
+            } = *readback;
+            SettingObservation::AppliedWithReadback(Box::new(SettingReadback {
+                value,
+                catalogue: rebuild(catalogue),
+                fast,
+                mode_reason,
+            }))
+        }
+        SettingObservation::Refused { current, catalogue } => SettingObservation::Refused {
+            current,
+            catalogue: catalogue.map(rebuild),
+        },
+        SettingObservation::Unknown => SettingObservation::Unknown,
+    }
 }
 
 impl OwnerTransition {
@@ -304,7 +338,7 @@ impl OwnerTransition {
                 self.next.ports.authorizations.remove(&authorization);
                 let mode_request =
                     (setting.kind == crate::ProviderSettingKind::Mode).then_some(value.0 == "auto");
-                self.setting_on_wire(setting, observation, mode_request)?;
+                self.setting_on_wire(setting, wrap_setting_catalogue(observation), mode_request)?;
                 self.continue_close()
             }
             DispatchResult::SettingKept {

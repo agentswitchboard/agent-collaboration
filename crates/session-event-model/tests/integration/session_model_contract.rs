@@ -40,6 +40,36 @@ fn accepted_steer_input_joins_an_existing_turn_with_its_own_id() {
     assert!(session_event_model::InputId::new("").is_err());
 }
 
+#[test]
+fn input_id_preserves_opaque_json_string_bytes() {
+    use session_event_model::InputId;
+
+    let opaque_id = InputId::new("  a \"quoted\" input\t ").expect("opaque input id");
+    let opaque_wire = r#""  a \"quoted\" input\t ""#;
+    let longest_value = "é".repeat(2048);
+    let longest_wire = format!("\"{longest_value}\"");
+    let longest_id = InputId::new(longest_value).expect("4096-byte input id");
+
+    for (input_id, wire) in [
+        (opaque_id, opaque_wire),
+        (longest_id, longest_wire.as_str()),
+    ] {
+        assert_eq!(
+            serde_json::to_string(&input_id).expect("input id JSON"),
+            wire
+        );
+        assert_eq!(
+            serde_json::from_str::<InputId>(wire).expect("decode input id"),
+            input_id
+        );
+    }
+
+    let over_length = format!("\"{}a\"", "é".repeat(2048));
+    for wire in [r#""""#, r#""contains\u0000NUL""#, &over_length] {
+        assert!(serde_json::from_str::<InputId>(wire).is_err());
+    }
+}
+
 // Specification E7: requiresAction implies at least one pending interaction.
 #[test]
 fn requires_action_cannot_start_with_an_empty_pending_set() {
