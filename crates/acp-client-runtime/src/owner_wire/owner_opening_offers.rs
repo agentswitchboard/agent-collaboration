@@ -138,6 +138,13 @@ impl OwnerAcpWire {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.install_exact_route(route, session.clone())?;
+        if !self
+            .transport
+            .attach_restore_registration(route.run, Some(route), instance)
+        {
+            self.retire_exact_route(route, instance);
+            return Err(TransportRefusal::RouteUnavailable);
+        }
         let updates = self
             .restore_updates
             .open_instance(route.run, session.clone(), instance);

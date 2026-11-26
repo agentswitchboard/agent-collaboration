@@ -1,6 +1,9 @@
 //! Route untagged ACP updates to the current restore's own stream.
 
-use crate::{acp_transport::TransportRun, owner_opening_instance::OpeningInstance};
+use crate::{
+    acp_transport::{RestoreSelection, TransportRun},
+    owner_opening_instance::OpeningInstance,
+};
 use agent_client_protocol::Dispatch;
 use session_event_model::session_profile_codec::STATE_METHOD;
 use std::sync::{Mutex, PoisonError};
@@ -18,6 +21,7 @@ struct RestoreUpdateTap {
 }
 
 impl RestoreUpdates {
+    #[cfg(test)]
     pub(crate) fn open(
         &self,
         run: TransportRun,
@@ -90,15 +94,14 @@ impl RestoreUpdates {
     pub(crate) fn forward(
         &self,
         session: &str,
-        current: Option<TransportRun>,
+        selected: RestoreSelection,
         message: Dispatch,
     ) -> Option<Dispatch> {
         let taps = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(tap) = current.and_then(|run| {
-            taps.iter()
-                .rev()
-                .find(|tap| tap.run == run && tap.session == session)
-        }) {
+        if let RestoreSelection::Registered { run, instance } = selected {
+            let tap = taps
+                .iter()
+                .find(|tap| tap.names(run, &instance) && tap.session == session)?;
             // An untagged state notification from an earlier unanswered
             // restore cannot supply live turn evidence for its successor.
             if matches!(&message, Dispatch::Notification(notification) if notification.method() == STATE_METHOD)
@@ -115,7 +118,9 @@ impl RestoreUpdates {
             }
             return None;
         }
-        if current.is_none() && taps.iter().any(|tap| tap.session == session) {
+        if matches!(selected, RestoreSelection::NoRoute)
+            && taps.iter().any(|tap| tap.session == session)
+        {
             return None;
         }
         Some(message)

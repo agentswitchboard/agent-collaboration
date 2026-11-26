@@ -1,9 +1,12 @@
 //! Ordered ACP output and the transport's authorization fence.
 
+mod restore_registration;
+pub(crate) use restore_registration::RestoreSelection;
+
 use crate::callback_router::CallbackRouter;
 pub use crate::callback_router::{CallbackKind, CallbackResolution};
 use crate::in_folder_allowance::{InFolderGrant, InFolderPermission};
-use crate::owner_opening_instance::OpeningOffer;
+use crate::owner_opening_instance::{OpeningInstance, OpeningOffer};
 pub use crate::transport_run::TransportRun;
 use crate::transport_run::authorization_run;
 use agent_client_protocol::schema::v1::PermissionOptionId;
@@ -95,6 +98,7 @@ struct ConnectionRoute {
     folders: Option<InFolderGrant>,
     settings: Option<AcceptedRunSettings>,
     lifecycle: Option<LifecycleRoute>,
+    restore_registration: Option<OpeningInstance>,
 }
 
 #[derive(Clone)]
@@ -148,6 +152,7 @@ impl ConnectionRoute {
             folders: None,
             settings: None,
             lifecycle,
+            restore_registration: None,
         }
     }
 
@@ -195,6 +200,10 @@ struct TransportState<Frame> {
 
 impl<Frame> TransportState<Frame> {
     fn route_for_session(&self, session: &str) -> Option<TransportRun> {
+        self.find_route_for_session(session).map(|(run, _)| run)
+    }
+
+    fn find_route_for_session(&self, session: &str) -> Option<(TransportRun, &ConnectionRoute)> {
         let mut matches = self.routes.iter().filter(|(_, route)| {
             route.session == session
                 && !route
@@ -202,8 +211,8 @@ impl<Frame> TransportState<Frame> {
                     .as_ref()
                     .is_some_and(LifecycleRoute::is_removed)
         });
-        let (run, _) = matches.next()?;
-        matches.next().is_none().then_some(*run)
+        let (run, route) = matches.next()?;
+        matches.next().is_none().then_some((*run, route))
     }
 }
 

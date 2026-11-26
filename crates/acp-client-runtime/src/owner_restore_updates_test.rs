@@ -53,13 +53,21 @@ fn notification(session: &str, method: &str) -> Dispatch {
 fn observed(
     updates: &RestoreUpdates,
     current: TransportRun,
+    stamp: &OpeningInstance,
     receive: &mut mpsc::UnboundedReceiver<Dispatch>,
     session: &str,
     method: &str,
 ) -> bool {
     assert!(
         updates
-            .forward(session, Some(current), notification(session, method))
+            .forward(
+                session,
+                RestoreSelection::Registered {
+                    run: current,
+                    instance: stamp.clone()
+                },
+                notification(session, method)
+            )
             .is_none(),
         "the current restore consumes or drops the frame"
     );
@@ -80,14 +88,22 @@ fn a_same_generation_replacement_keeps_its_earlier_unanswered_state_marker() {
     let current = run(OwnerIncarnation(Uuid::now_v7()), 1);
     let (prior, _old_updates) = updates.open(current, SAVED_SESSION.into());
     updates.retire(current);
-    let (_, mut receive) = updates.open(current, SAVED_SESSION.into());
+    let (current_stamp, mut receive) = updates.open(current, SAVED_SESSION.into());
     assert!(
-        !observed(&updates, current, &mut receive, SAVED_SESSION, STATE_METHOD),
+        !observed(
+            &updates,
+            current,
+            &current_stamp,
+            &mut receive,
+            SAVED_SESSION,
+            STATE_METHOD
+        ),
         "earlier same-generation marker was erased before its exact wire reply"
     );
     assert!(observed(
         &updates,
         current,
+        &current_stamp,
         &mut receive,
         SAVED_SESSION,
         "session/update"
@@ -96,6 +112,7 @@ fn a_same_generation_replacement_keeps_its_earlier_unanswered_state_marker() {
     assert!(observed(
         &updates,
         current,
+        &current_stamp,
         &mut receive,
         SAVED_SESSION,
         STATE_METHOD
@@ -154,9 +171,23 @@ fn replay_custody_agrees_with_the_overlap_oracle_for_reused_and_fresh_generation
             // The generator knows the real source. ACP only discloses its session.
             // Ordinary updates enter current replay even when their source retired.
             let actual = if true_source == prior_count + 1 {
-                observed(&updates, other, &mut other_receive, OTHER_SESSION, method)
+                observed(
+                    &updates,
+                    other,
+                    &other_stamp,
+                    &mut other_receive,
+                    OTHER_SESSION,
+                    method,
+                )
             } else {
-                observed(&updates, current, &mut receive, SAVED_SESSION, method)
+                observed(
+                    &updates,
+                    current,
+                    &current_stamp,
+                    &mut receive,
+                    SAVED_SESSION,
+                    method,
+                )
             };
             let expected = true_source == prior_count + 1
                 || operation == 2

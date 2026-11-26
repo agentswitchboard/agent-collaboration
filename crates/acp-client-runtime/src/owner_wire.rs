@@ -266,7 +266,17 @@ impl OwnerAcpWire {
         ),
         TransportRefusal,
     > {
-        let (tap, updates) = self.restore_updates.open(run, session.clone());
+        let _edit = self
+            .route_edits
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let tap = crate::owner_opening_instance::OpeningInstance::default();
+        if !self.transport.attach_restore_registration(run, None, &tap) {
+            return Err(TransportRefusal::RouteUnavailable);
+        }
+        let updates = self
+            .restore_updates
+            .open_instance(run, session.clone(), &tap);
         let reply = self.enqueue_open(
             run,
             OpenRequest::Restore {
@@ -280,6 +290,7 @@ impl OwnerAcpWire {
         );
         if reply.is_err() {
             self.restore_updates.discard_unoffered(run, &tap);
+            self.transport.clear_restore_registration(run, &tap);
         }
         reply.map(|receipt| (tap, receipt))
     }
@@ -451,15 +462,6 @@ impl OwnerAcpWire {
 
     pub(crate) fn route_for_session(&self, session: &str) -> Option<TransportRun> {
         self.transport.route_for_session(session)
-    }
-
-    pub(crate) fn forward_restored_update(
-        &self,
-        session: &str,
-        message: agent_client_protocol::Dispatch,
-    ) -> Option<agent_client_protocol::Dispatch> {
-        self.restore_updates
-            .forward(session, self.route_for_session(session), message)
     }
 
     pub(crate) fn session_for_route(&self, run: TransportRun) -> Option<String> {
