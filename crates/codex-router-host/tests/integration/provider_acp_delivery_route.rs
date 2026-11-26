@@ -9,8 +9,7 @@ use agent_automation::{
     RouteEffectEvidence, SubmissionEffect,
 };
 use codex_router_host::{
-    ExternalProviderBinding, ExternalProviderRuntime, ExternalProviderSupervisor,
-    ProviderAcpDeliveryRoute,
+    ExternalProviderRuntime, ExternalProviderSupervisor, ProviderAcpDeliveryRoute,
 };
 use collaboration_contracts::{
     AttemptReconciliation, AttemptReconciliationContext, DeliveryPrecondition, LoadPolicy,
@@ -82,10 +81,7 @@ async fn cursor_steer_rejects_before_evidence_or_client_io() {
         .expect("session record");
     let supervisor = Arc::new(
         ExternalProviderSupervisor::new(
-            vec![ExternalProviderBinding {
-                identity: binding.clone(),
-                runtime,
-            }],
+            vec![runtime.into_binding(binding.clone())],
             Arc::clone(&store),
             fixture_clock.clone(),
         )
@@ -187,10 +183,7 @@ async fn cursor_auto_queues_a_prepared_push_with_exact_line_and_push_id() {
     let fixture_retirement = runtime.retirement();
     let supervisor = Arc::new(
         ExternalProviderSupervisor::new(
-            vec![ExternalProviderBinding {
-                identity: binding.clone(),
-                runtime,
-            }],
+            vec![runtime.into_binding(binding.clone())],
             Arc::clone(&store),
             fixture_clock.clone(),
         )
@@ -457,10 +450,7 @@ async fn provider_load_auth_rejection_is_typed_without_session_new() {
         .expect("session record");
     let supervisor = Arc::new(
         ExternalProviderSupervisor::new(
-            vec![ExternalProviderBinding {
-                identity: binding.clone(),
-                runtime,
-            }],
+            vec![runtime.into_binding(binding.clone())],
             Arc::clone(&store),
             fixture_clock.clone(),
         )
@@ -590,10 +580,7 @@ async fn unadvertised_load_settles_not_submitted_without_sending_load() {
         .expect("session record");
     let supervisor = Arc::new(
         ExternalProviderSupervisor::new(
-            vec![ExternalProviderBinding {
-                identity: binding.clone(),
-                runtime,
-            }],
+            vec![runtime.into_binding(binding.clone())],
             Arc::clone(&store),
             fixture_clock.clone(),
         )
@@ -720,10 +707,7 @@ async fn coded_provider_load_errors_keep_correlations_and_do_not_expose_acp_text
             .expect("session record");
         let supervisor = Arc::new(
             ExternalProviderSupervisor::new(
-                vec![ExternalProviderBinding {
-                    identity: binding.clone(),
-                    runtime,
-                }],
+                vec![runtime.into_binding(binding.clone())],
                 Arc::clone(&store),
                 fixture_clock.clone(),
             )

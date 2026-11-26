@@ -8,9 +8,7 @@
 
 use super::provider_acp_message_fifo_support::{provider_binding, recorded_requests, target};
 use super::provider_fixture_launch;
-use codex_router_host::{
-    ExternalProviderBinding, ExternalProviderRuntime, ExternalProviderSupervisor,
-};
+use codex_router_host::{ExternalProviderRuntime, ExternalProviderSupervisor};
 use collaboration_contracts::ProviderConversationBackend;
 use collaboration_protocol::{
     ConversationOperationFailure, ConversationOperationFailureKind,
@@ -72,10 +70,7 @@ async fn a_settlement_that_fails_to_save_answers_its_outcome_and_durable_stage()
         .expect("session record");
     let supervisor = Arc::new(
         ExternalProviderSupervisor::new(
-            vec![ExternalProviderBinding {
-                identity: provider_binding(&target),
-                runtime,
-            }],
+            vec![runtime.into_binding(provider_binding(&target))],
             Arc::clone(&store),
             fixture_clock.clone(),
         )

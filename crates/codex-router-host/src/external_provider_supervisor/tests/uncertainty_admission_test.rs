@@ -71,10 +71,7 @@ async fn assert_uncertainty_admission(targetless: bool, previous_generation: boo
         live_binding.generation.generation = GenerationNumber::try_from(2).unwrap();
     }
     let backend = ExternalProviderSupervisor::new(
-        vec![ExternalProviderBinding {
-            identity: live_binding.clone(),
-            runtime,
-        }],
+        vec![runtime.into_binding(live_binding.clone())],
         Arc::clone(&store),
         crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )

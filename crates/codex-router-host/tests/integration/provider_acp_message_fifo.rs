@@ -2,8 +2,7 @@
 
 use agent_automation::{RouteEffectEvidence, SubmissionEffect};
 use codex_router_host::{
-    ExternalProviderBinding, ExternalProviderRuntime, ExternalProviderSupervisor,
-    ProviderAcpDeliveryRoute,
+    ExternalProviderRuntime, ExternalProviderSupervisor, ProviderAcpDeliveryRoute,
 };
 use collaboration_contracts::SessionDeliveryRoute;
 use collaboration_protocol::{
@@ -61,10 +60,7 @@ async fn typed_queue_keeps_blocks_and_input_identity_through_fifo() {
     let fixture_retirement = runtime.retirement();
     let supervisor = Arc::new(
         ExternalProviderSupervisor::new(
-            vec![ExternalProviderBinding {
-                identity: binding.clone(),
-                runtime,
-            }],
+            vec![runtime.into_binding(binding.clone())],
             Arc::clone(&store),
             fixture_clock.clone(),
         )
@@ -219,10 +215,7 @@ async fn cursor_queue_drains_after_control_prompt_settles() {
     let fixture_retirement = runtime.retirement();
     let supervisor = Arc::new(
         ExternalProviderSupervisor::new(
-            vec![ExternalProviderBinding {
-                identity: binding.clone(),
-                runtime,
-            }],
+            vec![runtime.into_binding(binding.clone())],
             Arc::clone(&store),
             fixture_clock.clone(),
         )
@@ -465,10 +458,7 @@ async fn permanent_queued_load_failure_is_inspectable_and_does_not_stop_fifo() {
         .expect("session record");
     let supervisor = Arc::new(
         ExternalProviderSupervisor::new(
-            vec![ExternalProviderBinding {
-                identity: binding.clone(),
-                runtime,
-            }],
+            vec![runtime.into_binding(binding.clone())],
             Arc::clone(&store),
             clock.clone(),
         )
@@ -625,10 +615,7 @@ async fn failed_queued_prompt_advances_to_the_next_accepted_item() {
     let fixture_retirement = runtime.retirement();
     let supervisor = Arc::new(
         ExternalProviderSupervisor::new(
-            vec![ExternalProviderBinding {
-                identity: binding.clone(),
-                runtime,
-            }],
+            vec![runtime.into_binding(binding.clone())],
             Arc::clone(&store),
             fixture_clock.clone(),
         )
@@ -830,10 +817,7 @@ async fn provider_retirement_marks_queued_items_not_submitted() {
     let fixture_retirement = runtime.retirement();
     let supervisor = Arc::new(
         ExternalProviderSupervisor::new(
-            vec![ExternalProviderBinding {
-                identity: binding.clone(),
-                runtime,
-            }],
+            vec![runtime.into_binding(binding.clone())],
             Arc::clone(&store),
             fixture_clock.clone(),
         )

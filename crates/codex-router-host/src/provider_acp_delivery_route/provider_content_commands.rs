@@ -158,10 +158,9 @@ impl ProviderAcpDeliveryRoute {
             }
             _ => return Err(ProviderQueueAdmissionError::Unavailable.into()),
         }
-        let runtime = self
-            .supervisor
-            .runtime_for(&target.endpoint)
-            .ok_or(ProviderQueueAdmissionError::Unavailable)?;
+        if !self.supervisor.has_binding(&target.endpoint) {
+            return Err(ProviderQueueAdmissionError::Unavailable.into());
+        }
         if self
             .supervisor
             .owner_session_snapshot(&target)
@@ -169,9 +168,11 @@ impl ProviderAcpDeliveryRoute {
         {
             return Err(ProviderQueueAdmissionError::SettingsUnresolved.into());
         }
-        let capabilities = runtime
-            .capability_report(&String::from(target.session_id.clone()))
-            .await;
+        let capabilities = self
+            .supervisor
+            .session_capabilities(&target)
+            .await
+            .ok_or(ProviderQueueAdmissionError::Unavailable)?;
         if let acp_client_runtime::ProviderTurnInput::Prompt(submission) = &input
             && let Some(content_type) = unsupported_content_type(&submission.content, &capabilities)
         {
@@ -224,10 +225,9 @@ impl ProviderAcpDeliveryRoute {
             .await
             .map_err(|_| ProviderQueueAdmissionError::Unavailable)?
             .ok_or(ProviderQueueAdmissionError::SessionNotFound)?;
-        let runtime = self
-            .supervisor
-            .runtime_for(&target.endpoint)
-            .ok_or(ProviderQueueAdmissionError::Unavailable)?;
+        if !self.supervisor.has_binding(&target.endpoint) {
+            return Err(ProviderQueueAdmissionError::Unavailable.into());
+        }
         if self
             .supervisor
             .owner_session_snapshot(&target)
@@ -235,9 +235,11 @@ impl ProviderAcpDeliveryRoute {
         {
             return Err(ProviderQueueAdmissionError::SettingsUnresolved.into());
         }
-        let capabilities = runtime
-            .capability_report(&String::from(target.session_id.clone()))
-            .await;
+        let capabilities = self
+            .supervisor
+            .session_capabilities(&target)
+            .await
+            .ok_or(ProviderQueueAdmissionError::Unavailable)?;
         if let Some(content_type) = unsupported_content_type(&contents.content, &capabilities) {
             return Err(ProviderQueueAdmissionError::UnsupportedContent { content_type }.into());
         }
@@ -285,10 +287,9 @@ impl ProviderAcpDeliveryRoute {
             .await
             .map_err(|_| ProviderQueueAdmissionError::Unavailable)?
             .ok_or(ProviderQueueAdmissionError::SessionNotFound)?;
-        let runtime = self
-            .supervisor
-            .runtime_for(&target.endpoint)
-            .ok_or(ProviderQueueAdmissionError::Unavailable)?;
+        if !self.supervisor.has_binding(&target.endpoint) {
+            return Err(ProviderQueueAdmissionError::Unavailable);
+        }
         if self
             .supervisor
             .owner_session_snapshot(&target)
@@ -296,9 +297,11 @@ impl ProviderAcpDeliveryRoute {
         {
             return Err(ProviderQueueAdmissionError::SettingsUnresolved);
         }
-        let capabilities = runtime
-            .capability_report(&String::from(target.session_id.clone()))
-            .await;
+        let capabilities = self
+            .supervisor
+            .session_capabilities(&target)
+            .await
+            .ok_or(ProviderQueueAdmissionError::Unavailable)?;
         if let Some(content_type) = unsupported_content_type(&contents.content, &capabilities) {
             return Err(ProviderQueueAdmissionError::UnsupportedContent { content_type });
         }
@@ -381,19 +384,19 @@ impl ProviderAcpDeliveryRoute {
 
 fn unsupported_content_type(
     contents: &[session_event_model::PromptContent],
-    capabilities: &acp_client_runtime::ProviderCapabilityReport,
+    capabilities: &session_event_model::CapabilityReport,
 ) -> Option<&'static str> {
     contents.iter().find_map(|content| match content {
         session_event_model::PromptContent::Text { .. }
         | session_event_model::PromptContent::ResourceLink { .. } => None,
-        session_event_model::PromptContent::Image { .. } if !capabilities.accepts_image => {
+        session_event_model::PromptContent::Image { .. } if !capabilities.prompt_content.image => {
             Some("image")
         }
-        session_event_model::PromptContent::Audio { .. } if !capabilities.accepts_audio => {
+        session_event_model::PromptContent::Audio { .. } if !capabilities.prompt_content.audio => {
             Some("audio")
         }
         session_event_model::PromptContent::EmbeddedResource { .. }
-            if !capabilities.accepts_embedded_resource =>
+            if !capabilities.prompt_content.embedded_context =>
         {
             Some("embeddedResource")
         }

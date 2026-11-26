@@ -65,9 +65,9 @@ impl ManagedNoticePort for ManagedAcpNoticeAdapter {
                         let owner = binding.owners.existing(&target)?;
                         let snapshots = owner.snapshots();
                         let snapshot = snapshots.borrow().clone();
-                        Some((target, binding, snapshots, snapshot))
+                        Some((target, snapshots, snapshot))
                     });
-            let (local_target, binding, snapshots, snapshot) =
+            let (local_target, snapshots, snapshot) =
                 owners.next().ok_or(NoticeDeferred::NotOpen)?;
             if owners.next().is_some() {
                 return Err(NoticeDeferred::UnprovedRecipient);
@@ -92,7 +92,7 @@ impl ManagedNoticePort for ManagedAcpNoticeAdapter {
                     generation,
                     placement,
                 },
-                clock: binding.runtime.owner_clock(),
+                clock: self.supervisor.inner.clock.clone(),
                 snapshots,
             }) as Box<dyn ManagedNoticeRun>)
         })

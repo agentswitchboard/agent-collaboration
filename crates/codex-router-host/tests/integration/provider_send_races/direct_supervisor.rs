@@ -41,10 +41,7 @@ impl DirectSupervisor {
         let binding = provider_binding(&target());
         let supervisor = Arc::new(
             ExternalProviderSupervisor::new(
-                vec![ExternalProviderBinding {
-                    identity: binding.clone(),
-                    runtime,
-                }],
+                vec![runtime.into_binding(binding.clone())],
                 Arc::clone(&store),
                 fixture_clock.clone(),
             )

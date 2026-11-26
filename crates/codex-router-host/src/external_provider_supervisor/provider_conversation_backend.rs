@@ -232,7 +232,7 @@ impl ProviderConversationBackend for ExternalProviderSupervisor {
                             tracing::debug!(?reason, "session harness refused create activation");
                             match SessionId::try_from(session.0) {
                                 Ok(session_id) => {
-                                    runtime.session_setup().record_created_mode(
+                                    runtime.session_setup.record_created_mode(
                                         &String::from(session_id.clone()),
                                         &permission_mode,
                                     );
@@ -287,7 +287,7 @@ impl ProviderConversationBackend for ExternalProviderSupervisor {
                                             observed.fast = created.effective_settings.fast.map(crate::provider_operation_settlement::provider_fast_state);
                                             observed.requested_mode = created.permission_mode.requested;
                                             observed.mode_reason = created.permission_mode.reason.map(crate::provider_operation_settlement::provider_mode_reason);
-                                            runtime.session_setup().record_requested_mode(&String::from(target.session_id.clone()), crate::provider_session_setup::RequestedModeRecord { requested_mode: observed.requested_mode.clone(), mode_reason: observed.mode_reason });
+                                            runtime.session_setup.record_requested_mode(&String::from(target.session_id.clone()), crate::provider_session_setup::RequestedModeRecord { requested_mode: observed.requested_mode.clone(), mode_reason: observed.mode_reason });
                                             ProviderOperationCompletion::Success {
                                                 settlement: ConversationOperationSettlement::Created {
                                                     target: target.clone(),
@@ -331,7 +331,7 @@ impl ProviderConversationBackend for ExternalProviderSupervisor {
                                             completion_inner.record_settings_catalog(target.clone(), catalog).await;
                                         }
                                         // Show keeps the requested mode and reason of a partial start too.
-                                        runtime.session_setup().record_created_mode(&String::from(target.session_id.clone()), &permission_mode);
+                                        runtime.session_setup.record_created_mode(&String::from(target.session_id.clone()), &permission_mode);
                                         ProviderOperationCompletion::Success {
                                             settlement: ConversationOperationSettlement::CreatedWithoutSettings {
                                                 target: target.clone(),
@@ -436,7 +436,7 @@ impl ProviderConversationBackend for ExternalProviderSupervisor {
                 &request.operation_id,
                 Some(target.clone()),
             )?;
-            if !runtime.admission().supports_load {
+            if !runtime.connection.capabilities(None).await.load {
                 return Err(failure(
                     ConversationOperationFailureKind::UnsupportedCapability,
                     ConversationOperationFailureStage::Binding,

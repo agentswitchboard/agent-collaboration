@@ -91,10 +91,7 @@ impl FailureRoute {
         .expect("fixture runtime");
         let supervisor = Arc::new(
             ExternalProviderSupervisor::new_with_hub(
-                vec![ExternalProviderBinding {
-                    identity: binding.clone(),
-                    runtime,
-                }],
+                vec![runtime.into_binding(binding.clone())],
                 store.clone(),
                 Some(hub.clone()),
                 None,

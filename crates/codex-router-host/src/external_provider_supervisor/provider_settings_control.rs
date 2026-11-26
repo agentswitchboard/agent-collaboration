@@ -180,8 +180,10 @@ pub(super) async fn apply(
                 value,
                 expected_model: expected_model.map(SettingValueId),
                 reuse_confirmed: supervisor
-                    .runtime_for(&request.target.endpoint)
-                    .is_some_and(|runtime| runtime.can_reuse_setting_confirmation(kind)),
+                    .inner
+                    .bindings
+                    .get(&request.target.endpoint)
+                    .is_some_and(|binding| binding.connection.reuses_setting_confirmation(kind)),
             }
         }
     };

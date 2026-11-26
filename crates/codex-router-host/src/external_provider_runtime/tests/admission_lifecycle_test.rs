@@ -114,36 +114,66 @@ async fn capability_report_uses_initialize_and_session_advertisements() {
             }),
         )
         .launch();
+    let clock = crate::external_provider_runtime::acp_scripted_fixture::manual_clock();
     let runtime = ExternalProviderRuntime::initialize(
         fixture,
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
-        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
+        clock.clone(),
     )
     .await
     .expect("fixture initializes");
-    let before = runtime.capability_report("fixture-session").await;
-    assert!(before.supports_load);
-    assert!(before.supports_resume);
-    assert!(before.supports_close);
-    assert!(before.supports_list);
-    assert!(before.router_queue);
-    assert!(before.supports_cancel_queued);
-    assert!(before.accepts_image);
-    assert!(!before.accepts_audio);
-    assert!(before.accepts_embedded_resource);
-    assert!(!before.supports_steering);
-    assert!(!before.supports_modes);
-    assert!(!before.supports_config_options);
-    assert!(before.supports_elicitation);
-    runtime
-        .create_session(PathBuf::from("/tmp"))
+    let root = tempfile::tempdir().expect("fixture store directory");
+    let store = switchboard_session_store::ProviderOperationStore::open(
+        &root.path().join("operations.sqlite"),
+    )
+    .await
+    .expect("open the fixture store");
+    let binding = crate::session_store_lane::tests::mock_binding();
+    let target = SessionRef {
+        endpoint: binding.endpoint.clone(),
+        session_id: collaboration_protocol::SessionId::try_from("fixture-session".to_owned())
+            .expect("fixture session ID"),
+    };
+    let supervisor = crate::ExternalProviderSupervisor::new(
+        vec![runtime.into_binding(binding)],
+        Arc::new(tokio::sync::Mutex::new(store)),
+        clock,
+    )
+    .expect("compose the supervisor binding");
+    let before = supervisor
+        .session_capabilities(&target)
+        .await
+        .expect("bound connection");
+    assert!(before.load);
+    assert!(before.resume);
+    assert!(before.close);
+    assert!(before.list);
+    assert!(
+        before
+            .queue
+            .is_some_and(|queue| queue.kind == session_event_model::QueueCapability::Router)
+    );
+    assert!(before.queue.is_some_and(|queue| queue.can_cancel));
+    assert!(before.prompt_content.image);
+    assert!(!before.prompt_content.audio);
+    assert!(before.prompt_content.embedded_context);
+    assert!(!before.steer);
+    assert!(!before.modes);
+    assert!(!before.config_options);
+    assert!(before.elicitation);
+    let created = supervisor
+        .open_provider_fixture(&target.endpoint, PathBuf::from("/tmp"))
         .await
         .expect("session created");
-    let after = runtime.capability_report("fixture-session").await;
-    assert!(after.supports_steering);
-    assert!(after.supports_modes);
-    assert!(after.supports_config_options);
-    runtime.shutdown().await;
+    assert_eq!(created, "fixture-session");
+    let after = supervisor
+        .session_capabilities(&target)
+        .await
+        .expect("bound session");
+    assert!(after.steer);
+    assert!(after.modes);
+    assert!(after.config_options);
+    supervisor.shutdown().await.expect("shut down the fixture");
 }
 
 #[cfg(unix)]

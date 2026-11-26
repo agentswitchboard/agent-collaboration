@@ -15,7 +15,7 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 use crate::{
     ExternalProviderRuntime,
     external_provider_runtime::acp_scripted_fixture::{launch_fixture_agent, manual_clock},
-    external_provider_supervisor::{ExternalProviderBinding, ExternalProviderSupervisor},
+    external_provider_supervisor::ExternalProviderSupervisor,
 };
 
 struct IssuanceCall {
@@ -97,7 +97,7 @@ impl CreatedSessionFixture {
         let requester = crate::external_provider_supervisor::tests::requester();
         let (called, calls) = mpsc::unbounded_channel();
         let backend = ExternalProviderSupervisor::new_with_session_tokens(
-            vec![ExternalProviderBinding { identity, runtime }],
+            vec![runtime.into_binding(identity)],
             Arc::new(Mutex::new(store)),
             None,
             None,

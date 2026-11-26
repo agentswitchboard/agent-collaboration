@@ -29,10 +29,7 @@ async fn check_reconcile_started_during_reservation(read_point: ReconcileReadPoi
         .await
         .expect("operation store opens");
     let backend = ExternalProviderSupervisor::new(
-        vec![ExternalProviderBinding {
-            identity: binding(),
-            runtime,
-        }],
+        vec![runtime.into_binding(binding())],
         Arc::new(Mutex::new(store)),
         crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
