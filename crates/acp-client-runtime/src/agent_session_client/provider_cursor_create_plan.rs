@@ -205,26 +205,27 @@ impl<P: AcpRequestPayloads> HandleDispatchFrom<Agent> for ProviderCursorCreatePl
         }
         let port = Arc::clone(&self.request_policy);
         let request_cancellation = responder.cancellation();
-        let Some(response_guard) = context.track_response("cursor/create_plan", responder.id())
-        else {
+        let Some(response_guard) = context.track_response(
+            "cursor/create_plan",
+            responder.id(),
+            responder.cancellation(),
+        ) else {
             responder.respond(json!({"outcome":"cancelled"}))?;
             return Ok(Handled::Yes);
         };
         self.approval_bindings
             .spawn_callback(&connection, async move {
                 if let Some(refusal) = context.managed_refusal(port.as_ref()) {
+                    let declined = json!({"outcome":"cancelled"});
+                    let response = refusal.acp_cursor_plan();
                     let (open, queued) = response_guard.commit(|open| {
                         (
                             open,
-                            responder.respond(if open {
-                                refusal.acp_cursor_plan()
-                            } else {
-                                json!({"outcome":"cancelled"})
-                            }),
+                            responder.respond(if open { response } else { declined }),
                         )
                     });
                     drop(response_guard);
-                    if open && queued.is_ok() {
+                    if open && queued.is_ok() && !request_cancellation.is_cancelled() {
                         context.cancel_after_refusal(port, refusal).await;
                     }
                     return queued;
@@ -232,13 +233,10 @@ impl<P: AcpRequestPayloads> HandleDispatchFrom<Agent> for ProviderCursorCreatePl
                 let outcome = context
                     .decide_approval(port.as_ref(), approval, request_cancellation)
                     .await;
-                response_guard.commit(|open| {
-                    responder.respond(cursor_plan_decision(if open {
-                        outcome
-                    } else {
-                        ApprovalPortOutcome::Cancelled
-                    }))
-                })
+                let response = cursor_plan_decision(outcome);
+                let declined = cursor_plan_decision(ApprovalPortOutcome::Cancelled);
+                response_guard
+                    .commit(|open| responder.respond(if open { response } else { declined }))
             })?;
         Ok(Handled::Yes)
     }

@@ -90,7 +90,8 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
 
     #[cfg(any(test, feature = "test-observation"))]
     pub fn active_approval_operation(&self, provider_session_id: &str) -> Option<P::OperationId> {
-        self.approval_bindings
+        let operation = self
+            .approval_bindings
             .active
             .lock()
             .ok()
@@ -98,7 +99,8 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
                 contexts
                     .get(provider_session_id)
                     .map(|context| context.operation_id.clone())
-            })
+            })?;
+        Some(operation.as_ref().clone())
     }
 
     #[cfg(any(test, feature = "test-observation"))]
@@ -160,10 +162,26 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
     }
 
     #[cfg(feature = "test-observation")]
+    pub fn approval_scope_lock_probe_for_test(
+        &self,
+        session: &str,
+    ) -> Option<impl Fn() -> bool + Send + Sync + use<P>> {
+        self.approval_bindings.scope_lock_probe(session)
+    }
+
+    #[cfg(feature = "test-observation")]
     pub fn managed_permission_enqueued_for_test(
         &self,
     ) -> Option<agent_client_protocol::schema::v1::RequestId> {
         self.frame_observation.managed_permission_enqueued()
+    }
+
+    #[cfg(feature = "test-observation")]
+    pub fn hold_permission_reply_for_test(
+        &self,
+        id: agent_client_protocol::schema::v1::RequestId,
+    ) -> crate::provider_frame_observation::PermissionReplyProbe {
+        self.frame_observation.hold_permission_reply(id)
     }
 
     #[cfg(feature = "test-observation")]

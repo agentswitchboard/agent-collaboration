@@ -99,7 +99,11 @@ pub(super) fn spawn_external_approval_dispatch<P: AcpRequestPayloads>(
     let request_id = serde_json::to_string(&(request.session_id.0.as_ref(), responder.id()))
         .map_err(|_| Error::internal_error())?;
     let Some((context, response_guard)) = context.and_then(|context| {
-        let guard = context.track_response("session/request_permission", responder.id())?;
+        let guard = context.track_response(
+            "session/request_permission",
+            responder.id(),
+            responder.cancellation(),
+        )?;
         Some((context, guard))
     }) else {
         #[cfg(any(test, feature = "test-observation"))]
@@ -123,7 +127,7 @@ pub(super) fn spawn_external_approval_dispatch<P: AcpRequestPayloads>(
             record_permission_refusal(
                 &state,
                 &provider_session_id,
-                Some(context.operation_id.clone()),
+                Some(context.operation_id.as_ref().clone()),
                 ExternalProviderApprovalRefusalReason::Managed(refusal),
             )
             .await;
@@ -131,18 +135,26 @@ pub(super) fn spawn_external_approval_dispatch<P: AcpRequestPayloads>(
             state
                 .permission_outcome
                 .store(1, std::sync::atomic::Ordering::Relaxed);
+            #[cfg(feature = "test-observation")]
+            let queue_witness = state
+                .frame_observation
+                .before_permission_reply(responder.id(), request_cancellation.clone())
+                .await;
+            let declined = RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled);
             let (open, queued) = response_guard.commit(|open| {
                 (
                     open,
-                    responder.respond(if open {
-                        response
-                    } else {
-                        RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled)
-                    }),
+                    responder.respond(if open { response } else { declined }),
                 )
             });
             drop(response_guard);
-            if open && queued.is_ok() {
+            #[cfg(feature = "test-observation")]
+            if queued.is_ok()
+                && let Some(witness) = queue_witness
+            {
+                let _fixture = witness.send(());
+            }
+            if open && queued.is_ok() && !request_cancellation.is_cancelled() {
                 #[cfg(feature = "test-observation")]
                 state
                     .frame_observation
@@ -157,27 +169,38 @@ pub(super) fn spawn_external_approval_dispatch<P: AcpRequestPayloads>(
             context,
             request,
             request_id,
-            request_cancellation,
+            request_cancellation.clone(),
             &state,
         )
         .await;
-        response_guard.commit(|open| {
-            let outcome = if open {
-                outcome
-            } else {
-                RequestPermissionOutcome::Cancelled
-            };
-            #[cfg(any(test, feature = "test-observation"))]
-            state.permission_outcome.store(
-                if matches!(outcome, RequestPermissionOutcome::Selected(_)) {
-                    2
-                } else {
-                    1
-                },
-                std::sync::atomic::Ordering::Relaxed,
-            );
-            responder.respond(RequestPermissionResponse::new(outcome))
-        })
+        #[cfg(feature = "test-observation")]
+        let queue_witness = state
+            .frame_observation
+            .before_permission_reply(responder.id(), request_cancellation)
+            .await;
+        let selected = matches!(outcome, RequestPermissionOutcome::Selected(_));
+        let response = RequestPermissionResponse::new(outcome);
+        let declined = RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled);
+        let (open, queued) = response_guard.commit(|open| {
+            (
+                open,
+                responder.respond(if open { response } else { declined }),
+            )
+        });
+        #[cfg(any(test, feature = "test-observation"))]
+        state.permission_outcome.store(
+            if open && selected { 2 } else { 1 },
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        #[cfg(not(any(test, feature = "test-observation")))]
+        let _observation = (open, selected);
+        #[cfg(feature = "test-observation")]
+        if queued.is_ok()
+            && let Some(witness) = queue_witness
+        {
+            let _fixture = witness.send(());
+        }
+        queued
     })
 }
 
@@ -207,7 +230,7 @@ async fn handle_contextual_permission_request<P: AcpRequestPayloads>(
                     .and_then(|observer| observer.clone());
                 if let Some(observer) = observer {
                     observer(
-                        context.approval,
+                        context.approval.as_ref().clone(),
                         crate::RefusedApprovalOffer {
                             request_id,
                             reason: refused.reason,
@@ -247,7 +270,7 @@ async fn handle_contextual_permission_request<P: AcpRequestPayloads>(
             record_permission_refusal(
                 state,
                 &provider_session_id,
-                Some(context.operation_id),
+                Some(context.operation_id.as_ref().clone()),
                 ExternalProviderApprovalRefusalReason::ApprovalBrokerUnavailable,
             )
             .await;

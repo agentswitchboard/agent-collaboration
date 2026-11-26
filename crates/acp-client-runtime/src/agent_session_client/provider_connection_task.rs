@@ -154,6 +154,10 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
         #[cfg(feature = "test-observation")]
         let mark_connection_settled = connection_settled.clone().drop_guard();
         #[cfg(feature = "test-observation")]
+        let connection_drain_started = CancellationToken::new();
+        #[cfg(feature = "test-observation")]
+        let mark_connection_drain_started = connection_drain_started.clone();
+        #[cfg(feature = "test-observation")]
         let provider_reaping_finished = CancellationToken::new();
         #[cfg(feature = "test-observation")]
         let mark_provider_reaping_finished = provider_reaping_finished.clone();
@@ -269,11 +273,12 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
                             use agent_client_protocol::schema::v1::{
                                 RequestPermissionOutcome, RequestPermissionResponse, SelectedPermissionOutcome,
                             };
-                            if let Some(guard) = context.track_response("session/request_permission", responder.id()) {
-                                return guard.commit(|open| responder.respond(RequestPermissionResponse::new(
-                                    if open { RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(option)) }
-                                    else { RequestPermissionOutcome::Cancelled },
-                                )));
+                            if let Some(guard) = context.track_response("session/request_permission", responder.id(), responder.cancellation()) {
+                                let selected = RequestPermissionResponse::new(
+                                    RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(option)),
+                                );
+                                let declined = RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled);
+                                return guard.commit(|open| responder.respond(if open { selected } else { declined }));
                             }
                             return responder.respond(RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled));
                         }
@@ -437,6 +442,8 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
             if !child_exited {
                 lifetime.end().await;
             }
+            #[cfg(feature = "test-observation")]
+            mark_connection_drain_started.cancel();
             connection_approval_bindings.drain_connection().await;
             #[cfg(feature = "test-observation")]
             mark_provider_reaping_finished.cancel();
@@ -479,6 +486,8 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
             task: tokio::sync::Mutex::new(Some(task)),
             #[cfg(feature = "test-observation")]
             connection_settled,
+            #[cfg(feature = "test-observation")]
+            connection_drain_started,
             #[cfg(feature = "test-observation")]
             provider_reaping_finished,
             shutdown_failed,

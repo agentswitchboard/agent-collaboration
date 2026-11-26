@@ -80,6 +80,8 @@ pub struct AgentSessionClient<P: AcpRequestPayloads> {
     #[cfg(feature = "test-observation")]
     connection_settled: CancellationToken,
     #[cfg(feature = "test-observation")]
+    connection_drain_started: CancellationToken,
+    #[cfg(feature = "test-observation")]
     provider_reaping_finished: CancellationToken,
     shutdown_failed: Arc<std::sync::atomic::AtomicBool>,
     frame_observation: Arc<ProviderFrameObservation>,
@@ -125,6 +127,13 @@ impl<P: AcpRequestPayloads> AgentSessionClient<P> {
     #[cfg(feature = "test-observation")]
     pub fn connection_fixture_signals(&self) -> (CancellationToken, CancellationToken) {
         (self.shutdown.clone(), self.connection_settled.clone())
+    }
+
+    /// Signals that the connection has stopped serving and is about to join callbacks.
+    #[must_use]
+    #[cfg(feature = "test-observation")]
+    pub fn connection_drain_started_for_test(&self) -> CancellationToken {
+        self.connection_drain_started.clone()
     }
 
     /// Observes the process lifetime decision before the connection drains stderr.

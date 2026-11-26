@@ -195,27 +195,29 @@ impl<P: AcpRequestPayloads> HandleDispatchFrom<Agent> for ProviderCursorQuestion
             responder.respond(json!({"outcome":{"outcome":"cancelled"}}))?;
             return Ok(Handled::Yes);
         };
-        let Some(response_guard) = context.track_response("cursor/ask_question", responder.id())
-        else {
+        let Some(response_guard) = context.track_response(
+            "cursor/ask_question",
+            responder.id(),
+            responder.cancellation(),
+        ) else {
             responder.respond(json!({"outcome":{"outcome":"cancelled"}}))?;
             return Ok(Handled::Yes);
         };
         let port = Arc::clone(&self.request_policy);
+        let request_cancellation = responder.cancellation();
         if let Some(refusal) = context.managed_refusal(port.as_ref()) {
             self.approval_bindings
                 .spawn_callback(&connection, async move {
+                    let declined = json!({"outcome":{"outcome":"cancelled"}});
+                    let response = refusal.acp_question();
                     let (open, queued) = response_guard.commit(|open| {
                         (
                             open,
-                            responder.respond(if open {
-                                refusal.acp_question()
-                            } else {
-                                json!({"outcome":{"outcome":"cancelled"}})
-                            }),
+                            responder.respond(if open { response } else { declined }),
                         )
                     });
                     drop(response_guard);
-                    if open && queued.is_ok() {
+                    if open && queued.is_ok() && !request_cancellation.is_cancelled() {
                         context.cancel_after_refusal(port, refusal).await;
                     }
                     queued
@@ -225,11 +227,12 @@ impl<P: AcpRequestPayloads> HandleDispatchFrom<Agent> for ProviderCursorQuestion
         let canonical = match Self::request_from_cursor(&session_id, responder.id(), cursor) {
             Ok(canonical) => canonical,
             Err(error) => {
+                let declined = json!({"outcome":{"outcome":"cancelled"}});
                 response_guard.commit(|open| {
                     if open {
                         responder.respond_with_error(error)
                     } else {
-                        responder.respond(json!({"outcome":{"outcome":"cancelled"}}))
+                        responder.respond(declined)
                     }
                 })?;
                 return Ok(Handled::Yes);
@@ -246,22 +249,15 @@ impl<P: AcpRequestPayloads> HandleDispatchFrom<Agent> for ProviderCursorQuestion
                 | QuestionField::MultiChoice { field_id, .. } => field_id.clone(),
             })
             .collect::<Vec<_>>();
-        let request_cancellation = responder.cancellation();
         self.approval_bindings
             .spawn_callback(&connection, async move {
                 let response = context
                     .decide_question(port.as_ref(), canonical, request_cancellation)
                     .await;
-                response_guard.commit(|open| {
-                    responder.respond(cursor_answer(
-                        if open {
-                            response
-                        } else {
-                            QuestionResponse::Cancelled
-                        },
-                        &field_order,
-                    ))
-                })
+                let response = cursor_answer(response, &field_order);
+                let declined = cursor_answer(QuestionResponse::Cancelled, &field_order);
+                response_guard
+                    .commit(|open| responder.respond(if open { response } else { declined }))
             })?;
         Ok(Handled::Yes)
     }

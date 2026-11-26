@@ -24,9 +24,9 @@ use std::{
     },
 };
 use switchboard_harness_contracts::{
-    ApprovalContext, Decision, ExactScope, ExactTurn, RequestCancellation,
-    RequestCancellationSignal, RequestDecisionRefusal, RequestFuture, RequestPolicy,
-    StopRequestsCause,
+    ApprovalContext, AuthorizationTarget, Decision, DispatchAuthorization, ExactScope, ExactTurn,
+    RequestCancellation, RequestCancellationSignal, RequestDecisionRefusal, RequestFuture,
+    RequestPolicy, StopRequestsCause,
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream, ReadHalf, WriteHalf},
@@ -55,6 +55,7 @@ pub(super) enum PolicyEvent {
     ScopeCancelled(u64),
     RequestCancelled(u64),
     Finished(u64),
+    StopFinished(u64),
     Refused(u64, RequestDecisionRefusal),
     Stopped {
         operation: u64,
@@ -70,6 +71,7 @@ pub(super) enum PolicyEvent {
 pub(super) enum DecisionPlan {
     Refuse(RequestDecisionRefusal),
     Hold(oneshot::Receiver<()>),
+    HoldAfterScopeEnd(oneshot::Receiver<()>),
     WaitForScopeEnd,
 }
 
@@ -82,7 +84,20 @@ pub(super) struct Policy {
     // The managed batch's first query belongs to its ordinary sibling.
     managed_query: AtomicUsize,
     client: OnceLock<Weak<Client>>,
+    factory_gate: Mutex<Option<FactoryGate>>,
 }
+
+struct FactoryGate {
+    reached: oneshot::Sender<(ExactTurn, Arc<dyn RequestCancellationSignal>)>,
+    release: std::sync::mpsc::Receiver<()>,
+    reentered: oneshot::Sender<bool>,
+}
+
+pub(super) type FactoryProbe = (
+    oneshot::Receiver<(ExactTurn, Arc<dyn RequestCancellationSignal>)>,
+    std::sync::mpsc::Sender<()>,
+    oneshot::Receiver<bool>,
+);
 
 impl Policy {
     pub(super) fn managed_batch() -> Self {
@@ -92,6 +107,61 @@ impl Policy {
         }
     }
 
+    pub(super) fn managed_first() -> Self {
+        Self {
+            managed_query: AtomicUsize::new(2),
+            ..Self::default()
+        }
+    }
+
+    pub(super) fn hold_factory(&self) -> FactoryProbe {
+        let (reached, observe) = oneshot::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let (reentered, observe_reentry) = oneshot::channel();
+        assert!(
+            locked(&self.factory_gate)
+                .replace(FactoryGate {
+                    reached,
+                    release: wait,
+                    reentered,
+                })
+                .is_none()
+        );
+        (observe, release, observe_reentry)
+    }
+
+    fn reenter_from_factory(
+        &self,
+        context: &ApprovalContext<u64>,
+        scope_signal: Arc<dyn RequestCancellationSignal>,
+    ) {
+        let gate = locked(&self.factory_gate).take();
+        let (Some(gate), ExactScope::Turn(turn)) = (gate, context.scope) else {
+            return;
+        };
+        assert!(gate.reached.send((turn, scope_signal)).is_ok());
+        gate.release
+            .recv()
+            .expect("release the synchronous policy factory");
+        let client = self
+            .client
+            .get()
+            .and_then(Weak::upgrade)
+            .expect("active factory client");
+        let authorization = DispatchAuthorization {
+            incarnation: turn.run.incarnation,
+            run: turn.run.generation,
+            input_id: InputId::generate(),
+            authorization_seq: 1,
+            target: AuthorizationTarget::ExistingTurn { turn: turn.turn },
+        };
+        let no_cancel = client
+            .owner_approval_bindings()
+            .begin_cancel(SESSION, &authorization)
+            .is_none();
+        assert!(gate.reentered.send(no_cancel).is_ok());
+    }
+
     pub(super) fn plan(&self, id: u64, plan: DecisionPlan) {
         assert!(locked(&self.plans).insert(id, plan).is_none());
     }
@@ -99,6 +169,12 @@ impl Policy {
     pub(super) fn hold_answer(&self, id: u64) -> oneshot::Sender<()> {
         let (release, wait) = oneshot::channel();
         self.plan(id, DecisionPlan::Hold(wait));
+        release
+    }
+
+    pub(super) fn hold_answer_until_scope_end(&self, id: u64) -> oneshot::Sender<()> {
+        let (release, wait) = oneshot::channel();
+        self.plan(id, DecisionPlan::HoldAfterScopeEnd(wait));
         release
     }
 
@@ -172,6 +248,14 @@ impl Policy {
                 self.record(PolicyEvent::ScopeCancelled(request));
                 Decision::Answer(answer)
             }
+            Some(DecisionPlan::HoldAfterScopeEnd(release)) => {
+                cancellation.turn.cancelled().await;
+                self.record(PolicyEvent::ScopeCancelled(request));
+                release
+                    .await
+                    .expect("release the held responder after scope end");
+                Decision::Answer(answer)
+            }
             None => Decision::Answer(answer),
         };
         self.record(PolicyEvent::Finished(request));
@@ -186,6 +270,7 @@ impl RequestPolicy<Payloads> for Policy {
         request: ApprovalRequest,
         cancellation: RequestCancellation,
     ) -> RequestFuture<'_, Decision<ApprovalPortOutcome>> {
+        self.reenter_from_factory(&context, Arc::clone(&cancellation.turn));
         Box::pin(async move {
             self.decide(
                 context,
@@ -271,6 +356,7 @@ impl RequestPolicy<Payloads> for Policy {
             if let Some(wait) = wait {
                 wait.await.expect("release policy stop");
             }
+            self.record(PolicyEvent::StopFinished(operation));
         })
     }
 }

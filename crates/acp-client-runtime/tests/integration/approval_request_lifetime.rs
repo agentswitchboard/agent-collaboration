@@ -1,3 +1,5 @@
+#[path = "approval_request_lifetime/commit_edges.rs"]
+mod commit_edges;
 #[path = "approval_request_lifetime/fixture.rs"]
 mod fixture;
 
@@ -335,10 +337,24 @@ async fn generation_retirement_stops_and_drains_the_exact_scope_on_a_live_pipe()
     assert_one_policy_stop(&policy, 1, turn, StopRequestsCause::GenerationRetired);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn provider_eof_calls_policy_stop_and_joins_the_pending_responder_before_exit() {
+    exercise_eof_drain(StopRequestsCause::ConnectionLost).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn provider_eof_during_generation_drain_keeps_the_first_stop_cause() {
+    exercise_eof_drain(StopRequestsCause::GenerationRetired).await;
+}
+
+#[expect(
+    clippy::expect_used,
+    reason = "The held ACP work and its gates are required fixture steps."
+)]
+async fn exercise_eof_drain(first_cause: StopRequestsCause) {
     let policy = Arc::new(Policy::default());
-    policy.plan(91, DecisionPlan::WaitForScopeEnd);
+    let answer = policy.hold_answer_until_scope_end(91);
+    let stop = policy.hold_stop(1);
     let (client, mut peer) = connect(policy.clone()).await;
     peer.create_session(&client, SESSION).await;
     let (_prompt, joined) = peer.start_prompt(&client, SESSION, 1).await;
@@ -348,18 +364,62 @@ async fn provider_eof_calls_policy_stop_and_joins_the_pending_responder_before_e
         .observe_approval_scope_drain_for_test(SESSION)
         .expect("tracked responder");
     assert_eq!(pending.len(), 1);
+    tokio::pin!(drained);
     let (_shutdown, settled) = client.connection_fixture_signals();
+    let teardown = client.connection_drain_started_for_test();
     assert!(!settled.is_cancelled());
 
+    if first_cause == StopRequestsCause::GenerationRetired {
+        client.retire_approval_run_for_test(SESSION, turn.run);
+        policy
+            .observe(|event| {
+                *event
+                    == PolicyEvent::Stopped {
+                        operation: 1,
+                        turn,
+                        cause: first_cause,
+                    }
+            })
+            .await;
+        assert!(futures_util::poll!(drained.as_mut()).is_pending());
+    }
+
     drop(peer);
-    client.retirement().cancelled().await;
-    client.shutdown().await;
-    assert!(settled.is_cancelled());
-    drained.await;
-    assert!(joined.await.expect("prompt task").is_err());
-    assert_one_policy_stop(&policy, 1, turn, StopRequestsCause::ConnectionLost);
-    assert!(policy.events().contains(&PolicyEvent::ScopeCancelled(91)));
+    let reached_drain = tokio::select! {
+        biased;
+        () = settled.cancelled() => false,
+        () = teardown.cancelled() => true,
+    };
+    assert!(
+        reached_drain,
+        "teardown acknowledged while the stop and responder were held"
+    );
+    assert!(futures_util::poll!(drained.as_mut()).is_pending());
+    policy
+        .observe(|event| *event == PolicyEvent::ScopeCancelled(91))
+        .await;
+    assert!(!settled.is_cancelled());
+
+    answer.send(()).expect("release the pending responder");
+    let responder_drained_first = tokio::select! {
+        biased;
+        () = settled.cancelled() => false,
+        () = drained.as_mut() => true,
+    };
+    assert!(
+        responder_drained_first,
+        "teardown acknowledged before the responder drained"
+    );
     assert!(policy.events().contains(&PolicyEvent::Finished(91)));
+    assert!(!policy.events().contains(&PolicyEvent::StopFinished(1)));
+    assert!(!settled.is_cancelled());
+
+    stop.send(()).expect("release the pending policy stop");
+    settled.cancelled().await;
+    assert!(policy.events().contains(&PolicyEvent::StopFinished(1)));
+    client.shutdown().await;
+    assert!(joined.await.expect("prompt task").is_err());
+    assert_one_policy_stop(&policy, 1, turn, first_cause);
 }
 
 #[tokio::test]
