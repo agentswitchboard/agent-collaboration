@@ -15,7 +15,8 @@ macro_rules! tagged_enum {
         pub enum $name { $($variant),+ }
 
         impl $name {
-            pub const ALL: &'static [Self] = &[$(Self::$variant),+];
+            #[cfg(test)]
+            pub(in crate::opening) const ALL: &'static [Self] = &[$(Self::$variant),+];
 
             const fn tag(self) -> &'static str {
                 match self { $(Self::$variant => $tag),+ }

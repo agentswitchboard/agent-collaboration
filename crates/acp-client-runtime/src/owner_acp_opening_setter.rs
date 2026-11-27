@@ -26,7 +26,9 @@ impl OwnerOpenings {
         let (instance, planned) = {
             let mut attempts = lock(&self.attempts);
             let Some(row) = attempts.targeted(identity) else {
-                return Err(Harness(self.opening_refusal(&attempts, identity)));
+                return Err(Harness(
+                    attempts.refusal_for(identity, self.session.get().is_some()),
+                ));
             };
             let instance = row.instance().clone();
             let planned = attempts.apply(
@@ -50,7 +52,7 @@ impl OwnerOpenings {
                 let removed =
                     lock(&self.attempts).apply(slot, &instance, Command::SetterDone(claim));
                 if let Ok(effect) = removed {
-                    effect.finish(&self.wire);
+                    effect.finish(self.wire.as_ref());
                 }
                 return Err(RestoreSettingRefusal::ReplyReservation(reason));
             }
@@ -88,11 +90,13 @@ impl OwnerOpenings {
         }
         let removed = lock(&self.attempts).apply(slot, &instance, Command::SetterDone(claim));
         if let Ok(effect) = removed {
-            effect.finish(&self.wire);
+            effect.finish(self.wire.as_ref());
         }
         if written == Err(crate::acp_transport::TransportRefusal::AuthorizationMismatch) {
             let attempts = lock(&self.attempts);
-            return Err(Harness(self.opening_refusal(&attempts, identity)));
+            return Err(Harness(
+                attempts.refusal_for(identity, self.session.get().is_some()),
+            ));
         }
         written.map_err(|reason| Harness(lifecycle_transport_refusal(reason)))
     }

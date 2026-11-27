@@ -1,12 +1,13 @@
 //! Restore receipts, replay publication, and exact held settings.
 
-use super::row::{RestoreDecision, RestoreMilestone, RestoreSignal, RestoreStart};
+use super::adapter::RestoreSignal;
 use super::{
     Arc, Command, Effect, LifecycleRefusal, LifecycleReply, Mutex, OpeningAttempts, OpeningFact,
     OpeningFailure, OpeningInstance, OpeningSlot, OwnerAcpWire, OwnerOpenings, RestoreOpening,
     RestoreVia, RunRetirement, SessionLifecycleFact, SessionLifecyclePort,
     lifecycle_transport_refusal, lock, opening_failure,
 };
+use super::{RestoreDecision, RestoreMilestone, RestoreStart};
 use crate::owner_session_open::OpenReceiptFailure;
 use crate::owner_session_setting::RestoreSettingPlan;
 use crate::owner_wire::RestoreOffer;
@@ -27,8 +28,19 @@ impl OwnerOpenings {
         #[cfg(any(test, feature = "test-observation"))]
         let reply = self.observe_reply(crate::owner_wire::OpeningDisposalKind::OpeningReply, reply);
         let slot = OpeningSlot::Run(opening.run.generation);
-        let admitted =
-            lock(&self.attempts).begin_restore(self, opening, self.stopped.child_token());
+        let admitted = {
+            let mut attempts = lock(&self.attempts);
+            let admitted = attempts.begin_restore(
+                self.session.get().map(String::as_str),
+                self.owner,
+                opening,
+                self.stopped.child_token(),
+            );
+            if let Ok((_, Effect::OfferRestore(start))) = &admitted {
+                self.session.get_or_init(|| start.request.session.0.clone());
+            }
+            admitted
+        };
         let (instance, effect) = admitted.map_err(|rejected| rejected.reason)?;
         let Effect::OfferRestore(start) = super::create::require_effect(Ok(effect), &self.wire)?
         else {
@@ -78,7 +90,7 @@ impl OwnerOpenings {
         let accepted = lock(&self.attempts).apply(slot, &instance, Command::WriterAccepted);
         match accepted {
             Ok(effect) if effect.faulted() => {
-                effect.finish(&self.wire);
+                effect.finish(self.wire.as_ref());
                 reply.send(OpeningFact::RestoreFailed {
                     run,
                     failure: OpeningFailure::OutcomeUnknown,
@@ -86,7 +98,7 @@ impl OwnerOpenings {
                 return Ok(());
             }
             Ok(effect) => {
-                effect.finish(&self.wire);
+                effect.finish(self.wire.as_ref());
             }
             Err(rejected) => {
                 tracing::debug!(?run, reason=?rejected.reason, "ACP had taken the restore before the row was retired");
@@ -293,11 +305,11 @@ impl RestoreWorker {
                 continue_restore(deferred.await.unwrap_or(RestoreDecision::Superseded))
             }
             Ok(effect) if effect.faulted() => {
-                effect.finish(&self.wire);
+                effect.finish(self.wire.as_ref());
                 Err(RestoreWorkerFailure::Internal)
             }
             Ok(effect) => {
-                let accepted = effect.finish(&self.wire);
+                let accepted = effect.finish(self.wire.as_ref());
                 match deferred.try_recv() {
                     Ok(decision) => continue_restore(decision),
                     Err(_) => Ok(accepted),

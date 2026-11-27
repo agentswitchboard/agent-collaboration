@@ -1,10 +1,10 @@
 //! Stage the exact reader, then authorize it only after its real handoff.
 
-use super::row::{ReaderEnd, ReaderHandoff};
 use super::{
     Arc, Command, Effect, OpeningSlot, OwnerOpenings, RunRetirement, SessionLifecycleFact,
     SessionLifecyclePort, lock,
 };
+use super::{ReaderEnd, ReaderHandoff};
 use crate::owner_session_stream::OwnerStreamTarget;
 use provider_session_machines::harness_lifecycle::{ActivationRefusal, ActivationSetup};
 use switchboard_harness_shared_mechanics::opening::activation_refusal;
@@ -17,9 +17,14 @@ impl OwnerOpenings {
         retired: RunRetirement,
     ) -> Result<(), ActivationRefusal> {
         self.observe_health().map_err(activation_refusal)?;
-        let (instance, generation, handoff) = lock(&self.attempts).begin_reader(self, setup)?;
+        let (instance, generation, handoff) = lock(&self.attempts).begin_reader(
+            self.session.get().is_some(),
+            self.owner,
+            setup,
+            &self.stopped,
+        )?;
         let Effect::StartReader(handoff) = handoff else {
-            handoff.finish(&self.wire);
+            handoff.finish(self.wire.as_ref());
             return Err(ActivationRefusal::OperationNotOffered);
         };
         let slot = OpeningSlot::Run(generation);
@@ -65,7 +70,7 @@ impl OwnerOpenings {
                 );
                 let ended = lock(&self.attempts).apply(slot, &instance, Command::ActivationFailed);
                 if let Ok(effect) = ended {
-                    effect.finish(&self.wire);
+                    effect.finish(self.wire.as_ref());
                 }
                 // This actor alone can accept the handoff. If its failure
                 // arrives after StartingReader has gone, the earlier
@@ -96,12 +101,12 @@ impl OwnerOpenings {
             drop(attempts);
             if route_lost {
                 if let Ok(effect) = accepted {
-                    effect.finish(&self.wire);
+                    effect.finish(self.wire.as_ref());
                 }
                 return Err(ActivationRefusal::RouteUnavailable);
             }
             let effect = accepted.map_err(|rejected| activation_refusal(rejected.reason))?;
-            if !effect.finish(&self.wire) {
+            if !effect.finish(self.wire.as_ref()) {
                 return Err(ActivationRefusal::OperationNotOffered);
             }
         }
@@ -165,7 +170,7 @@ impl OwnerOpenings {
                         ..
                     }
                 );
-                effect.finish(&wire);
+                effect.finish(wire.as_ref());
                 if report {
                     let _owner_gone = events
                         .send(SessionLifecycleFact::RunObservationFailed { run: generation })

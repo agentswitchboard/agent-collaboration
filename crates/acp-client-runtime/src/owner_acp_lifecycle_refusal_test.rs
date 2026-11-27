@@ -13,9 +13,10 @@ use provider_session_machines::harness_lifecycle::{
 use session_event_model::ProviderAuthStatus;
 use std::num::NonZeroUsize;
 use switchboard_harness_contracts::{
-    ConnectionEpoch, LifecycleMove, OwnerIncarnation, ReservedReply, WriterState,
+    ConnectionEpoch, LifecycleMove, LoadAttempt, OwnerIncarnation, ReservedReply, WriterState,
 };
 use tokio::sync::oneshot;
+use uuid::Uuid;
 
 #[path = "owner_acp_opening_reply_stop_test.rs"]
 mod reply_stop;
@@ -201,7 +202,7 @@ async fn a_lost_receipt_and_a_stopped_writer_do_not_offer_same_binding_reopen() 
     assert_eq!(failure, OpeningFailure::OutcomeUnknown);
     assert_eq!(failure.valid_moves(), &[LifecycleMove::KeepOutcomeUnknown]);
     assert!(
-        lock(&openings.attempts).runs.is_empty(),
+        lock(&openings.attempts).runs_is_empty(),
         "a failed receipt leaves no opening that could still answer"
     );
     assert_eq!(
@@ -361,10 +362,7 @@ async fn wait_for_actual_row(
     expected: Option<OpeningPhase>,
 ) {
     loop {
-        let observed = lock(&openings.attempts)
-            .runs
-            .get(&generation)
-            .map(OpeningRow::phase);
+        let observed = lock(&openings.attempts).phase_of(generation);
         if observed == expected {
             return;
         }
@@ -389,10 +387,7 @@ async fn physical_writer_close_reaches_the_pending_row_without_a_followup_call()
         .reached
         .await
         .expect("the real stopped writer observation completed");
-    let phase = lock(&openings.attempts)
-        .runs
-        .get(&run.generation)
-        .map(OpeningRow::phase);
+    let phase = lock(&openings.attempts).phase_of(run.generation);
     assert_eq!(
         phase,
         Some(OpeningPhase::StoppedAwaitingReply),
@@ -409,7 +404,7 @@ async fn physical_writer_close_reaches_the_pending_row_without_a_followup_call()
     assert!(
         matches!(fact, OpeningFact::RestoreFailed { run: exact, failure: OpeningFailure::OutcomeUnknown } if exact == run)
     );
-    assert!(lock(&openings.attempts).runs.is_empty());
+    assert!(lock(&openings.attempts).runs_is_empty());
     drop(openings);
     tasks.close();
     tasks.wait().await;
@@ -435,7 +430,7 @@ async fn physical_route_loss_and_connection_retirement_reach_the_row_without_a_c
         OpeningFact::RestoreFailed { run: exact, failure: OpeningFailure::OutcomeUnknown } if exact == run
     ));
     assert_eq!(
-        lock(&openings.attempts).port_refusal,
+        lock(&openings.attempts).port_refusal(),
         Some(LifecycleRefusal::ConnectionRetired)
     );
     drop(openings);
@@ -456,7 +451,7 @@ async fn delayed_retirement_cleanup_cannot_take_a_replacement_route_at_the_same_
         .take_retired(run.generation)
         .expect("release only the exact old row");
     let new_answer = pending_load(&openings, run);
-    old_row.finish(&openings.wire);
+    old_row.finish(openings.wire.as_ref());
     assert!(old_answer.await.is_err());
     drop(old_frame);
     assert_eq!(
@@ -526,10 +521,7 @@ async fn a_buffered_close_reply_survives_the_real_writer_stop() {
         .await
         .expect("the real writer receiver is stopped");
     assert_eq!(
-        lock(&openings.attempts)
-            .runs
-            .get(&run.generation)
-            .map(OpeningRow::phase),
+        lock(&openings.attempts).phase_of(run.generation),
         Some(OpeningPhase::StoppedAwaitingReply),
         "writer stop lost a buffered close receipt"
     );
@@ -548,7 +540,7 @@ async fn a_buffered_close_reply_survives_the_real_writer_stop() {
     );
     drop(unreturned_open);
     assert!(opening_reply.await.is_err());
-    assert!(lock(&openings.attempts).runs.is_empty());
+    assert!(lock(&openings.attempts).runs_is_empty());
     drop(openings);
     tasks.close();
     tasks.wait().await;
@@ -563,10 +555,7 @@ async fn a_vacant_restore_offers_only_the_row_decided_by_the_step() {
     };
     let _reply = pending_load(&openings, run);
     assert_eq!(
-        lock(&openings.attempts)
-            .runs
-            .get(&run.generation)
-            .map(OpeningRow::phase),
+        lock(&openings.attempts).phase_of(run.generation),
         Some(OpeningPhase::AwaitingRestore),
         "the declared vacant restore must commit its restore row",
     );

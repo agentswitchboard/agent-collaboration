@@ -2,7 +2,6 @@
 
 mod lifecycle_routes;
 mod restore_registration;
-pub(crate) use lifecycle_routes::ReadmitOutcome;
 pub(crate) use restore_registration::RestoreSelection;
 
 use crate::callback_router::ToolClaims;

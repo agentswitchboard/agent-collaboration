@@ -1,13 +1,18 @@
 //! Preserve or settle the exact in-flight receipt when its local route stops.
 
-use super::super::{RestoreReceiptStage, RestoreSignal};
+use super::super::super::OpeningAdapter;
+use super::super::RestoreReceiptStage;
 use super::{
     Command, Edge, Effect, LostReceipt, OpeningInstance, OpeningState, Release, RestoreMilestone,
     Step, StoppedReceipt, finish, store,
 };
 use OpeningState as State;
 
-pub(super) fn stop_writer(mut state: State, instance: &OpeningInstance, edge: Edge) -> Step {
+pub(super) fn stop_writer<A: OpeningAdapter>(
+    mut state: State<A>,
+    instance: &OpeningInstance,
+    edge: Edge,
+) -> Step<A> {
     let taken = edge == Edge::WriterStoppedAfterOffer;
     if let Some(stage) = state.pending_restore(taken) {
         if let State::OfferingClose { deferred, .. } = &mut state
@@ -80,12 +85,12 @@ pub(super) fn stop_writer(mut state: State, instance: &OpeningInstance, edge: Ed
     )
 }
 
-pub(super) fn lose_route(
-    mut state: State,
+pub(super) fn lose_route<A: OpeningAdapter>(
+    mut state: State<A>,
     instance: &OpeningInstance,
-    command: Command,
+    command: Command<A>,
     taken: bool,
-) -> Step {
+) -> Step<A> {
     let Some(run) = state.run().cloned() else {
         return Err((state, command));
     };
@@ -113,12 +118,12 @@ pub(super) fn lose_route(
     )
 }
 
-pub(super) fn resolve_after_loss(
-    state: State,
+pub(super) fn resolve_after_loss<A: OpeningAdapter>(
+    state: State<A>,
     instance: &OpeningInstance,
-    milestone: RestoreMilestone,
-    signal: Option<RestoreSignal>,
-) -> Step {
+    milestone: RestoreMilestone<A>,
+    signal: Option<A::RestoreSignal>,
+) -> Step<A> {
     let (next, stage) = match &state {
         State::StoppedAwaitingReply(StoppedReceipt::OpenRestore(_, stage)) => (None, *stage),
         State::RouteLost {
@@ -173,7 +178,7 @@ pub(super) fn resolve_after_loss(
     ))
 }
 
-pub(super) fn lost_receipt(state: &State, taken: bool) -> LostReceipt {
+pub(super) fn lost_receipt<A: OpeningAdapter>(state: &State<A>, taken: bool) -> LostReceipt {
     if let Some(stage) = state.pending_restore(taken) {
         return LostReceipt::Open(stage);
     }

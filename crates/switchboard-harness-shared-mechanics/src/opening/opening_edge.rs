@@ -1,11 +1,16 @@
 //! Select the declared edge from a typed command and owned custody.
 
+use super::super::super::OpeningAdapter;
 use super::{
     CloseFact, Command, Edge, LostReceipt, OpeningState, RestoreMilestone, StoppedReceipt,
 };
-use crate::acp_transport::ReadmitOutcome;
+use crate::run_ledger::ReadmitOutcome;
 
-pub(super) fn edge(state: &OpeningState, command: &Command, taken: bool) -> Option<Edge> {
+pub(super) fn edge<A: OpeningAdapter>(
+    state: &OpeningState<A>,
+    command: &Command<A>,
+    taken: bool,
+) -> Option<Edge> {
     use OpeningState as State;
     let event = match command {
         Command::OpenCreate(_) => Edge::OpenCreate,
@@ -241,7 +246,7 @@ enum CreateWorkerFact {
     Exited,
 }
 
-fn worker_edge(state: &OpeningState, fact: CreateWorkerFact) -> Option<Edge> {
+fn worker_edge<A: OpeningAdapter>(state: &OpeningState<A>, fact: CreateWorkerFact) -> Option<Edge> {
     use CreateWorkerFact as Fact;
     use OpeningState as State;
     match state {
@@ -292,7 +297,7 @@ fn worker_edge(state: &OpeningState, fact: CreateWorkerFact) -> Option<Edge> {
     }
 }
 
-fn connection_loss_edge(state: &OpeningState, taken: bool) -> Edge {
+fn connection_loss_edge<A: OpeningAdapter>(state: &OpeningState<A>, taken: bool) -> Edge {
     use OpeningState as State;
     match state {
         State::StoppedAwaitingReply(_) => Edge::RetainReceiptAfterConnectionLoss,

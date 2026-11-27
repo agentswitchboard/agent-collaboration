@@ -2,7 +2,7 @@
 
 use super::{AcpFrame, OpenReply, OpenRequest, OwnerAcpWire, OwnerWireRefusal, ResponseKind};
 use crate::{
-    acp_transport::{ReadmitOutcome, TransportRefusal, TransportRun},
+    acp_transport::{TransportRefusal, TransportRun},
     owner_session_open::{LifecycleOpenReceipt, OwnerSessionOpenSetup},
 };
 use agent_client_protocol::{JsonRpcMessage as _, schema::v1::CloseSessionRequest};
@@ -15,6 +15,7 @@ use provider_session_machines::{
 use switchboard_harness_shared_mechanics::opening::{
     LifecycleRoute, OpeningInstance, OpeningOffer,
 };
+use switchboard_harness_shared_mechanics::run_ledger::ReadmitOutcome;
 
 pub(crate) struct RestoreOffer<'a> {
     pub(crate) route: &'a LifecycleRoute,

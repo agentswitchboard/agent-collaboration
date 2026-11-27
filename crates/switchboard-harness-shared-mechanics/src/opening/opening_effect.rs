@@ -1,9 +1,10 @@
 //! Run owned opening effects after their row has been committed.
 
-use super::{DeferredRestore, Effect, OwnerAcpWire, RestoreDecision};
+use super::super::{OpeningAdapter, OpeningEffects};
+use super::{DeferredRestore, Effect, RestoreDecision, SendRestoreDecision};
 
-impl Effect {
-    pub(in super::super) fn faulted(&self) -> bool {
+impl<A: OpeningAdapter> Effect<A> {
+    pub fn faulted(&self) -> bool {
         match self {
             Self::Fault(_) => true,
             Self::DropSignal(_, next) | Self::DiscardAfter(_, next) => next.faulted(),
@@ -72,23 +73,23 @@ impl Effect {
         }
     }
 
-    pub(in super::super) fn finish(self, wire: &OwnerAcpWire) -> bool {
+    pub fn finish(self, effects: &impl OpeningEffects) -> bool {
         match self {
             Self::WithdrawSetters(setters, next) => {
                 drop(setters);
-                next.finish(wire)
+                next.finish(effects)
             }
             Self::Fault(fault) => {
-                fault.release(wire);
+                fault.release(effects);
                 false
             }
             Self::None | Self::Rollback(None) => true,
             Self::ReaderEnded { release, .. } | Self::Release(release) => {
-                release.run(wire);
+                release.run(effects);
                 true
             }
             Self::CloseConfirmed(release, deferred) => {
-                release.run(wire);
+                release.run(effects);
                 if let Some(deferred) = deferred {
                     deferred.outcome.send(RestoreDecision::Superseded);
                 }
@@ -102,7 +103,7 @@ impl Effect {
                 let DeferredRestore { milestone, outcome } = deferred;
                 drop(milestone);
                 outcome.send(decision);
-                release.run(wire);
+                release.run(effects);
                 true
             }
             Self::ResolveRestore {
@@ -111,14 +112,14 @@ impl Effect {
                 release,
             } => {
                 if let Some(release) = release {
-                    release.run(wire);
+                    release.run(effects);
                 }
                 outcome.send(decision);
                 true
             }
             Self::DropSignal(signal, next) => {
                 drop(signal);
-                next.finish(wire)
+                next.finish(effects)
             }
             Self::Discarded(command) => {
                 drop(command);
@@ -126,11 +127,11 @@ impl Effect {
             }
             Self::DiscardAfter(command, next) => {
                 drop(command);
-                next.finish(wire)
+                next.finish(effects)
             }
             Self::ReleaseBefore(previous, next) => {
                 drop(previous);
-                next.finish(wire)
+                next.finish(effects)
             }
             Self::Readmit(_, _) => false,
             Self::Deferred

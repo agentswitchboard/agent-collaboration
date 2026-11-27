@@ -1,24 +1,29 @@
 //! Exercise independently chosen payloads through the owned opening step.
 
 use super::*;
-use provider_session_machines::harness_lifecycle::LifecycleRefusal;
+use switchboard_harness_contracts::LifecycleRefusal;
 
-type Applied =
-    Result<(Option<super::super::super::OpeningRow>, Effect), super::super::super::Refused>;
+type Applied = Result<
+    (
+        Option<super::super::super::OpeningRow<TestOpening>>,
+        Effect<TestOpening>,
+    ),
+    super::super::super::Refused<TestOpening>,
+>;
 
 impl Fixture {
     fn apply_payload(
         &self,
-        state: OpeningState,
-        command: Command,
+        state: OpeningState<TestOpening>,
+        command: Command<TestOpening>,
         instance: &OpeningInstance,
     ) -> Applied {
-        let row = super::super::super::OpeningRow {
+        let row: super::super::super::OpeningRow<TestOpening> = super::super::super::OpeningRow {
             attempt: self.attempt,
             instance: instance.clone(),
             state,
         };
-        let _table = lock(&self.table);
+        let _table = self.table.lock();
         row.apply(instance, command)
     }
 }
@@ -35,7 +40,7 @@ enum ReaderOrigin {
 
 #[tokio::test]
 async fn every_reader_ending_obeys_its_reason_and_live_origin() {
-    let fixture = Fixture::new().await;
+    let fixture = Fixture::new();
     let reasons = [
         (ReaderEnd::Retired, false),
         (ReaderEnd::Finished, false),
@@ -131,7 +136,7 @@ async fn every_reader_ending_obeys_its_reason_and_live_origin() {
 
 #[tokio::test]
 async fn readmission_receipts_preserve_or_retire_only_their_exact_route() {
-    let fixture = Fixture::new().await;
+    let fixture = Fixture::new();
     let cases = [
         (ReadmitOutcome::Reopened, P::Active),
         (ReadmitOutcome::MarkerAbsent, P::Active),
@@ -152,7 +157,7 @@ async fn readmission_receipts_preserve_or_retire_only_their_exact_route() {
                     if exact {
                         attempt
                     } else {
-                        CloseAttempt(Uuid::now_v7())
+                        CloseAttempt("019f0000-0000-7000-8000-000000005908".parse().unwrap())
                     },
                     outcome,
                 ),
@@ -212,7 +217,7 @@ enum CloseOrigin {
 }
 
 impl CloseOrigin {
-    fn row(self, fixture: &Fixture) -> OpeningState {
+    fn row(self, fixture: &Fixture) -> OpeningState<TestOpening> {
         match self {
             Self::AwaitingPeer => OpeningState::AwaitingRestore(fixture.run.clone()),
             Self::PublishingReplay => OpeningState::PublishingReplay(fixture.owned_restore()),
@@ -235,7 +240,7 @@ enum DeferredPayload {
 }
 
 impl DeferredPayload {
-    fn milestone(self, fixture: &Fixture) -> Option<RestoreMilestone> {
+    fn milestone(self, fixture: &Fixture) -> Option<RestoreMilestone<TestOpening>> {
         Some(match self {
             Self::Empty => return None,
             Self::Loaded => {
@@ -266,11 +271,11 @@ enum CloseReceiptOwner {
 #[tokio::test]
 async fn close_receipts_check_kind_attempt_and_generation_before_retiring() {
     use CloseReceiptOwner as Owner;
-    let fixture = Fixture::new().await;
+    let fixture = Fixture::new();
     let attempts = [
         fixture.close,
         RunAttempt {
-            attempt: CloseAttempt(Uuid::now_v7()),
+            attempt: CloseAttempt("019f0000-0000-7000-8000-000000009761".parse().unwrap()),
             ..fixture.close
         },
         RunAttempt {
@@ -377,7 +382,7 @@ async fn close_receipts_check_kind_attempt_and_generation_before_retiring() {
 
 #[tokio::test]
 async fn setter_reply_claim_must_retain_the_exact_plan_and_envelope() {
-    let fixture = Fixture::new().await;
+    let fixture = Fixture::new();
     let mut visited = [[false; 2]; 2];
     for (claim_index, exact) in [true, false].into_iter().enumerate() {
         for (plan_index, has_plan) in [true, false].into_iter().enumerate() {
@@ -389,17 +394,14 @@ async fn setter_reply_claim_must_retain_the_exact_plan_and_envelope() {
                 .setting
                 .change;
             if !has_plan {
-                drop(restore.held.setters[0].plan.take());
+                restore.held.setters[0].plan = None;
             }
             let claim = if exact {
                 fixture.setter.clone()
             } else {
                 OpeningOffer::default()
             };
-            let reply = crate::owner_opening_disposal::observe_reply(
-                Box::new(IgnoreSettingReply),
-                Some(fixture.disposal_token()),
-            );
+            let reply = ignore_setting_reply(fixture.disposal_token());
             let instance = OpeningInstance::default();
             let result = fixture.apply_payload(
                 OpeningState::HeldRestore(restore),
@@ -481,7 +483,7 @@ async fn close_offer_outcomes_keep_each_origin_and_its_owned_deferred_payload() 
         ),
         (Origin::Active, Buffer::Empty, Some(P::Active)),
     ];
-    let fixture = Fixture::new().await;
+    let fixture = Fixture::new();
     let mut visited = [[false; 2]; 13];
     for (case, (origin, payload, rollback_phase)) in cases.into_iter().enumerate() {
         for (outcome, accepted) in [false, true].into_iter().enumerate() {

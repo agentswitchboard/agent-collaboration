@@ -1,8 +1,8 @@
 //! Deliver real writer, connection, and route facts to each affected row.
 
 use super::{
-    Arc, Command, CreateAttempt, Effect, LifecycleRefusal, Mutex, OpeningAttempts, OpeningInstance,
-    OpeningSlot, OwnerAcpWire, OwnerOpenings, SessionGeneration, WriterState, lock,
+    Arc, Command, Effect, LifecycleRefusal, Mutex, OpeningAttempts, OpeningInstance, OpeningSlot,
+    OwnerAcpWire, OwnerOpenings, SessionGeneration, WriterState, lock,
 };
 use switchboard_harness_shared_mechanics::opening::LifecycleRoute;
 
@@ -58,18 +58,7 @@ impl OwnerOpenings {
                 LifecycleRefusal::Writer(WriterState::Stopped),
             );
         }
-        let (refusal, removed) = {
-            let attempts = lock(&self.attempts);
-            let removed = attempts
-                .runs
-                .iter()
-                .filter_map(|(&generation, row)| {
-                    row.removed_route()
-                        .map(|route| (OpeningSlot::Run(generation), row.instance().clone(), route))
-                })
-                .collect::<Vec<_>>();
-            (attempts.port_refusal, removed)
-        };
+        let (removed, refusal) = lock(&self.attempts).removed_routes();
         for (slot, instance, route) in removed {
             deliver_route_removed(&self.attempts, &self.wire, slot, &instance, &route);
         }
@@ -96,7 +85,7 @@ impl OwnerOpenings {
 
     pub(in super::super) fn retire(&self, generation: SessionGeneration) {
         if let Ok((_instance, effect)) = self.take_retired(generation) {
-            effect.finish(&self.wire);
+            effect.finish(self.wire.as_ref());
         }
     }
 
@@ -119,38 +108,8 @@ impl OwnerOpenings {
 }
 
 fn stop_port(attempts: &Mutex<OpeningAttempts>, wire: &OwnerAcpWire, refusal: LifecycleRefusal) {
-    let effects = {
-        let mut attempts = lock(attempts);
-        if attempts.port_refusal == Some(LifecycleRefusal::ConnectionRetired)
-            || attempts.port_refusal == Some(refusal)
-        {
-            return;
-        }
-        attempts.port_refusal = Some(refusal);
-        let rows =
-            attempts
-                .creates
-                .iter()
-                .map(|(&id, row)| {
-                    (
-                        OpeningSlot::Create(CreateAttempt(id)),
-                        row.instance().clone(),
-                    )
-                })
-                .chain(attempts.runs.iter().map(|(&generation, row)| {
-                    (OpeningSlot::Run(generation), row.instance().clone())
-                }))
-                .collect::<Vec<_>>();
-        let mut effects = Vec::with_capacity(rows.len());
-        for (slot, instance) in rows {
-            let command = if refusal == LifecycleRefusal::ConnectionRetired {
-                Command::ConnectionRetired
-            } else {
-                Command::WriterStopped
-            };
-            effects.push(attempts.apply(slot, &instance, command));
-        }
-        effects
+    let Some(effects) = lock(attempts).stop_all(refusal) else {
+        return;
     };
     for effect in effects.into_iter().flatten() {
         effect.finish(wire);

@@ -124,7 +124,7 @@ async fn writer_stop_does_not_lose_the_older_restore_under_an_untaken_close() {
         Site::Delivered,
     );
     ledger.assert_conserved(owed_before, &[], &[], &[open_id]);
-    assert!(lock(&opening.attempts).runs.is_empty());
+    assert!(lock(&opening.attempts).runs_is_empty());
     drop(opening);
     tasks.close();
     tasks.wait().await;
@@ -212,9 +212,7 @@ async fn assert_exact_close_after_stop(peer: PeerClose) {
         .await
         .expect("actual writer stopped with the original close outstanding");
     assert_eq!(
-        lock(&opening.attempts)
-            .get(OpeningSlot::Run(run.generation))
-            .map(OpeningRow::phase),
+        lock(&opening.attempts).phase_of(run.generation),
         Some(OpeningPhase::StoppedAwaitingReply)
     );
     assert!(matches!(
@@ -240,7 +238,7 @@ async fn assert_exact_close_after_stop(peer: PeerClose) {
     );
     ledger.move_to(id, custody, Site::Delivered);
     ledger.assert_conserved(owed_before, &[], &[], &[id]);
-    assert!(lock(&opening.attempts).runs.is_empty());
+    assert!(lock(&opening.attempts).runs_is_empty());
     drop(old_frame);
     assert!(
         old.await.is_err(),

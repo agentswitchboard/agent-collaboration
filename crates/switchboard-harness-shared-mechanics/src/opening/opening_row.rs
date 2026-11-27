@@ -1,46 +1,36 @@
 #![deny(clippy::wildcard_enum_match_arm)]
 
-//! One owned step at the ACP opening boundary.
+//! One owned step at the opening boundary.
 
-#[path = "owner_acp_opening_effect.rs"]
+#[path = "opening_effect.rs"]
 mod effect;
-#[path = "owner_acp_opening_step.rs"]
+#[path = "opening_step.rs"]
 mod reducer;
 #[cfg(test)]
-#[path = "owner_acp_opening_row_test.rs"]
+#[path = "opening_row_test.rs"]
 mod tests;
 
-use super::{OpenSetup, RestoreOpening};
-use crate::{
-    RequestedProviderSettings, acp_transport::ReadmitOutcome,
-    owner_session_open::OwnerOpenedSession, owner_session_setting::OwnerSettingWirePlan,
-    owner_wire::OwnerAcpWire,
+use super::{
+    LifecycleRoute, OpeningAdapter, OpeningEffects, OpeningEvent as Edge, OpeningInstance,
+    OpeningOffer, OpeningPhase, OpeningPolicy, SendRestoreDecision, StepFaultReport,
 };
-use provider_session_machines::{
-    SessionGeneration,
-    harness_lifecycle::{
-        AcceptedRunSettings, CloseFact, LifecycleRefusal, LifecycleReply, OpenAttempt,
-        SettingAttempt, SettingFact, SetupReport,
-    },
-    session_lifecycle_machine::{CloseAttempt, LoadAttempt, RestoreVia},
-    session_owner::{OwnerAddress, OwnerSetting, RunAttempt},
-};
-use session_event_model::{CapabilityReport, SessionSettings, SkillView};
+use crate::run_ledger::ReadmitOutcome;
 use state_machine_core::StateMachine;
-use switchboard_harness_shared_mechanics::opening::{
-    LifecycleRoute, OpeningEvent as Edge, OpeningInstance, OpeningOffer, OpeningPhase,
-    OpeningPolicy,
+use switchboard_harness_contracts::{
+    AcceptedRunSettings, CloseAttempt, CloseFact, CreateAttempt, HarnessSessionId,
+    LifecycleRefusal, LifecycleReply, LoadAttempt, OpenAttempt, OpenSetup, OwnerAddress,
+    OwnerSetting, RequestedProviderSettings, RestoreVia, RunAttempt, SessionGeneration,
+    SettingAttempt, SettingFact, SetupReport, TransportRun,
 };
-use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
-pub(super) struct OpeningRow {
+pub struct OpeningRow<A: OpeningAdapter> {
     attempt: OpenAttempt,
     instance: OpeningInstance,
-    state: OpeningState,
+    state: OpeningState<A>,
 }
 
-enum OpeningState {
+enum OpeningState<A: OpeningAdapter> {
     Vacant {
         bound: bool,
     },
@@ -49,24 +39,24 @@ enum OpeningState {
         pending: PendingCreate,
     },
     AwaitingCreate(PendingCreate),
-    HeldCreate(HeldCreate),
+    HeldCreate(HeldCreate<A>),
     ConfiguringCreate(CancellationToken),
-    ConfiguredCreate(Box<OwnerOpenedSession>),
+    ConfiguredCreate(Box<A::OpenedSession>),
     OfferingRestore {
         offer: OpeningOffer,
         run: RunResources,
     },
     AwaitingRestore(RunResources),
-    PublishingReplay(RoutedRestore),
-    HeldRestore(RoutedRestore),
-    PreparedRestore(RoutedRestore),
+    PublishingReplay(RoutedRestore<A>),
+    HeldRestore(RoutedRestore<A>),
+    PreparedRestore(RoutedRestore<A>),
     StartingReader(RunResources),
     Active(RunResources),
     OfferingClose {
-        origin: Box<OpeningState>,
+        origin: Box<OpeningState<A>>,
         attempt: CloseAttempt,
         offer: OpeningOffer,
-        deferred: Option<DeferredRestore>,
+        deferred: Option<DeferredRestore<A>>,
     },
     ClosingRestore {
         run: RunResources,
@@ -96,95 +86,75 @@ struct PendingCreate {
     pub(super) stopped: CancellationToken,
 }
 
-struct HeldCreate {
-    pub(super) session: Box<OwnerOpenedSession>,
+struct HeldCreate<A: OpeningAdapter> {
+    pub(super) session: Box<A::OpenedSession>,
     pub(super) requested: Box<RequestedProviderSettings>,
 }
 
 #[derive(Clone)]
-pub(super) struct RunResources {
-    pub(super) route: LifecycleRoute,
-    pub(super) stopped: CancellationToken,
+pub struct RunResources {
+    pub route: LifecycleRoute,
+    pub stopped: CancellationToken,
 }
 
-struct RoutedRestore {
+struct RoutedRestore<A: OpeningAdapter> {
     pub(super) run: RunResources,
-    pub(super) held: Box<HeldRestore>,
+    pub(super) held: Box<HeldRestore<A>>,
 }
 
-pub(super) struct PendingSetter {
+pub struct PendingSetter<A: OpeningAdapter> {
     claim: OpeningOffer,
-    plan: Option<SetterPlan>,
+    plan: Option<SetterPlan<A>>,
 }
 
-struct SetterPlan {
+struct SetterPlan<A: OpeningAdapter> {
     restore: RunAttempt<LoadAttempt>,
     setting: OwnerSetting,
-    wire: OwnerSettingWirePlan,
+    wire: A::SettingPlan,
 }
 
-pub(super) struct SetterWrite {
-    pub(super) route: LifecycleRoute,
-    pub(super) restore: RunAttempt<LoadAttempt>,
-    pub(super) setting: OwnerSetting,
-    pub(super) plan: OwnerSettingWirePlan,
-    pub(super) reply: LifecycleReply<SettingFact>,
+pub struct SetterWrite<A: OpeningAdapter> {
+    pub route: LifecycleRoute,
+    pub restore: RunAttempt<LoadAttempt>,
+    pub setting: OwnerSetting,
+    pub plan: A::SettingPlan,
+    pub reply: LifecycleReply<SettingFact>,
 }
 
-pub(super) struct HeldRestore {
-    pub(super) session: Box<OwnerOpenedSession>,
+pub struct HeldRestore<A: OpeningAdapter> {
+    pub(super) session: Box<A::OpenedSession>,
     pub(super) accepted_mode_fallback: Option<String>,
-    pub(super) skills: Option<SkillView>,
-    setters: Vec<PendingSetter>,
+    pub(super) skills: Option<A::Skills>,
+    setters: Vec<PendingSetter<A>>,
 }
 
-pub(super) struct DeferredRestore {
-    pub(super) milestone: RestoreMilestone,
-    pub(super) outcome: RestoreSignal,
-}
-
-pub(super) struct RestoreSignal {
-    sender: oneshot::Sender<RestoreDecision>,
-    #[cfg(any(test, feature = "test-observation"))]
-    pub(super) _disposal: Option<Box<crate::owner_opening_disposal::OpeningDisposalToken>>,
-}
-
-impl RestoreSignal {
-    pub(super) fn new(sender: oneshot::Sender<RestoreDecision>) -> Self {
-        Self {
-            sender,
-            #[cfg(any(test, feature = "test-observation"))]
-            _disposal: None,
-        }
-    }
-
-    fn send(self, decision: RestoreDecision) {
-        let _worker_gone = self.sender.send(decision);
-    }
+pub struct DeferredRestore<A: OpeningAdapter> {
+    pub(super) milestone: RestoreMilestone<A>,
+    pub(super) outcome: A::RestoreSignal,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum RestoreDecision {
+pub enum RestoreDecision {
     Continue,
     Superseded,
     LocallyUnavailable(RestoreVia),
     ReceiptMissing,
 }
 
-pub(super) enum RestoreMilestone {
-    Loaded(Box<HeldRestore>),
-    Resumed(Box<HeldRestore>),
+pub enum RestoreMilestone<A: OpeningAdapter> {
+    Loaded(Box<HeldRestore<A>>),
+    Resumed(Box<HeldRestore<A>>),
     ReplayAdmitted,
     ReplayRejected,
     Failed,
     WorkerExited,
 }
 
-impl RestoreMilestone {
-    pub(super) fn held(
-        session: OwnerOpenedSession,
+impl<A: OpeningAdapter> RestoreMilestone<A> {
+    pub fn held(
+        session: A::OpenedSession,
         accepted_mode_fallback: Option<String>,
-        skills: Option<SkillView>,
+        skills: Option<A::Skills>,
         from_load: bool,
     ) -> Self {
         let held = Box::new(HeldRestore {
@@ -239,7 +209,7 @@ pub(super) enum RestoreReceiptStage {
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
-pub(super) enum ReaderEnd {
+pub enum ReaderEnd {
     Retired,
     Finished,
     Failed,
@@ -254,7 +224,7 @@ pub(super) enum StoppedReceipt {
     Close(RunResources, CloseAttempt),
 }
 
-impl OpeningState {
+impl<A: OpeningAdapter> OpeningState<A> {
     fn pending_restore(&self, taken: bool) -> Option<RestoreReceiptStage> {
         match self {
             Self::OfferingRestore { .. } if taken => Some(RestoreReceiptStage::AwaitingPeer),
@@ -393,7 +363,7 @@ impl OpeningState {
         }
     }
 
-    fn held_session(&self) -> Option<&OwnerOpenedSession> {
+    fn held_session(&self) -> Option<&A::OpenedSession> {
         match self {
             Self::HeldCreate(held) => Some(&held.session),
             Self::ConfiguredCreate(session) => Some(session),
@@ -434,16 +404,16 @@ impl OpeningState {
     }
 }
 
-pub(super) enum Command {
+pub enum Command<A: OpeningAdapter> {
     OpenCreate(Box<OpenCreateRequest>),
     OpenRestore(Box<OpenRestoreRequest>),
     WriterAccepted,
     WriterRefused,
-    Created(Box<OwnerOpenedSession>),
+    Created(Box<A::OpenedSession>),
     OpenFailed,
     WorkerExited,
     Configure(CancellationToken),
-    Configured(Box<OwnerOpenedSession>),
+    Configured(Box<A::OpenedSession>),
     ConfigureClosed,
     AcceptSettings(AcceptedRunSettings),
     PutSettingBack {
@@ -459,7 +429,7 @@ pub(super) enum Command {
     ActivationFailed,
     ReaderAccepted,
     ReaderStopped(ReaderEnd),
-    RestoreProgress(RestoreMilestone, Option<RestoreSignal>),
+    RestoreProgress(RestoreMilestone<A>, Option<A::RestoreSignal>),
     CloseAsked(RunAttempt<CloseAttempt>),
     CloseOffered(RunAttempt<CloseAttempt>, bool),
     CloseSettled(CloseFact),
@@ -471,79 +441,87 @@ pub(super) enum Command {
     RouteRemoved(LifecycleRoute),
 }
 
-pub(super) struct OpenCreateRequest {
-    pub(super) setup: OpenSetup,
-    pub(super) requested: RequestedProviderSettings,
-    pub(super) stopped: CancellationToken,
+pub struct RestoreOpening {
+    pub run: RunAttempt<LoadAttempt>,
+    pub session: HarnessSessionId,
+    pub via: RestoreVia,
+    pub setup: OpenSetup,
+    pub requested_mode: Option<String>,
 }
 
-pub(super) struct OpenRestoreRequest {
+pub struct OpenCreateRequest {
+    pub setup: OpenSetup,
+    pub requested: RequestedProviderSettings,
+    pub stopped: CancellationToken,
+}
+
+pub struct OpenRestoreRequest {
     pub(super) request: RestoreOpening,
     pub(super) owner: OwnerAddress,
     pub(super) stopped: CancellationToken,
 }
 
-pub(super) struct CreateStart {
-    pub(super) setup: OpenSetup,
-    pub(super) offer: OpeningOffer,
-    pub(super) stopped: CancellationToken,
+pub struct CreateStart {
+    pub setup: OpenSetup,
+    pub offer: OpeningOffer,
+    pub stopped: CancellationToken,
 }
 
-pub(super) struct RestoreStart {
-    pub(super) request: RestoreOpening,
-    pub(super) offer: OpeningOffer,
-    pub(super) resources: RunResources,
+pub struct RestoreStart {
+    pub request: RestoreOpening,
+    pub offer: OpeningOffer,
+    pub resources: RunResources,
 }
 
-pub(super) struct ReaderHandoff {
-    pub(super) session: Box<OwnerOpenedSession>,
-    pub(super) skills: Option<SkillView>,
-    pub(super) run: RunResources,
-    pub(super) install_route: bool,
+pub struct ReaderHandoff<A: OpeningAdapter> {
+    pub session: Box<A::OpenedSession>,
+    pub skills: Option<A::Skills>,
+    pub run: RunResources,
+    pub install_route: bool,
 }
 
-pub(super) enum Effect {
+pub enum Effect<A: OpeningAdapter> {
     OfferCreate(Box<CreateStart>),
     OfferRestore(Box<RestoreStart>),
-    Fault(Box<StepFault>),
-    Discarded(Box<Command>),
-    DropSignal(RestoreSignal, Box<Effect>),
-    ReleaseBefore(Box<Effect>, Box<Effect>),
-    DiscardAfter(Box<Command>, Box<Effect>),
+    Fault(Box<StepFault<A>>),
+    Discarded(Box<Command<A>>),
+    DropSignal(A::RestoreSignal, Box<Effect<A>>),
+    ReleaseBefore(Box<Effect<A>>, Box<Effect<A>>),
+    DiscardAfter(Box<Command<A>>, Box<Effect<A>>),
     Readmit(LifecycleRoute, CloseAttempt),
-    Rollback(Option<DeferredRestore>),
+    Rollback(Option<DeferredRestore<A>>),
     None,
     Configure {
-        session: Box<OwnerOpenedSession>,
+        session: Box<A::OpenedSession>,
         requested: Box<RequestedProviderSettings>,
     },
-    Settings(Box<SetupReport<CapabilityReport, SessionSettings>>),
+    Settings(Box<SetupReport<A::Capabilities, A::Settings>>),
     RefuseSetter(LifecycleRefusal),
     ReserveSetter(OpeningOffer),
-    WriteSetter(Box<SetterWrite>),
-    WithdrawSetters(Vec<PendingSetter>, Box<Effect>),
-    StartReader(ReaderHandoff),
+    WriteSetter(Box<SetterWrite<A>>),
+    WithdrawSetters(Vec<PendingSetter<A>>, Box<Effect<A>>),
+    StartReader(ReaderHandoff<A>),
     CloseOffer(LifecycleRoute, OpeningOffer),
-    CloseConfirmed(Release, Option<DeferredRestore>),
+    CloseConfirmed(Release<A>, Option<DeferredRestore<A>>),
     Deferred,
     ResolveDeferredRestore {
-        deferred: DeferredRestore,
+        deferred: DeferredRestore<A>,
         decision: RestoreDecision,
-        release: Release,
+        release: Release<A>,
     },
     ResolveRestore {
-        outcome: RestoreSignal,
+        outcome: A::RestoreSignal,
         decision: RestoreDecision,
-        release: Option<Release>,
+        release: Option<Release<A>>,
     },
-    Release(Release),
+    Release(Release<A>),
     ReaderEnded {
-        release: Release,
+        release: Release<A>,
         report_loss: bool,
     },
 }
 
-pub(super) struct StepFault {
+pub struct StepFault<A: OpeningAdapter> {
     pub(super) phase: OpeningPhase,
     pub(super) edge: Edge,
     pub(super) declared: OpeningPhase,
@@ -551,11 +529,11 @@ pub(super) struct StepFault {
     instance: OpeningInstance,
     previous_run: Option<RunResources>,
     previous_offer: Option<OpeningOffer>,
-    rejected: Option<Release>,
-    effect: Effect,
+    rejected: Option<Release<A>>,
+    effect: Effect<A>,
 }
 
-impl StepFault {
+impl<A: OpeningAdapter> StepFault<A> {
     fn fence(&self) {
         if let Some(offer) = &self.previous_offer {
             let _taken = offer.was_taken_or_withdraw();
@@ -568,29 +546,38 @@ impl StepFault {
         }
     }
 
-    fn release(self, wire: &OwnerAcpWire) {
-        tracing::error!(phase=?self.phase, edge=?self.edge, declared=?self.declared,
-            actual=?self.actual, "ACP opening step returned an undeclared outcome");
+    fn release(self, effects: &impl OpeningEffects) {
+        effects.report_step_fault(&StepFaultReport {
+            phase: self.phase,
+            edge: self.edge,
+            declared: self.declared,
+            actual: self.actual,
+        });
         if let Some(run) = self.previous_run {
-            wire.retire_opening_route(&run.route, &self.instance);
+            effects.retire_opening_route(&run.route, &self.instance);
             run.route.notify_removed();
             run.stopped.cancel();
         }
         if let Some(rejected) = self.rejected {
-            rejected.run(wire);
+            rejected.run(effects);
         }
         drop(self.effect);
     }
 }
 
-pub(super) struct Release {
+pub struct Release<A: OpeningAdapter> {
     instance: OpeningInstance,
-    state: Box<OpeningState>,
+    state: Box<OpeningState<A>>,
     retire: bool,
 }
 
-impl Release {
-    fn new(instance: &OpeningInstance, state: OpeningState, retire: bool) -> Self {
+impl<A: OpeningAdapter> Release<A> {
+    #[cfg(test)]
+    pub(super) fn is_for_test(&self, instance: &OpeningInstance) -> bool {
+        self.instance.is_same_as(instance)
+    }
+
+    fn new(instance: &OpeningInstance, state: OpeningState<A>, retire: bool) -> Self {
         Self {
             instance: instance.clone(),
             state: Box::new(state),
@@ -598,10 +585,10 @@ impl Release {
         }
     }
 
-    pub(super) fn run(self, wire: &OwnerAcpWire) {
+    fn run(self, effects: &impl OpeningEffects) {
         if self.retire {
             if let Some(run) = self.state.run() {
-                wire.retire_opening_route(&run.route, &self.instance);
+                effects.retire_opening_route(&run.route, &self.instance);
                 run.route.notify_removed();
                 run.stopped.cancel();
             }
@@ -641,25 +628,26 @@ impl Release {
     }
 }
 
-pub(super) struct Rejected {
-    pub(super) reason: LifecycleRefusal,
-    // A rejected receipt may own a reader. Keep its drop outside the lock.
-    pub(super) _command: Box<Command>,
+pub struct Rejected<A: OpeningAdapter> {
+    pub reason: LifecycleRefusal,
+    // Keep receipt payloads outside the lock. begin_reader settles its fresh
+    // activation resources inside the guard, before any reader exists.
+    pub(super) _command: Box<Command<A>>,
 }
 
-pub(super) struct Refused {
-    pub(super) row: Box<OpeningRow>,
-    pub(super) rejection: Rejected,
+pub(super) struct Refused<A: OpeningAdapter> {
+    pub(super) row: Box<OpeningRow<A>>,
+    pub(super) rejection: Rejected<A>,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
-pub(super) enum Slot {
-    Create(provider_session_machines::harness_lifecycle::CreateAttempt),
+pub enum Slot {
+    Create(CreateAttempt),
     Run(SessionGeneration),
 }
 
 impl Slot {
-    pub(super) fn for_attempt(attempt: OpenAttempt) -> Self {
+    pub fn for_attempt(attempt: OpenAttempt) -> Self {
         match attempt {
             OpenAttempt::Create(create) => Self::Create(create),
             OpenAttempt::Restore(restore) => Self::Run(restore.generation),
@@ -668,36 +656,39 @@ impl Slot {
 }
 
 impl RunResources {
-    pub(super) fn new(
+    pub fn new(
         owner: OwnerAddress,
         generation: SessionGeneration,
         stopped: &CancellationToken,
     ) -> Self {
         Self {
-            route: LifecycleRoute::new(super::transport_run(owner, generation)),
+            route: LifecycleRoute::new(TransportRun {
+                incarnation: owner.incarnation,
+                generation,
+            }),
             stopped: stopped.child_token(),
         }
     }
 }
 
-impl OpeningRow {
-    pub(super) fn attempt(&self) -> OpenAttempt {
+impl<A: OpeningAdapter> OpeningRow<A> {
+    pub fn attempt(&self) -> OpenAttempt {
         self.attempt
     }
 
-    pub(super) fn instance(&self) -> &OpeningInstance {
+    pub fn instance(&self) -> &OpeningInstance {
         &self.instance
     }
 
-    pub(super) fn phase(&self) -> OpeningPhase {
+    pub fn phase(&self) -> OpeningPhase {
         self.state.phase()
     }
 
-    pub(super) fn held(&self) -> bool {
+    pub fn held(&self) -> bool {
         self.state.held_session().is_some()
     }
 
-    pub(super) fn removed_route(&self) -> Option<LifecycleRoute> {
+    pub fn removed_route(&self) -> Option<LifecycleRoute> {
         let route = &self.state.run()?.route;
         (route.is_removed() && self.phase() != OpeningPhase::RouteLost).then(|| route.clone())
     }
@@ -717,8 +708,8 @@ impl OpeningRow {
     pub(super) fn apply(
         self,
         instance: &OpeningInstance,
-        command: Command,
-    ) -> Result<(Option<Self>, Effect), Refused> {
+        command: Command<A>,
+    ) -> Result<(Option<Self>, Effect<A>), Refused<A>> {
         let reason = self.phase().refusal();
         if !self.instance.is_same_as(instance) {
             return Err(Refused {

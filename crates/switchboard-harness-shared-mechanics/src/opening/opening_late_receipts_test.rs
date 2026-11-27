@@ -5,7 +5,7 @@ use switchboard_harness_contracts::LifecycleRefusal;
 
 #[tokio::test]
 async fn a_closing_restore_accepts_only_the_exact_late_open_receipt_classes() {
-    let fixture = Fixture::new().await;
+    let fixture = Fixture::new();
     let instance = OpeningInstance::default();
     let cases = [
         (
@@ -23,7 +23,7 @@ async fn a_closing_restore_accepts_only_the_exact_late_open_receipt_classes() {
     ];
     for (milestone, accepts) in cases {
         let event = milestone.event();
-        let row = super::super::super::OpeningRow {
+        let row: super::super::super::OpeningRow<TestOpening> = super::super::super::OpeningRow {
             attempt: fixture.attempt,
             instance: instance.clone(),
             state: OpeningState::ClosingRestore {
@@ -32,7 +32,7 @@ async fn a_closing_restore_accepts_only_the_exact_late_open_receipt_classes() {
             },
         };
         let result = {
-            let _table = lock(&fixture.table);
+            let _table = fixture.table.lock();
             row.apply(&instance, Command::RestoreProgress(milestone, None))
         };
         let row = match (accepts, result) {
@@ -64,7 +64,7 @@ async fn a_closing_restore_accepts_only_the_exact_late_open_receipt_classes() {
 
 #[tokio::test]
 async fn writer_stop_keeps_only_the_lost_routes_exact_remaining_receipt() {
-    let fixture = Fixture::new().await;
+    let fixture = Fixture::new();
     let instance = OpeningInstance::default();
     for receipt in [
         LostReceipt::None,
@@ -72,7 +72,7 @@ async fn writer_stop_keeps_only_the_lost_routes_exact_remaining_receipt() {
         LostReceipt::Open(RestoreReceiptStage::PublishingLoad),
         LostReceipt::Close(fixture.close.attempt),
     ] {
-        let row = super::super::super::OpeningRow {
+        let row: super::super::super::OpeningRow<TestOpening> = super::super::super::OpeningRow {
             attempt: fixture.attempt,
             instance: instance.clone(),
             state: OpeningState::RouteLost {
@@ -81,7 +81,7 @@ async fn writer_stop_keeps_only_the_lost_routes_exact_remaining_receipt() {
             },
         };
         let result = {
-            let _table = lock(&fixture.table);
+            let _table = fixture.table.lock();
             row.apply(&instance, Command::WriterStopped)
         };
         let Ok((stored, Effect::Release(release))) = result else {

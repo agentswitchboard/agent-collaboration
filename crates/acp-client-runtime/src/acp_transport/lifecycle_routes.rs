@@ -7,26 +7,7 @@ use super::{
 use crate::in_folder_allowance::InFolderGrant;
 use provider_session_machines::session_lifecycle_machine::CloseAttempt;
 use switchboard_harness_shared_mechanics::opening::OpeningOffer;
-use switchboard_harness_shared_mechanics::run_ledger::ReadmitOutcome as LedgerReadmitOutcome;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ReadmitOutcome {
-    Reopened,
-    RouteLost,
-    MarkerAbsent,
-    DifferentMarker,
-}
-
-impl From<LedgerReadmitOutcome> for ReadmitOutcome {
-    fn from(outcome: LedgerReadmitOutcome) -> Self {
-        match outcome {
-            LedgerReadmitOutcome::Reopened => Self::Reopened,
-            LedgerReadmitOutcome::RouteLost => Self::RouteLost,
-            LedgerReadmitOutcome::MarkerAbsent => Self::MarkerAbsent,
-            LedgerReadmitOutcome::DifferentMarker => Self::DifferentMarker,
-        }
-    }
-}
+use switchboard_harness_shared_mechanics::run_ledger::ReadmitOutcome;
 
 impl<Frame> AcpTransport<Frame> {
     pub(crate) fn activate_lifecycle_route(&self, route: &LifecycleRoute) -> bool {
@@ -182,7 +163,7 @@ impl<Frame> AcpTransport<Frame> {
         {
             return ReadmitOutcome::RouteLost;
         }
-        state.ledger.readmit(route.run, attempt).into()
+        state.ledger.readmit(route.run, attempt)
     }
 
     #[cfg(any(test, feature = "test-observation"))]
@@ -206,7 +187,7 @@ impl<Frame> AcpTransport<Frame> {
         replacement: CloseAttempt,
     ) -> bool {
         let mut state = self.state();
-        if state.ledger.readmit(run, previous) != LedgerReadmitOutcome::Reopened {
+        if state.ledger.readmit(run, previous) != ReadmitOutcome::Reopened {
             return false;
         }
         state.ledger.begin_close(run).is_ok_and(|close| {
