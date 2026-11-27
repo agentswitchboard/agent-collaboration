@@ -31,7 +31,36 @@ impl std::error::Error for DecimalTextError {}
     Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, schemars::JsonSchema,
 )]
 #[serde(try_from = "String", into = "String")]
+#[schemars(extend("pattern" = canonical_decimal_pattern(), "maxLength" = 20))]
 pub struct DecimalCount(u64);
+
+fn canonical_decimal_pattern() -> String {
+    let maximum = u64::MAX.to_string();
+    // All shorter canonical values fit; full-length alternatives either equal
+    // the maximum or first differ at a digit that is smaller.
+    let mut alternatives = vec![
+        "0".to_owned(),
+        format!("[1-9][0-9]{{0,{}}}", maximum.len() - 2),
+    ];
+    let mut prefix = String::new();
+    for (index, ceiling) in maximum.bytes().enumerate() {
+        let floor = if index == 0 { b'1' } else { b'0' };
+        if ceiling > floor {
+            let lower = char::from(floor);
+            let upper = char::from(ceiling - 1);
+            let digit = if lower == upper {
+                lower.to_string()
+            } else {
+                format!("[{lower}-{upper}]")
+            };
+            let remaining = maximum.len() - index - 1;
+            alternatives.push(format!("{prefix}{digit}[0-9]{{{remaining}}}"));
+        }
+        prefix.push(char::from(ceiling));
+    }
+    alternatives.push(maximum);
+    format!(r"^(?:{})$(?![\s\S])", alternatives.join("|"))
+}
 
 impl DecimalCount {
     #[must_use]

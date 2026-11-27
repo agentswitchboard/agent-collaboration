@@ -81,6 +81,51 @@ fn private_read_declarations_reserve_normal_serde_json_for_payloads() {
 }
 
 #[test]
+fn private_read_declarations_allow_jsonschema_only_for_payload_tests_without_defaults() {
+    for (owner, _) in SESSION_READ_CRATES {
+        for (serde_kind, kind, default_features) in [
+            (None, DependencyKind::Normal, false),
+            (Some("build"), DependencyKind::Build, false),
+            (Some("dev"), DependencyKind::Dev, false),
+            (Some("dev"), DependencyKind::Dev, true),
+        ] {
+            let metadata = metadata_with_workspace_dependency(
+                owner,
+                "jsonschema",
+                json!({
+                    "name": "jsonschema",
+                    "source": "registry+https://github.com/rust-lang/crates.io-index",
+                    "kind": serde_kind,
+                    "features": [],
+                    "uses_default_features": default_features,
+                }),
+            );
+            let result = check_declared_session_read_edges(&metadata);
+            if owner == "switchboard-session-payloads" && kind == DependencyKind::Dev {
+                if default_features {
+                    let error = result.expect_err("jsonschema defaults must stay off");
+                    assert!(
+                        error.to_string().contains(
+                            "forbidden Dev feature settings switchboard-session-payloads -> jsonschema"
+                        ),
+                        "{error}"
+                    );
+                } else {
+                    assert!(result.is_ok(), "{result:?}");
+                }
+            } else {
+                assert_eq!(
+                    result.err().map(|error| error.to_string()),
+                    Some(format!(
+                        "BD1: forbidden {kind:?} dependency {owner} -> jsonschema"
+                    )),
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn private_read_declarations_check_workspace_ids_feature_settings() {
     for (owner, _) in SESSION_READ_CRATES {
         for (features, uses_default_features, expected) in [

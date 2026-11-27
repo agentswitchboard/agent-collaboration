@@ -11,7 +11,7 @@ use super::assert_refused;
 
 const VALID_CALL: &str =
     r#"{"kind":"read","action":{"kind":"notReported"},"state":{"kind":"pending"},"locations":[]}"#;
-const TOOL_ITEM: &str = r#"{"id":"fixture","order":"0","body":{"kind":"assistant","group":{"id":"group","order":"0"},"body":{"kind":"toolCall","call":{"kind":"read","action":{"kind":"notReported"},"state":{"kind":"pending"},"locations":[]}}}}"#;
+const TOOL_ITEM: &str = r#"{"id":"fixture","order":"0","firstSeenAtMs":1700000000000,"body":{"kind":"assistant","group":{"id":"group","order":"0"},"body":{"kind":"toolCall","call":{"kind":"read","action":{"kind":"notReported"},"state":{"kind":"pending"},"locations":[]}}}}"#;
 
 #[test]
 fn user_and_session_reject_tool_calls_and_thinking() {
@@ -20,7 +20,7 @@ fn user_and_session_reject_tool_calls_and_thinking() {
         ("session", r#"{"kind":"notice","text":"ok"}"#),
     ] {
         let wire = format!(
-            r#"{{"id":"fixture","order":"0","body":{{"kind":"{role}","body":{valid_body}}}}}"#
+            r#"{{"id":"fixture","order":"0","firstSeenAtMs":1700000000000,"body":{{"kind":"{role}","body":{valid_body}}}}}"#
         );
         serde_json::from_str::<Item>(&wire).unwrap();
 
@@ -203,7 +203,7 @@ fn nested_objects_reject_extra_keys_and_positional_arrays() {
     assert_strict_enum::<ToolState>(r#"{"kind":"pending"}"#, r#"["pending"]"#);
     assert_strict_object::<Item>(
         TOOL_ITEM,
-        r#"["fixture",null,"0",{"kind":"assistant","group":{"id":"group","order":"0"},"body":{"kind":"toolCall","call":{"kind":"read","action":{"kind":"notReported"},"state":{"kind":"pending"},"locations":[]}}}]"#,
+        r#"["fixture",null,"0",1700000000000,{"kind":"assistant","group":{"id":"group","order":"0"},"body":{"kind":"toolCall","call":{"kind":"read","action":{"kind":"notReported"},"state":{"kind":"pending"},"locations":[]}}}]"#,
     );
 }
 

@@ -1,0 +1,85 @@
+{
+  "deferredRoots": [
+    "InspectResult",
+    "LoadResult",
+    "WatchRecord",
+    "WatchEnd"
+  ],
+  "inherited": {
+    "policy": "Inherited from workspace-ids, not restated here.",
+    "types": [
+      {
+        "additionalRefusals": [
+          "Malformed UUID",
+          "Wrong UUID version",
+          "Wrong UUID variant",
+          "Noncanonical UUID spelling"
+        ],
+        "name": "SessionOperationId",
+        "roots": [
+          "LoadRequest",
+          "LoadQuery"
+        ],
+        "rustReader": "Requires a lower-case, hyphenated canonical RFC 4122 UUIDv7.",
+        "schema": "String with no UUID pattern."
+      },
+      {
+        "additionalRefusals": [
+          "Empty string",
+          "More than 4096 UTF-8 bytes",
+          "NUL"
+        ],
+        "name": "SessionId",
+        "roots": [
+          "Item",
+          "LoadRequest",
+          "LoadQuery"
+        ],
+        "rustReader": "Requires 1 to 4096 UTF-8 bytes and refuses NUL.",
+        "schema": "String. The description mentions a limit and no NUL."
+      },
+      {
+        "additionalRefusals": [],
+        "name": "MachineId",
+        "roots": [
+          "Item",
+          "LoadRequest",
+          "LoadQuery"
+        ],
+        "rustReader": "Requires the same UUID representation.",
+        "schema": "String with a lower-case, hyphenated RFC 4122 UUIDv7 pattern."
+      },
+      {
+        "additionalRefusals": [
+          "See SessionId"
+        ],
+        "name": "SessionRef",
+        "roots": [
+          "Item",
+          "LoadRequest",
+          "LoadQuery"
+        ],
+        "rustReader": "Requires the named pair and applies the inherited identifier readers.",
+        "schema": "Closed object requiring machineId and sessionId."
+      }
+    ]
+  },
+  "jsonParserBoundary": "Duplicate keys and numeric token spellings inside raw values are handled by the JSON parser.",
+  "name": "session-read-contract",
+  "plainValidatorLimitations": [
+    {
+      "detail": "A plain validator ignores x-maxUtf8Bytes. The contract test registers it and the consumer generates a UTF-8 byte-length check.",
+      "rule": "checked-utf8-byte-limits"
+    },
+    {
+      "detail": "JSON Schema accepts an integral JSON number such as 1.0. The Rust timestamp reader requires an integer token.",
+      "rule": "first-seen-integer-token"
+    }
+  ],
+  "roots": [
+    "Item",
+    "LoadRequest",
+    "LoadQuery"
+  ],
+  "version": 1
+}

@@ -73,7 +73,9 @@ wire_object! {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LineRange {
+    #[schemars(range(min = 1, max = u32::MAX))]
     first_line: u32,
+    #[schemars(range(min = 1, max = u32::MAX))]
     line_count: u32,
 }
 

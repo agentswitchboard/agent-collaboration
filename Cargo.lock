@@ -6305,6 +6305,7 @@ dependencies = [
 name = "switchboard-session-payloads"
 version = "0.1.166"
 dependencies = [
+ "jsonschema",
  "schemars 1.2.2",
  "serde",
  "serde_json",

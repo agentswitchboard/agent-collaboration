@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::decimal_count::{DecimalCount, DecimalTextError};
 
+const ITEM_IDENTIFIER_MAX_BYTES: usize = 256;
+pub(super) const CONTROL_FREE_TEXT_PATTERN: &str = r"^[^\u0000-\u001F\u007F-\u009F]+$(?![\s\S])";
+
 /// The reason a session item, turn or group identifier was refused.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ItemIdentifierError {
@@ -30,7 +33,7 @@ fn check_identifier(value: &str) -> Result<(), ItemIdentifierError> {
     if value.is_empty() {
         return Err(ItemIdentifierError::Empty);
     }
-    if value.len() > 256 {
+    if value.len() > ITEM_IDENTIFIER_MAX_BYTES {
         return Err(ItemIdentifierError::TooLong);
     }
     if value.chars().any(char::is_control) {
@@ -44,6 +47,12 @@ macro_rules! item_identifier {
         $(#[$attribute])*
         #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, schemars::JsonSchema)]
         #[serde(try_from = "String", into = "String")]
+        #[schemars(extend(
+            "minLength" = 1,
+            "maxLength" = ITEM_IDENTIFIER_MAX_BYTES,
+            "x-maxUtf8Bytes" = ITEM_IDENTIFIER_MAX_BYTES,
+            "pattern" = CONTROL_FREE_TEXT_PATTERN
+        ))]
         pub struct $name(String);
 
         impl $name {
