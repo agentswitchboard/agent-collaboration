@@ -73,12 +73,15 @@ function installRecorder(recordingDirectory) {
       if (!acpInitialize) return;
       started = true;
     }
+    const envelope = JSON.stringify({ seq, connection, direction });
+    // The parsed value is only for detecting ACP startup. Re-encoding it would
+    // round provider integers and change number literals in the retained frame.
     const line =
       message === undefined
-        ? { seq, connection, direction, unparsed: text }
-        : { seq, connection, direction, message };
+        ? JSON.stringify({ seq, connection, direction, unparsed: text })
+        : `${envelope.slice(0, -1)},"message":${text}}`;
     seq += 1;
-    appendFileSync(path, `${JSON.stringify(line)}\n`);
+    appendFileSync(path, `${line}\n`, { mode: 0o600 });
   };
 
   const take = (direction, chunk) => {
