@@ -4,9 +4,9 @@ use crate::binding_dispatch_permit::BindingUncertainty;
 use crate::session_store_lane::{
     MarkedInput, SessionStoreLane, SessionStoreLaneTask, SessionStoreOfferError, StoreLaneHandover,
 };
-#[cfg(test)]
-use acp_client_runtime::acp_transport::{AcpTransport, SlotEvidence};
 use collaboration_protocol::{OperationId, SessionRef};
+#[cfg(test)]
+use provider_session_machines::harness_lifecycle::SlotEvidence;
 #[cfg(test)]
 use provider_session_machines::session_owner::DispatchAuthorization;
 use provider_session_machines::session_owner::{
@@ -230,42 +230,6 @@ impl SessionOwnerRegistry {
             entry.shutdown.cancel();
         }
         Ok(())
-    }
-
-    /// Called by the task monitor after the old owner stops offering effects.
-    /// It fences the registry compare-and-swap, transport revocation and lane
-    /// handover against a concurrent attempt to replace the same entry.
-    #[cfg(test)]
-    pub fn replace_failed_session<'connection, Frame: 'connection>(
-        &self,
-        target: &SessionRef,
-        failed: OwnerIncarnation,
-        connection: ConnectionEpoch,
-        transports: impl IntoIterator<Item = &'connection AcpTransport<Frame>>,
-    ) -> Result<
-        FailedOwnerSettlement<Vec<(DispatchAuthorization, SlotEvidence)>>,
-        SessionOwnerRegistryError,
-    > {
-        let mut slots = Vec::new();
-        let settled = self.replace_failed_with(
-            target,
-            failed,
-            connection,
-            BTreeSet::new(),
-            |incarnation, inputs| {
-                slots = transports
-                    .into_iter()
-                    .flat_map(|transport| transport.revoke_incarnation(incarnation))
-                    .collect();
-                answer_complete_acp_snapshot(inputs, &slots)
-            },
-        )?;
-        Ok(FailedOwnerSettlement {
-            replacement: settled.replacement,
-            handover: settled.handover,
-            slot_evidence: slots,
-            inputs: settled.inputs,
-        })
     }
 
     pub(crate) fn replace_failed_with(

@@ -48,10 +48,9 @@ async fn check_approval_lease_at_offer(path: OfferPath) {
             .hold_provider_writer_capacity()
             .expect("real provider writer hold")
     });
-    let runtime = rig
-        .supervisor
-        .runtime_for(&rig.target.endpoint)
-        .expect("provider runtime");
+    let runtime =
+        crate::provider_test_support::fixture_runtime_for(&rig.supervisor, &rig.target.endpoint)
+            .expect("provider runtime");
     let provider_session = String::from(rig.target.session_id.clone());
     let request = prompt_request(&rig);
     let pause = runtime

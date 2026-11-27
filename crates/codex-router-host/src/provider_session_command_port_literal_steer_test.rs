@@ -143,9 +143,11 @@ async fn start_foreground(rig: &CommandPortRig) -> SessionTurnHandle {
 }
 
 fn provider_runtime(rig: &CommandPortRig) -> Arc<ExternalProviderRuntime> {
-    rig.supervisor
-        .runtime_for(&protocol_target("fixture-session").endpoint)
-        .expect("fixture runtime")
+    crate::provider_test_support::fixture_runtime_for(
+        &rig.supervisor,
+        &protocol_target("fixture-session").endpoint,
+    )
+    .expect("fixture runtime")
 }
 
 async fn release_foreground(rig: &CommandPortRig, listener: &UnixListener) {

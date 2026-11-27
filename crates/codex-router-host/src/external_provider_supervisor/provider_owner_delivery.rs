@@ -18,9 +18,9 @@ use crate::{
         NoticePlacement, NoticeRun, NoticeWriterTake, notice_waits_for_session,
     },
 };
-use acp_client_runtime::acp_transport::TransportRun;
 use collaboration_contracts::AttemptEvidenceSink;
 use collaboration_protocol::MessageDelivery;
+use provider_session_machines::harness_lifecycle::TransportRun;
 use provider_session_machines::{
     session_lifecycle_machine::SessionLifecycle,
     session_owner::{OwnerInput, PromptAdmission, RevokeReason, SessionOwnerReply, SteerOrigin},

@@ -537,7 +537,7 @@ async fn stored_kind_state_and_ending_are_rejected_by_the_public_read() {
         ),
     ] {
         fixture.alter_fixture(corruption).await;
-        assert_corrupt_read(&fixture, &holder, &request.request_id).await;
+        assert_corrupt_read(&fixture, &holder, &request.request_id, None).await;
         fixture.alter_fixture(restore).await;
     }
     let ended = fixture
@@ -556,13 +556,83 @@ async fn stored_kind_state_and_ending_are_rejected_by_the_public_read() {
         ApprovalDecisionReply::SavedDecision { .. }
     ));
     fixture.alter_fixture("UPDATE approval_requests SET ending_json=json_set(ending_json,'$.ending.kind','future_ending')").await;
-    assert_corrupt_read(&fixture, &holder, &request.request_id).await;
+    assert_corrupt_read(&fixture, &holder, &request.request_id, None).await;
+}
+
+#[tokio::test]
+async fn stored_report_kind_mismatch_and_ending_binding_are_rejected_by_the_public_read() {
+    let (fixture, holder, requester) = fixture_with_owner().await;
+    let request = key(&holder.run, 1);
+    let raise = provider(&request, &requester, "Stored binding");
+    raise_and_commit(&fixture, &holder, &raise).await;
+
+    fixture
+        .alter_fixture("UPDATE approval_requests SET request_kind='provider_question'")
+        .await;
+    assert_corrupt_read(
+        &fixture,
+        &holder,
+        &request.request_id,
+        Some("approval_requests.request_kind"),
+    )
+    .await;
+    fixture
+        .alter_fixture("UPDATE approval_requests SET request_kind='provider_approval'")
+        .await;
+    let (ended, _) = fixture
+        .apply(None, async |store| {
+            store
+                .fixture_decide_approval(
+                    &holder.organization_id,
+                    person(11),
+                    decide_input(&request.request_id, 101, 2),
+                )
+                .await
+        })
+        .await;
+    assert!(matches!(
+        ended.unwrap().reply,
+        ApprovalDecisionReply::SavedDecision { .. }
+    ));
+
+    fixture
+        .alter_fixture("UPDATE approval_requests SET delivery_state='future_report'")
+        .await;
+    assert_corrupt_read(
+        &fixture,
+        &holder,
+        &request.request_id,
+        Some("approval_requests.delivery_state"),
+    )
+    .await;
+    fixture
+        .alter_fixture("UPDATE approval_requests SET delivery_state='owed'")
+        .await;
+
+    // Both decision families have the same compact DecidedEarlier ending.
+    // Retain the actor and envelope so the only disagreement is the bound kind.
+    fixture
+        .alter_fixture(
+            "UPDATE approval_requests SET ending_json=json_set(ending_json,'$.ending',
+              json_object('kind','unprovenCall','ending',
+                         json_object('kind','decided','decision','allow',
+                          'personId',json_extract(ending_json,'$.ending.ending.by.personId'))))",
+        )
+        .await;
+    assert_corrupt_read(
+        &fixture,
+        &holder,
+        &request.request_id,
+        Some("approval_requests.ending_binding"),
+    )
+    .await;
 }
 
 async fn assert_corrupt_read(
     fixture: &NativeApprovalStoreFixture,
     holder: &ApprovalHolderScope,
     request_id: &ApprovalRequestId,
+    column: Option<&str>,
 ) {
     let (read, evidence) = fixture
         .apply(None, async |store| {
@@ -571,13 +641,22 @@ async fn assert_corrupt_read(
                 .await
         })
         .await;
-    assert!(
-        matches!(
-            read,
-            Err(ApprovalApplyFailure::Store(StoreFailure::Corrupt { .. }))
-        ),
-        "{read:?}"
-    );
+    if let Some(expected) = column {
+        assert!(
+            matches!(&read, Err(ApprovalApplyFailure::Store(StoreFailure::Corrupt {
+                reason: central_storage::CorruptReason::BadValue { column },
+            })) if column == expected),
+            "expected corruption at {expected}, got {read:?}"
+        );
+    } else {
+        assert!(
+            matches!(
+                &read,
+                Err(ApprovalApplyFailure::Store(StoreFailure::Corrupt { .. }))
+            ),
+            "{read:?}"
+        );
+    }
     assert!(evidence.sql_writes.is_empty());
 }
 
@@ -588,12 +667,9 @@ pub(super) async fn snapshot(fixture: &NativeApprovalStoreFixture) -> Vec<String
     // The shared Workerd snapshot already uses all five compound SELECT terms.
     rows.extend(
         fixture
-            .inspect_rows(
-                "SELECT json_array('erased', approval_row_id, request_id, organization_id, router_run_id,
-                                   ending_json, created_at, updated_at)
-                 FROM approval_erased_requests
-                 ORDER BY 1",
-            )
+            .inspect_rows(include_str!(
+                "../fixtures/native_approval_store_snapshot.sql"
+            ))
             .await,
     );
     rows

@@ -38,3 +38,60 @@ fn fixture_only_restore_wording_tracks_the_original_phases() {
         );
     }
 }
+
+#[test]
+fn post_send_transport_loss_names_unknown_setting_state() {
+    use serde_json::json;
+
+    let request: ProviderSettingsSetRequest = serde_json::from_value(json!({
+            "target":{"endpoint":{"serviceId":"00000000-0000-4000-8000-000000000001","endpointId":"claude-local"},"sessionId":"provider-session"},
+            "actor":{"endpoint":{"serviceId":"00000000-0000-4000-8000-000000000001","endpointId":"codex-local"},"sessionId":"creator"},
+            "setting":"mode","value":"ask"
+        })).expect("set request");
+    let failure = setting_error(&request, ExternalProviderRuntimeError::TransportFailure);
+    assert_eq!(failure.kind, ProviderSettingsFailureKind::OutcomeUnknown);
+    assert_eq!(failure.setting, Some(ProviderSettingName::Mode));
+    assert_eq!(failure.value.as_deref(), Some("ask"));
+    let precise = setting_error(
+        &request,
+        ExternalProviderRuntimeError::SettingOutcomeUnknown {
+            provider_session_id: "provider-session".into(),
+            setting: provider_session_machines::ProviderSettingKind::Mode,
+            value: "ask".into(),
+        },
+    );
+    assert_eq!(precise.kind, ProviderSettingsFailureKind::OutcomeUnknown);
+    assert_eq!(precise.setting, Some(ProviderSettingName::Mode));
+}
+
+#[test]
+fn replay_failure_mapping_preserves_pre_and_post_dispatch_provenance() {
+    let target: SessionRef = serde_json::from_value(serde_json::json!({"endpoint":{"serviceId":"00000000-0000-4000-8000-000000000001","endpointId":"cursor-local"},"sessionId":"known"})).expect("target");
+    for (error, kind, stage, effect) in [
+        (
+            ExternalProviderRuntimeError::HistoryReplayAdmissionFailed,
+            ConversationOperationFailureKind::Unavailable,
+            ConversationOperationFailureStage::Dispatch,
+            ProviderOperationEffect::None,
+        ),
+        (
+            ExternalProviderRuntimeError::HistoryReplayUnavailable,
+            ConversationOperationFailureKind::OutcomeUnknown,
+            ConversationOperationFailureStage::Settlement,
+            ProviderOperationEffect::Unknown,
+        ),
+    ] {
+        // Arrange/Act: mapping must retain the exact caller operation and target on either path.
+        let operation = OperationId::generate();
+        let failure = legacy_runtime_failure(operation.clone(), Some(target.clone()), error);
+        // Assert: post-dispatch uncertainty cannot be weakened by the new admission arm.
+        assert_eq!(failure.operation_id, Some(operation));
+        assert_eq!(failure.target, Some(target.clone()));
+        assert_eq!(failure.kind, kind);
+        assert_eq!(failure.stage, stage);
+        assert_eq!(failure.effect, effect);
+        if effect == ProviderOperationEffect::None {
+            assert!(String::from(failure.message).contains("before provider load"));
+        }
+    }
+}

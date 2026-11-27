@@ -71,8 +71,7 @@ fn pause(
     point: HandoverPausePoint,
 ) -> HandoverPause {
     let input = InputId::new(String::from(notice.attempt())).expect("notice input id");
-    rig.supervisor
-        .runtime_for(&rig.target.endpoint)
+    crate::provider_test_support::fixture_runtime_for(&rig.supervisor, &rig.target.endpoint)
         .expect("fixture provider")
         .pause_work_handover_for_test(point, input)
 }

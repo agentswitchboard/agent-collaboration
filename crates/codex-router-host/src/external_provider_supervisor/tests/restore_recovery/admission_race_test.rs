@@ -15,11 +15,11 @@ async fn check_marked_create_against_idle_prompt(busy: PromptBusyPolicy) {
     rig.seed_session().await;
     let host = rig.open_host("restored-in-auto").await;
     rig.assert_loads(&host).await;
-    let (reached, release) = host
-        .runtime_for(&rig.target.endpoint)
-        .expect("provider runtime")
-        .preparation_fixture
-        .pause_create();
+    let (reached, release) =
+        crate::provider_test_support::fixture_runtime_for(&host, &rig.target.endpoint)
+            .expect("provider runtime")
+            .preparation_fixture
+            .pause_create();
     let create = OperationId::generate();
     host.create(create_request(&rig, create.clone()))
         .await

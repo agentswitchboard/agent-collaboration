@@ -218,7 +218,7 @@ async fn acp_replay_completeness_reaches_the_owner_without_changing_visible_hist
         );
         let restore = fixture
             .runtime
-            .owner_door
+            .owner_door_slot
             .get()
             .expect("production door")
             .existing_provider_session(saved)

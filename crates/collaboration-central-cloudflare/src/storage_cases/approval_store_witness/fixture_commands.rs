@@ -79,6 +79,9 @@ pub(super) enum StoredCorruption {
     RequestKind,
     RecordState,
     Ending,
+    DeliveryState,
+    RequestKindMismatch,
+    EndingBinding,
     ProviderMarkerWithCallCause,
     CallMarkerWithProviderCause,
 }

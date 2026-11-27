@@ -111,7 +111,7 @@ pub(crate) fn provider_setting_name(
 }
 
 pub(crate) fn provider_applied_setting(
-    setting: acp_client_runtime::AppliedProviderSetting,
+    setting: provider_session_machines::harness_lifecycle::AppliedProviderSetting,
 ) -> AppliedProviderSetting {
     AppliedProviderSetting {
         setting: provider_setting_name(setting.kind),
@@ -130,7 +130,7 @@ pub(crate) fn provider_failed_setting(
 }
 
 pub(crate) fn provider_not_applied_setting(
-    setting: acp_client_runtime::NotAppliedProviderSetting,
+    setting: provider_session_machines::harness_lifecycle::NotAppliedProviderSetting,
 ) -> NotAppliedProviderSetting {
     NotAppliedProviderSetting {
         setting: provider_setting_name(setting.kind),
@@ -184,10 +184,10 @@ pub(crate) fn created_session_resume_inputs(
 }
 
 pub(crate) const fn provider_mode_reason(
-    reason: acp_client_runtime::PermissionModeReason,
+    reason: provider_session_machines::session_owner::PermissionModeReason,
 ) -> collaboration_protocol::ProviderModeReason {
-    use acp_client_runtime::PermissionModeReason as Runtime;
     use collaboration_protocol::ProviderModeReason as Protocol;
+    use provider_session_machines::session_owner::PermissionModeReason as Runtime;
     match reason {
         Runtime::AutoNotOffered => Protocol::AutoNotOffered,
         Runtime::AgentFellBack => Protocol::AgentFellBack,

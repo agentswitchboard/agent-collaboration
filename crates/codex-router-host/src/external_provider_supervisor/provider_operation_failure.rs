@@ -165,7 +165,7 @@ pub(super) fn restore_operation_failure(
     result
 }
 
-pub(super) fn runtime_failure(
+pub(crate) fn runtime_failure(
     operation_id: OperationId,
     target: Option<SessionRef>,
     cause: OperationFailureCause,
@@ -440,3 +440,6 @@ mod tests;
 #[cfg(test)]
 #[path = "operation_failure_cause_test.rs"]
 mod cause_tests;
+
+#[cfg(test)]
+pub(crate) use cause_tests::assert_failure;

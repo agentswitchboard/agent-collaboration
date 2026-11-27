@@ -352,6 +352,61 @@ test("Workerd approvals bound retirement and refuse unknown stored kinds, states
   }
 });
 
+test("Workerd approvals reject an unknown report, mismatched request kind and foreign ending binding", async (): Promise<void> => {
+  const central = await ApprovalWorkerdHost.start();
+  try {
+    for (const [field, column] of [
+      ["deliveryState", "approval_requests.delivery_state"],
+      ["requestKindMismatch", "approval_requests.request_kind"],
+      ["endingBinding", "approval_requests.ending_binding"],
+    ] as const) {
+      const database = `approval-${field}`;
+      await initializeApprovals(central, database);
+      await central.reopen();
+      const request = raiseRequest(1, "Stored binding");
+      const raised = await invokeApprovalWitness({
+        central,
+        database,
+        command: { kind: "raise", holder, request },
+      });
+      assert.equal(raised.writes, 3);
+      await central.reopen();
+      if (field !== "requestKindMismatch") {
+        const decided = await invokeApprovalWitness({
+          central,
+          database,
+          command: personDecision(request.requestId, uuid(5501), 1),
+        });
+        assert.equal(decided.writes, 6);
+        await central.reopen();
+      }
+      committedResult(
+        await invokeApprovalWitness({
+          central,
+          database,
+          command: { kind: "corrupt", requestId: request.requestId, field },
+        }),
+      );
+      await central.reopen();
+      const rejected = await invokeApprovalWitness({
+        central,
+        database,
+        command: {
+          kind: "read",
+          organization: holder.organization,
+          person: personId,
+          requestId: request.requestId,
+        },
+      });
+      assert.match(rejected.error ?? "", /Corrupt/);
+      assert.ok(rejected.error?.includes(column), `expected ${column}, got ${rejected.error}`);
+      assert.equal(rejected.writes, 0);
+    }
+  } finally {
+    await central.close();
+  }
+});
+
 test("Workerd approval endings and a run replacement roll back after every guarded write", async (): Promise<void> => {
   const central = await ApprovalWorkerdHost.start();
   const database = "approval-ending-rollback";

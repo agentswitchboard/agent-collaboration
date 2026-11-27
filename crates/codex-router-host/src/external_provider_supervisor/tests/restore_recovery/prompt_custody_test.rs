@@ -186,8 +186,7 @@ async fn immediate_prompt_owner_refusal_answers_at_l_with_terminal_storage_held(
     )
     .expect("valid prompt");
     request.busy = PromptBusyPolicy::RefuseBusy;
-    let ack = host
-        .runtime_for(&rig.target.endpoint)
+    let ack = crate::provider_test_support::fixture_runtime_for(&host, &rig.target.endpoint)
         .expect("runtime")
         .preparation_fixture
         .pause_delivery_ack(false);
