@@ -60,6 +60,25 @@ impl RefusalTag for RouteCloseRefusal {
 
 pub struct RouteCloseMachine;
 
+impl RouteCloseMachine {
+    pub(super) fn reduce(
+        state: RouteCloseState,
+        event: RouteCloseEvent,
+    ) -> Result<RouteCloseState, RouteCloseRefusal> {
+        use RouteCloseEvent::{CloseSent, Readmit};
+        use RouteCloseRefusal::{AlreadyClosing, DifferentMarker, MarkerAbsent};
+        use RouteCloseState::{Closing, Open};
+
+        match (state, event) {
+            (Open, CloseSent { attempt }) => Ok(Closing { attempt }),
+            (Closing { attempt: marked }, Readmit { attempt }) if marked == attempt => Ok(Open),
+            (Closing { .. }, CloseSent { .. }) => Err(AlreadyClosing),
+            (Closing { .. }, Readmit { .. }) => Err(DifferentMarker),
+            (Open, Readmit { .. }) => Err(MarkerAbsent),
+        }
+    }
+}
+
 impl StateMachine for RouteCloseMachine {
     type State = RouteCloseState;
     type Event = RouteCloseEvent;
@@ -67,22 +86,9 @@ impl StateMachine for RouteCloseMachine {
     type Error = RouteCloseRefusal;
 
     fn transition(state: &RouteCloseState, event: RouteCloseEvent) -> StateMachineResult<Self> {
-        use RouteCloseEvent::{CloseSent, Readmit};
-        use RouteCloseRefusal::{AlreadyClosing, DifferentMarker, MarkerAbsent};
-        use RouteCloseState::{Closing, Open};
-
-        let next = match (*state, event) {
-            (Open, CloseSent { attempt }) => Closing { attempt },
-            (Closing { attempt: marked }, Readmit { attempt }) if marked == attempt => Open,
-            (Closing { .. }, CloseSent { .. }) => {
-                return Err(TransitionError::Domain(AlreadyClosing));
-            }
-            (Closing { .. }, Readmit { .. }) => {
-                return Err(TransitionError::Domain(DifferentMarker));
-            }
-            (Open, Readmit { .. }) => return Err(TransitionError::Domain(MarkerAbsent)),
-        };
-        Ok((next, Vec::new()))
+        Self::reduce(*state, event)
+            .map(|next| (next, Vec::new()))
+            .map_err(TransitionError::Domain)
     }
 
     fn transitions() -> &'static [Transition] {

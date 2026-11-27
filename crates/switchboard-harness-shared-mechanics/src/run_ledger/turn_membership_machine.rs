@@ -16,6 +16,16 @@ pub enum TurnMembershipState {
     ProviderStarted { turn: TurnId },
 }
 
+impl TurnMembershipState {
+    #[must_use]
+    pub const fn current_turn(self) -> Option<TurnId> {
+        match self {
+            Self::Eligible { turn } | Self::ProviderStarted { turn } => Some(turn),
+            Self::Loading | Self::Idle | Self::Provisional { .. } => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TurnMembershipEvent {
     Activate,
@@ -95,6 +105,57 @@ const TRANSITIONS: &[Transition] = &[
 
 pub struct TurnMembershipMachine;
 
+impl TurnMembershipMachine {
+    pub(super) fn reduce(
+        state: TurnMembershipState,
+        event: TurnMembershipEvent,
+    ) -> Result<TurnMembershipState, TurnMembershipRefusal> {
+        use TurnMembershipEvent as Event;
+        use TurnMembershipRefusal as Refusal;
+        use TurnMembershipState as State;
+
+        match (state, event) {
+            (State::Loading, Event::Activate) => Ok(State::Idle),
+            (State::Idle, Event::Begin { turn }) => Ok(State::Provisional { turn }),
+            (State::Idle, Event::ObserveEligible { turn }) => Ok(State::ProviderStarted { turn }),
+            (State::Provisional { turn: saved }, Event::TakeNew { turn }) if turn == saved => {
+                Ok(State::Eligible { turn })
+            }
+            (State::Provisional { turn: saved }, Event::RemoveOnRevoke { turn })
+                if turn == saved =>
+            {
+                Ok(State::Idle)
+            }
+            (
+                State::Eligible { turn: saved } | State::ProviderStarted { turn: saved },
+                Event::End { turn },
+            ) if turn == saved => Ok(State::Idle),
+            (
+                State::Idle
+                | State::Provisional { .. }
+                | State::Eligible { .. }
+                | State::ProviderStarted { .. },
+                Event::Activate,
+            ) => Err(Refusal::AlreadyLive),
+            (State::Loading, Event::Begin { .. } | Event::ObserveEligible { .. }) => {
+                Err(Refusal::NotLive)
+            }
+            (
+                State::Provisional { .. } | State::Eligible { .. } | State::ProviderStarted { .. },
+                Event::Begin { .. } | Event::ObserveEligible { .. },
+            ) => Err(Refusal::TurnAlreadySet),
+            (
+                State::Loading
+                | State::Idle
+                | State::Provisional { .. }
+                | State::Eligible { .. }
+                | State::ProviderStarted { .. },
+                Event::TakeNew { .. } | Event::RemoveOnRevoke { .. } | Event::End { .. },
+            ) => Err(Refusal::NotThatTurn),
+        }
+    }
+}
+
 impl StateMachine for TurnMembershipMachine {
     type State = TurnMembershipState;
     type Event = TurnMembershipEvent;
@@ -105,50 +166,9 @@ impl StateMachine for TurnMembershipMachine {
         state: &TurnMembershipState,
         event: TurnMembershipEvent,
     ) -> StateMachineResult<Self> {
-        use TurnMembershipEvent as Event;
-        use TurnMembershipRefusal as Refusal;
-        use TurnMembershipState as State;
-
-        let next = match (*state, event) {
-            (State::Loading, Event::Activate) => State::Idle,
-            (State::Idle, Event::Begin { turn }) => State::Provisional { turn },
-            (State::Idle, Event::ObserveEligible { turn }) => State::ProviderStarted { turn },
-            (State::Provisional { turn: saved }, Event::TakeNew { turn }) if turn == saved => {
-                State::Eligible { turn }
-            }
-            (State::Provisional { turn: saved }, Event::RemoveOnRevoke { turn })
-                if turn == saved =>
-            {
-                State::Idle
-            }
-            (
-                State::Eligible { turn: saved } | State::ProviderStarted { turn: saved },
-                Event::End { turn },
-            ) if turn == saved => State::Idle,
-            (
-                State::Idle
-                | State::Provisional { .. }
-                | State::Eligible { .. }
-                | State::ProviderStarted { .. },
-                Event::Activate,
-            ) => return Err(TransitionError::Domain(Refusal::AlreadyLive)),
-            (State::Loading, Event::Begin { .. } | Event::ObserveEligible { .. }) => {
-                return Err(TransitionError::Domain(Refusal::NotLive));
-            }
-            (
-                State::Provisional { .. } | State::Eligible { .. } | State::ProviderStarted { .. },
-                Event::Begin { .. } | Event::ObserveEligible { .. },
-            ) => return Err(TransitionError::Domain(Refusal::TurnAlreadySet)),
-            (
-                State::Loading
-                | State::Idle
-                | State::Provisional { .. }
-                | State::Eligible { .. }
-                | State::ProviderStarted { .. },
-                Event::TakeNew { .. } | Event::RemoveOnRevoke { .. } | Event::End { .. },
-            ) => return Err(TransitionError::Domain(Refusal::NotThatTurn)),
-        };
-        Ok((next, Vec::new()))
+        Self::reduce(*state, event)
+            .map(|next| (next, Vec::new()))
+            .map_err(TransitionError::Domain)
     }
 
     fn transitions() -> &'static [Transition] {

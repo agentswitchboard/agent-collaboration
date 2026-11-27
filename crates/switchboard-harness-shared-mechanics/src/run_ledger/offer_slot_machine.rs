@@ -62,6 +62,24 @@ impl RefusalTag for OfferSlotRefusal {
 
 pub struct OfferSlotMachine;
 
+impl OfferSlotMachine {
+    pub(super) fn reduce(
+        state: OfferSlotState,
+        event: OfferSlotEvent,
+    ) -> Result<OfferSlotState, OfferSlotRefusal> {
+        use OfferSlotEvent::{HandOver, Revoke};
+        use OfferSlotRefusal::{AlreadyRevoked, AlreadyTaken};
+        use OfferSlotState::{Offered, Revoked, Taken};
+
+        match (state, event) {
+            (Offered, HandOver) => Ok(Taken),
+            (Offered, Revoke) => Ok(Revoked),
+            (Taken, HandOver | Revoke) => Err(AlreadyTaken),
+            (Revoked, HandOver | Revoke) => Err(AlreadyRevoked),
+        }
+    }
+}
+
 impl StateMachine for OfferSlotMachine {
     type State = OfferSlotState;
     type Event = OfferSlotEvent;
@@ -69,17 +87,9 @@ impl StateMachine for OfferSlotMachine {
     type Error = OfferSlotRefusal;
 
     fn transition(state: &OfferSlotState, event: OfferSlotEvent) -> StateMachineResult<Self> {
-        use OfferSlotEvent::{HandOver, Revoke};
-        use OfferSlotRefusal::{AlreadyRevoked, AlreadyTaken};
-        use OfferSlotState::{Offered, Revoked, Taken};
-
-        let next = match (*state, event) {
-            (Offered, HandOver) => Taken,
-            (Offered, Revoke) => Revoked,
-            (Taken, HandOver | Revoke) => return Err(TransitionError::Domain(AlreadyTaken)),
-            (Revoked, HandOver | Revoke) => return Err(TransitionError::Domain(AlreadyRevoked)),
-        };
-        Ok((next, Vec::new()))
+        Self::reduce(*state, event)
+            .map(|next| (next, Vec::new()))
+            .map_err(TransitionError::Domain)
     }
 
     fn transitions() -> &'static [Transition] {
