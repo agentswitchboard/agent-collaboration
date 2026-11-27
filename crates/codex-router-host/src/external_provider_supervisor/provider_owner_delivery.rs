@@ -2,8 +2,8 @@
 
 use super::{
     ConversationOperationFailureKind, ConversationOperationFailureStage,
-    ExternalProviderSupervisor, PreparedOperation, ProviderOperationCompletion,
-    ProviderOperationEffect, ProviderOperationKind, failure,
+    ExternalProviderSupervisor, OperationFailureCause, PreparedOperation,
+    ProviderOperationCompletion, ProviderOperationEffect, ProviderOperationKind, failure,
     provider_admission_policy::{AdmissionClass, AdmissionMode, NoticeAdmissionPlacement},
     provider_owner_operations::owner_failure,
     provider_owner_prompt::{SessionQueuePlan, WarmRun, explicit_steer_refusal, retained_prompt},
@@ -281,7 +281,13 @@ impl ExternalProviderSupervisor {
                 runtime.connection.prepare_prompt(request.input, observed),
             )
             .await?
-            .map_err(|error| runtime_failure(operation.clone(), Some(target.clone()), error))?;
+            .map_err(|error| {
+                runtime_failure(
+                    operation.clone(),
+                    Some(target.clone()),
+                    OperationFailureCause::PromptRefused(error),
+                )
+            })?;
         let can_queue = matches!(
             admission,
             DeliveryAdmission::Requested(MessageDelivery::Auto | MessageDelivery::Queue)

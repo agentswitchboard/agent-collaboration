@@ -23,7 +23,8 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 #[cfg(any(test, feature = "test-support"))]
 use crate::external_provider_supervisor::HarnessConnectionTestSupport;
 use crate::{
-    ConnectionShutdown, ExternalProviderBinding, HarnessConnection,
+    ConnectionShutdown, ExternalProviderBinding, HarnessConnection, PromptRefusal,
+    PromptSelectionRefusal,
     host_request_policy::{HostRequestPayloads, HostRequestPolicy},
     session_owner_ingress::SessionOwnerIngress,
     session_owner_lifecycle_reports::SessionHarnessProvider,
@@ -554,10 +555,12 @@ impl HarnessConnection for ExternalProviderRuntime {
         &self,
         input: ProviderTurnInput,
         observed: Option<CapabilityReport>,
-    ) -> RequestFuture<'_, Result<PreparedPrompt, ExternalProviderRuntimeError>> {
+    ) -> RequestFuture<'_, Result<PreparedPrompt, PromptRefusal>> {
         Box::pin(async move {
             let capabilities = self.merge_capabilities(observed).await;
-            self.client.prepare_owner_prompt(input, &capabilities)
+            self.client
+                .prepare_owner_prompt(input, &capabilities)
+                .map_err(prompt_refusal)
         })
     }
 
@@ -585,6 +588,35 @@ impl HarnessConnection for ExternalProviderRuntime {
                 ConnectionShutdown::Stopped
             }
         })
+    }
+}
+
+pub(crate) fn prompt_refusal(error: ExternalProviderRuntimeError) -> PromptRefusal {
+    match error {
+        ExternalProviderRuntimeError::Behavior(error) => {
+            let kind = match error {
+                acp_client_runtime::ProviderError::InvalidSelection => {
+                    PromptSelectionRefusal::InvalidSelection
+                }
+                acp_client_runtime::ProviderError::MalformedMetadata => {
+                    PromptSelectionRefusal::MalformedMetadata
+                }
+                acp_client_runtime::ProviderError::Unsupported => {
+                    PromptSelectionRefusal::Unsupported
+                }
+                acp_client_runtime::ProviderError::SourceUnavailable => {
+                    PromptSelectionRefusal::SourceUnavailable
+                }
+            };
+            PromptRefusal::Selection {
+                kind,
+                message: error.to_string(),
+            }
+        }
+        ExternalProviderRuntimeError::UnsupportedContent { content_type } => {
+            PromptRefusal::UnsupportedContent { content_type }
+        }
+        _ => PromptRefusal::Unclassified,
     }
 }
 

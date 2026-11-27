@@ -335,7 +335,7 @@ impl ProviderAcpDeliveryRoute {
                     .await;
             }
             ProviderSessionLoadOutcome::Unavailable { phase, reason } => {
-                use acp_client_runtime::RestorePhase;
+                use provider_session_machines::session_owner::RestorePhase;
                 let (retryable, cause) = match phase {
                     RestorePhase::Preflight => (
                         true,

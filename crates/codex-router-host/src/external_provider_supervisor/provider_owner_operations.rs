@@ -123,7 +123,7 @@ pub(super) async fn restore(
                 super::provider_operation_failure::restore_operation_failure(
                     operation,
                     target.clone(),
-                    acp_client_runtime::RestoreFailure::attempted(coded.into()),
+                    coded,
                 ),
             )
         }

@@ -202,9 +202,10 @@ impl ExternalProviderRuntime {
                 Default::default(),
             )
             .await;
-        let id = crate::provider_create_result::project_owner_create(result)?
-            .created
-            .provider_session_id;
+        let id =
+            crate::external_provider_supervisor::owner_fixture_failures::fixture_created_session(
+                result,
+            )?;
         let record = RuntimeFixture::record(fixture.target(id.clone())?, cwd)?;
         fixture
             .store

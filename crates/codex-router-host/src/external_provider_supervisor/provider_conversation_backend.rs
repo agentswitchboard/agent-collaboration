@@ -1,3 +1,4 @@
+use super::provider_create_result::project_owner_create;
 use super::{
     Arc, ConversationBindingIdentity, ConversationCancelRequest, ConversationCloseRequest,
     ConversationCreateRequest, ConversationLoadRequest, ConversationOperationFailureKind,
@@ -7,7 +8,7 @@ use super::{
     ConversationOperationWaitOutput, ConversationOperationWaitRequest,
     ConversationOperationWaitResult, ConversationOutputUnavailableReason,
     ConversationPromptRequest, ConversationResumeRequest, Duration, EndpointRef,
-    ExternalProviderRuntimeError, ExternalProviderSupervisor, OperationId, PreparedOperation,
+    ExternalProviderSupervisor, OperationFailureCause, OperationId, PreparedOperation,
     ProviderBindingIdentity, ProviderConversationBackend, ProviderConversationFuture,
     ProviderOperationCompletion, ProviderOperationEffect, ProviderOperationKind,
     ProviderOperationStage, ProviderPromptContentsRequest, ProviderReconciliationState,
@@ -18,7 +19,6 @@ use super::{
     provider_session_lifecycle, provider_session_record, provider_settings_control,
     runtime_failure, snapshot_failure, snapshot_from_record, unavailable_failure,
 };
-use crate::provider_create_result::project_owner_create;
 use crate::session_owner_door::OwnerCreateFailure;
 use provider_session_machines::harness_lifecycle::{
     FastRequest, OpenSetup, RequestedProviderSettings,
@@ -317,7 +317,7 @@ impl ProviderConversationBackend for ExternalProviderSupervisor {
                                         )),
                                     }
                                 }
-                                Err(ExternalProviderRuntimeError::CreatedWithoutSettings {
+                                Err(OperationFailureCause::CreatedWithoutSettings {
                                     provider_session_id,
                                     applied,
                                     failed,
@@ -361,7 +361,7 @@ impl ProviderConversationBackend for ExternalProviderSupervisor {
                                     )),
                                     }
                                 }
-                                Err(ExternalProviderRuntimeError::InvalidSetting {
+                                Err(OperationFailureCause::InvalidSetting {
                                     setting,
                                     value,
                                     advertised,

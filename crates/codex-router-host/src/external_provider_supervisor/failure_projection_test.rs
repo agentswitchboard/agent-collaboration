@@ -1,4 +1,8 @@
 use super::*;
+use crate::external_provider_supervisor::owner_fixture_failures::{
+    legacy_prompt_runtime_failure as prompt_runtime_failure,
+    legacy_runtime_failure as runtime_failure,
+};
 
 #[test]
 fn lost_provider_prompt_has_terminal_unknown_effect_and_sanitized_reason() {

@@ -6,7 +6,7 @@ use super::{
     SessionRef, ensure_provider_session_loaded, session_queue_plan,
 };
 use crate::session_owner_calls::InputAcceptance;
-use acp_client_runtime::RestorePhase;
+use provider_session_machines::session_owner::RestorePhase;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum ProviderQueueAdmissionError {
@@ -30,6 +30,7 @@ pub enum ProviderQueueAdmissionError {
 pub enum ProviderSteerContentsError {
     #[error(transparent)]
     Admission(#[from] ProviderQueueAdmissionError),
+    #[cfg(any(test, feature = "test-support"))]
     #[error(transparent)]
     Runtime(#[from] crate::ExternalProviderRuntimeError),
     #[error("provider steer operation failed")]
