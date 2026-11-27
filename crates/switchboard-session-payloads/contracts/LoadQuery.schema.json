@@ -7,10 +7,15 @@
     },
     "SessionId": {
       "description": "One agent conversation, as its provider (Claude Code, Codex) minted it:\nstored as given, 1 to 4096 UTF-8 bytes without NUL.",
-      "type": "string"
+      "maxLength": 4096,
+      "minLength": 1,
+      "pattern": "^[^\\u0000]+$",
+      "type": "string",
+      "x-maxUtf8Bytes": 4096
     },
     "SessionOperationId": {
       "description": "One operation on a session, made by the caller before it sends, so a repeat can be recognised.",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
       "type": "string"
     },
     "SessionRef": {

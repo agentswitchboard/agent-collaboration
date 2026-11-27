@@ -595,7 +595,11 @@
     },
     "SessionId": {
       "description": "One agent conversation, as its provider (Claude Code, Codex) minted it:\nstored as given, 1 to 4096 UTF-8 bytes without NUL.",
-      "type": "string"
+      "maxLength": 4096,
+      "minLength": 1,
+      "pattern": "^[^\\u0000]+$",
+      "type": "string",
+      "x-maxUtf8Bytes": 4096
     },
     "SessionRef": {
       "additionalProperties": false,

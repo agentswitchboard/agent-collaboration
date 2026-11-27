@@ -6,29 +6,20 @@
     "WatchEnd"
   ],
   "inherited": {
-    "policy": "Inherited from workspace-ids, not restated here.",
+    "policy": "Inherited from workspace-ids. Each root includes the rules for the types it uses.",
     "types": [
       {
-        "additionalRefusals": [
-          "Malformed UUID",
-          "Wrong UUID version",
-          "Wrong UUID variant",
-          "Noncanonical UUID spelling"
-        ],
+        "additionalRefusals": [],
         "name": "SessionOperationId",
         "roots": [
           "LoadRequest",
           "LoadQuery"
         ],
         "rustReader": "Requires a lower-case, hyphenated canonical RFC 4122 UUIDv7.",
-        "schema": "String with no UUID pattern."
+        "schema": "String with a lower-case, hyphenated RFC 4122 UUIDv7 pattern."
       },
       {
-        "additionalRefusals": [
-          "Empty string",
-          "More than 4096 UTF-8 bytes",
-          "NUL"
-        ],
+        "additionalRefusals": [],
         "name": "SessionId",
         "roots": [
           "Item",
@@ -36,7 +27,7 @@
           "LoadQuery"
         ],
         "rustReader": "Requires 1 to 4096 UTF-8 bytes and refuses NUL.",
-        "schema": "String. The description mentions a limit and no NUL."
+        "schema": "String with 1 to 4096 characters, a pattern that excludes NUL, and x-maxUtf8Bytes set to 4096."
       },
       {
         "additionalRefusals": [],
@@ -50,9 +41,7 @@
         "schema": "String with a lower-case, hyphenated RFC 4122 UUIDv7 pattern."
       },
       {
-        "additionalRefusals": [
-          "See SessionId"
-        ],
+        "additionalRefusals": [],
         "name": "SessionRef",
         "roots": [
           "Item",
@@ -60,7 +49,7 @@
           "LoadQuery"
         ],
         "rustReader": "Requires the named pair and applies the inherited identifier readers.",
-        "schema": "Closed object requiring machineId and sessionId."
+        "schema": "Closed object requiring machineId and sessionId with their inherited schema rules."
       }
     ]
   },
