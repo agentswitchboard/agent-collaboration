@@ -1,6 +1,6 @@
 #![deny(clippy::wildcard_enum_match_arm)]
 
-//! Declared ACP opening transitions and the owner actions derived from them.
+//! Declared opening transitions and the owner actions derived from them.
 
 use state_machine_core::{
     EventTag, RefusalTag, StateMachine, StateMachineResult, StateTag, Transition, TransitionError,
