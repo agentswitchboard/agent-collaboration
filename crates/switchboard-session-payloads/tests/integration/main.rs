@@ -9,6 +9,11 @@ use serde::{Serialize, de::DeserializeOwned};
 use switchboard_session_payloads::{LoadQuery, LoadRequest};
 use workspace_ids::{SessionId, SessionIdError, SessionRef};
 
+mod contract_artifacts;
+mod contract_item_fixtures;
+mod contract_manifest;
+mod contract_schema;
+mod contract_schema_semantics;
 mod item_actions;
 mod item_examples;
 mod item_money;

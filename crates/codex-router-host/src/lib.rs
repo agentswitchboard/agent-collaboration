@@ -113,7 +113,7 @@ pub use router_settings::{
 mod provider_startup_composition;
 pub use provider_startup_composition::ExternalProviderStartup;
 mod provider_operation_settlement;
-pub use acp_client_runtime::ProviderSessionActivity;
+pub use provider_session_machines::ProviderSessionActivity;
 pub type ProviderSteeringOutcome = acp_client_runtime::ProviderSteeringOutcome<
     collaboration_protocol::OperationId,
     external_provider_approval_context::ExternalProviderApprovalContext,

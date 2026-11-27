@@ -517,7 +517,12 @@ pub(super) fn check_declared_session_read_edges(
                 "hegeltest" => &["static-engine"],
                 _ => &[],
             };
-            if dependency.features != allowed_features || !dependency.uses_default_features {
+            let uses_default_features = !(owner == "switchboard-session-payloads"
+                && kind == DependencyKind::Dev
+                && dependency.name == "jsonschema");
+            if dependency.features != allowed_features
+                || dependency.uses_default_features != uses_default_features
+            {
                 return Err(format!(
                     "BD1: forbidden {kind:?} feature settings {owner} -> {}: features {:?}, default features: {}",
                     dependency.name, dependency.features, dependency.uses_default_features
@@ -532,7 +537,7 @@ fn allowed_session_read_dev_dependencies(owner: &str) -> &'static [&'static str]
     if owner == "switchboard-session-calls" {
         &["serde_json", "serde_path_to_error", "hegeltest"]
     } else {
-        &["serde_json", "serde_path_to_error"]
+        &["serde_json", "serde_path_to_error", "jsonschema"]
     }
 }
 

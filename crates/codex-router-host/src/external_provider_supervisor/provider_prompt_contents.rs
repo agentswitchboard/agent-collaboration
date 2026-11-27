@@ -30,7 +30,7 @@ pub struct ProviderPromptContentsRequest {
     pub target: SessionRef,
     pub requested_by: ProviderIdentity,
     pub approver: ProviderIdentity,
-    pub input: acp_client_runtime::ProviderTurnInput,
+    pub input: session_event_model::ProviderTurnInput,
     pub busy: PromptBusyPolicy,
 }
 
@@ -51,7 +51,7 @@ impl ProviderPromptContentsRequest {
             target,
             requested_by,
             approver,
-            input: acp_client_runtime::ProviderTurnInput::Prompt(
+            input: session_event_model::ProviderTurnInput::Prompt(
                 session_event_model::ProviderSubmission::plain(vec![content]),
             ),
             busy: PromptBusyPolicy::RefuseBusy,
@@ -84,7 +84,7 @@ impl ProviderPromptContentsRequest {
             target: request.target,
             requested_by: request.requested_by,
             approver: request.approver,
-            input: acp_client_runtime::ProviderTurnInput::Prompt(
+            input: session_event_model::ProviderTurnInput::Prompt(
                 session_event_model::ProviderSubmission::plain(vec![content]),
             ),
             busy: PromptBusyPolicy::Send(request.delivery),

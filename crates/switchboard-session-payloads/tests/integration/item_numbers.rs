@@ -78,7 +78,7 @@ fn a_bare_json_number_is_refused_for_orders_and_counts() {
 }
 
 fn assert_decimal_refused(invalid: &str, reason: &str) {
-    let item = r#"{"id":"fixture","order":"8","body":{"kind":"user","body":{"kind":"message","text":"ok"}}}"#;
+    let item = r#"{"id":"fixture","order":"8","firstSeenAtMs":1700000000000,"body":{"kind":"user","body":{"kind":"message","text":"ok"}}}"#;
     serde_json::from_str::<Item>(item).unwrap();
     assert_refused::<Item>(&item.replace(r#""8""#, invalid), "order", reason);
 

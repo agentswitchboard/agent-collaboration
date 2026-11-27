@@ -1,6 +1,7 @@
 //! Private payloads for session loads and the typed items a session carries.
 
 mod decimal_count;
+mod first_seen_at_ms;
 mod item_identifiers;
 mod money_reading;
 mod object_reader;
@@ -9,6 +10,7 @@ mod tool_call;
 mod usage_reading;
 
 pub use decimal_count::{DecimalCount, DecimalTextError};
+pub use first_seen_at_ms::{FirstSeenAtMs, FirstSeenAtMsError};
 pub use item_identifiers::{GroupId, ItemId, ItemIdentifierError, ItemOrder, TurnId};
 pub use money_reading::{MoneyAmount, MoneyAmountError, MoneyCurrency, MoneyCurrencyError};
 pub use session_item::{

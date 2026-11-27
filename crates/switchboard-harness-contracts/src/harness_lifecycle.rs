@@ -20,6 +20,13 @@ mod refusal_tests;
 #[path = "harness_lifecycle_test.rs"]
 mod tests;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProviderSessionActivity {
+    NotLoaded,
+    Idle,
+    Running,
+}
+
 /// Session model types chosen by the controller. The harness supplies their values.
 pub trait HarnessLifecyclePayloads: Send + Sync + 'static {
     type Event: Send + 'static;

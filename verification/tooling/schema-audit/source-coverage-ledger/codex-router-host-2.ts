@@ -92,7 +92,7 @@ export const section: LedgerSection = {
     {
       file: "crates/codex-router-host/src/external_provider_supervisor/provider_operation_failure.rs",
       disposition: { kind: "converts", owners: ["router-vocabulary"] },
-      note: "ExternalProviderRuntimeError and ProviderError to ConversationOperationFailureKind/Stage/Effect table (166-384); acp InvalidSettingSessionDisposition to protocol (40-51); acp ProviderErrorCorrelationId to DeliveryCorrelationId by to_string/try_from (398-400); provider_code kept",
+      note: "ExternalProviderRuntimeError and ProviderError to ConversationOperationFailureKind/Stage/Effect table (166-384); switchboard-harness-contracts InvalidSettingSessionDisposition to protocol (40-51); acp ProviderErrorCorrelationId to DeliveryCorrelationId by to_string/try_from (398-400); provider_code kept",
     },
     {
       file: "crates/codex-router-host/src/external_provider_supervisor/provider_prompt_contents.rs",

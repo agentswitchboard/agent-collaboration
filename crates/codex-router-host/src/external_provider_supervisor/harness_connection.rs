@@ -1,9 +1,10 @@
 //! The session supervisor's port to a harness connection.
 
-use acp_client_runtime::{ExternalProviderApprovalRefusalReason, ProviderTurnInput};
 use collaboration_protocol::{OperationId, ProviderBindingIdentity};
 use provider_session_machines::{ProviderSettingKind, session_owner::RequestFuture};
-use session_event_model::{CapabilityReport, PreparedPrompt};
+use session_event_model::{
+    CapabilityReport, ExternalProviderApprovalRefusalReason, PreparedPrompt, ProviderTurnInput,
+};
 use std::sync::Arc;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
