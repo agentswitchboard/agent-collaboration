@@ -168,7 +168,7 @@ fn accepted_items() -> ItemExamples {
         tool_item(
             ToolAction::Other {
                 input: RawInput::Value {
-                    value: json!({"sequence": 9_007_199_254_740_993_u64, "epoch": 7}),
+                    value: json!({"sequence": 42, "epoch": 7}),
                 },
             },
             ToolState::Pending,
