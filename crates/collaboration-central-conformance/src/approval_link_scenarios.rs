@@ -397,7 +397,7 @@ pub async fn received_frees_capacity_and_replacement_retires_run(
         "retirement retains every old request"
     );
     let retired_at = require_replaced_run(fixture, &target.router_run, &replacement).await?;
-    assert_retired_requests(&prior_requests, &retired_requests, &first, &retired_at)?;
+    assert_retired_requests(&prior_requests, &retired_requests, &first, &retired_at);
     assert_eq!(
         retirement_destinations(fixture, &target.router_run).await?,
         prior_destinations
@@ -471,12 +471,12 @@ fn assert_retired_requests(
     after: &[Vec<SqlValue>],
     first: &Raise,
     retired_at: &str,
-) -> Result<()> {
+) {
     let [received_before, waiting @ ..] = before else {
-        return Err("expected the received request before retirement".into());
+        panic!("expected the received request before retirement");
     };
     let [received_after, retired @ ..] = after else {
-        return Err("expected the received request after retirement".into());
+        panic!("expected the received request after retirement");
     };
     assert_eq!(
         received_before.first(),
@@ -496,9 +496,7 @@ fn assert_retired_requests(
             SqlValue::Text(ended_at),
         ] = settled.as_slice()
         else {
-            return Err(
-                format!("expected a retained request with a complete ending: {settled:?}").into(),
-            );
+            panic!("expected a retained request with a complete ending: {settled:?}");
         };
         assert_eq!(prior.first(), Some(&text(id)));
         assert_eq!(state, "ended");
@@ -508,18 +506,18 @@ fn assert_retired_requests(
             "all outstanding requests end at retirement"
         );
         let reason = approval_request_protocol::CancelReason::RequesterGone {};
-        let ending: DeliverEndingRequest = serde_json::from_str(ending)?;
+        let ending: DeliverEndingRequest =
+            serde_json::from_str(ending).expect("retired request ending decodes");
         assert_eq!(ending.request_id().as_str(), id);
         assert_eq!(
             ending.into_ending(),
             approval_request_protocol::Ending::Cancelled { reason }
         );
         assert_eq!(
-            serde_json::from_str::<StopReceiptEnding>(compact)?,
+            serde_json::from_str::<StopReceiptEnding>(compact).expect("compact ending decodes"),
             StopReceiptEnding::Cancelled { reason }
         );
     }
-    Ok(())
 }
 
 async fn require_joined_capacity_refusal(
