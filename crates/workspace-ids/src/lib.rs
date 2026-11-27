@@ -8,6 +8,9 @@ pub struct IdValidationError {
     pub field: &'static str,
 }
 
+const UUID_V7_PATTERN: &str =
+    "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
+
 // Ported from message-board::board_identity, without the system-clock mint API.
 macro_rules! workspace_identifiers {
     ($($(#[$attribute:meta])* $name:ident $(=> $error:ident)?),+ $(,)?) => {$ (
@@ -16,6 +19,7 @@ macro_rules! workspace_identifiers {
             schemars::JsonSchema,
         )]
         #[serde(try_from = "String", into = "String")]
+        #[schemars(extend("pattern" = UUID_V7_PATTERN))]
         $(#[$attribute])*
         pub struct $name(String);
 
@@ -29,7 +33,27 @@ macro_rules! workspace_identifiers {
         impl $name {
             #[must_use] pub fn as_str(&self) -> &str { &self.0 }
         }
-    )+};
+    )+
+
+        #[cfg(test)]
+        fn assert_uuid_v7_identifier_schemas() {
+            $(
+                let schema = schemars::schema_for!($name);
+                assert_eq!(
+                    schema.get("type").and_then(serde_json::Value::as_str),
+                    Some("string"),
+                    "{} schema type",
+                    stringify!($name),
+                );
+                assert_eq!(
+                    schema.get("pattern").and_then(serde_json::Value::as_str),
+                    Some(UUID_V7_PATTERN),
+                    "{} schema pattern",
+                    stringify!($name),
+                );
+            )+
+        }
+    };
     (@conversion $name:ident) => {
         impl TryFrom<String> for $name {
             type Error = IdValidationError;
@@ -76,7 +100,6 @@ workspace_identifiers!(
     WorkspaceId,
     RequestId,
     /// The Router install's durable identity, shared with central.
-    #[schemars(extend("pattern" = "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"))]
     #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
     MachineId,
     /// One Router process run registered with central.
@@ -142,6 +165,7 @@ pub enum SessionOperationIdError {
     Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize, schemars::JsonSchema,
 )]
 #[serde(try_from = "String", into = "String")]
+#[schemars(extend("minLength" = 1, "maxLength" = 4096, "pattern" = r"^[^\u0000]+$", "x-maxUtf8Bytes" = 4096))]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)

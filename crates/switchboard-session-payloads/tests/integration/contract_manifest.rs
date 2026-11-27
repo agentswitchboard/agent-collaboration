@@ -19,21 +19,21 @@ pub(super) fn manifest() -> Value {
             }
         ],
         "inherited": {
-            "policy": "Inherited from workspace-ids, not restated here.",
+            "policy": "Inherited from workspace-ids. Each root includes the rules for the types it uses.",
             "types": [
                 {
                     "name": "SessionOperationId",
                     "roots": ["LoadRequest", "LoadQuery"],
-                    "schema": "String with no UUID pattern.",
+                    "schema": "String with a lower-case, hyphenated RFC 4122 UUIDv7 pattern.",
                     "rustReader": "Requires a lower-case, hyphenated canonical RFC 4122 UUIDv7.",
-                    "additionalRefusals": ["Malformed UUID", "Wrong UUID version", "Wrong UUID variant", "Noncanonical UUID spelling"]
+                    "additionalRefusals": []
                 },
                 {
                     "name": "SessionId",
                     "roots": ["Item", "LoadRequest", "LoadQuery"],
-                    "schema": "String. The description mentions a limit and no NUL.",
+                    "schema": "String with 1 to 4096 characters, a pattern that excludes NUL, and x-maxUtf8Bytes set to 4096.",
                     "rustReader": "Requires 1 to 4096 UTF-8 bytes and refuses NUL.",
-                    "additionalRefusals": ["Empty string", "More than 4096 UTF-8 bytes", "NUL"]
+                    "additionalRefusals": []
                 },
                 {
                     "name": "MachineId",
@@ -45,9 +45,9 @@ pub(super) fn manifest() -> Value {
                 {
                     "name": "SessionRef",
                     "roots": ["Item", "LoadRequest", "LoadQuery"],
-                    "schema": "Closed object requiring machineId and sessionId.",
+                    "schema": "Closed object requiring machineId and sessionId with their inherited schema rules.",
                     "rustReader": "Requires the named pair and applies the inherited identifier readers.",
-                    "additionalRefusals": ["See SessionId"]
+                    "additionalRefusals": []
                 }
             ]
         },
@@ -100,7 +100,9 @@ fn session_load_schemas_retain_the_inherited_workspace_id_contracts() {
     assert_inherited_load_rules::<LoadQuery>();
 }
 
-fn assert_inherited_load_rules<T: schemars::JsonSchema + serde::de::DeserializeOwned>() {
+fn assert_inherited_load_rules<
+    T: schemars::JsonSchema + serde::de::DeserializeOwned + serde::Serialize,
+>() {
     use super::{
         LOAD, OPERATION_ID,
         contract_artifacts::replace_field,
@@ -109,6 +111,7 @@ fn assert_inherited_load_rules<T: schemars::JsonSchema + serde::de::DeserializeO
 
     let schema = schema_for::<T>();
     let validator = contract_validator(&schema);
+    let root = std::any::type_name::<T>();
     let load: Value = serde_json::from_str(LOAD).unwrap();
     assert!(validator.is_valid(&load));
     assert!(serde_json::from_value::<T>(load.clone()).is_ok());
@@ -122,14 +125,6 @@ fn assert_inherited_load_rules<T: schemars::JsonSchema + serde::de::DeserializeO
     }
     assert!(
         schema
-            .pointer("/$defs/SessionOperationId/pattern")
-            .is_none()
-    );
-    assert!(schema.pointer("/$defs/SessionId/minLength").is_none());
-    assert!(schema.pointer("/$defs/SessionId/maxLength").is_none());
-    assert!(schema.pointer("/$defs/SessionId/x-maxUtf8Bytes").is_none());
-    assert!(
-        schema
             .pointer("/$defs/MachineId/pattern")
             .and_then(Value::as_str)
             .is_some()
@@ -139,21 +134,111 @@ fn assert_inherited_load_rules<T: schemars::JsonSchema + serde::de::DeserializeO
         Some(&Value::Bool(false)),
     );
 
-    for (pointer, value, accepted_by_schema) in [
-        ("/operationId", json!("not-a-uuid"), true),
-        ("/operationId", json!(OPERATION_ID.to_uppercase()), true),
-        ("/target/sessionId", json!(""), true),
-        ("/target/sessionId", json!("é".repeat(2049)), true),
-        ("/target/sessionId", json!("fixture\0value"), true),
+    for (pointer, case, value, accepted) in [
         (
             "/target/machineId",
+            "trailing line feed",
+            json!(format!("{OPERATION_ID}\n")),
+            false,
+        ),
+        (
+            "/target/machineId",
+            "version 4",
             json!("01890f2e-7b4c-4cc0-98c4-000000000001"),
             false,
+        ),
+        (
+            "/operationId",
+            "canonical UUIDv7",
+            json!(OPERATION_ID),
+            true,
+        ),
+        ("/operationId", "malformed UUID", json!("not-a-uuid"), false),
+        (
+            "/operationId",
+            "uppercase",
+            json!(OPERATION_ID.to_uppercase()),
+            false,
+        ),
+        (
+            "/operationId",
+            "version 4",
+            json!("01890f2e-7b4c-4cc0-98c4-000000000001"),
+            false,
+        ),
+        (
+            "/operationId",
+            "non-RFC variant",
+            json!("01890f2e-7b4c-7cc0-08c4-000000000001"),
+            false,
+        ),
+        (
+            "/operationId",
+            "no hyphens",
+            json!(OPERATION_ID.replace('-', "")),
+            false,
+        ),
+        (
+            "/operationId",
+            "braces",
+            json!(format!("{{{OPERATION_ID}}}")),
+            false,
+        ),
+        (
+            "/operationId",
+            "trailing line feed",
+            json!(format!("{OPERATION_ID}\n")),
+            false,
+        ),
+        ("/operationId", "empty", json!(""), false),
+        ("/target/sessionId", "one byte", json!("x"), true),
+        (
+            "/target/sessionId",
+            "4096 UTF-8 bytes",
+            json!("é".repeat(2048)),
+            true,
+        ),
+        (
+            "/target/sessionId",
+            "4097 UTF-8 bytes below the character limit",
+            json!(format!("{}x", "é".repeat(2048))),
+            false,
+        ),
+        ("/target/sessionId", "empty", json!(""), false),
+        ("/target/sessionId", "NUL", json!("fixture\0value"), false),
+        (
+            "/target/sessionId",
+            "internal newline",
+            json!("line\nnext"),
+            true,
+        ),
+        (
+            "/target/sessionId",
+            "internal tab",
+            json!("first\tfield"),
+            true,
         ),
     ] {
         let mut input = load.clone();
         replace_field(&mut input, pointer, value);
-        assert_eq!(validator.is_valid(&input), accepted_by_schema, "{pointer}");
-        assert!(serde_json::from_value::<T>(input).is_err(), "{pointer}");
+        let decoded = serde_json::from_value::<T>(input.clone());
+        assert_eq!(
+            decoded.is_ok(),
+            accepted,
+            "{root} {pointer} {case}: Rust reader"
+        );
+        assert_eq!(
+            validator.is_valid(&input),
+            accepted,
+            "{root} {pointer} {case}: JSON Schema"
+        );
+        if let Ok(decoded) = decoded {
+            let encoded = serde_json::to_value(decoded).unwrap();
+            assert_eq!(
+                encoded.pointer(pointer),
+                input.pointer(pointer),
+                "{root} {pointer} {case}: exact round trip"
+            );
+        }
     }
 }
