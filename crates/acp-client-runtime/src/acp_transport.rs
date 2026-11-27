@@ -2,13 +2,11 @@
 
 mod lifecycle_routes;
 mod restore_registration;
-pub(crate) use lifecycle_routes::ReadmitOutcome;
 pub(crate) use restore_registration::RestoreSelection;
 
 use crate::callback_router::ToolClaims;
 pub use crate::callback_router::{CallbackKind, CallbackResolution};
 use crate::in_folder_allowance::{InFolderGrant, InFolderPermission};
-use crate::owner_opening_instance::OpeningInstance;
 pub use crate::transport_run::TransportRun;
 use agent_client_protocol::schema::v1::PermissionOptionId;
 use provider_session_machines::{
@@ -24,13 +22,10 @@ use provider_session_machines::{
 use std::{
     collections::{BTreeMap, BTreeSet},
     num::NonZeroUsize,
-    sync::{
-        Arc, Mutex, MutexGuard,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Mutex, MutexGuard},
 };
+use switchboard_harness_shared_mechanics::opening::{LifecycleRoute, OpeningInstance};
 use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
 
 pub use switchboard_harness_contracts::SlotEvidence;
 use switchboard_harness_contracts::{HandOverRefusal, InputId, OwnerEvidence};
@@ -119,49 +114,6 @@ struct AcpRoute {
     settings: Option<AcceptedRunSettings>,
     lifecycle: Option<LifecycleRoute>,
     restore_registration: Option<OpeningInstance>,
-}
-
-#[derive(Clone)]
-pub(crate) struct LifecycleRoute {
-    pub(crate) run: TransportRun,
-    lifetime: Arc<RouteLifetime>,
-}
-
-struct RouteLifetime {
-    removed: AtomicBool,
-    notify_removed: CancellationToken,
-}
-
-impl LifecycleRoute {
-    pub(crate) fn new(run: TransportRun) -> Self {
-        Self {
-            run,
-            lifetime: Arc::new(RouteLifetime {
-                removed: AtomicBool::new(false),
-                notify_removed: CancellationToken::new(),
-            }),
-        }
-    }
-
-    pub(crate) fn is_removed(&self) -> bool {
-        self.lifetime.removed.load(Ordering::Acquire)
-    }
-
-    pub(crate) fn mark_removed(&self) {
-        self.lifetime.removed.store(true, Ordering::Release);
-    }
-
-    pub(crate) async fn removed(&self) {
-        self.lifetime.notify_removed.cancelled().await;
-    }
-
-    pub(crate) fn notify_removed(&self) {
-        self.lifetime.notify_removed.cancel();
-    }
-
-    pub(crate) fn is_same_as(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.lifetime, &other.lifetime)
-    }
 }
 
 impl AcpRoute {

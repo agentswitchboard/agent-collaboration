@@ -2,14 +2,13 @@
 
 use super::super::OwnerAcpWire;
 use crate::{
-    acp_transport::{LifecycleRoute, TransportRun},
-    owner_opening_instance::OpeningInstance,
-    owner_session_setting::tests::ConnectionCatalogueBehavior,
+    acp_transport::TransportRun, owner_session_setting::tests::ConnectionCatalogueBehavior,
 };
 use agent_client_protocol::{Dispatch, UntypedMessage};
 use provider_session_machines::{SessionGeneration, session_owner::OwnerIncarnation};
 use session_event_model::session_profile_codec::STATE_METHOD;
 use std::{num::NonZeroUsize, sync::Arc};
+use switchboard_harness_shared_mechanics::opening::{LifecycleRoute, OpeningInstance};
 use uuid::Uuid;
 
 #[test]

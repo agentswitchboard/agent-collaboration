@@ -24,24 +24,12 @@ impl OwnerOpenings {
         let slot = OpeningSlot::Run(close.generation);
         let (instance, admitted, session) = {
             let mut attempts = lock(&self.attempts);
-            if let Some(refusal) = attempts.port_refusal {
-                return Err(refusal);
-            }
-            let Some(row) = attempts.get(slot) else {
-                return Err(if let Some(create) = attempts.creates.values().next() {
-                    create.phase().refusal()
-                } else if attempts.runs.is_empty() {
-                    self.idle_phase().refusal()
-                } else {
-                    LifecycleRefusal::AttemptMismatch
-                });
-            };
+            let instance = attempts.close_target(close.generation, self.session.get().is_some())?;
             let session = self
                 .session
                 .get()
-                .ok_or_else(|| row.phase().refusal())?
+                .ok_or(LifecycleRefusal::AttemptMismatch)?
                 .clone();
-            let instance = row.instance().clone();
             let admitted = attempts.apply(slot, &instance, Command::CloseAsked(close));
             (instance, admitted, session)
         };
@@ -68,7 +56,7 @@ impl OwnerOpenings {
             let refused =
                 lock(&self.attempts).apply(slot, &instance, Command::CloseOffered(close, false));
             if let Ok(effect) = refused {
-                effect.finish(&self.wire);
+                effect.finish(self.wire.as_ref());
             }
             let refusal = super::super::lifecycle_wire_refusal(error);
             if refusal == LifecycleRefusal::RouteUnavailable && route.is_removed() {
@@ -84,7 +72,7 @@ impl OwnerOpenings {
             lock(&self.attempts).apply(slot, &instance, Command::CloseOffered(close, true));
         if let Ok(effect) = offered {
             let faulted = effect.faulted();
-            effect.finish(&self.wire);
+            effect.finish(self.wire.as_ref());
             if faulted {
                 reply.send(CloseFact::Unknown {
                     run: close,
@@ -110,7 +98,7 @@ impl OwnerOpenings {
             let settled = lock(&attempts).apply(slot, &instance, Command::CloseSettled(fact));
             if let Ok(effect) = settled {
                 let faulted = effect.faulted();
-                effect.finish(&wire);
+                effect.finish(wire.as_ref());
                 reply.send(if faulted { unconfirmed } else { fact });
             }
         });
@@ -143,14 +131,14 @@ impl OwnerOpenings {
                     Command::ReadmitResult(close.attempt, reopened),
                 );
                 if let Ok(effect) = result {
-                    effect.finish(&self.wire);
+                    effect.finish(self.wire.as_ref());
                 }
             }
             Err(rejected) => {
                 tracing::debug!(?close, reason=?rejected.reason, "ACP refused the exact close re-admission")
             }
             Ok(effect) => {
-                effect.finish(&self.wire);
+                effect.finish(self.wire.as_ref());
             }
         }
     }

@@ -141,7 +141,7 @@ impl OwnerOpenedSession {
     pub(crate) fn register_in_folder_opening(
         &mut self,
         wire: &crate::owner_wire::OwnerAcpWire,
-        route: &crate::acp_transport::LifecycleRoute,
+        route: &switchboard_harness_shared_mechanics::opening::LifecycleRoute,
     ) {
         if let Some(grant) = self.in_folder.take() {
             wire.register_opening_folders(route, grant);
@@ -167,7 +167,7 @@ pub(crate) enum OpenRequest {
     Restore {
         provider_id: String,
         attempt: LoadAttempt,
-        tap: crate::owner_opening_instance::OpeningInstance,
+        tap: switchboard_harness_shared_mechanics::opening::OpeningInstance,
         updates: mpsc::UnboundedReceiver<Dispatch>,
         via: RestoreVia,
         setup: OwnerSessionOpenSetup,

@@ -1,14 +1,16 @@
 #![deny(clippy::wildcard_enum_match_arm)]
 
-//! The transition selected by the ACP opening declaration.
+//! The transition selected by the opening declaration.
 
-#[path = "owner_acp_opening_edge.rs"]
+#[path = "opening_edge.rs"]
 mod selector;
 use selector::edge;
-#[path = "owner_acp_opening_receipt.rs"]
+#[path = "opening_receipt.rs"]
 mod receipt;
 use receipt::{lose_route, lost_receipt, resolve_after_loss, stop_writer};
 
+use super::super::OpeningAdapter;
+use super::super::{LifecycleRoute, OpeningOffer};
 use super::{
     Command, CreateStart, DeferredRestore, Edge, Effect, HeldCreate, HeldRestore, LostReceipt,
     OpenCreateRequest, OpenRestoreRequest, OpeningInstance, OpeningPhase, OpeningPolicy,
@@ -16,26 +18,16 @@ use super::{
     RestoreMilestone, RestoreStart, RoutedRestore, RunResources, SetterPlan, SetterWrite,
     StateMachine, StepFault, StoppedReceipt,
 };
-use crate::{
-    owner_opening_instance::OpeningOffer, owner_session_open::OwnerOpenedSession,
-    owner_session_setting::OwnerSettingWirePlan,
-};
-use provider_session_machines::{
-    ProviderSettingsCatalog,
-    harness_lifecycle::{AcceptedRunSettings, CloseFact, LifecycleRefusal, SetupReport},
-};
-use session_event_model::{CapabilityReport, SessionSettings};
-use std::sync::Arc;
-use switchboard_harness_contracts::WorkOfferRefusal;
+use switchboard_harness_contracts::{CloseFact, LifecycleRefusal, TransportRun};
 
-type Step = Result<(Option<OpeningState>, Effect), (OpeningState, Command)>;
+type Step<A> = Result<(Option<OpeningState<A>>, Effect<A>), (OpeningState<A>, Command<A>)>;
 
-pub(super) fn step(
-    state: OpeningState,
-    command: Command,
+pub(super) fn step<A: OpeningAdapter>(
+    state: OpeningState<A>,
+    command: Command<A>,
     instance: &OpeningInstance,
     taken: bool,
-) -> Step {
+) -> Step<A> {
     let from = state.phase();
     let Some(edge) = edge(&state, &command, taken) else {
         return Err((state, command));
@@ -166,11 +158,11 @@ struct DeclaredOutcome<'a> {
 }
 
 impl DeclaredOutcome<'_> {
-    fn validate(
+    fn validate<A: OpeningAdapter>(
         self,
-        next: Option<OpeningState>,
-        effect: Effect,
-    ) -> (Option<OpeningState>, Effect) {
+        next: Option<OpeningState<A>>,
+        effect: Effect<A>,
+    ) -> (Option<OpeningState<A>>, Effect<A>) {
         let actual = next.as_ref().map(OpeningState::phase);
         let matches = actual.map_or(
             matches!(
@@ -199,21 +191,21 @@ impl DeclaredOutcome<'_> {
     }
 }
 
-fn store(state: OpeningState, effect: Effect) -> Step {
+fn store<A: OpeningAdapter>(state: OpeningState<A>, effect: Effect<A>) -> Step<A> {
     Ok((Some(state), effect))
 }
 
-fn finish(state: OpeningState, instance: &OpeningInstance) -> Step {
+fn finish<A: OpeningAdapter>(state: OpeningState<A>, instance: &OpeningInstance) -> Step<A> {
     Ok((None, Effect::Release(Release::new(instance, state, true))))
 }
 
-fn apply_edge(
-    state: OpeningState,
-    command: Command,
+fn apply_edge<A: OpeningAdapter>(
+    state: OpeningState<A>,
+    command: Command<A>,
     instance: &OpeningInstance,
     edge: Edge,
     taken: bool,
-) -> Step {
+) -> Step<A> {
     use OpeningState as State;
     match (state, command) {
         (State::Vacant { .. }, Command::OpenCreate(request)) => {
@@ -246,10 +238,10 @@ fn apply_edge(
             } = *request;
             let offer = OpeningOffer::default();
             let resources = RunResources {
-                route: crate::acp_transport::LifecycleRoute::new(super::super::transport_run(
-                    owner,
-                    request.run.generation,
-                )),
+                route: LifecycleRoute::new(TransportRun {
+                    incarnation: owner.incarnation,
+                    generation: request.run.generation,
+                }),
                 stopped,
             };
             store(
@@ -296,14 +288,14 @@ fn apply_edge(
             store(State::ConfiguredCreate(session), Effect::None)
         }
         (State::ConfiguredCreate(mut session), Command::AcceptSettings(accepted)) => {
-            let report = apply_catalogue(&mut session, accepted);
+            let report = A::accept_catalogue(&mut session, accepted);
             store(
                 State::ConfiguredCreate(session),
                 Effect::Settings(Box::new(report)),
             )
         }
         (State::HeldRestore(mut restore), Command::AcceptSettings(accepted)) => {
-            let report = apply_catalogue(&mut restore.held.session, accepted);
+            let report = A::accept_catalogue(&mut restore.held.session, accepted);
             let setters = std::mem::take(&mut restore.held.setters);
             store(
                 State::PreparedRestore(restore),
@@ -311,29 +303,14 @@ fn apply_edge(
             )
         }
         (State::HeldRestore(mut restore), Command::PutSettingBack { attempt, session }) => {
-            let plan = if attempt.setting.change.generation == attempt.restore.generation {
-                OwnerSettingWirePlan::from_work_catalog(
+            let restore_attempt = attempt.restore;
+            let setting = attempt.setting;
+            let plan = if setting.change.generation == restore_attempt.generation {
+                A::plan_setting_put_back(
                     session,
-                    &ProviderSettingsCatalog::from_record(attempt.catalogue),
-                    attempt.setting.kind,
-                    attempt.value.0,
+                    *attempt,
                     restore.held.accepted_mode_fallback.clone(),
                 )
-                .map_err(|reason| match reason {
-                    WorkOfferRefusal::SettingValueNotOffered => {
-                        LifecycleRefusal::SettingValueNotOffered
-                    }
-                    WorkOfferRefusal::SettingSetterUnavailable => {
-                        LifecycleRefusal::SettingSetterUnavailable
-                    }
-                    WorkOfferRefusal::PreparationFailed
-                    | WorkOfferRefusal::SettingCatalogueUnavailable
-                    | WorkOfferRefusal::RouteUnavailable
-                    | WorkOfferRefusal::RouteClosing
-                    | WorkOfferRefusal::WorkDoesNotFitAuthorization
-                    | WorkOfferRefusal::OtherAuthorizationOffered
-                    | WorkOfferRefusal::AuthorizationSequenceOnRecord => LifecycleRefusal::Encoding,
-                })
             } else {
                 Err(LifecycleRefusal::AttemptMismatch)
             };
@@ -347,8 +324,8 @@ fn apply_edge(
             restore.held.setters.push(PendingSetter {
                 claim: claim.clone(),
                 plan: Some(SetterPlan {
-                    restore: attempt.restore,
-                    setting: attempt.setting,
+                    restore: restore_attempt,
+                    setting,
                     wire,
                 }),
             });
@@ -616,12 +593,12 @@ fn apply_edge(
     }
 }
 
-fn end_reader(
-    state: OpeningState,
+fn end_reader<A: OpeningAdapter>(
+    state: OpeningState<A>,
     instance: &OpeningInstance,
     reason: ReaderEnd,
     taken: bool,
-) -> Step {
+) -> Step<A> {
     use OpeningState as State;
     let report_loss = match reason {
         ReaderEnd::Failed | ReaderEnd::HandoffClosed => true,
@@ -670,25 +647,14 @@ fn end_reader(
     )
 }
 
-fn apply_catalogue(
-    session: &mut OwnerOpenedSession,
-    accepted: AcceptedRunSettings,
-) -> SetupReport<CapabilityReport, SessionSettings> {
-    session.accept_restore_catalogue(&ProviderSettingsCatalog::from_record(Arc::clone(
-        &accepted.catalogue,
-    )));
-    SetupReport {
-        capabilities: session.capabilities().to_session_model(),
-        settings: session.settings(),
-        observed: crate::owner_session_creation::catalogue_evidence(session.catalog()),
-    }
-}
-
 #[cfg(test)]
-#[path = "owner_acp_opening_step_test.rs"]
+#[path = "opening_step_test.rs"]
 mod tests;
 
-fn withdraw_setters(setters: Vec<PendingSetter>, effect: Effect) -> Effect {
+fn withdraw_setters<A: OpeningAdapter>(
+    setters: Vec<PendingSetter<A>>,
+    effect: Effect<A>,
+) -> Effect<A> {
     if setters.is_empty() {
         effect
     } else {
@@ -697,5 +663,5 @@ fn withdraw_setters(setters: Vec<PendingSetter>, effect: Effect) -> Effect {
 }
 
 #[cfg(test)]
-#[path = "owner_acp_opening_matrix_test.rs"]
+#[path = "opening_matrix_test.rs"]
 mod matrix;

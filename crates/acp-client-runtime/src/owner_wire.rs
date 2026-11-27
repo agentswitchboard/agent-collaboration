@@ -290,7 +290,7 @@ impl OwnerAcpWire {
         setup: OwnerSessionOpenSetup,
     ) -> Result<
         (
-            crate::owner_opening_instance::OpeningInstance,
+            switchboard_harness_shared_mechanics::opening::OpeningInstance,
             OwnerSessionOpenReceipt,
         ),
         TransportRefusal,
@@ -299,7 +299,7 @@ impl OwnerAcpWire {
             .route_edits
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let tap = crate::owner_opening_instance::OpeningInstance::default();
+        let tap = switchboard_harness_shared_mechanics::opening::OpeningInstance::default();
         if !self.transport.attach_restore_registration(run, None, &tap) {
             return Err(TransportRefusal::RouteUnavailable);
         }
@@ -587,11 +587,11 @@ impl OwnerAcpWire {
 
     pub(crate) fn reapply_exact_setting(
         &self,
-        route: &crate::acp_transport::LifecycleRoute,
+        route: &switchboard_harness_shared_mechanics::opening::LifecycleRoute,
         run: RunAttempt<LoadAttempt>,
         setting: OwnerSetting,
         plan: OwnerSettingWirePlan,
-        claim: &crate::owner_opening_instance::OpeningOffer,
+        claim: &switchboard_harness_shared_mechanics::opening::OpeningOffer,
         completion: LifecycleReply<SettingFact>,
     ) -> Result<(), TransportRefusal> {
         self.transport.enqueue_lifecycle_request(

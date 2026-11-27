@@ -58,7 +58,6 @@ pub mod owner_acp_binding;
 mod owner_callback_routing;
 #[cfg(any(test, feature = "test-observation"))]
 mod owner_opening_disposal;
-mod owner_opening_instance;
 mod owner_restore_updates;
 pub mod owner_session_creation;
 mod owner_session_replay;

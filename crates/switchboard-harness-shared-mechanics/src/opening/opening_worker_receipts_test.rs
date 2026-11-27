@@ -27,7 +27,7 @@ const OUTCOMES: [[Outcome; 5]; 6] = {
 
 #[tokio::test]
 async fn create_and_configure_worker_facts_settle_only_the_receipt_they_own() {
-    let fixture = Fixture::new().await;
+    let fixture = Fixture::new();
     let mut visited = [[false; 5]; 6];
     for (owner, expected_facts) in OUTCOMES.into_iter().enumerate() {
         for (fact, expected) in expected_facts.into_iter().enumerate() {
@@ -63,13 +63,14 @@ async fn create_and_configure_worker_facts_settle_only_the_receipt_they_own() {
                 fixture.attempt
             };
             let instance = OpeningInstance::default();
-            let row = super::super::super::OpeningRow {
-                attempt,
-                instance: instance.clone(),
-                state,
-            };
+            let row: super::super::super::OpeningRow<TestOpening> =
+                super::super::super::OpeningRow {
+                    attempt,
+                    instance: instance.clone(),
+                    state,
+                };
             let result = {
-                let _table = lock(&fixture.table);
+                let _table = fixture.table.lock();
                 row.apply(&instance, command)
             };
             match (expected, result) {

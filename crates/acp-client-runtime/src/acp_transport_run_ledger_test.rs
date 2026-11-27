@@ -1,5 +1,7 @@
 use super::*;
-use crate::owner_opening_instance::OpeningOffer;
+use std::sync::Arc;
+use switchboard_harness_shared_mechanics::opening::OpeningOffer;
+use switchboard_harness_shared_mechanics::run_ledger::ReadmitOutcome;
 use tokio::sync::mpsc::error::TryRecvError;
 
 fn run() -> TransportRun {

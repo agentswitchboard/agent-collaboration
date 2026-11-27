@@ -1,7 +1,7 @@
 //! Snapshot one route's immutable restore registration at notification ingress.
 
 use super::{AcpTransport, LifecycleRoute, TransportRun};
-use crate::owner_opening_instance::OpeningInstance;
+use switchboard_harness_shared_mechanics::opening::OpeningInstance;
 
 #[derive(Clone)]
 pub(crate) enum RestoreSelection {

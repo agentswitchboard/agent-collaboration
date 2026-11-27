@@ -1,20 +1,37 @@
 //! Check two real reservations in each generated opening and setter schedule.
 
-use super::super::super::super::OwnerOpenings;
-use super::*;
+use super::{
+    Command, Effect, OpenCreateRequest, OpenSetup, OpeningSlot, OwnerOpenings, RestoreMilestone,
+    RestoreOpening, lock,
+};
 use crate::{
+    owner_session_open::OwnerOpenedSession,
     owner_session_setting::tests::ConnectionCatalogueBehavior,
     owner_wire::{OpeningPausePoint, OwnerAcpWire, output_stop_tests},
 };
+use agent_client_protocol::{Agent, Client, ConnectionTo, Lines, schema::v1::SessionId};
 use codex_router_test_support::reply_ledger::{ReplyLedger, ReplySite};
+use futures_util::{SinkExt as _, sink, stream};
 use provider_session_machines::harness_lifecycle::{
     CreatedSetupFact, EventPort, EventSendFuture, LifecycleReply, SessionCreatedSetupFact,
     SessionLifecycleFact, SettingFact,
 };
+use provider_session_machines::{
+    ProviderSettingChoice, ProviderSettingKind, ProviderSettingsCatalog,
+    ProviderSettingsCatalogRecord,
+};
+use std::sync::Arc;
 use std::{num::NonZeroUsize, sync::OnceLock};
+use switchboard_harness_contracts::{
+    ConnectionEpoch, CreateAttempt, HarnessSessionId, LoadAttempt, OwnerAddress, OwnerIncarnation,
+    OwnerSetting, RestoreVia, RunAttempt, SessionGeneration, SettingApplication, SettingAttempt,
+    SettingValueId,
+};
 use switchboard_harness_contracts::{OpenRequest, OpeningFact, OpeningFailure, ReplyAdmission};
 use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
+use uuid::Uuid;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum ReplyId {
@@ -149,10 +166,14 @@ async fn admit(
     connection: &CancellationToken,
     ledger: &mut ReplyLedger<ReplyId, Holder>,
 ) -> Admission {
-    let fixture = Fixture::new().await;
     let owner = OwnerAddress {
-        incarnation: fixture.run.route.run.incarnation,
+        incarnation: OwnerIncarnation(Uuid::now_v7()),
         connection_epoch: ConnectionEpoch(Uuid::now_v7()),
+    };
+    let create = CreateAttempt(Uuid::now_v7());
+    let restore = RunAttempt {
+        generation: SessionGeneration::from_number(1),
+        attempt: LoadAttempt(Uuid::now_v7()),
     };
     let mut release_setup = None;
     let binding = OwnerOpenings::new(
@@ -163,10 +184,7 @@ async fn admit(
         tasks.clone(),
         connection.clone(),
     );
-    let OpenAttempt::Create(create) = fixture.create else {
-        panic!("fixture create identity");
-    };
-    let setup = || super::super::super::super::OpenSetup {
+    let setup = || OpenSetup {
         cwd: "/".into(),
         work_roots: Default::default(),
         scratch_folder: None,
@@ -184,10 +202,10 @@ async fn admit(
                     },
                 ),
                 Request::Restore => (
-                    ReplyId::Restore(fixture.restore.attempt.0),
+                    ReplyId::Restore(restore.attempt.0),
                     OpenRequest::Restore {
                         owner,
-                        run: fixture.restore,
+                        run: restore,
                         session: switchboard_harness_contracts::HarnessSessionId(
                             "queued-session".into(),
                         ),
@@ -217,17 +235,28 @@ async fn admit(
             )
         }
         Request::Configure => {
-            lock(&binding.attempts).insert(
-                super::super::super::super::OpeningSlot::Create(create),
-                super::super::super::OpeningRow {
-                    attempt: fixture.create,
-                    instance: OpeningInstance::default(),
-                    state: OpeningState::HeldCreate(HeldCreate {
-                        session: fixture.session(),
-                        requested: Box::default(),
-                    }),
-                },
-            );
+            let session = Box::new(fixture_session().await);
+            let mut attempts = lock(&binding.attempts);
+            let (instance, offer) = attempts
+                .begin_create(
+                    false,
+                    create,
+                    OpenCreateRequest {
+                        setup: setup(),
+                        requested: Default::default(),
+                        stopped: CancellationToken::new(),
+                    },
+                )
+                .unwrap_or_else(|_| panic!("create fixture admission"));
+            assert!(matches!(offer, Effect::OfferCreate(_)));
+            let slot = OpeningSlot::Create(create);
+            attempts
+                .apply(slot, &instance, Command::WriterAccepted)
+                .unwrap_or_else(|_| panic!("fixture create was taken"));
+            attempts
+                .apply(slot, &instance, Command::Created(session))
+                .unwrap_or_else(|_| panic!("fixture create returned a held session"));
+            drop(attempts);
             let id = ReplyId::Configure(create.0);
             let (reply, receipt) = reserve();
             ledger.reserve(id);
@@ -256,12 +285,9 @@ async fn admit(
                 .session
                 .set("queued-session".into())
                 .expect("bind preexisting provider session");
-            wire.install_opening_route(&fixture.run.route, "queued-session".into())
-                .expect("register actual ordered route");
-            let mut held = fixture.owned_restore();
-            held.held.setters.clear();
+            let mut session = fixture_session().await;
             if kind == ProviderSettingKind::Fast {
-                held.held.session.catalog =
+                session.catalog =
                     ProviderSettingsCatalog::from_record(Arc::new(ProviderSettingsCatalogRecord {
                         config_options: vec![switchboard_harness_contracts::ProviderConfigOption {
                             id: "fast".into(),
@@ -274,24 +300,53 @@ async fn admit(
                         ..Default::default()
                     }));
             }
-            let catalogue = held.held.session.catalog.clone().into_record();
-            lock(&binding.attempts).insert(
-                super::super::super::super::OpeningSlot::Run(fixture.restore.generation),
-                super::super::super::OpeningRow {
-                    attempt: fixture.attempt,
-                    instance: OpeningInstance::default(),
-                    state: OpeningState::HeldRestore(held),
-                },
-            );
+            let catalogue = session.catalog.clone().into_record();
+            let route = {
+                let mut attempts = lock(&binding.attempts);
+                let (instance, offer) = attempts
+                    .begin_restore(
+                        Some("queued-session"),
+                        owner,
+                        RestoreOpening {
+                            run: restore,
+                            session: HarnessSessionId("queued-session".into()),
+                            via: RestoreVia::Resume,
+                            setup: setup(),
+                            requested_mode: None,
+                        },
+                        CancellationToken::new(),
+                    )
+                    .unwrap_or_else(|_| panic!("restore fixture admission"));
+                let Effect::OfferRestore(start) = offer else {
+                    panic!("restore fixture requires a real route");
+                };
+                let slot = OpeningSlot::Run(restore.generation);
+                attempts
+                    .apply(slot, &instance, Command::WriterAccepted)
+                    .unwrap_or_else(|_| panic!("fixture restore was taken"));
+                attempts
+                    .apply(
+                        slot,
+                        &instance,
+                        Command::RestoreProgress(
+                            RestoreMilestone::held(session, None, None, false),
+                            None,
+                        ),
+                    )
+                    .unwrap_or_else(|_| panic!("fixture restore returned a held session"));
+                start.resources.route
+            };
+            wire.install_opening_route(&route, "queued-session".into())
+                .expect("register actual ordered route");
             let setting = OwnerSetting {
                 change: RunAttempt {
-                    generation: fixture.restore.generation,
+                    generation: restore.generation,
                     attempt: SettingApplication(Uuid::now_v7()),
                 },
                 kind,
             };
             let id = ReplyId::Setter {
-                restore: fixture.restore.attempt.0,
+                restore: restore.attempt.0,
                 application: setting.change.attempt.0,
             };
             ledger.reserve(id);
@@ -300,7 +355,7 @@ async fn admit(
             binding
                 .put_setting_back(
                     SettingAttempt {
-                        restore: fixture.restore,
+                        restore,
                         setting,
                         value: SettingValueId(
                             if kind == ProviderSettingKind::Fast {
@@ -407,4 +462,35 @@ async fn generated_opening_histories_drain_two_exact_reply_envelopes() {
         }
     }
     assert_eq!(visited, [[[true; 2]; 5]; 5]);
+}
+
+async fn fixture_session() -> OwnerOpenedSession {
+    let outgoing = sink::drain().sink_map_err(|infallible| match infallible {});
+    let incoming = stream::empty::<std::io::Result<String>>();
+    let connection: ConnectionTo<Agent> = Client
+        .builder()
+        .connect_with(Lines::new(outgoing, incoming), async |connection| {
+            Ok(connection)
+        })
+        .await
+        .expect("construct the held ACP fixture session");
+    OwnerOpenedSession {
+        provider_id: SessionId::new("matrix-session"),
+        connection,
+        route: None,
+        capabilities: Default::default(),
+        catalog: ProviderSettingsCatalog::from_record(ProviderSettingsCatalogRecord {
+            modes: vec![ProviderSettingChoice {
+                value: "ask".into(),
+                label: "Ask".into(),
+            }],
+            ..Default::default()
+        }),
+        behavior: Arc::new(ConnectionCatalogueBehavior),
+        buffer: Arc::default(),
+        projection: None,
+        in_folder: None,
+        observed_tool_calls: Arc::default(),
+        opening_disposal: None,
+    }
 }

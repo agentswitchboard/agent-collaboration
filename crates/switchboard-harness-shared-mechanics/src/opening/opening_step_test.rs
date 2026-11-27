@@ -1,4 +1,5 @@
 use super::*;
+use crate::opening::opening_test_adapter::TestOpening;
 use tokio_util::sync::CancellationToken;
 
 #[test]
@@ -13,7 +14,7 @@ fn an_undeclared_outcome_removes_the_row_and_keeps_a_typed_fault() {
         previous_run: None,
         previous_offer: None,
     }
-    .validate(Some(OpeningState::ConfiguringCreate(stopped)), Effect::None);
+    .validate::<TestOpening>(Some(OpeningState::ConfiguringCreate(stopped)), Effect::None);
     assert!(stored.is_none());
     let Effect::Fault(fault) = effect else {
         panic!("the invalid handler outcome must be an internal fault");
@@ -26,15 +27,13 @@ fn an_undeclared_outcome_removes_the_row_and_keeps_a_typed_fault() {
 
 #[test]
 fn an_already_answered_gone_route_has_no_restore_receipt_to_await() {
-    use provider_session_machines::{
-        SessionGeneration,
-        session_owner::{ConnectionEpoch, OwnerAddress, OwnerIncarnation},
+    use switchboard_harness_contracts::{
+        ConnectionEpoch, OwnerAddress, OwnerIncarnation, SessionGeneration,
     };
-    use uuid::Uuid;
 
     let owner = OwnerAddress {
-        incarnation: OwnerIncarnation(Uuid::now_v7()),
-        connection_epoch: ConnectionEpoch(Uuid::now_v7()),
+        incarnation: OwnerIncarnation("019f0000-0000-7000-8000-000000001274".parse().unwrap()),
+        connection_epoch: ConnectionEpoch("019f0000-0000-7000-8000-000000001334".parse().unwrap()),
     };
     let run = super::super::RunResources::new(
         owner,
@@ -43,7 +42,7 @@ fn an_already_answered_gone_route_has_no_restore_receipt_to_await() {
     );
     let route = run.route.clone();
     let instance = OpeningInstance::default();
-    let Ok((Some(lost), Effect::Release(_))) = step(
+    let Ok((Some(lost), Effect::Release(_))) = step::<TestOpening>(
         OpeningState::Active(run),
         Command::RouteRemoved(route),
         &instance,

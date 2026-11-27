@@ -1,42 +1,34 @@
 //! Independent expectations for the opening declaration and owned effects.
 
-use super::super::super::{OpeningAttempts, lock};
 use super::super::RestoreReceiptStage;
 use super::*;
-use crate::acp_transport::ReadmitOutcome;
-use crate::owner_opening_disposal::OpeningDisposalProbe;
+use crate::opening::opening_test_adapter::{
+    DisposalProbe, DisposalToken, HeldTable, TestOpenedSession, TestOpening, TestRestoreSignal,
+    ignore_setting_reply,
+};
+use crate::run_ledger::ReadmitOutcome;
 use Edge as E;
 use OpeningPhase as P;
-use agent_client_protocol::{Agent, Client, ConnectionTo, schema::v1::SessionId};
-use provider_session_machines::{
-    ProviderSettingChoice, ProviderSettingKind, ProviderSettingsCatalogRecord, SessionGeneration,
-    harness_lifecycle::{CreateAttempt, OpenAttempt, SettingAttempt},
-    session_lifecycle_machine::{CloseAttempt, LoadAttempt},
-    session_owner::{ConnectionEpoch, OwnerAddress, OwnerIncarnation, OwnerSetting, RunAttempt},
-    session_setting_machine::{SettingApplication, SettingValueId},
+use std::{cell::RefCell, sync::Arc};
+use switchboard_harness_contracts::{
+    AcceptedRunSettings, CloseAttempt, CloseUncertainty, ConnectionEpoch, CreateAttempt,
+    LoadAttempt, OpenAttempt, OwnerAddress, OwnerIncarnation, OwnerSetting, ProviderSettingChoice,
+    ProviderSettingKind, ProviderSettingsCatalogRecord, RunAttempt, SessionGeneration,
+    SettingApplication, SettingAttempt, SettingValueId,
 };
-use std::{
-    cell::RefCell,
-    sync::{Arc, Mutex},
-};
-use switchboard_harness_contracts::{CloseUncertainty, ReservedReply};
 use tokio_util::sync::CancellationToken;
-use uuid::Uuid;
 
-#[path = "owner_acp_opening_matrix_expectations.rs"]
+#[path = "opening_matrix_expectations.rs"]
 mod expectations;
-#[path = "owner_acp_opening_late_receipts_test.rs"]
+#[path = "opening_late_receipts_test.rs"]
 mod late_receipts;
-#[path = "owner_acp_opening_payloads_test.rs"]
+#[path = "opening_payloads_test.rs"]
 mod payloads;
-#[path = "owner_acp_opening_reply_envelopes_test.rs"]
-mod reply_envelopes;
-#[path = "owner_acp_opening_worker_receipts_test.rs"]
+#[path = "opening_worker_receipts_test.rs"]
 mod worker_receipts;
 use expectations::{expected, expected_actions};
 
 struct Fixture {
-    connection: ConnectionTo<Agent>,
     run: super::super::RunResources,
     attempt: OpenAttempt,
     create: OpenAttempt,
@@ -45,43 +37,34 @@ struct Fixture {
     setter: OpeningOffer,
     catalogue: Arc<ProviderSettingsCatalogRecord>,
     stopped: CancellationToken,
-    table: Mutex<OpeningAttempts>,
-    disposals: RefCell<Vec<OpeningDisposalProbe>>,
+    table: HeldTable,
+    disposals: RefCell<Vec<DisposalProbe>>,
 }
 
 impl Fixture {
-    async fn new() -> Self {
-        use agent_client_protocol::Lines;
-        use futures_util::{SinkExt as _, sink, stream};
-
-        let outgoing = sink::drain().sink_map_err(|infallible| match infallible {});
-        let incoming = stream::empty::<std::io::Result<String>>();
-        let connection = Client
-            .builder()
-            .connect_with(Lines::new(outgoing, incoming), async |connection| {
-                Ok(connection)
-            })
-            .await
-            .expect("construct an inert SDK resource for the pure transition");
+    fn new() -> Self {
         let owner = OwnerAddress {
-            incarnation: OwnerIncarnation(Uuid::now_v7()),
-            connection_epoch: ConnectionEpoch(Uuid::now_v7()),
+            incarnation: OwnerIncarnation("019f0000-0000-7000-8000-000000001595".parse().unwrap()),
+            connection_epoch: ConnectionEpoch(
+                "019f0000-0000-7000-8000-000000001659".parse().unwrap(),
+            ),
         };
         let generation = SessionGeneration::from_number(1);
         let restore = RunAttempt {
             generation,
-            attempt: LoadAttempt(Uuid::now_v7()),
+            attempt: LoadAttempt("019f0000-0000-7000-8000-000000001843".parse().unwrap()),
         };
         let close = RunAttempt {
             generation,
-            attempt: CloseAttempt(Uuid::now_v7()),
+            attempt: CloseAttempt("019f0000-0000-7000-8000-000000001961".parse().unwrap()),
         };
         let stopped = CancellationToken::new();
         Self {
-            connection,
             run: super::super::RunResources::new(owner, generation, &stopped),
             attempt: OpenAttempt::Restore(restore),
-            create: OpenAttempt::Create(CreateAttempt(Uuid::now_v7())),
+            create: OpenAttempt::Create(CreateAttempt(
+                "019f0000-0000-7000-8000-000000002236".parse().unwrap(),
+            )),
             restore,
             close,
             setter: OpeningOffer::default(),
@@ -93,29 +76,17 @@ impl Fixture {
                 ..Default::default()
             }),
             stopped,
-            table: Mutex::default(),
+            table: HeldTable::default(),
             disposals: RefCell::default(),
         }
     }
 
-    fn session(&self) -> Box<OwnerOpenedSession> {
-        Box::new(OwnerOpenedSession {
-            provider_id: SessionId::new("matrix-session"),
-            connection: self.connection.clone(),
-            route: None,
-            capabilities: Default::default(),
-            catalog: ProviderSettingsCatalog::from_record(Arc::clone(&self.catalogue)),
-            behavior: Arc::new(crate::owner_session_setting::tests::ConnectionCatalogueBehavior),
-            buffer: Arc::default(),
-            projection: None,
-            in_folder: None,
-            observed_tool_calls: Arc::default(),
-            opening_disposal: Some(self.disposal_token()),
-        })
+    fn session(&self) -> Box<TestOpenedSession> {
+        Box::new(TestOpenedSession::new(self.disposal_token()))
     }
 
-    fn disposal_token(&self) -> crate::owner_opening_disposal::OpeningDisposalToken {
-        let probe = OpeningDisposalProbe::default();
+    fn disposal_token(&self) -> DisposalToken {
+        let probe = DisposalProbe::default();
         let token = probe.bind(&self.table);
         self.disposals.borrow_mut().push(probe);
         token
@@ -124,10 +95,8 @@ impl Fixture {
     fn restore_signal(
         &self,
         sender: tokio::sync::oneshot::Sender<RestoreDecision>,
-    ) -> super::super::RestoreSignal {
-        let mut signal = super::super::RestoreSignal::new(sender);
-        signal._disposal = Some(Box::new(self.disposal_token()));
-        signal
+    ) -> TestRestoreSignal {
+        TestRestoreSignal::new(sender, self.disposal_token())
     }
 
     fn assert_disposals(&self) {
@@ -142,7 +111,9 @@ impl Fixture {
             setting: OwnerSetting {
                 change: RunAttempt {
                     generation: self.restore.generation,
-                    attempt: SettingApplication(Uuid::now_v7()),
+                    attempt: SettingApplication(
+                        "019f0000-0000-7000-8000-000000003705".parse().unwrap(),
+                    ),
                 },
                 kind: ProviderSettingKind::Mode,
             },
@@ -151,26 +122,20 @@ impl Fixture {
         }
     }
 
-    fn pending_setter(&self) -> super::super::PendingSetter {
+    fn pending_setter(&self) -> super::super::PendingSetter<TestOpening> {
         let attempt = self.setter_request();
         super::super::PendingSetter {
             claim: self.setter.clone(),
             plan: Some(SetterPlan {
                 restore: attempt.restore,
                 setting: attempt.setting,
-                wire: OwnerSettingWirePlan::from_work_catalog(
-                    "matrix-session".into(),
-                    &ProviderSettingsCatalog::from_record(attempt.catalogue),
-                    attempt.setting.kind,
-                    attempt.value.0,
-                    None,
-                )
-                .expect("setter offered in test catalogue"),
+                wire: TestOpening::plan_setting_put_back("matrix-session".into(), attempt, None)
+                    .expect("setter offered in test catalogue"),
             }),
         }
     }
 
-    fn owned_restore(&self) -> RoutedRestore {
+    fn owned_restore(&self) -> RoutedRestore<TestOpening> {
         RoutedRestore {
             run: self.run.clone(),
             held: Box::new(HeldRestore {
@@ -183,15 +148,8 @@ impl Fixture {
     }
 }
 
-struct IgnoreSettingReply;
-impl ReservedReply<provider_session_machines::harness_lifecycle::SettingFact>
-    for IgnoreSettingReply
-{
-    fn send(self: Box<Self>, _: provider_session_machines::harness_lifecycle::SettingFact) {}
-}
-
 impl Fixture {
-    fn state(&self, phase: P, event: E) -> Option<OpeningState> {
+    fn state(&self, phase: P, event: E) -> Option<OpeningState<TestOpening>> {
         use super::super::PendingCreate;
         use OpeningState as S;
         let run = self.run.clone();
@@ -385,7 +343,7 @@ impl Fixture {
         Some(state)
     }
 
-    fn command(&self, phase: P, event: E) -> Option<Command> {
+    fn command(&self, phase: P, event: E) -> Option<Command<TestOpening>> {
         let command = match event {
             E::WriterAccepted => Command::WriterAccepted,
             E::WriterRefused => Command::WriterRefused,
@@ -426,10 +384,7 @@ impl Fixture {
             },
             E::SetterReserved => Command::SetterReserved(
                 self.setter.clone(),
-                crate::owner_opening_disposal::observe_reply(
-                    Box::new(IgnoreSettingReply),
-                    Some(self.disposal_token()),
-                ),
+                ignore_setting_reply(self.disposal_token()),
             ),
             E::SetterDone => Command::SetterDone(self.setter.clone()),
             E::AcceptSettings | E::AcceptCreatedSettings => {
@@ -535,7 +490,11 @@ enum Action {
     ResolveRestore,
 }
 
-fn actual_actions(effect: &Effect, fixture: &Fixture, instance: &OpeningInstance) -> Vec<Action> {
+fn actual_actions(
+    effect: &Effect<TestOpening>,
+    fixture: &Fixture,
+    instance: &OpeningInstance,
+) -> Vec<Action> {
     use Action as A;
     match effect {
         Effect::None | Effect::Rollback(None) => vec![A::Hold],
@@ -622,7 +581,7 @@ fn actual_actions(effect: &Effect, fixture: &Fixture, instance: &OpeningInstance
 
 #[tokio::test]
 async fn every_applicable_owned_step_matches_the_independent_effect_matrix() {
-    let fixture = Fixture::new().await;
+    let fixture = Fixture::new();
     for &phase in P::ALL {
         for &event in E::ALL {
             if !expectations::canonical_stimulus(phase, event) {
@@ -649,13 +608,13 @@ async fn every_applicable_owned_step_matches_the_independent_effect_matrix() {
             } else {
                 fixture.attempt
             };
-            let row = super::super::OpeningRow {
+            let row: super::super::OpeningRow<TestOpening> = super::super::OpeningRow {
                 attempt: identity,
                 instance: instance.clone(),
                 state,
             };
             let result = {
-                let _table = lock(&fixture.table);
+                let _table = fixture.table.lock();
                 row.apply(&instance, command)
             };
             match (declared, result) {
@@ -699,9 +658,9 @@ async fn every_applicable_owned_step_matches_the_independent_effect_matrix() {
 
 #[tokio::test]
 async fn successful_reopen_receipt_cannot_revive_an_invalidated_route() {
-    let fixture = Fixture::new().await;
+    let fixture = Fixture::new();
     let instance = OpeningInstance::default();
-    let row = super::super::OpeningRow {
+    let row: super::super::OpeningRow<TestOpening> = super::super::OpeningRow {
         attempt: fixture.attempt,
         instance: instance.clone(),
         state: OpeningState::Readmitting {
@@ -724,8 +683,36 @@ async fn successful_reopen_receipt_cannot_revive_an_invalidated_route() {
 }
 
 #[tokio::test]
+async fn marker_absent_receipt_cannot_revive_an_invalidated_route() {
+    let fixture = Fixture::new();
+    let instance = OpeningInstance::default();
+    let row: super::super::OpeningRow<TestOpening> = super::super::OpeningRow {
+        attempt: fixture.attempt,
+        instance: instance.clone(),
+        state: OpeningState::Readmitting {
+            run: fixture.run.clone(),
+            attempt: fixture.close.attempt,
+        },
+    };
+    fixture.run.route.mark_removed();
+    let (next, effect) = row
+        .apply(
+            &instance,
+            Command::ReadmitResult(fixture.close.attempt, ReadmitOutcome::MarkerAbsent),
+        )
+        .unwrap_or_else(|_| {
+            panic!("settle the marker-absent readmission on the invalidated exact route")
+        });
+    assert_eq!(next.map(|row| row.phase()), Some(P::RouteLost));
+    assert_eq!(
+        actual_actions(&effect, &fixture, &instance),
+        vec![Action::Remove]
+    );
+}
+
+#[tokio::test]
 async fn stopped_writer_only_releases_the_matching_owed_receipt() {
-    let fixture = Fixture::new().await;
+    let fixture = Fixture::new();
     for owed in 0..4 {
         for arrived in 0..4 {
             let run = fixture.run.clone();
@@ -742,7 +729,7 @@ async fn stopped_writer_only_releases_the_matching_owed_receipt() {
                 _ => Command::CloseSettled(CloseFact::Closed { run: fixture.close }),
             };
             let instance = OpeningInstance::default();
-            let row = super::super::OpeningRow {
+            let row: super::super::OpeningRow<TestOpening> = super::super::OpeningRow {
                 attempt: fixture.attempt,
                 instance: instance.clone(),
                 state: OpeningState::StoppedAwaitingReply(receipt),
@@ -765,11 +752,11 @@ async fn stopped_writer_only_releases_the_matching_owed_receipt() {
 
 #[tokio::test]
 async fn a_deferred_load_is_applied_only_when_close_was_unoffered() {
-    let fixture = Fixture::new().await;
+    let fixture = Fixture::new();
     for writer_took_close in [false, true] {
         let instance = OpeningInstance::default();
         let (outcome, _waiting) = tokio::sync::oneshot::channel();
-        let row = super::super::OpeningRow {
+        let row: super::super::OpeningRow<TestOpening> = super::super::OpeningRow {
             attempt: fixture.attempt,
             instance: instance.clone(),
             state: OpeningState::OfferingClose {
@@ -783,7 +770,7 @@ async fn a_deferred_load_is_applied_only_when_close_was_unoffered() {
             },
         };
         let result = {
-            let _table = lock(&fixture.table);
+            let _table = fixture.table.lock();
             row.apply(
                 &instance,
                 Command::CloseOffered(fixture.close, writer_took_close),
@@ -815,3 +802,6 @@ async fn a_deferred_load_is_applied_only_when_close_was_unoffered() {
         fixture.assert_disposals();
     }
 }
+
+#[path = "opening_effect_order_test.rs"]
+mod effect_order;

@@ -1,8 +1,8 @@
 use super::*;
-use provider_session_machines::harness_lifecycle::CreateAttempt;
-use uuid::Uuid;
+use crate::opening::opening_test_adapter::TestOpening;
+use switchboard_harness_contracts::CreateAttempt;
 
-fn queued_create(attempt: OpenAttempt, instance: OpeningInstance) -> OpeningRow {
+fn queued_create(attempt: OpenAttempt, instance: OpeningInstance) -> OpeningRow<TestOpening> {
     let row = OpeningRow::vacant(attempt, instance.clone(), false);
     let accepted = row.apply(
         &instance,
@@ -24,7 +24,9 @@ fn queued_create(attempt: OpenAttempt, instance: OpeningInstance) -> OpeningRow 
 
 #[test]
 fn owned_writer_step_commits_the_declared_awaiting_variant() {
-    let attempt = OpenAttempt::Create(CreateAttempt(Uuid::now_v7()));
+    let attempt = OpenAttempt::Create(CreateAttempt(
+        "019f0000-0000-7000-8000-000000000924".parse().unwrap(),
+    ));
     let instance = OpeningInstance::default();
     let row = queued_create(attempt, instance.clone());
 
@@ -47,7 +49,9 @@ fn owned_writer_step_commits_the_declared_awaiting_variant() {
 
 #[test]
 fn a_stale_step_keeps_the_entire_original_opening() {
-    let attempt = OpenAttempt::Create(CreateAttempt(Uuid::now_v7()));
+    let attempt = OpenAttempt::Create(CreateAttempt(
+        "019f0000-0000-7000-8000-000000001927".parse().unwrap(),
+    ));
     let instance = OpeningInstance::default();
     let row = queued_create(attempt, instance.clone());
 

@@ -1,12 +1,10 @@
 //! Route untagged ACP updates to the current restore's own stream.
 
-use crate::{
-    acp_transport::{RestoreSelection, TransportRun},
-    owner_opening_instance::OpeningInstance,
-};
+use crate::acp_transport::{RestoreSelection, TransportRun};
 use agent_client_protocol::Dispatch;
 use session_event_model::session_profile_codec::STATE_METHOD;
 use std::sync::{Mutex, PoisonError};
+use switchboard_harness_shared_mechanics::opening::OpeningInstance;
 use tokio::sync::mpsc;
 
 #[derive(Default)]
