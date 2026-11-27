@@ -1,0 +1,10 @@
+id: test-attr-fn
+language: Rust
+rule:
+  kind: function_item
+  follows:
+    kind: attribute_item
+    regex: "test"
+    stopBy:
+      not:
+        kind: attribute_item

@@ -1,0 +1,5 @@
+id: inner-doc
+language: Rust
+rule:
+  kind: line_comment
+  regex: "^//!"

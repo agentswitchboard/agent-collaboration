@@ -1,0 +1,12 @@
+id: top-item
+language: Rust
+rule:
+  any:
+    - kind: function_item
+    - kind: struct_item
+    - kind: enum_item
+    - kind: trait_item
+    - kind: impl_item
+    - kind: mod_item
+    - kind: type_item
+  inside: { kind: source_file }

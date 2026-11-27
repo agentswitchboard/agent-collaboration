@@ -1,0 +1,5 @@
+minimumReleaseAgeExclude:
+  - "@sunstack/sdk-darwin-arm64@0.25.0"
+  - "@sunstack/sdk-linux-arm64-gnu@0.25.0"
+  - "@sunstack/sdk-linux-x64-gnu@0.25.0"
+  - "@sunstack/sdk@0.25.0"

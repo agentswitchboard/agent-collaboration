@@ -1,0 +1,247 @@
+{
+  "R001": {
+    "name": "review.time.test_file_waits_on_real_time",
+    "evidence": "test_call_file",
+    "severity": "warn",
+    "questions": {
+      "waits_on_real_time": {
+        "type": "noul",
+        "instructions": {
+          "check": "function",
+          "context": "call",
+          "task": "Does this test need real time to pass for its expected outcome at this clock read or sleep: does it wait for time itself to move (an expiry or deadline in the code under test to arrive), give the code under test time to make progress or win a race, or assert on how much real time elapsed?"
+        },
+        "criteria": {
+          "true": "The test passes only because real time moves: it sleeps or loops until an expiry or deadline in the code under test arrives, sleeps so a background task or actor gets ahead, simulates slowness with a sleep, or asserts on measured elapsed time.",
+          "false": "The time is a fixture value (such as now minus 40 days), seeds a fake clock, stamps a record, or is a deadline that only bounds how long the test waits for an event or a process and fires only when the test is already failing, including a short poll interval inside such a wait."
+        }
+      }
+    },
+    "decision": {
+      "start": "is_tokio",
+      "steps": {
+        "is_tokio": {
+          "mechanical_check": {
+            "tool": "regex",
+            "field": "call",
+            "pattern": "^tokio::time::(sleep|Instant::now)"
+          },
+          "yes": "paused",
+          "no": "waits_on_real_time"
+        },
+        "paused": {
+          "mechanical_check": {
+            "tool": "regex",
+            "field": "paused",
+            "pattern": "."
+          },
+          "yes": "pass",
+          "no": "waits_on_real_time"
+        },
+        "waits_on_real_time": {
+          "ask": "waits_on_real_time",
+          "yes_at_or_above": 0.7,
+          "no_at_or_below": 0.3,
+          "yes": {
+            "finding": "This test looks to need real time to pass for its outcome; drive the injected clock or wait on an event instead.",
+            "at": "call"
+          },
+          "no": "read_whole",
+          "uncertain": "uncertain"
+        },
+        "read_whole": {
+          "mechanical_check": {
+            "tool": "complete",
+            "field": "function"
+          },
+          "yes": "pass",
+          "no": "uncertain"
+        }
+      }
+    }
+  },
+  "R002": {
+    "name": "review.time.inline_test_waits_on_real_time",
+    "evidence": "test_call_inline",
+    "severity": "warn",
+    "questions": {
+      "waits_on_real_time": {
+        "type": "noul",
+        "instructions": {
+          "check": "function",
+          "context": "call",
+          "task": "Does this test need real time to pass for its expected outcome at this clock read or sleep: does it wait for time itself to move (an expiry or deadline in the code under test to arrive), give the code under test time to make progress or win a race, or assert on how much real time elapsed?"
+        },
+        "criteria": {
+          "true": "The test passes only because real time moves: it sleeps or loops until an expiry or deadline in the code under test arrives, sleeps so a background task or actor gets ahead, simulates slowness with a sleep, or asserts on measured elapsed time.",
+          "false": "The time is a fixture value (such as now minus 40 days), seeds a fake clock, stamps a record, or is a deadline that only bounds how long the test waits for an event or a process and fires only when the test is already failing, including a short poll interval inside such a wait."
+        }
+      }
+    },
+    "decision": {
+      "start": "is_tokio",
+      "steps": {
+        "is_tokio": {
+          "mechanical_check": {
+            "tool": "regex",
+            "field": "call",
+            "pattern": "^tokio::time::(sleep|Instant::now)"
+          },
+          "yes": "paused",
+          "no": "waits_on_real_time"
+        },
+        "paused": {
+          "mechanical_check": {
+            "tool": "regex",
+            "field": "paused",
+            "pattern": "."
+          },
+          "yes": "pass",
+          "no": "waits_on_real_time"
+        },
+        "waits_on_real_time": {
+          "ask": "waits_on_real_time",
+          "yes_at_or_above": 0.7,
+          "no_at_or_below": 0.3,
+          "yes": {
+            "finding": "This test looks to need real time to pass for its outcome; drive the injected clock or wait on an event instead.",
+            "at": "call"
+          },
+          "no": "read_whole",
+          "uncertain": "uncertain"
+        },
+        "read_whole": {
+          "mechanical_check": {
+            "tool": "complete",
+            "field": "function"
+          },
+          "yes": "pass",
+          "no": "uncertain"
+        }
+      }
+    }
+  },
+  "R003": {
+    "name": "review.time.production_decides_on_system_clock",
+    "evidence": "prod_call",
+    "severity": "warn",
+    "questions": {
+      "clock_source": {
+        "type": "noul",
+        "instructions": {
+          "check": "function",
+          "context": "call",
+          "task": "Is this function a clock source: does it return the time it reads at this call to its caller, so other code gets the current time from it?"
+        },
+        "criteria": {
+          "true": "The function exists to hand out the current time: it reads the clock and returns that time, converted or not, as its result.",
+          "false": "The function uses the time for its own work, or passes it to another call, and does not return it as its result."
+        }
+      },
+      "system_rule": {
+        "type": "noul",
+        "instructions": {
+          "check": "function",
+          "context": "call",
+          "task": "Does the time read at this call set or check time-based state of the system own things, such as when a cursor, token, lease or session expires, or when scheduled work is due?"
+        },
+        "criteria": {
+          "true": "The time is used to compute or compare an expiry, lifetime, due time or schedule that is part of the system own state, such as a cursor that lives 60 seconds, a token expiry time, or which scheduled items are due now.",
+          "false": "The time only bounds how long to keep waiting on or retrying an operation (a socket, a child process, a channel, a poll, a remote call, a busy database or a storage write); or it is stored as a timestamp of when something happened, logged, displayed, or measured for reporting."
+        }
+      }
+    },
+    "decision": {
+      "start": "clock_home",
+      "steps": {
+        "clock_home": {
+          "mechanical_check": {
+            "tool": "regex",
+            "field": "function",
+            "pattern": "^\\s*(pub(\\([a-z]+\\))?\\s+)?fn (now|sleep_until)\\(\\s*&self"
+          },
+          "yes": "not_applicable",
+          "no": "clock_source"
+        },
+        "clock_source": {
+          "ask": "clock_source",
+          "yes_at_or_above": 0.7,
+          "no_at_or_below": 0.3,
+          "yes": {
+            "finding": "This function is a clock source outside the injected clock; code that calls it decides from real time and cannot be tested without waiting.",
+            "at": "call"
+          },
+          "no": "system_rule",
+          "uncertain": "system_rule"
+        },
+        "system_rule": {
+          "ask": "system_rule",
+          "yes_at_or_above": 0.7,
+          "no_at_or_below": 0.3,
+          "yes": {
+            "finding": "The system clock drives one of the system own rules here (expiry, renewal, retry or schedule), so that rule cannot be tested without real time.",
+            "at": "call"
+          },
+          "no": "read_whole",
+          "uncertain": "uncertain"
+        },
+        "read_whole": {
+          "mechanical_check": {
+            "tool": "complete",
+            "field": "function"
+          },
+          "yes": "pass",
+          "no": "uncertain"
+        }
+      }
+    }
+  },
+  "R004": {
+    "name": "review.crate.file_within_stated_job",
+    "evidence": "rust_file",
+    "severity": "warn",
+    "reference": {
+      "crate": "codex-router-host",
+      "crate_job": "The codex-router-host crate only builds components and injects them: no session logic, state machine, stored or wire type, or SQL lives in it, and a module is added to it only if it constructs or wires something."
+    },
+    "questions": {
+      "other_work": {
+        "type": "noul",
+        "instructions": {
+          "check": "items",
+          "against": "reference.crate_job",
+          "context": "doc",
+          "task": "Does this file own a rule or behaviour of its own that belongs to some other job than constructing and wiring components?"
+        },
+        "criteria": {
+          "true": "The file owns logic another crate would own: a policy (which value wins, what is refused or allowed, protected or reserved values, a hardcoded capability list), a type that defines a stored, settings or wire format, retry, probe or supervision loops over a process, a migration, a state machine, session or domain logic, delivery or protocol handling, an inventory or a cache.",
+          "false": "The file builds components, passes configuration values through, maps errors and applies defaults while assembling, injects ports or adapters, or starts the service. Small checks that only keep the wiring itself safe do not count as owning a rule."
+        }
+      }
+    },
+    "decision": {
+      "start": "other_work",
+      "steps": {
+        "other_work": {
+          "ask": "other_work",
+          "yes_at_or_above": 0.7,
+          "no_at_or_below": 0.3,
+          "yes": {
+            "finding": "This Host file holds work beyond constructing and wiring components; check whether it belongs in another crate.",
+            "at": "items"
+          },
+          "no": "read_whole",
+          "uncertain": "uncertain"
+        },
+        "read_whole": {
+          "mechanical_check": {
+            "tool": "complete",
+            "field": "items"
+          },
+          "yes": "pass",
+          "no": "uncertain"
+        }
+      }
+    }
+  }
+}
