@@ -97,6 +97,46 @@ async fn a_late_stop_rolls_back_the_timeout_and_its_new_retention_due_work() {
 }
 
 #[tokio::test]
+async fn a_timeout_restores_the_existing_attempt_when_the_transaction_rolls_back() {
+    let (fixture, holder, _, raise, _) = waiting_approval("Timeout with a previous attempt").await;
+    fixture
+        .alter_fixture(
+            "INSERT INTO engine_work_attempts
+            (attempt_id, machine_kind, subject_key, state, failure_count, next_try_at,
+             last_failure, first_failed_at, last_failed_at, created_at, updated_at)
+         SELECT '019ac19f-aa00-7000-8000-00000000a185', 'approval_request', approval_row_id,
+                'failing', 1, '1970-01-01T01:00:00.000Z', 'statement_rejected',
+                '1970-01-01T00:55:00.000Z', '1970-01-01T00:55:00.000Z',
+                '1970-01-01T00:55:00.000Z', '1970-01-01T00:55:00.000Z'
+         FROM approval_requests",
+        )
+        .await;
+    let attempt_ids = "SELECT attempt_id FROM engine_work_attempts AS attempt
+         JOIN approval_requests AS request ON request.approval_row_id = attempt.subject_key
+         WHERE attempt.machine_kind = 'approval_request'";
+    assert_eq!(
+        fixture.inspect_rows(attempt_ids).await,
+        ["019ac19f-aa00-7000-8000-00000000a185"]
+    );
+    let admission = ApprovalHolderAdmission::for_fixture_scope(&holder);
+    let stop = provider_stop(&raise);
+    fixture.clock.set_millis(HOUR);
+
+    let committed = assert_rollback_each_write(&fixture, 3, async |store| {
+        store.stop_from_holder(&admission, stop.clone()).await
+    })
+    .await;
+
+    assert_eq!(
+        committed.reply,
+        StopReply::Stands {
+            ending: StopReceiptEnding::TimedOut {}
+        }
+    );
+    assert!(fixture.inspect_rows(attempt_ids).await.is_empty());
+}
+
+#[tokio::test]
 async fn a_stop_rolls_back_closing_an_owed_ending() {
     let (fixture, holder, _, raise, _) = waiting_approval("Owed ending stop").await;
     fixture.clock.set_millis(HOUR);

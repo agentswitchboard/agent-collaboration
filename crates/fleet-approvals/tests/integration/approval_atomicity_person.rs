@@ -1,6 +1,7 @@
 use approval_request_protocol::{
     ApprovalDecideReply, ApprovalListFilter, ApprovalListReply, ApprovalReadReply, RaiseReply,
 };
+use central_engine_model::CENTRAL_RECORD_RETENTION_MILLIS;
 use fleet_approvals::{
     ApprovalApplyFailure, ApprovalCommitProof, ApprovalHolderScope, PersonApprovalStoreOutput,
     PersonApprovalStoreReply, apply_person_command,
@@ -17,7 +18,7 @@ use fleet_signin::{
 use super::{
     approval_atomicity_raise_stop::waiting_approval,
     approval_store_atomicity::assert_loan_rollback_each_write,
-    approval_store_cases::raise_and_commit,
+    approval_store_cases::{fixture_with_owner, raise_and_commit},
     fixtures::{HOUR, answer, key, operation_id, person_id, provider},
     native_approval_store::{ApprovalTransactionEvidence, NativeApprovalStoreFixture},
 };
@@ -120,6 +121,45 @@ async fn a_person_decision_rolls_back_its_ending_result_and_time() {
         decide_with_existing_actor(&fixture, &holder, raise.request_id(), 1, 7).await;
     assert!(matches!(reply, ApprovalDecideReply::SavedDecision { .. }));
     assert_eq!(offers, 1);
+}
+
+#[tokio::test]
+async fn a_person_decision_restores_the_pruned_log_row_when_the_transaction_rolls_back() {
+    let (fixture, holder, requester) = fixture_with_owner().await;
+    fixture
+        .clock
+        .set_millis(CENTRAL_RECORD_RETENTION_MILLIS + HOUR);
+    let request = provider(
+        &key(&holder.run, 1),
+        &requester,
+        "Decision with an old log row",
+    );
+    assert!(matches!(
+        raise_and_commit(&fixture, &holder, &request).await.0,
+        RaiseReply::Receipt { .. }
+    ));
+    fixture.alter_fixture(
+        "INSERT INTO runtime_request_log
+            (request_id, caller, content_digest, answer, created_at, updated_at)
+         VALUES ('019ac19f-aa00-7000-8000-00000000a186',
+                 '019ac19f-aa00-7000-8000-00000000a183',
+                 'aged-fixture-result', '{}', '1970-01-01T00:00:00.000Z', '1970-01-01T00:00:00.000Z')",
+    ).await;
+    let log_ids = "SELECT request_id FROM runtime_request_log ORDER BY request_id";
+    assert_eq!(
+        fixture.inspect_rows(log_ids).await,
+        ["019ac19f-aa00-7000-8000-00000000a186"]
+    );
+
+    let (reply, offers) =
+        decide_with_existing_actor(&fixture, &holder, request.request_id(), 1, 7).await;
+
+    assert!(matches!(reply, ApprovalDecideReply::SavedDecision { .. }));
+    assert_eq!(offers, 1);
+    assert_eq!(
+        fixture.inspect_rows(log_ids).await,
+        [operation_id(101).as_str()]
+    );
 }
 
 #[tokio::test]
