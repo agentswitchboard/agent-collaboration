@@ -1,14 +1,16 @@
 //! Private payloads for session loads and the typed items a session carries.
 
+mod decimal_count;
 mod item_identifiers;
+mod money_reading;
 mod object_reader;
 mod session_item;
 mod tool_call;
 mod usage_reading;
 
-pub use item_identifiers::{
-    GroupId, ItemId, ItemIdentifierError, ItemOrder, ItemOrderError, TurnId,
-};
+pub use decimal_count::{DecimalCount, DecimalTextError};
+pub use item_identifiers::{GroupId, ItemId, ItemIdentifierError, ItemOrder, TurnId};
+pub use money_reading::{MoneyAmount, MoneyAmountError, MoneyCurrency, MoneyCurrencyError};
 pub use session_item::{
     AssistantBody, GroupPlace, Item, ItemBody, PlanEntry, PlanEntryPriority, PlanEntryState,
     SessionBody, UserBody,

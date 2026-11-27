@@ -92,10 +92,10 @@ fn state_rejects_fields_owned_by_other_variants() {
 
 #[test]
 fn too_large_raw_input_refuses_a_value() {
-    let valid = r#"{"kind":{"kind":"other"},"action":{"kind":"other","input":{"kind":"tooLarge","bytes":8192}},"state":{"kind":"pending"},"locations":[]}"#;
+    let valid = r#"{"kind":{"kind":"other"},"action":{"kind":"other","input":{"kind":"tooLarge","bytes":"8192"}},"state":{"kind":"pending"},"locations":[]}"#;
     serde_json::from_str::<ToolCall>(valid).unwrap();
     assert_refused::<ToolCall>(
-        &valid.replace(r#""bytes":8192"#, r#""bytes":8192,"value":null"#),
+        &valid.replace(r#""bytes":"8192""#, r#""bytes":"8192","value":null"#),
         "action",
         "unknown field `value`",
     );

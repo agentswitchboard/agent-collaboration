@@ -5,6 +5,7 @@ use std::fmt;
 use serde::{Deserialize, Deserializer, Serialize};
 use workspace_ids::SessionRef;
 
+use crate::decimal_count::DecimalCount;
 use crate::object_reader::{deserialize_object, wire_enum, wire_object};
 
 wire_object! {
@@ -178,7 +179,7 @@ wire_enum! {
         /// An opaque JSON value, including null. Equality follows serde_json;
         /// numbers outside its exact representation are subject to its numeric limits.
         Value { value: serde_json::Value },
-        TooLarge { bytes: u64 },
+        TooLarge { bytes: DecimalCount },
     }
 }
 

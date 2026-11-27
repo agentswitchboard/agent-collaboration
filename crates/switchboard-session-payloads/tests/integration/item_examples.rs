@@ -120,9 +120,9 @@ fn unrecognized_tool_preserves_any_raw_json_or_a_size_report() {
         },
     );
     assert_wire(
-        r#"{"kind":"other","input":{"kind":"tooLarge","bytes":8192}}"#,
+        r#"{"kind":"other","input":{"kind":"tooLarge","bytes":"8192"}}"#,
         ToolAction::Other {
-            input: RawInput::TooLarge { bytes: 8192 },
+            input: RawInput::TooLarge { bytes: 8192.into() },
         },
     );
 }
@@ -354,8 +354,8 @@ fn plan_keeps_entry_order_and_usage_keeps_reported_count_or_money() {
                 metric: UsageMetric::ContextUsed,
                 scope: UsageScope::Turn,
                 amount: UsageAmount::Count {
-                    value: 9_007_199_254_740_993,
-                    capacity: Some(u64::MAX),
+                    value: 9_007_199_254_740_993.into(),
+                    capacity: Some(u64::MAX.into()),
                 },
             },
         },
@@ -367,8 +367,8 @@ fn plan_keeps_entry_order_and_usage_keeps_reported_count_or_money() {
                 metric: UsageMetric::Cost,
                 scope: UsageScope::Session,
                 amount: UsageAmount::Money {
-                    amount: "0.0400".into(),
-                    currency: "USD".into(),
+                    amount: "0.0400".parse().unwrap(),
+                    currency: "USD".parse().unwrap(),
                 },
             },
         },

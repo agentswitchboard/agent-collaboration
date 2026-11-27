@@ -2,68 +2,78 @@ use std::{fmt::Debug, str::FromStr};
 
 use serde::{Serialize, de::DeserializeOwned};
 use switchboard_session_payloads::{
-    GroupId, Item, ItemId, ItemIdentifierError, ItemOrder, ItemOrderError, TurnId, UsageAmount,
-    UsageReading,
+    DecimalCount, DecimalTextError, GroupId, Item, ItemId, ItemIdentifierError, ItemOrder,
+    RawInput, ToolCall, TurnId, UsageAmount, UsageReading,
 };
 
 use super::{assert_refused, assert_wire};
 
 #[test]
-fn orders_and_both_count_fields_keep_exact_decimal_text() {
-    for (decimal, value, count_wire) in [
+fn orders_usage_counts_and_byte_counts_keep_exact_decimal_text() {
+    for (decimal, value, count_wire, byte_wire) in [
         (
             r#""0""#,
             0,
             r#"{"kind":"count","value":"0","capacity":"0"}"#,
+            r#"{"kind":"tooLarge","bytes":"0"}"#,
         ),
         (
             r#""9007199254740993""#,
             9_007_199_254_740_993,
             r#"{"kind":"count","value":"9007199254740993","capacity":"9007199254740993"}"#,
+            r#"{"kind":"tooLarge","bytes":"9007199254740993"}"#,
         ),
         (
             r#""18446744073709551615""#,
             u64::MAX,
             r#"{"kind":"count","value":"18446744073709551615","capacity":"18446744073709551615"}"#,
+            r#"{"kind":"tooLarge","bytes":"18446744073709551615"}"#,
         ),
     ] {
         assert_wire(decimal, ItemOrder::from(value));
         assert_wire(
             count_wire,
             UsageAmount::Count {
-                value,
-                capacity: Some(value),
+                value: value.into(),
+                capacity: Some(value.into()),
+            },
+        );
+        assert_wire(
+            byte_wire,
+            RawInput::TooLarge {
+                bytes: value.into(),
             },
         );
     }
     assert_wire(
         r#"{"kind":"count","value":"0"}"#,
         UsageAmount::Count {
-            value: 0,
+            value: 0.into(),
             capacity: None,
         },
     );
 }
 
 #[test]
-fn malformed_decimal_text_is_refused_for_order_and_both_usage_counts() {
+fn malformed_decimal_text_is_refused_for_orders_and_counts() {
     for (decimal, reason) in [
-        ("", ItemOrderError::Empty),
-        ("007", ItemOrderError::LeadingZero),
-        ("+7", ItemOrderError::NonDecimal),
-        ("-7", ItemOrderError::NonDecimal),
-        ("1.5", ItemOrderError::NonDecimal),
-        ("７", ItemOrderError::NonDecimal),
-        ("18446744073709551616", ItemOrderError::OutOfRange),
+        ("", DecimalTextError::Empty),
+        ("007", DecimalTextError::LeadingZero),
+        ("+7", DecimalTextError::NonDecimal),
+        ("-7", DecimalTextError::NonDecimal),
+        ("1.5", DecimalTextError::NonDecimal),
+        ("７", DecimalTextError::NonDecimal),
+        ("18446744073709551616", DecimalTextError::OutOfRange),
     ] {
         assert_eq!(decimal.parse::<ItemOrder>(), Err(reason));
+        assert_eq!(decimal.parse::<DecimalCount>(), Err(reason));
         let wire = serde_json::to_string(decimal).unwrap();
         assert_decimal_refused(&wire, &reason.to_string());
     }
 }
 
 #[test]
-fn a_bare_json_number_is_refused_for_order_and_both_usage_counts() {
+fn a_bare_json_number_is_refused_for_orders_and_counts() {
     assert_decimal_refused("7", "integer `7`, expected a string");
 }
 
@@ -79,6 +89,10 @@ fn assert_decimal_refused(invalid: &str, reason: &str) {
     for valid in [r#""8""#, r#""9""#] {
         assert_refused::<UsageReading>(&reading.replace(valid, invalid), "amount", reason);
     }
+
+    let call = r#"{"kind":{"kind":"other"},"action":{"kind":"other","input":{"kind":"tooLarge","bytes":"8"}},"state":{"kind":"pending"},"locations":[]}"#;
+    serde_json::from_str::<ToolCall>(call).unwrap();
+    assert_refused::<ToolCall>(&call.replace(r#""8""#, invalid), "action", reason);
 }
 
 #[test]

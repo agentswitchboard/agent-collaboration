@@ -11,6 +11,7 @@ use workspace_ids::{SessionId, SessionIdError, SessionRef};
 
 mod item_actions;
 mod item_examples;
+mod item_money;
 mod item_numbers;
 mod item_schema;
 mod item_strictness;

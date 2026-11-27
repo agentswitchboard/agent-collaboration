@@ -1,6 +1,6 @@
 use std::fmt::Debug;
 
-use schemars::JsonSchema;
+use schemars::{JsonSchema, generate::SchemaSettings};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use switchboard_session_payloads::{
@@ -12,19 +12,18 @@ use switchboard_session_payloads::{
 use super::assert_refused;
 
 fn schema<T: JsonSchema>() -> Value {
-    serde_json::to_value(schemars::schema_for!(T)).unwrap()
+    let schema = SchemaSettings::draft2020_12()
+        .with(|settings| settings.inline_subschemas = true)
+        .into_generator()
+        .into_root_schema_for::<T>();
+    serde_json::to_value(schema).unwrap()
 }
 
 #[test]
 fn schema_uses_strings_for_exact_positions_counts_and_money() {
     assert_eq!(schema::<ItemOrder>()["type"], "string");
     for item_shape in [schema::<Item>(), schema::<GroupPlace>()] {
-        let position = &item_shape["properties"]["order"];
-        let position_shape = position["$ref"]
-            .as_str()
-            .and_then(|reference| reference.strip_prefix('#'))
-            .map_or(position, |pointer| item_shape.pointer(pointer).unwrap());
-        assert_eq!(position_shape["type"], "string");
+        assert_eq!(item_shape["properties"]["order"]["type"], "string");
     }
 
     let usage = schema::<UsageAmount>();
@@ -38,6 +37,11 @@ fn schema_uses_strings_for_exact_positions_counts_and_money() {
     assert_eq!(count["required"], json!(["kind", "value"]));
     let money = variant(variants, "money");
     assert_eq!(money["properties"]["amount"]["type"], "string");
+    assert_eq!(money["properties"]["currency"]["type"], "string");
+
+    let raw = schema::<RawInput>();
+    let too_large = variant(branches(&raw), "tooLarge");
+    assert_eq!(too_large["properties"]["bytes"]["type"], "string");
 }
 
 #[test]
