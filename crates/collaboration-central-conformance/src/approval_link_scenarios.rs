@@ -397,7 +397,7 @@ pub async fn received_frees_capacity_and_replacement_retires_run(
         "retirement retains every old request"
     );
     let retired_at = require_replaced_run(fixture, &target.router_run, &replacement).await?;
-    assert_retired_requests(&prior_requests, &retired_requests, &first, &retired_at);
+    require_retired_requests(&prior_requests, &retired_requests, &first, &retired_at)?;
     assert_eq!(
         retirement_destinations(fixture, &target.router_run).await?,
         prior_destinations
@@ -466,26 +466,26 @@ async fn require_replaced_run(
     Ok(retired_at.clone())
 }
 
-fn assert_retired_requests(
+fn require_retired_requests(
     before: &[Vec<SqlValue>],
     after: &[Vec<SqlValue>],
     first: &Raise,
     retired_at: &str,
-) {
+) -> Result<()> {
     let [received_before, waiting @ ..] = before else {
-        panic!("expected the received request before retirement");
+        return Err("expected the received request before retirement".into());
     };
     let [received_after, retired @ ..] = after else {
-        panic!("expected the received request after retirement");
+        return Err("expected the received request after retirement".into());
     };
-    assert_eq!(
-        received_before.first(),
-        Some(&text(first.request_id().as_str()))
-    );
-    assert_eq!(
-        received_after, received_before,
-        "retirement leaves the paid ending intact"
-    );
+    if received_before.first() != Some(&text(first.request_id().as_str()))
+        || received_after != received_before
+    {
+        return Err(format!(
+            "retirement must retain the exact paid request {}: before {received_before:?}, after {received_after:?}",
+            first.request_id().as_str(),
+        ).into());
+    }
     for (prior, settled) in waiting.iter().zip(retired) {
         let [
             SqlValue::Text(id),
@@ -496,28 +496,35 @@ fn assert_retired_requests(
             SqlValue::Text(ended_at),
         ] = settled.as_slice()
         else {
-            panic!("expected a retained request with a complete ending: {settled:?}");
+            return Err(
+                format!("expected a retained request with a complete ending: {settled:?}").into(),
+            );
         };
-        assert_eq!(prior.first(), Some(&text(id)));
-        assert_eq!(state, "ended");
-        assert_eq!(delivery, "closed_without_receipt");
-        assert_eq!(
-            ended_at, retired_at,
-            "all outstanding requests end at retirement"
-        );
+        if prior.first() != Some(&text(id))
+            || state != "ended"
+            || delivery != "closed_without_receipt"
+            || ended_at != retired_at
+        {
+            return Err(format!(
+                "expected {:?} to end without receipt at {retired_at}, got {settled:?}",
+                prior.first(),
+            )
+            .into());
+        }
         let reason = approval_request_protocol::CancelReason::RequesterGone {};
-        let ending: DeliverEndingRequest =
-            serde_json::from_str(ending).expect("retired request ending decodes");
-        assert_eq!(ending.request_id().as_str(), id);
-        assert_eq!(
-            ending.into_ending(),
-            approval_request_protocol::Ending::Cancelled { reason }
-        );
-        assert_eq!(
-            serde_json::from_str::<StopReceiptEnding>(compact).expect("compact ending decodes"),
-            StopReceiptEnding::Cancelled { reason }
-        );
+        let ending: DeliverEndingRequest = serde_json::from_str(ending)?;
+        if ending.request_id().as_str() != id
+            || ending.into_ending() != (approval_request_protocol::Ending::Cancelled { reason })
+            || serde_json::from_str::<StopReceiptEnding>(compact)?
+                != (StopReceiptEnding::Cancelled { reason })
+        {
+            return Err(format!(
+                "expected both endings for {id} to record RequesterGone: {settled:?}"
+            )
+            .into());
+        }
     }
+    Ok(())
 }
 
 async fn require_joined_capacity_refusal(
