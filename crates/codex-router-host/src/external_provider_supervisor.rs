@@ -41,6 +41,7 @@ mod provider_session_lifecycle;
 mod provider_session_scratch;
 pub(crate) use provider_session_scratch::PrepareProviderScratch;
 mod provider_settings_control;
+pub(crate) mod restore_failure_text;
 #[cfg(test)]
 pub(crate) use provider_settings_control::snapshot_settings;
 #[cfg(any(test, feature = "test-support"))]

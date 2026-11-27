@@ -1,5 +1,6 @@
 //! Map provider admission and prompt loss into the operation failure contract.
 
+use super::restore_failure_text::CodedRestoreFailure;
 use super::{OperationFailureCause, PromptRefusal, PromptSelectionRefusal};
 use super::{failure, failure_with_provider_code};
 use collaboration_protocol::{
@@ -152,7 +153,7 @@ pub(super) fn restore_operation_failure(
     target: SessionRef,
     failure: ProviderWireFailure,
 ) -> ConversationOperationFailure {
-    let reason = crate::provider_acp_session_loading::load_error_reason(failure);
+    let reason = CodedRestoreFailure::from_wire(failure).into_text();
     let mut result = runtime_failure(
         operation_id,
         Some(target),
