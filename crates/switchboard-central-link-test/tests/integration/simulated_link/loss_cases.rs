@@ -3,7 +3,8 @@ use central_link_client::ReadyLinkLane;
 use super::{
     CustodyRequestStatus, DataFrame, Duration, FrameKind, LinkFrame, MessageStatus, NetworkCustody,
     ReceiptFrameOutcome, ReceiptResult, assert_kept_receipt, assert_one_offer_per_socket,
-    assert_replayed_member, offered_message, queued_message, run_link_case, send_and_keep,
+    assert_replayed_member, offered_message, offers_for, queued_message, run_link_case,
+    send_and_keep,
 };
 
 #[test]
@@ -257,6 +258,82 @@ fn lost_receipt_reoffers_the_same_durably_kept_message() {
             "the repeat must preserve the original kept arrival"
         );
         assert_one_offer_per_socket(&case, &message);
+        case.close().await;
+    });
+}
+
+#[test]
+fn lost_receipt_result_retries_the_durable_decision_without_a_reoffer() {
+    run_link_case(|link| async move {
+        let mut case = NetworkCustody::start(link).await;
+        let message = send_and_keep(&mut case).await;
+        let after = case.link.network.hold_next(FrameKind::ReceiptResult);
+        case.advance_to_next_mark().await;
+        let lost_receipt = case.link.network.seen(after, FrameKind::Receipt).await;
+        let lost_result = case
+            .link
+            .network
+            .seen(after, FrameKind::ReceiptResult)
+            .await;
+        let LinkFrame::Data(DataFrame::ReceiptResults { results, .. }) = &lost_result.frame else {
+            panic!("expected Central's receipt result");
+        };
+        assert_eq!(results, &[ReceiptResult::Recorded]);
+        case.link.network.discard().await;
+        assert_eq!(
+            case.inbox.pending_receipts().await.unwrap().healthy.len(),
+            1
+        );
+
+        case.advance_to(lost_result.sent_at + Duration::from_secs(7));
+        let after = case.link.network.frames().len();
+        case.link.reset_socket().await;
+        case.link.reconnect().await;
+        assert!(matches!(
+            case.central_status(&message).await,
+            MessageStatus::Delivered { .. }
+        ));
+        let previous = case.next_receipt_outcome().await;
+        assert!(
+            matches!(
+                previous,
+                ReceiptFrameOutcome::RetryPending | ReceiptFrameOutcome::StaleCompletion
+            ),
+            "an unanswered receipt must remain pending, got {previous:?}"
+        );
+        assert_eq!(
+            case.inbox.pending_receipts().await.unwrap().healthy.len(),
+            1
+        );
+        case.confirm_receipt(&message).await;
+        let replay = case.link.network.seen(after, FrameKind::Receipt).await;
+        assert_ne!(replay.connection_port, lost_receipt.connection_port);
+        let LinkFrame::Data(DataFrame::Receipts {
+            receipts: first, ..
+        }) = lost_receipt.frame
+        else {
+            panic!("expected the original receipt");
+        };
+        let LinkFrame::Data(DataFrame::Receipts {
+            receipts: second, ..
+        }) = replay.frame
+        else {
+            panic!("expected the retried receipt");
+        };
+        assert_eq!(first, second);
+        assert!(
+            case.inbox
+                .pending_receipts()
+                .await
+                .unwrap()
+                .healthy
+                .is_empty()
+        );
+        assert_eq!(
+            offers_for(&case, &message).len(),
+            1,
+            "Central already recorded the receipt"
+        );
         case.close().await;
     });
 }

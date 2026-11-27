@@ -179,7 +179,7 @@ async fn reject_unmatched_answers(
     let (original_correlation, original_facts) = receipt_facts(first);
     let mut last_correlation = original_correlation.clone();
     for rejection in [
-        InvalidAnswer::StaleSocket,
+        InvalidAnswer::EarlierRequestReplay,
         InvalidAnswer::WrongCorrelation,
         InvalidAnswer::ShortResults,
     ] {
@@ -283,7 +283,7 @@ async fn assert_receipt_is_owed(case: &mut NetworkCustody, message: &MessageId, 
 
 #[derive(Clone, Copy, Debug)]
 enum InvalidAnswer {
-    StaleSocket,
+    EarlierRequestReplay,
     WrongCorrelation,
     ShortResults,
 }
@@ -291,7 +291,9 @@ enum InvalidAnswer {
 impl InvalidAnswer {
     fn name(self) -> &'static str {
         match self {
-            Self::StaleSocket => "prior socket answer",
+            Self::EarlierRequestReplay => {
+                "earlier request's answer replayed on the replacement connection"
+            }
             Self::WrongCorrelation => "wrong correlation",
             Self::ShortResults => "short result",
         }
@@ -299,7 +301,7 @@ impl InvalidAnswer {
 
     fn wire_reply(self, previous_answer: &InFlightFrame, current: &CorrelationId) -> Vec<u8> {
         let reply = match self {
-            Self::StaleSocket => previous_answer.frame.clone(),
+            Self::EarlierRequestReplay => previous_answer.frame.clone(),
             Self::WrongCorrelation => LinkFrame::Data(DataFrame::ReceiptResults {
                 correlation_id: "019f0000-0000-7000-8000-00000000ce19".parse().unwrap(),
                 results: vec![ReceiptResult::Recorded; 2],

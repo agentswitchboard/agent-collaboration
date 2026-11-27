@@ -14,6 +14,9 @@ enrollment and JWKS service.
 The receipt resend case drops the answer to a committed delivery and Seen batch,
 then checks replay, reply correlation and length, one handover, and final
 confirmation on the replacement connection.
+It replays an earlier request's answer through the replacement connection and
+checks that its old correlation is refused. The stale-connection completion guard
+is exercised separately at the [custody inbox boundary](../../switchboard-message-custody/tests/integration/inbox_custody.rs#L453).
 The reopen case drops the custody worker and driver while the receipt is owed
 and checks the same receipt after opening the persisted store and a fresh link.
 
