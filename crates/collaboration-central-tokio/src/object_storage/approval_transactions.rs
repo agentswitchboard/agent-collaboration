@@ -6,6 +6,10 @@ use central_link_call_composition::{
     ApprovalTransactionFuture, CommittedApprovalApply, OrganizationApprovalTransactions,
     OrganizationLoan,
 };
+#[cfg(feature = "test-support")]
+use central_link_call_composition::{
+    ApprovalWriteLoan, ApprovalWriteProbe, ProbedApprovalExecutor,
+};
 use central_storage::{AlarmPublication, BatchOutcome, ReadOutcome, Statement, StoreFailure};
 use fleet_identity_protocol::OrganizationId;
 use fleet_lent_transaction::CentralTransaction;
@@ -20,13 +24,18 @@ pub(crate) struct NativeApprovalLoan<'connection> {
     transaction: NativeTransaction<'connection>,
     wrote: &'connection AtomicBool,
     clock: Option<&'connection dyn Clock>,
+    #[cfg(feature = "test-support")]
+    write_probe: Option<ApprovalWriteLoan>,
 }
 
 impl CentralTransaction for NativeApprovalLoan<'_> {
     type Database = sqlx::Sqlite;
 
     fn executor(&mut self) -> impl sqlx::Executor<'_, Database = Self::Database> {
-        self.transaction.executor()
+        let executor = self.transaction.executor();
+        #[cfg(feature = "test-support")]
+        let executor = ProbedApprovalExecutor::new(executor, self.write_probe.as_ref());
+        executor
     }
 
     fn rows_affected(result: <Self::Database as sqlx::Database>::QueryResult) -> u64 {
@@ -44,14 +53,24 @@ impl ApprovalStatementLoan for NativeApprovalLoan<'_> {
     }
 
     async fn execute_lent(&mut self, statement: Statement) -> Result<u64, StoreFailure> {
+        #[cfg(feature = "test-support")]
+        let sql = statement.sql;
         let rows = execute_lent_statement(self.transaction.0, statement).await?;
         self.wrote.store(true, Ordering::Relaxed);
+        #[cfg(feature = "test-support")]
+        if let Some(probe) = &self.write_probe {
+            probe.after_statement(sql)?;
+        }
         Ok(rows)
     }
 }
 
 #[cfg(feature = "test-support")]
 impl ObjectStorage {
+    pub fn approval_write_probe(&self) -> &ApprovalWriteProbe {
+        &self.approval_write_probe
+    }
+
     pub fn hold_before_approval_commit(&self) -> fleet_runtime::HeldPause {
         self.central_publication_pauses
             .hold_central(fleet_runtime::PausePoint::BeforeApprovalCommit)
@@ -87,6 +106,8 @@ impl OrganizationApprovalTransactions for NativeSessionTransactions {
                     NativeApprovalLoan {
                         transaction: NativeTransaction(connection),
                         wrote: &wrote,
+                        #[cfg(feature = "test-support")]
+                        write_probe: self.storage.approval_write_probe.begin_loan(),
                         clock: self
                             .storage
                             .engine_publication

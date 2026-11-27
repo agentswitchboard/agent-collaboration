@@ -11,6 +11,8 @@ mod approval_dispatch;
 mod approval_fixture;
 mod approval_notice_recovery;
 mod approval_transaction;
+#[cfg(feature = "test-support")]
+mod approval_write_probe;
 mod organization_dispatch;
 mod organization_loan;
 mod parent_session_dispatch;
@@ -28,6 +30,8 @@ pub use approval_transaction::{
     ApprovalAlarmPublication, ApprovalStatementLoan, ApprovalTransactionFailure,
     ApprovalTransactionFuture, CommittedApprovalApply, OrganizationApprovalTransactions,
 };
+#[cfg(feature = "test-support")]
+pub use approval_write_probe::{ApprovalWriteLoan, ApprovalWriteProbe, ProbedApprovalExecutor};
 pub use organization_dispatch::{OrganizationLinkDispatcher, SessionEntropyUnavailable};
 pub use organization_loan::{
     OrganizationLoan, OrganizationSessionTransactions, SessionApplyFuture,
