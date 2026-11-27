@@ -345,6 +345,14 @@ async fn workerd_engine_delivers_or_recovers_approval_timeout_and_applies_stop_o
     Ok(())
 }
 
+#[tokio::test]
+async fn workerd_received_frees_approval_capacity_and_replacement_retires_run() -> Result<()> {
+    let fixture = Fixture::with_production_dispatcher().await?;
+    let result = collaboration_central_conformance::approval_link_scenarios::received_frees_capacity_and_replacement_retires_run(&fixture).await;
+    fixture.close().await?;
+    result
+}
+
 use collaboration_central_conformance::approval_link_scenarios::{
     FIXTURE_DECIDER, FIXTURE_DECISION_OPERATION, heartbeat, receive_fixture_decision, register_run,
     registered_waiting_request, require_owed,

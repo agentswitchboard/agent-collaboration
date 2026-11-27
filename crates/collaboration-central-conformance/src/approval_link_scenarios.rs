@@ -277,6 +277,154 @@ pub async fn approval_deadline_delivery(
     Ok(())
 }
 
+pub async fn received_frees_capacity_and_replacement_retires_run(
+    fixture: &impl ApprovalLinkFixture,
+) -> Result<()> {
+    let target = fixture.target()?;
+    let organization = &target.organization_id;
+    let remaining = u64::try_from((-fixture.now_seconds()).rem_euclid(300))?;
+    if remaining != 0 {
+        fixture.advance(remaining).await?;
+    }
+    let mut socket = fixture.connect().await?;
+    assert_eq!(
+        register_run(&mut socket, organization, &target.router_run).await?,
+        RegisterRunReply::Registered {}
+    );
+    let first = held_start(&target.router_run, 0)?;
+    let receipt = require_receipt(raise(&mut socket, organization, first.clone()).await?)?;
+    fixture.advance(1).await?;
+    for ordinal in 1..256 {
+        require_receipt(
+            raise(
+                &mut socket,
+                organization,
+                held_start(&target.router_run, ordinal)?,
+            )
+            .await?,
+        )?;
+    }
+    for seconds in [499, 500, 500, 500, 500, 500, 500] {
+        fixture.advance(seconds).await?;
+        renew(&mut socket, fixture.refresh().await?).await?;
+    }
+    fixture
+        .advance(u64::try_from(
+            receipt.window.deadline().timestamp() - fixture.now_seconds(),
+        )?)
+        .await?;
+    fixture.observe_due_alarm().await?;
+    let (correlation, offer) = next_ending(&mut socket, &target).await?;
+    assert_eq!(offer.request_id(), first.request_id());
+    assert_eq!(offer.contents_digest(), &first.contents_digest()?);
+    assert_eq!(
+        offer.into_ending(),
+        approval_request_protocol::Ending::TimedOut {}
+    );
+    require_owed(fixture, &first).await?;
+    assert_eq!(run_outstanding(fixture, &target.router_run).await?, 256);
+    require_joined_capacity_refusal(fixture, &mut socket, &target, 256).await?;
+
+    fixture.hold_delivery_answer().await?;
+    answer_ending(
+        &mut socket,
+        target.clone(),
+        correlation,
+        DeliverEndingReply::Received {},
+    )
+    .await?;
+    fixture.observe_delivery_answer().await?;
+    assert_eq!(
+        read_request(fixture, &first).await?,
+        [text("ended"), text("received_by_holder")]
+    );
+    require_receipt(
+        raise(
+            &mut socket,
+            organization,
+            held_start(&target.router_run, 256)?,
+        )
+        .await?,
+    )?;
+    assert_eq!(run_outstanding(fixture, &target.router_run).await?, 256);
+    require_joined_capacity_refusal(fixture, &mut socket, &target, 257).await?;
+    socket.close(CloseCode::Normal, None).await?;
+
+    let mut socket = fixture.connect_without_capabilities().await?;
+    let replacement: RouterRunId = "019f0000-0000-7000-8000-000000005416".parse()?;
+    let before_retirement = retirement_snapshot(fixture).await?;
+    fixture.fail_next_applying_write().await?;
+    assert_eq!(
+        central_call::<RegisterRunRpc>(
+            &mut socket,
+            organization,
+            RegisterRunRequest {
+                router_run: replacement.clone(),
+            }
+        )
+        .await?,
+        TypedCallResult::Refused {
+            reason: LinkCallRefusal::CentralFault
+        },
+    );
+    assert_eq!(retirement_snapshot(fixture).await?, before_retirement);
+    assert_eq!(
+        register_run(&mut socket, organization, &replacement).await?,
+        RegisterRunReply::Registered {}
+    );
+    assert_eq!(run_outstanding(fixture, &target.router_run).await?, 0);
+    socket.close(CloseCode::Normal, None).await?;
+    Ok(())
+}
+
+async fn run_outstanding(fixture: &impl ApprovalLinkFixture, run: &RouterRunId) -> Result<i64> {
+    let observed = fixture.read(Statement {
+        sql: "SELECT count(*) FROM approval_requests WHERE router_run_id=? AND (record_state='waiting' OR delivery_state='owed')",
+        args: vec![text(run.as_str())],
+    }).await?;
+    match observed.rows.as_slice() {
+        [row] => match row.as_slice() {
+            [SqlValue::Integer(count)] => Ok(count.get()),
+            _ => Err("expected the outstanding count".into()),
+        },
+        _ => Err("expected one outstanding count row".into()),
+    }
+}
+
+async fn require_joined_capacity_refusal(
+    fixture: &impl ApprovalLinkFixture,
+    socket: &mut WebSocket,
+    target: &ApprovalHolderTarget,
+    ordinal: u16,
+) -> Result<()> {
+    let before = retirement_snapshot(fixture).await?;
+    assert_eq!(
+        raise(
+            socket,
+            &target.organization_id,
+            held_start(&target.router_run, ordinal)?
+        )
+        .await?,
+        RaiseReply::TooManyOutstanding {},
+    );
+    assert_eq!(retirement_snapshot(fixture).await?, before);
+    Ok(())
+}
+
+async fn retirement_snapshot(
+    fixture: &impl ApprovalLinkFixture,
+) -> Result<Vec<Vec<Vec<SqlValue>>>> {
+    let mut rows = vec![snapshot(fixture).await?];
+    for sql in [
+        "SELECT * FROM approval_router_runs ORDER BY router_run_id",
+        "SELECT * FROM approval_request_destinations ORDER BY approval_destination_id",
+        "SELECT * FROM engine_due_entries WHERE work_kind='approval_request' ORDER BY due_entry_id",
+    ] {
+        rows.push(fixture.read(Statement { sql, args: vec![] }).await?.rows);
+    }
+    Ok(rows)
+}
+
 async fn require_capacity_refusal(
     fixture: &impl ApprovalLinkFixture,
     socket: &mut WebSocket,
