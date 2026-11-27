@@ -5,9 +5,6 @@ use crate::session_store_lane::{
     SessionStoreSettlement, SessionStoreTicket, SessionStoreWrite, tests::StoreFixture,
 };
 use acp_client_runtime::acp_transport::{TransportRefusal, TransportRun};
-use acp_client_runtime::session_owner_task::{
-    OwnerCompletionPort, OwnerTaskError, SessionOwnerPorts,
-};
 use collaboration_protocol::{
     ConversationBindingIdentity, ProviderOperationEffect, ProviderOperationKind,
     ProviderOperationStage, ProviderReconciliationState,
@@ -26,6 +23,9 @@ use provider_session_machines::{
 };
 use session_event_model::InputId;
 use switchboard_session_store::ProviderOperationAdmission;
+use switchboard_session_task::session_owner_task::{
+    OwnerCompletionPort, OwnerTaskError, SessionOwnerPorts,
+};
 
 fn connection() -> ConnectionEpoch {
     ConnectionEpoch(Uuid::now_v7())
@@ -138,7 +138,7 @@ impl SessionOwnerPorts for ScenarioPorts {
         address: OwnerAddress,
         effect: OwnerEffect,
         completions: &OwnerCompletionPort,
-        _caller_wakes: &mut acp_client_runtime::session_owner_task::OwnerCallerWakes,
+        _caller_wakes: &mut switchboard_session_task::session_owner_task::OwnerCallerWakes,
     ) -> Result<Option<OwnerEvent>, OwnerTaskError> {
         let event = match effect {
             OwnerEffect::Store(SessionStoreRequest::ReadRestoreSetup(run)) => {

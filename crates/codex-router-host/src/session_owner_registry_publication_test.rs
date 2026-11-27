@@ -20,7 +20,7 @@ impl SessionOwnerPorts for RealHubPorts {
         owner: OwnerAddress,
         effect: OwnerEffect,
         completions: &OwnerCompletionPort,
-        caller_wakes: &mut acp_client_runtime::session_owner_task::OwnerCallerWakes,
+        caller_wakes: &mut switchboard_session_task::session_owner_task::OwnerCallerWakes,
     ) -> Result<Option<OwnerEvent>, OwnerTaskError> {
         match effect {
             OwnerEffect::Publish(batch) => {

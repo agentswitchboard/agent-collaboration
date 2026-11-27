@@ -14,11 +14,12 @@ harness-work-observation = ["dep:sha2", "switchboard-harness-shared-mechanics/ha
 test-observation = ["switchboard-harness-contracts/test-support"]
 # Scenario tests use the owner fixture, in-process transport, and named-point hook.
 # Enabled only by dev-dependencies.
-test-support = ["harness-work-observation"]
+test-support = ["harness-work-observation", "dep:switchboard-session-task"]
 
 [dependencies]
 switchboard-harness-contracts.workspace = true
 switchboard-harness-shared-mechanics.workspace = true
+switchboard-session-task = { workspace = true, optional = true }
 agent-client-protocol.workspace = true
 provider-session-machines.workspace = true
 router-clock.workspace = true
@@ -40,6 +41,7 @@ vendor-protocol.workspace = true
 
 [dev-dependencies]
 acp-client-runtime = { path = ".", features = ["test-support"] }
+switchboard-session-task.workspace = true
 chrono.workspace = true
 router-clock = { workspace = true, features = ["test-support"] }
 hegel = { package = "hegeltest", version = "=0.52.6", features = ["static-engine"] }

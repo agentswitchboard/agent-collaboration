@@ -7,13 +7,13 @@ use crate::{
     session_owner_registry::{FailedOwnerSettlement, owner_proved_unsent},
     session_store_lane::SessionStoreSettlement,
 };
-use acp_client_runtime::session_owner_task::SessionOwnerTask;
 use collaboration_protocol::SessionRef;
 use provider_session_machines::session_owner::{
     OwnerEvidence, RemoteEffect, RevokeReason, SessionOwnerReply,
 };
 use session_event_model::InputId;
 use std::{collections::BTreeMap, sync::Arc};
+use switchboard_session_task::session_owner_task::SessionOwnerTask;
 
 impl SessionOwnerDoor {
     pub(super) fn run_registered(

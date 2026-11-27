@@ -8,9 +8,6 @@ use crate::{
     session_owner_publication::SessionOwnerPublisher,
     session_owner_storage::SessionOwnerStorage,
 };
-use acp_client_runtime::session_owner_task::{
-    OwnerCallerWakes, OwnerCompletionPort, OwnerTaskError, SessionOwnerPorts,
-};
 use collaboration_protocol::{ProviderIdentity, SessionRef};
 use lifecycle::lifecycle_settings;
 use provider_session_machines::{
@@ -30,6 +27,9 @@ use provider_session_machines::{
     session_setting_machine::SettingValueId,
 };
 use std::{collections::BTreeMap, sync::Arc};
+use switchboard_session_task::session_owner_task::{
+    OwnerCallerWakes, OwnerCompletionPort, OwnerTaskError, SessionOwnerPorts,
+};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 #[path = "session_owner_execution_lifecycle.rs"]

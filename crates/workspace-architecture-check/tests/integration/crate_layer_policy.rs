@@ -1,7 +1,7 @@
 //! Allowed normal/build edges between workspace packages.
 use super::workspace_boundaries;
 
-const LAYER_POLICY: [(&str, &[&str]); 52] = [
+const LAYER_POLICY: [(&str, &[&str]); 53] = [
     ("workspace-ids", &[]),
     (
         "workspace-model",
@@ -129,6 +129,7 @@ const LAYER_POLICY: [(&str, &[&str]); 52] = [
     ),
     workspace_boundaries::HARNESS_CONTRACTS,
     workspace_boundaries::HARNESS_SHARED_MECHANICS,
+    workspace_boundaries::SESSION_TASK,
     (
         "central-engine-model",
         &["central-storage", "state-machine-core"],
@@ -345,6 +346,7 @@ const LAYER_POLICY: [(&str, &[&str]); 52] = [
             "router-clock",
             workspace_boundaries::HARNESS_CONTRACTS.0,
             workspace_boundaries::HARNESS_SHARED_MECHANICS.0,
+            workspace_boundaries::SESSION_TASK.0,
         ],
     ),
     (
@@ -404,6 +406,7 @@ const LAYER_POLICY: [(&str, &[&str]); 52] = [
             "router-clock",
             "state-machine-core",
             "provider-session-machines",
+            workspace_boundaries::SESSION_TASK.0,
             "collaboration-contracts",
             "collaboration-runtime",
             "collaboration-service",

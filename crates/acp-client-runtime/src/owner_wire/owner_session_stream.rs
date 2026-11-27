@@ -1,7 +1,5 @@
 //! Decode SDK session updates into stamped owner facts.
 
-#[cfg(feature = "test-support")]
-use crate::session_owner_task::OwnerCompletionPort;
 use crate::{
     EventSinkClosed, ExternalProviderRuntimeError, HistoryReplayFuture, ProviderBehavior,
     ProviderCapabilityReport, SessionEventSink,
@@ -33,6 +31,8 @@ use provider_session_machines::session_turn_machine::TurnId;
 use session_event_model::session_profile_codec::{ProfileState, STATE_METHOD, StateNotification};
 use session_event_model::{LocalCause, SessionEvent, SessionSettings, SkillView};
 use std::sync::{Arc, Mutex, MutexGuard};
+#[cfg(feature = "test-support")]
+use switchboard_session_task::session_owner_task::OwnerCompletionPort;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 

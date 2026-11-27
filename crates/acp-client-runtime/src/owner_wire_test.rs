@@ -1,7 +1,4 @@
 use super::*;
-use crate::session_owner_task::{
-    OwnerCompletionPort, OwnerTaskError, SessionOwnerPorts, SessionOwnerTask,
-};
 use provider_session_machines::{
     session_lifecycle_machine::SessionLifecycle,
     session_owner::{
@@ -13,6 +10,9 @@ use provider_session_machines::{
     session_turn_machine::SessionTurn,
 };
 use session_event_model::{InputId, SessionState, TurnLostReason, TurnOutcome};
+use switchboard_session_task::session_owner_task::{
+    OwnerCompletionPort, OwnerTaskError, SessionOwnerPorts, SessionOwnerTask,
+};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -26,7 +26,7 @@ impl SessionOwnerPorts for PromptPorts {
         _: OwnerAddress,
         effect: OwnerEffect,
         _: &OwnerCompletionPort,
-        _caller_wakes: &mut crate::session_owner_task::OwnerCallerWakes,
+        _caller_wakes: &mut switchboard_session_task::session_owner_task::OwnerCallerWakes,
     ) -> Result<Option<OwnerEvent>, OwnerTaskError> {
         Ok(match effect {
             OwnerEffect::Wire(SessionWireRequest::Create { operation }) => {
