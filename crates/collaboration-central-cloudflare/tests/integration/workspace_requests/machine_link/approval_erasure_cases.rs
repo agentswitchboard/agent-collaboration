@@ -1,7 +1,42 @@
 use super::{Fixture, Result};
 use collaboration_central_conformance::approval_erasure_scenarios::{
-    cutoff_and_correlated_marker, erase_batches_isolate_corruption_and_retain_only_live_markers,
+    MissedApprovalCleanupFixture, cutoff_and_correlated_marker,
+    erase_batches_isolate_corruption_and_retain_only_live_markers,
+    missed_cleanup_is_recovered_by_the_next_mark,
 };
+use collaboration_central_conformance::approval_link_scenarios::ApprovalLinkFixture;
+
+impl MissedApprovalCleanupFixture for Fixture {
+    async fn miss_cleanup_at(&self, mark: i64) -> Result<()> {
+        let runtime = self.runtime();
+        let alarm: Option<i64> = runtime.control("raw-alarm-time", &()).await?;
+        assert_eq!(alarm, Some(mark * 1000));
+        let completed: u64 = runtime.control("raw-alarm-count", &()).await?;
+        // Advancing the injected clock leaves the actual Workerd alarm undispatched.
+        self.advance(u64::try_from(mark + 1 - self.now_seconds())?)
+            .await?;
+        let after: u64 = runtime.control("raw-alarm-count", &()).await?;
+        assert_eq!(after, completed);
+        Ok(())
+    }
+
+    fn prepare_catch_up(
+        &self,
+        socket: reqwest_websocket::WebSocket,
+        _mark: i64,
+    ) -> impl std::future::Future<Output = Result<reqwest_websocket::WebSocket>> {
+        // The scenario dispatches the retained platform alarm at the next mark.
+        std::future::ready(Ok(socket))
+    }
+}
+
+#[tokio::test]
+async fn workerd_missed_approval_cleanup_is_recovered_by_the_next_mark() -> Result<()> {
+    let fixture = Fixture::with_production_dispatcher().await?;
+    let result = missed_cleanup_is_recovered_by_the_next_mark(&fixture).await;
+    fixture.close().await?;
+    result
+}
 
 #[tokio::test]
 async fn workerd_approval_cutoff_and_marker_on_the_real_link() -> Result<()> {

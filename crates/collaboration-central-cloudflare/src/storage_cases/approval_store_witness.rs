@@ -420,6 +420,20 @@ async fn apply_fixture_sql(
                 StoredCorruption::Ending => {
                     "UPDATE approval_requests SET ending_json=json_set(ending_json,'$.ending.kind','future_ending') WHERE request_id=?1"
                 }
+                StoredCorruption::DeliveryState => {
+                    "UPDATE approval_requests SET delivery_state='future_report' WHERE request_id=?1"
+                }
+                StoredCorruption::RequestKindMismatch => {
+                    "UPDATE approval_requests SET request_kind='provider_question' WHERE request_id=?1"
+                }
+                StoredCorruption::EndingBinding => {
+                    // Both decision families project to the same compact ending.
+                    "UPDATE approval_requests SET ending_json=json_set(ending_json,'$.ending',
+                       json_object('kind','unprovenCall','ending',
+                         json_object('kind','decided','decision','allow',
+                                   'personId',json_extract(ending_json,'$.ending.ending.by.personId'))))
+                     WHERE request_id=?1"
+                }
                 StoredCorruption::ProviderMarkerWithCallCause => {
                     "UPDATE approval_requests SET stop_cause='call_withdrawn' WHERE request_id=?1 AND stop_family='provider'"
                 }

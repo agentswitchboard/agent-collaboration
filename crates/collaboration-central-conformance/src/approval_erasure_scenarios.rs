@@ -5,7 +5,8 @@ use approval_request_protocol::{
 };
 use central_link_protocol::TypedCallResult;
 use central_storage::{SafeInteger, SqlValue, Statement};
-use reqwest_websocket::CloseCode;
+use reqwest_websocket::{CloseCode, WebSocket};
+use std::future::Future;
 
 use crate::{
     ConformanceResult as Result,
@@ -17,6 +18,100 @@ use crate::{
 const RETENTION_SECONDS: i64 = 5_184_000;
 const FIVE_MINUTES: i64 = 300;
 const REPLACEMENT_RUN: &str = "019f0000-0000-7000-8000-00000000e601";
+
+pub trait MissedApprovalCleanupFixture: ApprovalLinkFixture {
+    fn miss_cleanup_at(&self, mark: i64) -> impl Future<Output = Result<()>>;
+    fn prepare_catch_up(
+        &self,
+        socket: WebSocket,
+        mark: i64,
+    ) -> impl Future<Output = Result<WebSocket>>;
+}
+
+pub async fn missed_cleanup_is_recovered_by_the_next_mark(
+    fixture: &impl MissedApprovalCleanupFixture,
+) -> Result<()> {
+    let target = fixture.target()?;
+    let organization = &target.organization_id;
+    let mut socket = fixture.connect_without_capabilities().await?;
+    assert_eq!(
+        register_run(&mut socket, organization, &target.router_run).await?,
+        RegisterRunReply::Registered {}
+    );
+    let request = held_start(&target.router_run, 10)?;
+    let ending = raise_and_stop(&mut socket, organization, &request).await?;
+    let marker = RaiseReply::AlreadyEnded {
+        marker: ErasedApprovalMarker {
+            request_id: request.request_id().clone(),
+            router_run: target.router_run.clone(),
+            ending,
+        },
+    };
+    let cutoff = fixture.now_seconds() + RETENTION_SECONDS;
+    let first_mark = cutoff + FIVE_MINUTES - cutoff.rem_euclid(FIVE_MINUTES);
+    assert_ne!(cutoff.rem_euclid(FIVE_MINUTES), 0);
+    socket.close(CloseCode::Normal, None).await?;
+
+    fixture.set_wall_seconds(cutoff - 1).await?;
+    let mut socket = fixture.connect_without_capabilities().await?;
+    assert_eq!(
+        register_run(&mut socket, organization, &target.router_run).await?,
+        RegisterRunReply::Registered {}
+    );
+    require_receipt(raise(&mut socket, organization, request.clone()).await?)?;
+    fixture.miss_cleanup_at(first_mark).await?;
+    assert_eq!(fixture.now_seconds(), first_mark + 1);
+    assert_count(fixture, "SELECT count(*) FROM approval_requests", 1).await?;
+    assert_count(
+        fixture,
+        "SELECT count(*) FROM approval_request_destinations",
+        1,
+    )
+    .await?;
+    assert_count(fixture, "SELECT count(*) FROM approval_erased_requests", 0).await?;
+    assert_eq!(
+        raise(&mut socket, organization, request.clone()).await?,
+        marker
+    );
+    assert_count(fixture, "SELECT count(*) FROM approval_requests", 1).await?;
+    assert_count(fixture, "SELECT count(*) FROM approval_erased_requests", 0).await?;
+    let mut socket = fixture
+        .prepare_catch_up(socket, first_mark + FIVE_MINUTES)
+        .await?;
+    advance_to_next_grid(fixture).await?;
+    assert_eq!(fixture.now_seconds(), first_mark + FIVE_MINUTES);
+    assert_count(fixture, "SELECT count(*) FROM approval_requests", 0).await?;
+    assert_count(
+        fixture,
+        "SELECT count(*) FROM approval_request_destinations",
+        0,
+    )
+    .await?;
+    assert_count(fixture, "SELECT count(*) FROM approval_erased_requests", 1).await?;
+    assert_count(
+        fixture,
+        "SELECT count(*) FROM engine_due_entries WHERE work_kind='approval_request'",
+        0,
+    )
+    .await?;
+    assert_eq!(raise(&mut socket, organization, request).await?, marker);
+    assert_count(fixture, "SELECT count(*) FROM approval_requests", 0).await?;
+    assert_count(
+        fixture,
+        "SELECT count(*) FROM approval_request_destinations",
+        0,
+    )
+    .await?;
+    assert_count(fixture, "SELECT count(*) FROM approval_erased_requests", 1).await?;
+    assert_count(
+        fixture,
+        "SELECT count(*) FROM engine_due_entries WHERE work_kind='approval_request'",
+        0,
+    )
+    .await?;
+    socket.close(CloseCode::Normal, None).await?;
+    Ok(())
+}
 
 pub async fn cutoff_and_correlated_marker(fixture: &impl ApprovalLinkFixture) -> Result<()> {
     let target = fixture.target()?;

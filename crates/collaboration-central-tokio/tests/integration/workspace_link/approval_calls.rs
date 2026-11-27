@@ -71,7 +71,7 @@ use super::receipt_frames::{EnrollmentAtApply, stored_ending_batch};
 use central_link_protocol::approval_rpc::ApprovalHolderTarget;
 use collaboration_central_conformance::approval_link_scenarios::{
     ApprovalLinkFixture, DeadlineDelivery, ROUTER_RUN, approval_deadline_delivery, receive_frame,
-    registered_stop_and_replay,
+    received_frees_capacity_and_replacement_retires_run, registered_stop_and_replay,
 };
 use reqwest_websocket::{RequestBuilderExt, WebSocket};
 use std::{
@@ -345,6 +345,20 @@ async fn tokio_engine_delivers_or_recovers_approval_timeout_and_applies_stop_owe
         result?;
     }
     Ok(())
+}
+
+#[tokio::test]
+async fn tokio_received_frees_approval_capacity_and_replacement_retires_run() -> Result<()> {
+    let fixture = NativeApprovalFixture {
+        link: start_session_link_fixture(signed_clock()?).await?,
+        before_alarm: Cell::new(0),
+        delivery_answer: RefCell::default(),
+        before_write: RefCell::default(),
+        notice_recovery: RefCell::default(),
+    };
+    let result = received_frees_capacity_and_replacement_retires_run(&fixture).await;
+    fixture.link.close().await?;
+    result
 }
 
 use collaboration_central_conformance::approval_link_scenarios::{
