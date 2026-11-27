@@ -144,18 +144,6 @@ fn exported_item_schema_counts_identifier_utf8_bytes() {
         ("TurnId", "/turn"),
         ("GroupId", "/body/group/id"),
     ] {
-        let keyword = format!("/$defs/{definition}/x-maxUtf8Bytes");
-        assert_eq!(
-            schema.pointer(&keyword).and_then(Value::as_u64),
-            Some(256),
-            "{definition}"
-        );
-        let keyword = format!("/$defs/{definition}/minLength");
-        assert_eq!(
-            schema.pointer(&keyword).and_then(Value::as_u64),
-            Some(1),
-            "{definition}"
-        );
         assert_wire_parity(&validator, &base, pointer, json!("é".repeat(128)), true);
         assert_wire_parity(&validator, &base, pointer, json!(" printable/name. "), true);
         for text in ["", "a\t", "a\n", "a\0", "a\u{007f}", "a\u{009f}"] {
@@ -168,6 +156,18 @@ fn exported_item_schema_counts_identifier_utf8_bytes() {
         assert!(
             plain.is_valid(&input),
             "{definition}: case must isolate the byte keyword"
+        );
+        let keyword = format!("/$defs/{definition}/x-maxUtf8Bytes");
+        assert_eq!(
+            schema.pointer(&keyword).and_then(Value::as_u64),
+            Some(256),
+            "{definition}"
+        );
+        let keyword = format!("/$defs/{definition}/minLength");
+        assert_eq!(
+            schema.pointer(&keyword).and_then(Value::as_u64),
+            Some(1),
+            "{definition}"
         );
     }
 }
@@ -240,17 +240,6 @@ fn exported_item_schema_refuses_zero_in_either_line_range_field() {
     let validator = contract_validator(&schema);
     let base = json!(file_read_item());
     for field in ["firstLine", "lineCount"] {
-        let schema_pointer = format!("/$defs/LineRange/properties/{field}");
-        let field_schema = schema.pointer(&schema_pointer).unwrap();
-        assert_eq!(
-            field_schema.get("type").and_then(Value::as_str),
-            Some("integer")
-        );
-        assert_eq!(field_schema.get("minimum").and_then(Value::as_u64), Some(1));
-        assert_eq!(
-            field_schema.get("maximum").and_then(Value::as_u64),
-            Some(u64::from(u32::MAX))
-        );
         let pointer = &format!("/body/body/call/action/lines/{field}");
         assert_wire_parity(&validator, &base, pointer, json!(1), true);
         assert_wire_parity(&validator, &base, pointer, json!(u32::MAX), true);
@@ -262,12 +251,41 @@ fn exported_item_schema_refuses_zero_in_either_line_range_field() {
             json!(u64::from(u32::MAX) + 1),
             false,
         );
+        let schema_pointer = format!("/$defs/LineRange/properties/{field}");
+        let field_schema = schema.pointer(&schema_pointer).unwrap();
+        assert_eq!(
+            field_schema.get("type").and_then(Value::as_str),
+            Some("integer")
+        );
+        assert_eq!(field_schema.get("minimum").and_then(Value::as_u64), Some(1));
+        assert_eq!(
+            field_schema.get("maximum").and_then(Value::as_u64),
+            Some(u64::from(u32::MAX))
+        );
     }
 }
 
 #[test]
 fn exported_item_schema_requires_a_javascript_safe_integer_for_first_seen_time() {
     let schema = schema_for::<Item>();
+    let validator = contract_validator(&schema);
+    let mut base = json!(user_item());
+    let pointer = "/firstSeenAtMs";
+    for value in [0, 1, 9_007_199_254_740_991_u64] {
+        assert_wire_parity(&validator, &base, pointer, json!(value), true);
+    }
+    for value in [
+        json!(-1),
+        json!(1.5),
+        json!(9_007_199_254_740_992_u64),
+        json!("1"),
+        Value::Null,
+    ] {
+        assert_wire_parity(&validator, &base, pointer, value, false);
+    }
+    base.as_object_mut().unwrap().remove("firstSeenAtMs");
+    assert!(!validator.is_valid(&base));
+    assert!(serde_json::from_value::<Item>(base).is_err());
     assert_eq!(
         schema
             .pointer("/$defs/FirstSeenAtMs/type")
@@ -294,25 +312,6 @@ fn exported_item_schema_requires_a_javascript_safe_integer_for_first_seen_time()
         FirstSeenAtMs::try_from(9_007_199_254_740_992),
         Err(FirstSeenAtMsError)
     );
-
-    let validator = contract_validator(&schema);
-    let mut base = json!(user_item());
-    let pointer = "/firstSeenAtMs";
-    for value in [0, 1, 9_007_199_254_740_991_u64] {
-        assert_wire_parity(&validator, &base, pointer, json!(value), true);
-    }
-    for value in [
-        json!(-1),
-        json!(1.5),
-        json!(9_007_199_254_740_992_u64),
-        json!("1"),
-        Value::Null,
-    ] {
-        assert_wire_parity(&validator, &base, pointer, value, false);
-    }
-    base.as_object_mut().unwrap().remove("firstSeenAtMs");
-    assert!(!validator.is_valid(&base));
-    assert!(serde_json::from_value::<Item>(base).is_err());
 }
 
 #[test]
