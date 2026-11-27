@@ -54,7 +54,7 @@ impl MissedApprovalCleanupFixture for NativeApprovalFixture {
         let target = self.target()?;
         assert_eq!(
             register_run(&mut socket, &target.organization_id, &target.router_run).await?,
-            approval_request_protocol::RegisterRunReply::Registered {}
+            super::RegisterRunReply::Registered {}
         );
         let owner = self.link.host.central(&self.link.organization_id).await?;
         let at = SyncTime::from_unix_millis(mark * 1000);

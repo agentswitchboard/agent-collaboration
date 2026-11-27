@@ -20,13 +20,13 @@ impl MissedApprovalCleanupFixture for Fixture {
         Ok(())
     }
 
-    async fn prepare_catch_up(
+    fn prepare_catch_up(
         &self,
         socket: reqwest_websocket::WebSocket,
         _mark: i64,
-    ) -> Result<reqwest_websocket::WebSocket> {
+    ) -> impl std::future::Future<Output = Result<reqwest_websocket::WebSocket>> {
         // The scenario dispatches the retained platform alarm at the next mark.
-        Ok(socket)
+        std::future::ready(Ok(socket))
     }
 }
 
