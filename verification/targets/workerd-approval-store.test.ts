@@ -362,6 +362,7 @@ test("Workerd approvals reject an unknown report, mismatched request kind and fo
     ] as const) {
       const database = `approval-${field}`;
       await initializeApprovals(central, database);
+      await central.reopen();
       const request = raiseRequest(1, "Stored binding");
       const raised = await invokeApprovalWitness({
         central,
@@ -369,6 +370,7 @@ test("Workerd approvals reject an unknown report, mismatched request kind and fo
         command: { kind: "raise", holder, request },
       });
       assert.equal(raised.writes, 3);
+      await central.reopen();
       if (field !== "requestKindMismatch") {
         const decided = await invokeApprovalWitness({
           central,
@@ -376,6 +378,7 @@ test("Workerd approvals reject an unknown report, mismatched request kind and fo
           command: personDecision(request.requestId, uuid(5501), 1),
         });
         assert.equal(decided.writes, 6);
+        await central.reopen();
       }
       committedResult(
         await invokeApprovalWitness({
@@ -384,6 +387,7 @@ test("Workerd approvals reject an unknown report, mismatched request kind and fo
           command: { kind: "corrupt", requestId: request.requestId, field },
         }),
       );
+      await central.reopen();
       const rejected = await invokeApprovalWitness({
         central,
         database,

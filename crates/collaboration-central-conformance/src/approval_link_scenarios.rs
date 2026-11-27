@@ -322,7 +322,10 @@ pub async fn received_frees_capacity_and_replacement_retires_run(
         approval_request_protocol::Ending::TimedOut {}
     );
     require_owed(fixture, &first).await?;
-    assert_eq!(run_outstanding(fixture, &target.router_run).await?, 256);
+    assert_eq!(
+        run_outstanding(fixture, &target.router_run).await?,
+        [255, 1]
+    );
     require_joined_capacity_refusal(fixture, &mut socket, &target, 256).await?;
 
     fixture.hold_delivery_answer().await?;
@@ -334,9 +337,15 @@ pub async fn received_frees_capacity_and_replacement_retires_run(
     )
     .await?;
     fixture.observe_delivery_answer().await?;
+    // Workerd evicts the object and reopens its store. Tokio has no link-fixture reopen.
+    fixture.reopen_after_clock_rollback().await?;
     assert_eq!(
         read_request(fixture, &first).await?,
         [text("ended"), text("received_by_holder")]
+    );
+    assert_eq!(
+        run_outstanding(fixture, &target.router_run).await?,
+        [255, 0]
     );
     require_receipt(
         raise(
@@ -346,12 +355,19 @@ pub async fn received_frees_capacity_and_replacement_retires_run(
         )
         .await?,
     )?;
-    assert_eq!(run_outstanding(fixture, &target.router_run).await?, 256);
+    assert_eq!(
+        run_outstanding(fixture, &target.router_run).await?,
+        [256, 0]
+    );
     require_joined_capacity_refusal(fixture, &mut socket, &target, 257).await?;
     socket.close(CloseCode::Normal, None).await?;
 
     let mut socket = fixture.connect_without_capabilities().await?;
     let replacement: RouterRunId = "019f0000-0000-7000-8000-000000005416".parse()?;
+    let prior_requests = retirement_requests(fixture, &target.router_run).await?;
+    let prior_destinations = retirement_destinations(fixture, &target.router_run).await?;
+    assert_eq!(prior_requests.len(), 257);
+    assert_eq!(prior_destinations.len(), 257);
     let before_retirement = retirement_snapshot(fixture).await?;
     fixture.fail_next_applying_write().await?;
     assert_eq!(
@@ -372,23 +388,138 @@ pub async fn received_frees_capacity_and_replacement_retires_run(
         register_run(&mut socket, organization, &replacement).await?,
         RegisterRunReply::Registered {}
     );
-    assert_eq!(run_outstanding(fixture, &target.router_run).await?, 0);
+    fixture.reopen_after_clock_rollback().await?;
+    assert_eq!(run_outstanding(fixture, &target.router_run).await?, [0, 0]);
+    let retired_requests = retirement_requests(fixture, &target.router_run).await?;
+    assert_eq!(
+        retired_requests.len(),
+        257,
+        "retirement retains every old request"
+    );
+    let retired_at = require_replaced_run(fixture, &target.router_run, &replacement).await?;
+    assert_retired_requests(&prior_requests, &retired_requests, &first, &retired_at)?;
+    assert_eq!(
+        retirement_destinations(fixture, &target.router_run).await?,
+        prior_destinations
+    );
     socket.close(CloseCode::Normal, None).await?;
     Ok(())
 }
 
-async fn run_outstanding(fixture: &impl ApprovalLinkFixture, run: &RouterRunId) -> Result<i64> {
+async fn run_outstanding(
+    fixture: &impl ApprovalLinkFixture,
+    run: &RouterRunId,
+) -> Result<[i64; 2]> {
     let observed = fixture.read(Statement {
-        sql: "SELECT count(*) FROM approval_requests WHERE router_run_id=? AND (record_state='waiting' OR delivery_state='owed')",
+        sql: "SELECT count(CASE WHEN record_state='waiting' THEN 1 END), count(CASE WHEN delivery_state='owed' THEN 1 END) FROM approval_requests WHERE router_run_id=?",
         args: vec![text(run.as_str())],
     }).await?;
     match observed.rows.as_slice() {
         [row] => match row.as_slice() {
-            [SqlValue::Integer(count)] => Ok(count.get()),
-            _ => Err("expected the outstanding count".into()),
+            [SqlValue::Integer(waiting), SqlValue::Integer(owed)] => {
+                Ok([waiting.get(), owed.get()])
+            }
+            _ => Err("expected the Waiting and Owed counts".into()),
         },
         _ => Err("expected one outstanding count row".into()),
     }
+}
+
+async fn retirement_requests(
+    fixture: &impl ApprovalLinkFixture,
+    run: &RouterRunId,
+) -> Result<Vec<Vec<SqlValue>>> {
+    Ok(fixture.read(Statement {
+        sql: "SELECT request_id, record_state, delivery_state, ending_json, compact_ending_json, ended_at FROM approval_requests WHERE router_run_id=? ORDER BY request_id",
+        args: vec![text(run.as_str())],
+    }).await?.rows)
+}
+
+async fn retirement_destinations(
+    fixture: &impl ApprovalLinkFixture,
+    run: &RouterRunId,
+) -> Result<Vec<Vec<SqlValue>>> {
+    Ok(fixture.read(Statement {
+        sql: "SELECT r.request_id, d.* FROM approval_request_destinations d JOIN approval_requests r ON r.approval_row_id=d.approval_row_id WHERE r.router_run_id=? ORDER BY d.approval_destination_id",
+        args: vec![text(run.as_str())],
+    }).await?.rows)
+}
+
+async fn require_replaced_run(
+    fixture: &impl ApprovalLinkFixture,
+    retired: &RouterRunId,
+    replacement: &RouterRunId,
+) -> Result<String> {
+    let runs = fixture.read(Statement {
+        sql: "SELECT router_run_id, retired_at FROM approval_router_runs WHERE router_run_id IN (?,?) ORDER BY registration_order",
+        args: vec![text(retired.as_str()), text(replacement.as_str())],
+    }).await?.rows;
+    let [old_run, new_run] = runs.as_slice() else {
+        return Err("expected the retained old run and its replacement".into());
+    };
+    let [SqlValue::Text(old_id), SqlValue::Text(retired_at)] = old_run.as_slice() else {
+        return Err("the old run needs a retirement timestamp".into());
+    };
+    assert_eq!(old_id, retired.as_str());
+    assert!(!retired_at.is_empty());
+    assert_eq!(new_run, &[text(replacement.as_str()), SqlValue::Null]);
+    Ok(retired_at.clone())
+}
+
+fn assert_retired_requests(
+    before: &[Vec<SqlValue>],
+    after: &[Vec<SqlValue>],
+    first: &Raise,
+    retired_at: &str,
+) -> Result<()> {
+    let [received_before, waiting @ ..] = before else {
+        return Err("expected the received request before retirement".into());
+    };
+    let [received_after, retired @ ..] = after else {
+        return Err("expected the received request after retirement".into());
+    };
+    assert_eq!(
+        received_before.first(),
+        Some(&text(first.request_id().as_str()))
+    );
+    assert_eq!(
+        received_after, received_before,
+        "retirement leaves the paid ending intact"
+    );
+    for (prior, settled) in waiting.iter().zip(retired) {
+        let [
+            SqlValue::Text(id),
+            SqlValue::Text(state),
+            SqlValue::Text(delivery),
+            SqlValue::Text(ending),
+            SqlValue::Text(compact),
+            SqlValue::Text(ended_at),
+        ] = settled.as_slice()
+        else {
+            return Err(
+                format!("expected a retained request with a complete ending: {settled:?}").into(),
+            );
+        };
+        assert_eq!(prior.first(), Some(&text(id)));
+        assert_eq!(state, "ended");
+        assert_eq!(delivery, "closed_without_receipt");
+        assert_eq!(
+            ended_at, retired_at,
+            "all outstanding requests end at retirement"
+        );
+        let reason = approval_request_protocol::CancelReason::RequesterGone {};
+        let ending: DeliverEndingRequest = serde_json::from_str(ending)?;
+        assert_eq!(ending.request_id().as_str(), id);
+        assert_eq!(
+            ending.into_ending(),
+            approval_request_protocol::Ending::Cancelled { reason }
+        );
+        assert_eq!(
+            serde_json::from_str::<StopReceiptEnding>(compact)?,
+            StopReceiptEnding::Cancelled { reason }
+        );
+    }
+    Ok(())
 }
 
 async fn require_joined_capacity_refusal(
