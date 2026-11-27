@@ -85,9 +85,6 @@ pub enum ProviderSettingFailureReason {
     Other(String),
 }
 
-pub type FailedProviderSetting =
-    switchboard_harness_contracts::FailedProviderSetting<ProviderSettingFailureReason>;
-
 impl ProviderSettingFailureReason {
     pub fn as_str(&self) -> &str {
         match self {
@@ -123,6 +120,9 @@ impl schemars::JsonSchema for ProviderSettingFailureReason {
         <String as schemars::JsonSchema>::json_schema(generator)
     }
 }
+
+pub type FailedProviderSetting =
+    switchboard_harness_contracts::FailedProviderSetting<ProviderSettingFailureReason>;
 
 /// Ended carries an agent-confirmed stop reason; lost carries no such claim.
 #[derive(schemars::JsonSchema, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
