@@ -479,6 +479,12 @@ pub(super) async fn control(
             let point: Point = request.json().await?;
             Response::from_json(&runtime.runtime().pause_points().central_count(point.into()))
         }
+        "/test/approval-delivery-scheduled-count" => Response::from_json(
+            &runtime
+                .runtime()
+                .pause_points()
+                .approval_delivery_scheduled_count(),
+        ),
         "/test/until-mac-delivery-count" => {
             let (point, minimum): (Point, u64) = request.json().await?;
             runtime

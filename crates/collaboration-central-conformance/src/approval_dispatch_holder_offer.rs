@@ -2,10 +2,47 @@
 use approval_request_protocol::{Ending, RegisterRunReply};
 use central_link_protocol::MacCallKind;
 use reqwest_websocket::{CloseCode, WebSocket};
+use std::num::NonZeroUsize;
 
 use crate::approval_link_scenarios::{announce_mac_calls, heartbeat, next_ending, register_run};
 
 use super::{ApprovalDispatchCase, ApprovalDispatchRollbackHost, Prepared, Result, apply};
+
+pub(super) async fn apply_cut(
+    host: &impl ApprovalDispatchRollbackHost,
+    prepared: &Prepared,
+    ordinal: NonZeroUsize,
+) -> Result<()> {
+    if !matches!(
+        prepared.case,
+        ApprovalDispatchCase::FirstPersonSaved
+            | ApprovalDispatchCase::FirstPersonLate
+            | ApprovalDispatchCase::FirstPersonInvalid
+    ) {
+        return apply(host, prepared, Some(Some(ordinal)), true).await;
+    }
+
+    let mut holder = registered_before_decision(host, prepared.at).await?;
+    let recovered = host.ending_recovery_count().await?;
+    announce_mac_calls(&mut holder, vec![MacCallKind::DeliverEnding]).await?;
+    host.wait_ending_recovery(recovered + 1).await?;
+    heartbeat(&mut holder).await?;
+    let scheduled = host.scheduled_delivery_count().await?;
+
+    apply(host, prepared, Some(Some(ordinal)), true).await?;
+
+    // The correlated refusal comes after the person dispatcher returns.
+    // Count synchronous handoffs so a later offer task cannot escape this check.
+    assert_eq!(
+        host.scheduled_delivery_count().await?,
+        scheduled,
+        "{:?} cut {ordinal} scheduled a holder offer",
+        prepared.case,
+    );
+    heartbeat(&mut holder).await?;
+    holder.close(CloseCode::Normal, None).await?;
+    Ok(())
+}
 
 pub(super) async fn apply_unarmed(
     host: &impl ApprovalDispatchRollbackHost,

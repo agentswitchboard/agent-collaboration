@@ -81,6 +81,37 @@ impl ApprovalDispatchRollbackHost for ApprovalRollbackFixture {
         self.0.await_notice_recovery().await
     }
 
+    async fn ending_recovery_count(&self) -> Result<u64> {
+        Ok(self
+            .0
+            .runtime()
+            .control("mac-delivery-count", &"macEndingRecoveryFinished")
+            .await?)
+    }
+
+    async fn wait_ending_recovery(&self, minimum: u64) -> Result<()> {
+        if !self
+            .0
+            .runtime()
+            .control::<bool>(
+                "until-mac-delivery-count",
+                &("macEndingRecoveryFinished", minimum),
+            )
+            .await?
+        {
+            return Err("ending recovery barrier did not complete".into());
+        }
+        Ok(())
+    }
+
+    async fn scheduled_delivery_count(&self) -> Result<u64> {
+        Ok(self
+            .0
+            .runtime()
+            .control("approval-delivery-scheduled-count", &())
+            .await?)
+    }
+
     async fn drive_due(&self) -> Result<()> {
         let _completion = self.0.runtime().after_event().await?;
         Ok(())

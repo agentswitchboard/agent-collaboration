@@ -141,6 +141,44 @@ impl ApprovalDispatchRollbackHost for ApprovalRollbackFixture {
         Ok(())
     }
 
+    async fn ending_recovery_count(&self) -> Result<u64> {
+        let central = self
+            .machine
+            .host
+            .central(&self.machine.organization_id)
+            .await?;
+        Ok(central
+            .runtime()
+            .pause_points()
+            .central_count(PausePoint::MacEndingRecoveryFinished))
+    }
+
+    async fn wait_ending_recovery(&self, minimum: u64) -> Result<()> {
+        let central = self
+            .machine
+            .host
+            .central(&self.machine.organization_id)
+            .await?;
+        central
+            .runtime()
+            .pause_points()
+            .until_central_count(PausePoint::MacEndingRecoveryFinished, minimum)
+            .await;
+        Ok(())
+    }
+
+    async fn scheduled_delivery_count(&self) -> Result<u64> {
+        let central = self
+            .machine
+            .host
+            .central(&self.machine.organization_id)
+            .await?;
+        Ok(central
+            .runtime()
+            .pause_points()
+            .approval_delivery_scheduled_count())
+    }
+
     async fn drive_due(&self) -> Result<()> {
         let owner = self
             .machine

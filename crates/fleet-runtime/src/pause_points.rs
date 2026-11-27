@@ -6,7 +6,10 @@
 //! and the held request's future goes with it. Built only with `test-support`.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{
+    Arc, Mutex, PoisonError,
+    atomic::{AtomicU64, Ordering},
+};
 use tokio::sync::watch;
 use workspace_ids::WorkspaceId;
 
@@ -91,6 +94,7 @@ pub struct PausePoints {
     held: Arc<Mutex<BTreeMap<WorkspaceId, Vec<PausePoint>>>>,
     central: Arc<Mutex<BTreeMap<PausePoint, ArmedPause>>>,
     central_counts: Arc<Mutex<BTreeMap<PausePoint, watch::Sender<u64>>>>,
+    approval_delivery_scheduled: Arc<AtomicU64>,
     /// Several holds may be armed on one key; arrivals take them in arming order,
     /// so two callers on one instance or request can each be held.
     engine: Arc<Mutex<BTreeMap<EngineKey, VecDeque<ArmedPause>>>>,
@@ -189,6 +193,16 @@ impl PausePoints {
             armed.arrived.send_replace(true);
             let _ = armed.release.wait_for(|released| *released).await;
         }
+    }
+
+    /// Record a synchronous handoff before its background work can run.
+    pub fn record_approval_delivery_scheduled(&self) {
+        self.approval_delivery_scheduled
+            .fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub fn approval_delivery_scheduled_count(&self) -> u64 {
+        self.approval_delivery_scheduled.load(Ordering::SeqCst)
     }
     /// Arms one engine hold on `point` for `key` (an instance or request key).
     #[must_use]

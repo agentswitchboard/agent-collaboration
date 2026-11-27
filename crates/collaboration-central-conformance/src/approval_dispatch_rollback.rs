@@ -1,4 +1,6 @@
 //! Rollback through the production approval dispatcher on each owning host.
+#[path = "approval_dispatch_corrupt_attempt.rs"]
+mod corrupt_attempt;
 #[path = "approval_dispatch_holder_offer.rs"]
 mod holder_offer;
 use std::{future::Future, num::NonZeroUsize};
@@ -47,6 +49,9 @@ pub trait ApprovalDispatchRollbackHost: Sized {
     fn trace(&self) -> impl Future<Output = Result<ApprovalWriteTrace>>;
     fn prepare_notice_recovery(&self) -> impl Future<Output = Result<()>>;
     fn finish_notice_recovery(&self) -> impl Future<Output = Result<()>>;
+    fn ending_recovery_count(&self) -> impl Future<Output = Result<u64>>;
+    fn wait_ending_recovery(&self, minimum: u64) -> impl Future<Output = Result<()>>;
+    fn scheduled_delivery_count(&self) -> impl Future<Output = Result<u64>>;
     fn drive_due(&self) -> impl Future<Output = Result<()>>;
     fn read(&self, statement: Statement) -> impl Future<Output = Result<ReadOutcome>>;
     fn write(&self, statement: Statement) -> impl Future<Output = Result<()>>;
@@ -85,7 +90,8 @@ pub async fn verify_approval_dispatch_rollback<Host: ApprovalDispatchRollbackHos
     let mut prepared = prepare(&host, case).await?;
     let before = host.snapshot(false).await?;
     for write in 1..=successful_trace.len() {
-        apply(&host, &prepared, Some(NonZeroUsize::new(write)), true).await?;
+        let ordinal = NonZeroUsize::new(write).ok_or("invalid cut ordinal")?;
+        holder_offer::apply_cut(&host, &prepared, ordinal).await?;
         assert_eq!(
             host.trace()
                 .await
@@ -123,6 +129,7 @@ struct Prepared {
     at: i64,
     request: Option<Raise>,
     parent: Option<(CentralSessionId, SessionSecret)>,
+    due_subject: Option<corrupt_attempt::DueSubject>,
 }
 
 impl Prepared {
@@ -145,6 +152,7 @@ async fn prepare(
             at,
             request: None,
             parent: None,
+            due_subject: None,
         });
     }
     let mut socket = host.connect_machine().await?;
@@ -171,8 +179,10 @@ async fn prepare(
         require_receipt(raise(&mut socket, &target.organization_id, request.clone()).await?)?;
     socket.close(CloseCode::Normal, None).await?;
     let deadline = receipt.window.deadline().timestamp_millis();
+    let mut due_subject = None;
     let at = match case {
         ApprovalDispatchCase::CorruptAttempt => {
+            due_subject = Some(corrupt_attempt::read_due_subject(host, &request, deadline).await?);
             host.write(Statement {
                 sql: "INSERT INTO engine_work_attempts
                     (attempt_id, machine_kind, subject_key, state, failure_count, next_try_at,
@@ -223,6 +233,7 @@ async fn prepare(
         at,
         request: Some(request),
         parent,
+        due_subject,
     })
 }
 
@@ -494,12 +505,7 @@ async fn require_committed(
     }
     match prepared.case {
         ApprovalDispatchCase::CorruptAttempt => {
-            assert_eq!(
-                rows("SELECT record_state FROM approval_requests").await?,
-                [vec![text("waiting")]]
-            );
-            assert_eq!(rows("SELECT last_failure FROM engine_work_attempts WHERE machine_kind='approval_request'").await?, [vec![text("corrupt_row")]]);
-            assert!(effective_due(host).await? > prepared.at);
+            corrupt_attempt::require_repaired(host, prepared).await?;
         }
         ApprovalDispatchCase::FirstPersonSaved
         | ApprovalDispatchCase::FirstPersonLate
@@ -553,6 +559,7 @@ async fn verify_no_write_control(
                 at: prepared.at - 1,
                 request: None,
                 parent: None,
+                due_subject: None,
             };
             apply(host, &older, Some(None), false).await?;
             assert!(host.trace().await?.is_empty());
@@ -565,6 +572,7 @@ async fn verify_no_write_control(
                 at: prepared.at + 1,
                 request: None,
                 parent: None,
+                due_subject: None,
             };
             apply(host, &empty, Some(None), false).await?;
             assert!(host.trace().await?.is_empty());
