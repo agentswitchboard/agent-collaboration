@@ -277,7 +277,7 @@ fn recovered_writing_is_suppressed_and_only_an_admitted_read_owes_seen() {
     });
 }
 
-async fn advance_local_mark(case: &NetworkCustody) -> ClockInstant {
+pub(super) async fn advance_local_mark(case: &NetworkCustody) -> ClockInstant {
     let mark = next_mark_after(case.link.clock.now());
     let wake = case.link.clock.wall_deadline(mark);
     case.custody_clock.wait_until_pending(wake).await;
@@ -285,7 +285,11 @@ async fn advance_local_mark(case: &NetworkCustody) -> ClockInstant {
     wake
 }
 
-async fn wait_for_seen(inbox: &mut InboxStore, completed_at: Timestamp, receipt: SeenReceiptState) {
+pub(super) async fn wait_for_seen(
+    inbox: &mut InboxStore,
+    completed_at: Timestamp,
+    receipt: SeenReceiptState,
+) {
     let expected = DirectHandoff::Seen {
         completed_at,
         receipt,
