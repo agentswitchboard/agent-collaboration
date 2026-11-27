@@ -5,7 +5,9 @@
 //! folders from them; a load or resume rebuilds them from the session's
 //! record, whichever path restores it.
 
-use crate::provider_work_roots::{ProviderWorkRoots, WorkRootsHook};
+pub(crate) mod session_work_roots;
+
+use self::session_work_roots::{ProviderWorkRoots, WorkRootsHook};
 use provider_session_machines::harness_lifecycle::{
     AUTO_PERMISSION_MODE, OpenSetup, PermissionModeReport, SessionWorkRoots,
 };
@@ -163,7 +165,7 @@ pub(crate) fn session_work_roots(
             ..SessionWorkRoots::default()
         };
     }
-    let roots = crate::provider_work_roots::session_work_roots(&configured.roots, cwd, named);
+    let roots = session_work_roots::session_work_roots(&configured.roots, cwd, named);
     let ask_outside_command = ready_hook.map(|hook| {
         let inside = std::iter::once(cwd.to_path_buf())
             .chain(scratch_folder.map(Path::to_path_buf))

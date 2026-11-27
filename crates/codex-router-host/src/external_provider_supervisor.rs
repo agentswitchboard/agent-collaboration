@@ -41,6 +41,7 @@ mod provider_session_lifecycle;
 mod provider_session_scratch;
 pub(crate) use provider_session_scratch::PrepareProviderScratch;
 mod provider_settings_control;
+pub(crate) mod restore_failure_text;
 #[cfg(test)]
 pub(crate) use provider_settings_control::snapshot_settings;
 #[cfg(any(test, feature = "test-support"))]
@@ -178,7 +179,7 @@ impl ExternalProviderSupervisor {
     pub(crate) fn set_work_roots(
         &self,
         endpoint: &EndpointRef,
-        work_roots: crate::provider_work_roots::ProviderWorkRoots,
+        work_roots: crate::provider_session_setup::session_work_roots::ProviderWorkRoots,
     ) {
         if let Some(binding) = self.inner.bindings.get(endpoint) {
             binding.session_setup.set_work_roots(work_roots);
@@ -188,7 +189,7 @@ impl ExternalProviderSupervisor {
     fn work_roots_for(
         &self,
         endpoint: &EndpointRef,
-    ) -> crate::provider_work_roots::ProviderWorkRoots {
+    ) -> crate::provider_session_setup::session_work_roots::ProviderWorkRoots {
         self.inner
             .bindings
             .get(endpoint)

@@ -84,7 +84,7 @@ async fn owner_door_uses_the_real_acp_connection_for_restore_prompt_and_close() 
     let owner = door
         .open(
             target.clone(),
-            crate::provider_work_roots::ProviderWorkRoots::default(),
+            crate::provider_session_setup::session_work_roots::ProviderWorkRoots::default(),
         )
         .expect("open owner");
     let load = operation(&fixture, &target, ProviderOperationKind::ConversationLoad).await;

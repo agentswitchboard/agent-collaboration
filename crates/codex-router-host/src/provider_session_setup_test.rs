@@ -3,7 +3,9 @@
 //! nothing for a record written before the resume inputs were kept.
 
 use super::{BindingSessionSetup, restore_setup};
-use crate::provider_work_roots::{AskOutsideHook, ProviderWorkRoots, WorkRootsHook};
+use crate::provider_session_setup::session_work_roots::{
+    AskOutsideHook, ProviderWorkRoots, WorkRootsHook,
+};
 use collaboration_protocol::ProviderWorkingDirectory;
 use provider_session_machines::harness_lifecycle::SessionWorkRoots;
 use std::path::{Path, PathBuf};
