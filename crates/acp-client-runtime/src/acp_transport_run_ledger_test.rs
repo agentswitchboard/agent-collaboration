@@ -183,19 +183,40 @@ fn a_replaced_instance_retires_its_claims_and_keeps_all_offer_evidence() {
     old.mark_removed();
     let next = LifecycleRoute::new(run);
     assert_eq!(
-        transport.install_lifecycle_route(&next, "session".into()),
+        transport.install_lifecycle_route(&next, "successor".into()),
         Ok(true)
     );
 
     assert!(!transport.has_lifecycle_route(&old));
     assert!(transport.has_lifecycle_route(&next));
     assert!(!transport.retire_lifecycle_route(&old));
-    assert_eq!(transport.route_for_session("session"), Some(run));
+    assert_eq!(transport.route_for_session("session"), None);
+    assert_eq!(transport.route_for_session("successor"), Some(run));
+    assert!(transport.activate_lifecycle_route(&next));
+    // An owned claim for the old turn cannot resolve into an idle continuation.
+    // The retired claim can, even though the successor has a different session name.
+    assert_eq!(
+        transport.resolve_callback("old-claim", CallbackKind::Continuation),
+        CallbackResolution::ExactIdle {
+            run,
+            item_id: "old-claim".into(),
+        }
+    );
+    assert_eq!(transport.current_turn(run), None);
+
+    let successor_turn = TurnId("019ac19f-aa00-7000-8000-000000000004".parse().unwrap());
+    transport.apply_membership(
+        run.incarnation,
+        TurnMembership::ObservedEligible {
+            run: run.generation,
+            turn: successor_turn,
+        },
+    );
+    assert_eq!(transport.current_turn(run), Some(successor_turn));
     assert_eq!(
         transport.resolve_callback("old-claim", CallbackKind::Request),
         CallbackResolution::Retired
     );
-    assert_eq!(transport.current_turn(run), None);
     for key in [&taken, &offered, &revoked] {
         assert_eq!(
             transport.offer_work(key.clone(), None, "duplicate"),
