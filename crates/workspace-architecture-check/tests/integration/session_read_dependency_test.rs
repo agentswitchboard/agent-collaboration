@@ -59,6 +59,28 @@ fn private_read_declarations_reject_an_inactive_logic_edge_by_kind() {
 }
 
 #[test]
+fn private_read_declarations_reserve_normal_serde_json_for_payloads() {
+    for (owner, _) in SESSION_READ_CRATES {
+        let metadata = metadata_with_workspace_dependency(
+            owner,
+            "serde_json",
+            json!({
+                "name": "serde_json",
+                "source": "registry+https://github.com/rust-lang/crates.io-index",
+                "features": [],
+                "uses_default_features": true,
+            }),
+        );
+        let rejection = check_declared_session_read_edges(&metadata)
+            .err()
+            .map(|error| error.to_string());
+        let expected = (owner == "switchboard-session-calls")
+            .then(|| format!("BD1: forbidden Normal dependency {owner} -> serde_json"));
+        assert_eq!(rejection, expected, "{owner}");
+    }
+}
+
+#[test]
 fn private_read_declarations_check_workspace_ids_feature_settings() {
     for (owner, _) in SESSION_READ_CRATES {
         for (features, uses_default_features, expected) in [
