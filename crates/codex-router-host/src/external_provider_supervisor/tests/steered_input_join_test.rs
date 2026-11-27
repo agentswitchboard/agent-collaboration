@@ -148,10 +148,7 @@ async fn steering_session_on_clock(
     .expect("fixture provider");
     let supervisor = Arc::new(
         ExternalProviderSupervisor::new_with_hub(
-            vec![ExternalProviderBinding {
-                identity: binding(),
-                runtime,
-            }],
+            vec![runtime.into_binding(binding())],
             Arc::clone(&store),
             Some(hub.clone()),
             None,

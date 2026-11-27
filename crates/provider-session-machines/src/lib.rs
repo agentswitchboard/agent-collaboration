@@ -3,6 +3,7 @@
 //! core, with no I/O, no locks and no clock reads. The connection, the Host
 //! and their cells hold the state and run the effects.
 
+pub mod harness_lifecycle;
 pub mod monotonic_instant;
 mod provider_model_reasoning;
 mod provider_setting_choice;
@@ -32,3 +33,8 @@ pub use provider_settings_catalog::{
     ProviderModeObservation, ProviderSettingsCatalog, ProviderSettingsCatalogRecord,
 };
 pub use session_generation::SessionGeneration;
+// The Host names these harness contracts through this crate.
+pub use switchboard_harness_contracts::{
+    AutoRealization, ExternalProviderCreatedSession, InvalidSettingSessionDisposition,
+    ProviderSessionActivity,
+};

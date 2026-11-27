@@ -1,60 +1,92 @@
 //! Route untagged ACP updates to the current restore's own stream.
 
-use crate::{acp_transport::TransportRun, owner_wire::OwnerAcpWire};
-use agent_client_protocol::{Agent, ConnectionTo, Dispatch, Error, HandleDispatchFrom, Handled};
-use session_event_model::session_profile_codec::STATE_METHOD;
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, Mutex, PoisonError},
+use crate::{
+    acp_transport::{RestoreSelection, TransportRun},
+    owner_opening_instance::OpeningInstance,
 };
+use agent_client_protocol::Dispatch;
+use session_event_model::session_profile_codec::STATE_METHOD;
+use std::sync::{Mutex, PoisonError};
 use tokio::sync::mpsc;
 
 #[derive(Default)]
-pub(crate) struct RestoreUpdates(Mutex<BTreeMap<TransportRun, RestoreUpdateTap>>);
+pub(crate) struct RestoreUpdates(Mutex<Vec<RestoreUpdateTap>>);
 
 struct RestoreUpdateTap {
+    run: TransportRun,
+    stamp: OpeningInstance,
     session: String,
     updates: Option<mpsc::UnboundedSender<Dispatch>>,
     awaiting_reply: bool,
 }
 
 impl RestoreUpdates {
+    #[cfg(test)]
     pub(crate) fn open(
         &self,
         run: TransportRun,
         session: String,
+    ) -> (OpeningInstance, mpsc::UnboundedReceiver<Dispatch>) {
+        let stamp = OpeningInstance::default();
+        let receive = self.open_instance(run, session, &stamp);
+        (stamp, receive)
+    }
+
+    pub(crate) fn open_instance(
+        &self,
+        run: TransportRun,
+        session: String,
+        stamp: &OpeningInstance,
     ) -> mpsc::UnboundedReceiver<Dispatch> {
         let (send, receive) = mpsc::unbounded_channel();
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(
-                run,
-                RestoreUpdateTap {
-                    session,
-                    updates: Some(send),
-                    awaiting_reply: true,
-                },
-            );
+        let mut taps = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        for earlier in taps.iter_mut().filter(|tap| tap.run == run) {
+            earlier.updates = None;
+        }
+        taps.retain(|tap| tap.updates.is_some() || tap.awaiting_reply);
+        taps.push(RestoreUpdateTap {
+            run,
+            stamp: stamp.clone(),
+            session,
+            updates: Some(send),
+            awaiting_reply: true,
+        });
         receive
     }
 
     pub(crate) fn retire(&self, run: TransportRun) {
         let mut taps = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(tap) = taps.get_mut(&run) {
+        if let Some(tap) = taps
+            .iter_mut()
+            .rev()
+            .find(|tap| tap.run == run && tap.updates.is_some())
+        {
             tap.updates = None;
-            if !tap.awaiting_reply {
-                taps.remove(&run);
-            }
         }
+        taps.retain(|tap| tap.updates.is_some() || tap.awaiting_reply);
     }
 
-    pub(crate) fn reply_settled(&self, run: TransportRun) {
+    pub(crate) fn retire_instance(&self, run: TransportRun, stamp: &OpeningInstance) {
         let mut taps = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(tap) = taps.get_mut(&run) {
+        if let Some(tap) = taps.iter_mut().find(|tap| tap.names(run, stamp)) {
+            tap.updates = None;
+        }
+        taps.retain(|tap| tap.updates.is_some() || tap.awaiting_reply);
+    }
+
+    pub(crate) fn discard_unoffered(&self, run: TransportRun, stamp: &OpeningInstance) {
+        let mut taps = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        taps.retain(|tap| !tap.names(run, stamp));
+    }
+
+    pub(crate) fn reply_settled(&self, run: TransportRun, stamp: &OpeningInstance) {
+        let mut taps = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(index) = taps.iter().position(|tap| tap.names(run, stamp))
+            && let Some(tap) = taps.get_mut(index)
+        {
             tap.awaiting_reply = false;
             if tap.updates.is_none() {
-                taps.remove(&run);
+                taps.remove(index);
             }
         }
     }
@@ -62,16 +94,21 @@ impl RestoreUpdates {
     pub(crate) fn forward(
         &self,
         session: &str,
-        current: Option<TransportRun>,
+        selected: RestoreSelection,
         message: Dispatch,
     ) -> Option<Dispatch> {
         let taps = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(tap) = current.and_then(|run| taps.get(&run)) {
+        if let RestoreSelection::Registered { run, instance } = selected {
+            let tap = taps
+                .iter()
+                .find(|tap| tap.names(run, &instance) && tap.session == session)?;
             // An untagged state notification from an earlier unanswered
             // restore cannot supply live turn evidence for its successor.
             if matches!(&message, Dispatch::Notification(notification) if notification.method() == STATE_METHOD)
-                && taps.iter().any(|(run, earlier)| {
-                    Some(*run) != current && earlier.session == session && earlier.awaiting_reply
+                && taps.iter().any(|earlier| {
+                    !earlier.stamp.is_same_as(&tap.stamp)
+                        && earlier.session == session
+                        && earlier.awaiting_reply
                 })
             {
                 return None;
@@ -81,49 +118,21 @@ impl RestoreUpdates {
             }
             return None;
         }
-        if current.is_none() && taps.values().any(|tap| tap.session == session) {
+        if matches!(selected, RestoreSelection::NoRoute)
+            && taps.iter().any(|tap| tap.session == session)
+        {
             return None;
         }
         Some(message)
     }
 }
 
-pub(crate) struct OwnerRestoreUpdateRouter(pub(crate) Arc<OwnerAcpWire>);
-
-impl HandleDispatchFrom<Agent> for OwnerRestoreUpdateRouter {
-    async fn handle_dispatch_from(
-        &mut self,
-        message: Dispatch,
-        _connection: ConnectionTo<Agent>,
-    ) -> Result<Handled<Dispatch>, Error> {
-        let session = match &message {
-            Dispatch::Notification(notification)
-                if matches!(notification.method(), "session/update" | STATE_METHOD) =>
-            {
-                notification
-                    .params()
-                    .get("sessionId")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_owned)
-            }
-            _ => None,
-        };
-        let Some(session) = session else {
-            return Ok(Handled::No {
-                message,
-                retry: false,
-            });
-        };
-        Ok(match self.0.forward_restored_update(&session, message) {
-            None => Handled::Yes,
-            Some(message) => Handled::No {
-                message,
-                retry: false,
-            },
-        })
-    }
-
-    fn describe_chain(&self) -> impl std::fmt::Debug {
-        "OwnerRestoreUpdateRouter"
+impl RestoreUpdateTap {
+    fn names(&self, run: TransportRun, stamp: &OpeningInstance) -> bool {
+        self.run == run && self.stamp.is_same_as(stamp)
     }
 }
+
+#[cfg(test)]
+#[path = "owner_restore_updates_test.rs"]
+mod tests;

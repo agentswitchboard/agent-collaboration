@@ -81,6 +81,7 @@ fn buffered_or_pending_prompt_is_never_reported_flushed() {
                 disposition: FlushDisposition::Pending,
             },
             Default::default(),
+            Default::default(),
         );
         let mut context = Context::from_waker(futures_util::task::noop_waker_ref());
         Pin::new(&mut sink)
@@ -112,6 +113,7 @@ fn flush_failure_is_distinct_from_delivery_and_scrubs_error_text() {
                 disposition: FlushDisposition::Error,
             },
             Default::default(),
+            Default::default(),
         );
         let mut context = Context::from_waker(futures_util::task::noop_waker_ref());
         Pin::new(&mut sink)
@@ -121,6 +123,7 @@ fn flush_failure_is_distinct_from_delivery_and_scrubs_error_text() {
             Pin::new(&mut sink).poll_flush(&mut context),
             Poll::Ready(Err(_))
         ));
+        assert!(sink.transport_ending.is_cancelled());
         assert!(capture.output().contains("outgoingFlushError"));
         assert!(!capture.output().contains("outgoingFlushed"));
         assert!(!capture.output().contains("PRIVATE_CANARY"));

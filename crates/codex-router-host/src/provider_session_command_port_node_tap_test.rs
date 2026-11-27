@@ -7,7 +7,7 @@
 
 use super::*;
 use crate::{
-    ExternalProviderBinding, ExternalProviderLaunch, ExternalProviderRuntime, LiveSessionOwnership,
+    ExternalProviderLaunch, ExternalProviderRuntime, LiveSessionOwnership,
     LiveSessionOwnershipCheck,
 };
 use codex_router_test_support::node_taps::{
@@ -290,10 +290,7 @@ async fn command_port_rig(fixture: AgentFixture) -> CommandPortRig {
         .expect("record session");
     let supervisor = Arc::new(
         ExternalProviderSupervisor::new(
-            vec![ExternalProviderBinding {
-                identity: binding.clone(),
-                runtime,
-            }],
+            vec![runtime.into_binding(binding.clone())],
             Arc::clone(&store),
             clock.clone(),
         )

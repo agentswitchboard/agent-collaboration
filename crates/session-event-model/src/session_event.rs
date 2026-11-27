@@ -121,6 +121,9 @@ impl schemars::JsonSchema for ProviderSettingFailureReason {
     }
 }
 
+pub type FailedProviderSetting =
+    switchboard_harness_contracts::FailedProviderSetting<ProviderSettingFailureReason>;
+
 /// Ended carries an agent-confirmed stop reason; lost carries no such claim.
 #[derive(schemars::JsonSchema, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]

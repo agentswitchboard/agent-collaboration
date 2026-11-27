@@ -1,7 +1,10 @@
 use super::*;
 use crate::{
-    InteractionFuture, owner_acp_binding::OwnerAcpBinding,
-    owner_session_setting::tests::ConnectionCatalogueBehavior, owner_wire::OwnerAcpOutput,
+    InteractionFuture, InteractionPort,
+    fixture_policy::{FixturePayloads, FixturePolicy},
+    owner_acp_binding::OwnerAcpBinding,
+    owner_session_setting::tests::ConnectionCatalogueBehavior,
+    owner_wire::OwnerAcpOutput,
 };
 use std::num::NonZeroUsize;
 use switchboard_harness_contracts::{
@@ -49,7 +52,8 @@ impl ReservedReply<WorkReply> for CapturedCancelReply {
 }
 
 struct CancelFixture {
-    binding: OwnerAcpBinding<WaitingInteractionPort>,
+    binding: OwnerAcpBinding<FixturePayloads<WaitingInteractionPort>>,
+    approvals: OwnerApprovalBindings<FixturePayloads<WaitingInteractionPort>>,
     #[cfg(feature = "test-observation")]
     wire: Arc<OwnerAcpWire>,
     port: Arc<WaitingInteractionPort>,
@@ -58,14 +62,18 @@ struct CancelFixture {
     retirement: CancellationToken,
     tasks: TaskTracker,
     _output: OwnerAcpOutput,
-    _lease: OwnerApprovalLease<WaitingInteractionPort>,
+    _lease: OwnerApprovalLease<FixturePayloads<WaitingInteractionPort>>,
 }
 
 impl CancelFixture {
     fn new() -> Self {
         let port = Arc::new(WaitingInteractionPort::default());
         let active = Arc::new(Mutex::new(HashMap::new()));
-        let approvals = OwnerApprovalBindings::new(Arc::clone(&active), Arc::clone(&port));
+        let approvals = OwnerApprovalBindings::new(
+            Arc::clone(&active),
+            Arc::new(FixturePolicy(Arc::clone(&port))),
+            CancellationToken::new(),
+        );
         let run = TransportRun {
             incarnation: OwnerIncarnation(Uuid::now_v7()),
             generation: SessionGeneration::from_number(1),
@@ -98,9 +106,10 @@ impl CancelFixture {
             binding: OwnerAcpBinding::new(
                 Arc::clone(&wire),
                 SESSION.into(),
-                approvals,
+                approvals.clone(),
                 tasks.clone(),
             ),
+            approvals,
             #[cfg(feature = "test-observation")]
             wire,
             port,
@@ -180,6 +189,36 @@ async fn retired_cancel_wait_drops_the_reservation_without_an_event() {
         reply.try_recv(),
         Err(oneshot::error::TryRecvError::Closed)
     ));
+}
+
+#[tokio::test]
+async fn a_finished_cancel_drain_beats_ready_retirement() {
+    let mut fixture = CancelFixture::new();
+    let mut reply = fixture.begin_wait();
+    fixture.port.cancelling.notified().await;
+    assert!(matches!(
+        reply.try_recv(),
+        Err(oneshot::error::TryRecvError::Empty)
+    ));
+
+    // Closing the empty approval barrier and retiring before yielding makes
+    // both branches ready at the next poll of the actual reserved wait.
+    fixture.approvals.retire_run(
+        SESSION,
+        TransportRun {
+            incarnation: fixture.authorization.incarnation,
+            generation: fixture.authorization.run,
+        },
+    );
+    fixture.retire().await;
+
+    assert_eq!(
+        reply.try_recv(),
+        Ok(WorkReply::Dispatch(DispatchResult::CancelDrainFinished(
+            fixture.authorization
+        ))),
+        "the completed drain sends the original fact when retirement is also ready",
+    );
 }
 
 #[tokio::test]

@@ -69,10 +69,7 @@ async fn selected_skill_removed_while_fifo_waits_is_refused_without_a_provider_p
     .await
     .expect("fixture provider");
     let supervisor = ExternalProviderSupervisor::new_with_hub(
-        vec![ExternalProviderBinding {
-            identity: binding.clone(),
-            runtime,
-        }],
+        vec![runtime.into_binding(binding.clone())],
         store.clone(),
         Some(hub.clone()),
         None,

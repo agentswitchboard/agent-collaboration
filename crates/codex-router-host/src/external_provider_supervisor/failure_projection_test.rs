@@ -1,4 +1,8 @@
 use super::*;
+use crate::external_provider_supervisor::owner_fixture_failures::{
+    legacy_prompt_runtime_failure as prompt_runtime_failure,
+    legacy_runtime_failure as runtime_failure,
+};
 
 #[test]
 fn lost_provider_prompt_has_terminal_unknown_effect_and_sanitized_reason() {
@@ -70,10 +74,7 @@ async fn unknown_agent_stop_reason_settles_with_typed_value() {
             .expect("operation store"),
     ));
     let backend = ExternalProviderSupervisor::new(
-        vec![ExternalProviderBinding {
-            identity: binding(),
-            runtime,
-        }],
+        vec![runtime.into_binding(binding())],
         store,
         crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )

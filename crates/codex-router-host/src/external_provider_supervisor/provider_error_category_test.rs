@@ -1,6 +1,8 @@
 //! Independent closed-category/public-failure oracles; all peer payloads are synthetic.
-use super::{
-    ExternalProviderRuntime, ExternalProviderRuntimeError, prompt_runtime_failure, runtime_failure,
+use super::{ExternalProviderRuntime, ExternalProviderRuntimeError};
+use crate::external_provider_supervisor::owner_fixture_failures::{
+    legacy_prompt_runtime_failure as prompt_runtime_failure,
+    legacy_runtime_failure as runtime_failure,
 };
 use collaboration_protocol::{
     ConversationOperationFailureKind as FailureKind,

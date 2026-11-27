@@ -10,26 +10,9 @@ pub fn is_fast_off_select_value(value: &str) -> bool {
     matches!(value, "false" | "off")
 }
 
-/// What the agent last reported for its fast option.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FastObserved {
-    Off,
-    On,
-    /// The agent offers no fast option.
-    NoOption,
-}
-
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct EffectiveProviderSettings {
-    pub mode: Option<String>,
-    pub model: Option<String>,
-    pub effort: Option<String>,
-    pub fast: Option<FastObserved>,
-}
-
 pub use switchboard_harness_contracts::{
-    ProviderConfigOption, ProviderConfigValue, ProviderModeObservation,
-    ProviderSettingsCatalogRecord,
+    EffectiveProviderSettings, FastObserved, ProviderConfigOption, ProviderConfigValue,
+    ProviderModeObservation, ProviderSettingsCatalogRecord, ProviderSettingsUpdate,
 };
 
 /// Last options advertised by a provider session, with its catalogue operations.
@@ -68,16 +51,6 @@ impl ProviderSettingsCatalog {
             Err(record) => record.model_reasoning.clone(),
         }
     }
-}
-
-/// A live provider notification decoded before the owner receives it.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ProviderSettingsUpdate {
-    CurrentMode(String),
-    ConfigOptions {
-        options: Vec<ProviderConfigOption>,
-        model_reasoning: Option<ModelReasoningMetadata>,
-    },
 }
 
 impl ProviderSettingsCatalog {

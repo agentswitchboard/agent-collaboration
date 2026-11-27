@@ -5,9 +5,7 @@
 /// mode and why they differ; Claude's auto stands in as acceptEdits.
 #[tokio::test]
 async fn start_and_show_report_requested_and_actual_mode_with_the_reason() {
-    use crate::external_provider_supervisor::{
-        ExternalProviderBinding, ExternalProviderSupervisor,
-    };
+    use crate::external_provider_supervisor::ExternalProviderSupervisor;
     use collaboration_contracts::ProviderConversationBackend;
     use collaboration_protocol::{
         ConversationCreateRequest, ConversationOperationSettlement,
@@ -20,6 +18,7 @@ async fn start_and_show_report_requested_and_actual_mode_with_the_reason() {
     let base = std::fs::canonicalize(root.path()).unwrap();
     let project = base.join("project");
     std::fs::create_dir_all(&project).unwrap();
+    let clock = crate::external_provider_runtime::acp_scripted_fixture::manual_clock();
     let runtime = crate::ExternalProviderRuntime::initialize(
         crate::external_provider_runtime::acp_scripted_fixture::launch_fixture_agent(
             "permission-mode-agent.ts",
@@ -32,7 +31,7 @@ async fn start_and_show_report_requested_and_actual_mode_with_the_reason() {
         std::sync::Arc::new(acp_provider_adapters::ClaudeAcpBehavior::new(
             acp_provider_adapters::ClaudeSkillSource::Annotated,
         )),
-        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
+        clock.clone(),
     )
     .await
     .unwrap();
@@ -42,15 +41,14 @@ async fn start_and_show_report_requested_and_actual_mode_with_the_reason() {
             .unwrap();
     let binding = crate::external_provider_supervisor::tests::binding();
     let requester = crate::external_provider_supervisor::tests::requester();
-    let clock = runtime.owner_clock();
     let backend = ExternalProviderSupervisor::new_with_hub(
-        vec![ExternalProviderBinding {
-            identity: binding.clone(),
-            runtime,
-        }],
+        vec![runtime.into_binding(binding.clone())],
         std::sync::Arc::new(tokio::sync::Mutex::new(store)),
         None,
-        Some(base.join("scratch")),
+        Some(crate::provider_session_scratch::provider_scratch_preparer(
+            base.join("scratch"),
+            clock.clone(),
+        )),
         clock,
     )
     .unwrap();

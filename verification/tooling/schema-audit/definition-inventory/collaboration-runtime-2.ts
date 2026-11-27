@@ -203,11 +203,11 @@ export const rows: InventoryRow[] = [
   },
   {
     file: "crates/switchboard-session-store/src/provider_operation_store.rs",
-    line: 800,
+    line: 785,
     owner: "router-vocabulary",
     kind: "json-in-string",
     defines:
-      "encode_closed and encode_enum store typed records as JSON text columns, decoded back with the same types (:800-820): local storage encoding, not a message between parts",
+      "encode_closed and encode_enum store typed records as JSON text columns, decoded back with the same types (:785-805): local storage encoding",
     usedBy: [{ crate: "switchboard-session-store" }],
     duplicateGroup: null,
     disposition: "boundary-encoding",
@@ -285,11 +285,11 @@ export const rows: InventoryRow[] = [
   },
   {
     file: "crates/switchboard-session-store/src/provider_operation_store.rs",
-    line: 822,
+    line: 807,
     owner: "router-vocabulary",
     kind: "rust-type",
     defines:
-      "decode_binding: binding_json tried as ConversationBindingIdentity, else legacy ProviderBindingIdentity JSON wrapped as ExternalProvider (:822-828); target SessionRef rebuilt from three text columns (:759-780)",
+      "decode_binding: binding_json tried as ConversationBindingIdentity, else legacy ProviderBindingIdentity JSON wrapped as ExternalProvider (:807-813); target SessionRef rebuilt from three text columns (:744-765)",
     usedBy: [{ crate: "switchboard-session-store" }],
     duplicateGroup: "legacy-stored-decoders",
     disposition: "duplicate",

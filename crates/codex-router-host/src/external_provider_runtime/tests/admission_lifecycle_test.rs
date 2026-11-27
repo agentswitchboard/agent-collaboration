@@ -114,95 +114,66 @@ async fn capability_report_uses_initialize_and_session_advertisements() {
             }),
         )
         .launch();
+    let clock = crate::external_provider_runtime::acp_scripted_fixture::manual_clock();
     let runtime = ExternalProviderRuntime::initialize(
         fixture,
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
-        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
+        clock.clone(),
     )
     .await
     .expect("fixture initializes");
-    let before = runtime.capability_report("fixture-session").await;
-    assert!(before.supports_load);
-    assert!(before.supports_resume);
-    assert!(before.supports_close);
-    assert!(before.supports_list);
-    assert!(before.router_queue);
-    assert!(before.supports_cancel_queued);
-    assert!(before.accepts_image);
-    assert!(!before.accepts_audio);
-    assert!(before.accepts_embedded_resource);
-    assert!(!before.supports_steering);
-    assert!(!before.supports_modes);
-    assert!(!before.supports_config_options);
-    assert!(before.supports_elicitation);
-    runtime
-        .create_session(PathBuf::from("/tmp"))
+    let root = tempfile::tempdir().expect("fixture store directory");
+    let store = switchboard_session_store::ProviderOperationStore::open(
+        &root.path().join("operations.sqlite"),
+    )
+    .await
+    .expect("open the fixture store");
+    let binding = crate::session_store_lane::tests::mock_binding();
+    let target = SessionRef {
+        endpoint: binding.endpoint.clone(),
+        session_id: collaboration_protocol::SessionId::try_from("fixture-session".to_owned())
+            .expect("fixture session ID"),
+    };
+    let supervisor = crate::ExternalProviderSupervisor::new(
+        vec![runtime.into_binding(binding)],
+        Arc::new(tokio::sync::Mutex::new(store)),
+        clock,
+    )
+    .expect("compose the supervisor binding");
+    let before = supervisor
+        .session_capabilities(&target)
+        .await
+        .expect("bound connection");
+    assert!(before.load);
+    assert!(before.resume);
+    assert!(before.close);
+    assert!(before.list);
+    assert!(
+        before
+            .queue
+            .is_some_and(|queue| queue.kind == session_event_model::QueueCapability::Router)
+    );
+    assert!(before.queue.is_some_and(|queue| queue.can_cancel));
+    assert!(before.prompt_content.image);
+    assert!(!before.prompt_content.audio);
+    assert!(before.prompt_content.embedded_context);
+    assert!(!before.steer);
+    assert!(!before.modes);
+    assert!(!before.config_options);
+    assert!(before.elicitation);
+    let created = supervisor
+        .open_provider_fixture(&target.endpoint, PathBuf::from("/tmp"))
         .await
         .expect("session created");
-    let after = runtime.capability_report("fixture-session").await;
-    assert!(after.supports_steering);
-    assert!(after.supports_modes);
-    assert!(after.supports_config_options);
-    runtime.shutdown().await;
-}
-
-#[test]
-fn prompt_content_gate_matches_advertised_optional_types() {
-    // ACP v1 initialization.mdx:202-217: text and resource links are baseline;
-    // image, audio and embedded resources require promptCapabilities.
-    use acp_client_runtime::ProviderCapabilityReport;
-    use acp_client_runtime::ProviderPromptContent;
-    use session_event_model::PromptContent;
-
-    let examples = [
-        ("text", serde_json::json!({"type": "text", "text": "hello"})),
-        (
-            "resourceLink",
-            serde_json::json!({"type": "resourceLink", "name": "reference", "uri": "file:///tmp/reference"}),
-        ),
-        (
-            "image",
-            serde_json::json!({"type": "image", "mimeType": "image/png", "data": "AA=="}),
-        ),
-        (
-            "audio",
-            serde_json::json!({"type": "audio", "mimeType": "audio/wav", "data": "AA=="}),
-        ),
-        (
-            "embeddedResource",
-            serde_json::json!({"type": "embeddedResource", "uri": "file:///tmp/reference", "text": "content"}),
-        ),
-    ];
-    for advertised_mask in 0_u8..8 {
-        let report = ProviderCapabilityReport {
-            accepts_image: advertised_mask & 1 != 0,
-            accepts_audio: advertised_mask & 2 != 0,
-            accepts_embedded_resource: advertised_mask & 4 != 0,
-            ..ProviderCapabilityReport::default()
-        };
-        for (content_type, wire_block) in &examples {
-            let block: PromptContent =
-                serde_json::from_value(wire_block.clone()).expect("canonical content example");
-            let result = ProviderPromptContent::from_session_contents(vec![block], &report);
-            let accepted = match *content_type {
-                "text" | "resourceLink" => true,
-                "image" => report.accepts_image,
-                "audio" => report.accepts_audio,
-                "embeddedResource" => report.accepts_embedded_resource,
-                _ => false,
-            };
-            if accepted {
-                assert!(result.is_ok(), "{content_type} mask {advertised_mask}");
-            } else {
-                assert_eq!(
-                    result
-                        .expect_err("unadvertised content is rejected")
-                        .to_string(),
-                    format!("unsupportedContent{{{content_type}}}")
-                );
-            }
-        }
-    }
+    assert_eq!(created, "fixture-session");
+    let after = supervisor
+        .session_capabilities(&target)
+        .await
+        .expect("bound session");
+    assert!(after.steer);
+    assert!(after.modes);
+    assert!(after.config_options);
+    supervisor.shutdown().await.expect("shut down the fixture");
 }
 
 #[cfg(unix)]

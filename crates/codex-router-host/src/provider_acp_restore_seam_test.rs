@@ -462,7 +462,9 @@ mod writer_admission_tests {
         let owner = host
             .session_owner_for(&rig.target)
             .expect("registered session");
-        let held_writer = owner.hold_provider_writer_capacity();
+        let held_writer = owner
+            .hold_provider_writer_capacity()
+            .expect("real provider writer hold");
         let route = delivery_route(&rig, host.clone(), store);
 
         let result = route

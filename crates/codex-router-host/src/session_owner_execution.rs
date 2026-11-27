@@ -1,48 +1,39 @@
-//! Host adapters for one adopted ACP session's owner.
+//! Execute the effects of one adopted session owner.
 
+#[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
+use crate::session_owner_work_observation::{WorkObservationKind, WorkObservationSink};
 use crate::{
     session_owner_calls::{InputAcceptance, SessionOwnerCalls},
+    session_owner_lifecycle_reports::{SessionHarnessBinding, SessionOwnerLifecycleReports},
     session_owner_publication::SessionOwnerPublisher,
     session_owner_storage::SessionOwnerStorage,
 };
-#[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
-use acp_client_runtime::work_call_observation::{
-    WorkWitnessEvent, WorkWitnessKind, record_host_work,
-};
-use acp_client_runtime::{
-    ExternalProviderRuntimeError,
-    acp_transport::TransportRun,
-    owner_acp_binding::OwnerAcpBinding,
-    owner_session_open::{OwnerOpenedSession, OwnerSessionOpenSetup},
-    owner_session_setting::{OwnerSettingWirePlan, RestoreSettingPlan},
-    owner_session_stream::OwnerStreamTarget,
-    owner_wire::OwnerAcpWire,
-    session_owner_task::{
-        OwnerCallerWakes, OwnerCompletionPort, OwnerTaskError, SessionOwnerPorts,
-    },
+use acp_client_runtime::session_owner_task::{
+    OwnerCallerWakes, OwnerCompletionPort, OwnerTaskError, SessionOwnerPorts,
 };
 use collaboration_protocol::{ProviderIdentity, SessionRef};
+use lifecycle::lifecycle_settings;
 use provider_session_machines::{
-    ProviderSettingKind, ProviderSettingsCatalog, SessionGeneration,
-    session_lifecycle_machine::{LoadAttempt, RestoreVia},
+    SessionGeneration,
+    harness_lifecycle::{
+        ActivationSetup, ApprovalLease, ApprovalLeaseRefusalReason, ExactTurn, Held, OpenAttempt,
+        TransportRun, owner_event_for_close,
+    },
     session_owner::{
         AuthorizedWork, CancelDrainStart, CancelDrainWait, CancelReservationRefusal,
-        DispatchAuthorization, DispatchResult, HarnessBinding, ObservationCause, ObservedSetting,
-        OwnerAddress, OwnerEffect, OwnerEvent, OwnerSetting, PreparationStage, PublicationBatch,
-        PublicationFact, RefusedWorkMove, ReplyAdmission, ReservedWorkReply, RestoreFailure,
-        RestoreLoadReadback, RestoreModeOutcome, RestorePreparation, RunAttempt, SessionOwnerReply,
-        SessionPublication, SessionWireRequest, SessionWireResult, SettingEvidence, SettingOffer,
-        SteerIdlePolicy, SteerOrigin, TurnDispatchMark, TurnMembership, WireOutcome,
-        WorkOfferRefusal, WriterState,
+        DispatchAuthorization, DispatchResult, OwnerAddress, OwnerEffect, OwnerEvent,
+        PreparationStage, PublicationBatch, PublicationFact, RefusedWorkMove, ReplyAdmission,
+        ReservedWorkReply, RestorePreparation, SessionOwnerReply, SessionWireRequest,
+        SessionWireResult, SettingOffer, SteerIdlePolicy, SteerOrigin, TurnDispatchMark,
+        TurnMembership, WorkOfferRefusal, WriterState,
     },
     session_setting_machine::SettingValueId,
 };
-use std::{
-    collections::{BTreeMap, HashMap},
-    path::PathBuf,
-    sync::{Arc, Mutex, MutexGuard},
-};
+use std::{collections::BTreeMap, sync::Arc};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
+
+#[path = "session_owner_execution_lifecycle.rs"]
+mod lifecycle;
 
 #[cfg(test)]
 #[path = "session_owner_work_refusal_test.rs"]
@@ -50,76 +41,72 @@ mod work_refusal_tests;
 
 pub struct SessionOwnerExecution {
     target: SessionRef,
-    wire: Arc<OwnerAcpWire>,
-    approvals:
-        acp_client_runtime::OwnerApprovalBindings<crate::acp_interaction_port::HostInteractionPort>,
-    work_binding: Box<dyn HarnessBinding>,
+    binding: SessionHarnessBinding,
+    observations: Arc<SessionOwnerLifecycleReports>,
     storage: SessionOwnerStorage,
     publisher: SessionOwnerPublisher,
     calls: Arc<SessionOwnerCalls>,
     tasks: TaskTracker,
-    opens: Arc<Mutex<HashMap<LoadAttempt, OpenedRestore>>>,
     routes: BTreeMap<SessionGeneration, OwnerRun>,
-    created: Option<OwnerOpenedSession>,
     work_roots: crate::provider_work_roots::ProviderWorkRoots,
+    #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
+    work_observer: Option<Arc<dyn WorkObservationSink>>,
     #[cfg(any(test, feature = "test-support"))]
     preparation_fixture: Arc<crate::session_owner_preparation_fixture::PreparationFixture>,
 }
 
-struct OpenedRestore {
-    session: OwnerOpenedSession,
-    fallback: Option<String>,
-    skills: Option<session_event_model::SkillView>,
-}
-
 struct OwnerRun {
-    load_attempt: Option<LoadAttempt>,
     cancel: CancellationToken,
+    router_auto_requested: bool,
     approval: Option<ActiveTurnApproval>,
 }
 
 struct ActiveTurnApproval {
     turn: provider_session_machines::session_turn_machine::TurnId,
     approver: ProviderIdentity,
-    _lease:
-        acp_client_runtime::OwnerApprovalLease<crate::acp_interaction_port::HostInteractionPort>,
+    _lease: Box<dyn ApprovalLease>,
+}
+
+enum ApprovalLeaseMoment {
+    BeforeOffer,
+    ObservedTurn,
 }
 
 impl SessionOwnerExecution {
     pub(crate) fn new(
         target: SessionRef,
-        wire: Arc<OwnerAcpWire>,
-        approvals: acp_client_runtime::OwnerApprovalBindings<
-            crate::acp_interaction_port::HostInteractionPort,
-        >,
+        binding: SessionHarnessBinding,
+        observations: Arc<SessionOwnerLifecycleReports>,
         storage: SessionOwnerStorage,
         publisher: SessionOwnerPublisher,
         calls: Arc<SessionOwnerCalls>,
         work_roots: crate::provider_work_roots::ProviderWorkRoots,
     ) -> Self {
         let tasks = storage.task_tracker();
-        let work_binding = Box::new(OwnerAcpBinding::new(
-            Arc::clone(&wire),
-            String::from(target.session_id.clone()),
-            approvals.clone(),
-            tasks.clone(),
-        ));
         Self {
             target,
-            wire,
-            approvals,
-            work_binding,
+            binding,
+            observations,
             storage,
             publisher,
             calls,
             tasks,
             work_roots,
-            opens: Arc::default(),
             routes: BTreeMap::new(),
-            created: None,
+            #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
+            work_observer: None,
             #[cfg(any(test, feature = "test-support"))]
             preparation_fixture: Arc::default(),
         }
+    }
+
+    #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
+    pub(crate) fn with_work_observer(
+        mut self,
+        observer: Option<Arc<dyn WorkObservationSink>>,
+    ) -> Self {
+        self.work_observer = observer;
+        self
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -151,194 +138,38 @@ impl SessionOwnerExecution {
         })
     }
 
-    fn transport_run(owner: OwnerAddress, generation: SessionGeneration) -> TransportRun {
-        TransportRun {
-            incarnation: owner.incarnation,
-            generation,
-        }
-    }
-
     fn install_approval_for(
         &self,
         owner: OwnerAddress,
         input: &provider_session_machines::session_owner::OwnerInput,
-    ) -> Result<Option<ActiveTurnApproval>, acp_client_runtime::ExternalProviderRuntimeError> {
-        self.calls
-            .take_approval(&input.input)
-            .map(|context| {
-                let approver = context.approver.clone();
-                self.approvals
-                    .install(
-                        self.session_id(),
-                        Self::transport_run(owner, input.generation),
-                        input.turn,
-                        context,
-                    )
-                    .map(|lease| ActiveTurnApproval {
-                        turn: input.turn,
-                        approver,
-                        _lease: lease,
-                    })
-            })
-            .transpose()
-    }
-
-    fn restore(
-        &mut self,
-        owner: OwnerAddress,
-        run: RunAttempt<LoadAttempt>,
-        via: RestoreVia,
-        completions: &OwnerCompletionPort,
-    ) -> Result<Option<OwnerEvent>, OwnerTaskError> {
-        let Some(saved) = self.storage.take_setup(run.attempt) else {
-            return Ok(Some(restore_failed(
-                run,
-                RestoreFailure::LocalPrerequisite {
-                    stage: PreparationStage::SavedSetup,
-                },
-            )));
+        moment: ApprovalLeaseMoment,
+    ) -> Result<Option<ActiveTurnApproval>, ApprovalLeaseRefusalReason> {
+        let Some(context) = self.calls.take_approval(&input.input) else {
+            return Ok(None);
         };
-        let completion = completions.reserve(owner)?;
-        let cwd = self
-            .storage
-            .explicit_working_directory(run.attempt)
-            .unwrap_or_else(|| PathBuf::from(String::from(saved.working_directory.clone())));
-        let restored =
-            crate::provider_session_setup::restore_setup(&self.work_roots, &cwd, &saved.resume);
-        let setup = OwnerSessionOpenSetup {
-            cwd,
-            work_roots: restored.work_roots,
-            scratch_folder: restored.scratch_folder,
-        };
-        let route = Self::transport_run(owner, run.generation);
-        let provider_id = self.session_id();
-        self.wire.open_route(route, provider_id.clone());
-        let receipt = match self
-            .wire
-            .restore(route, run.attempt, provider_id, via, setup)
-        {
-            Ok(receipt) => receipt,
-            Err(_) => return Ok(Some(restore_failed(run, RestoreFailure::NotEnqueued))),
-        };
-        let paused = CancellationToken::new();
-        self.routes.insert(
-            run.generation,
-            OwnerRun {
-                load_attempt: Some(run.attempt),
-                cancel: paused.clone(),
-                approval: None,
+        let approver = context.approver.clone();
+        let turn = ExactTurn {
+            run: TransportRun {
+                incarnation: owner.incarnation,
+                generation: input.generation,
             },
-        );
-        let opened = Arc::clone(&self.opens);
-        let completions = completions.clone();
-        self.tasks.spawn(async move {
-            let result = tokio::select! {
-                () = paused.cancelled() => return,
-                result = receipt => result,
-            };
-            let mut session = match result {
-                Ok(Ok(session)) => session,
-                Ok(Err(error)) => {
-                    completion.send(restore_failed(run, from_wire_failure(error)));
-                    return;
-                }
-                Err(_) => {
-                    completion.send(restore_failed(run, RestoreFailure::Disconnected));
-                    return;
-                }
-            };
-            let skills = if via == RestoreVia::Load {
-                match session.prepare_replay() {
-                    Ok(replay) => {
-                        if completions
-                            .send_stream(
-                                owner,
-                                OwnerEvent::Replay {
-                                    run,
-                                    events: replay.events,
-                                },
-                                &paused,
-                            )
-                            .await
-                            .is_err()
-                        {
-                            return;
-                        }
-                        replay.skills
-                    }
-                    Err(_) => {
-                        completion.send(restore_failed(
-                            run,
-                            RestoreFailure::LocalPrerequisite {
-                                stage: PreparationStage::Route,
-                            },
-                        ));
-                        return;
-                    }
-                }
-            } else {
-                None
-            };
-            let RestoreSettingPlan {
-                mode,
-                accepted_mode_fallback,
-                fast_off,
-            } = session.restore_setting_plan(saved.resume.requested_mode.as_deref());
-            let catalogue = Arc::new(session.catalog().clone());
-            lock(&opened).insert(
-                run.attempt,
-                OpenedRestore {
-                    session,
-                    fallback: accepted_mode_fallback,
-                    skills,
-                },
-            );
-            completion.send(OwnerEvent::Wire(SessionWireResult::Restore {
-                run,
-                outcome: WireOutcome::Confirmed(RestoreLoadReadback {
-                    catalogue,
-                    router_auto_requested: saved.resume.requested_mode.as_deref()
-                        == Some(acp_client_runtime::AUTO_PERMISSION_MODE),
-                    mode,
-                    fast_on: fast_off,
-                }),
-            }));
-        });
-        Ok(None)
-    }
-
-    fn restore_setting(
-        &mut self,
-        address: OwnerAddress,
-        run: RunAttempt<LoadAttempt>,
-        setting: OwnerSetting,
-        value: SettingValueId,
-        catalogue: &ProviderSettingsCatalog,
-        completions: &OwnerCompletionPort,
-    ) -> Result<Option<OwnerEvent>, OwnerTaskError> {
-        let connection = lock(&self.opens);
-        let Some(opened) = connection.get(&run.attempt) else {
-            return Ok(Some(setting_unsent(run, setting)));
+            turn: input.turn,
         };
-        let request = match OwnerSettingWirePlan::from_catalog(
-            self.session_id(),
-            catalogue,
-            setting.kind,
-            value.0,
-            opened.fallback.clone(),
-        ) {
-            Ok(request) => request,
-            Err(_) => return Ok(Some(setting_unsent(run, setting))),
-        };
-        let completion = completions.reserve(address)?;
-        if self
-            .wire
-            .reapply_setting(address.incarnation, run, setting, request, completion)
-            .is_err()
-        {
-            return Ok(Some(setting_unsent(run, setting)));
-        }
-        Ok(None)
+        let lease = match moment {
+            ApprovalLeaseMoment::BeforeOffer => self
+                .binding
+                .install_approval_lease_before_offer(turn, context)
+                .map_err(|refusal| refusal.0),
+            ApprovalLeaseMoment::ObservedTurn => self
+                .binding
+                .install_approval_lease_for_observed_turn(turn, context)
+                .map_err(|refusal| refusal.0),
+        }?;
+        Ok(Some(ActiveTurnApproval {
+            turn: input.turn,
+            approver,
+            _lease: lease,
+        }))
     }
 
     fn authorize(
@@ -364,9 +195,9 @@ impl SessionOwnerExecution {
         };
         #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
         let witness_kind = if notice.is_some() {
-            Some(WorkWitnessKind::ManagedNotice)
+            Some(WorkObservationKind::ManagedNotice)
         } else if matches!(&work, AuthorizedWork::Prompt(_)) {
-            Some(WorkWitnessKind::Prompt)
+            Some(WorkObservationKind::Prompt)
         } else {
             None
         };
@@ -381,10 +212,12 @@ impl SessionOwnerExecution {
                     return Ok(Some(definitely_unsent(authorization)));
                 };
                 let completion = reserve_work_reply(completions, owner)?;
-                let Ok(approval) = self.install_approval_for(owner, &input) else {
+                let Ok(approval) =
+                    self.install_approval_for(owner, &input, ApprovalLeaseMoment::BeforeOffer)
+                else {
                     return Ok(Some(definitely_unsent(authorization)));
                 };
-                let offered = self.work_binding.offer_prompt(
+                let offered = self.binding.offer_prompt(
                     authorization.clone(),
                     input.turn,
                     content.as_harness_content(),
@@ -413,7 +246,7 @@ impl SessionOwnerExecution {
                     SteerOrigin::Auto => SteerIdlePolicy::AllowOwnerPrompt,
                     SteerOrigin::Named | SteerOrigin::Notice => SteerIdlePolicy::Refuse,
                 };
-                self.work_binding.offer_steer(
+                self.binding.offer_steer(
                     authorization.clone(),
                     content.as_harness_content(),
                     idle,
@@ -424,7 +257,7 @@ impl SessionOwnerExecution {
                 if !self.calls.settlement_requested(setting.change.attempt.0) {
                     return Ok(Some(definitely_unsent(authorization)));
                 }
-                match self.work_binding.offer_setting(
+                match self.binding.offer_setting(
                     authorization.clone(),
                     setting.kind,
                     value,
@@ -442,36 +275,33 @@ impl SessionOwnerExecution {
             return Ok(Some(settle_refused_offer(
                 authorization,
                 refusal,
-                |authorization| self.work_binding.take_back(authorization),
+                |authorization| self.binding.take_back(authorization),
             )));
         }
         #[cfg(test)]
         if named_steer && let Some(release) = self.preparation_fixture.hold_named_steer_take() {
-            // Keep the real offer in ACP. The owner can consume the foreground
-            // ending before the test lets ACP attempt the exact transport take.
+            // Leave the offer on this binding while the owner consumes the foreground ending.
             let completion = completions.reserve(owner)?;
-            let binding = OwnerAcpBinding::new(
-                Arc::clone(&self.wire),
-                self.session_id(),
-                self.approvals.clone(),
-                self.tasks.clone(),
-            );
+            let take = self
+                .binding
+                .detached_take_for_test(authorization)
+                .ok_or(OwnerTaskError::ExecutorStopped)?;
             self.tasks.spawn(async move {
                 let _released = release.await;
-                if let Ok(result) = binding.hand_over(&authorization, &mut || true) {
+                if let Ok(result) = take() {
                     completion.send(OwnerEvent::Dispatch(result));
                 }
             });
             return Ok(None);
         }
         #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
-        if let Some(work_kind) = witness_kind {
-            record_host_work(&authorization, WorkWitnessEvent::Offered { work_kind });
+        if let (Some(work_kind), Some(observer)) = (witness_kind, &self.work_observer) {
+            observer.offered(&authorization, work_kind);
         }
         let handed_over = if let Some(notice) = notice {
-            notice.take(&authorization, self.work_binding.as_ref())
+            notice.take(&authorization, self.binding.as_ref())
         } else {
-            self.work_binding
+            self.binding
                 .hand_over(&authorization, &mut || {
                     setting_operation
                         .is_none_or(|operation| self.calls.settlement_requested(operation))
@@ -479,96 +309,12 @@ impl SessionOwnerExecution {
                 .ok()
         };
         #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
-        if let Some(work_kind) = witness_kind
+        if let (Some(work_kind), Some(observer)) = (witness_kind, &self.work_observer)
             && matches!(&handed_over, Some(DispatchResult::Taken(_)))
         {
-            record_host_work(&authorization, WorkWitnessEvent::NewlyTaken { work_kind });
+            observer.newly_taken(&authorization, work_kind);
         }
         Ok(handed_over.map(OwnerEvent::Dispatch))
-    }
-
-    fn activate_reader(
-        &mut self,
-        owner: OwnerAddress,
-        run: RunAttempt<LoadAttempt>,
-        completions: &OwnerCompletionPort,
-    ) {
-        let Some(opened) = lock(&self.opens).remove(&run.attempt) else {
-            return;
-        };
-        self.attach_stream(
-            owner,
-            run.generation,
-            opened.session,
-            opened.skills,
-            completions,
-        );
-    }
-
-    pub(crate) fn prepare_created(&mut self, session: OwnerOpenedSession) {
-        self.created = Some(session);
-    }
-
-    fn activate_created(
-        &mut self,
-        owner: OwnerAddress,
-        generation: SessionGeneration,
-        completions: &OwnerCompletionPort,
-    ) {
-        let Some(session) = self.created.take() else {
-            return;
-        };
-        self.wire
-            .open_route(Self::transport_run(owner, generation), self.session_id());
-        self.routes.insert(
-            generation,
-            OwnerRun {
-                load_attempt: None,
-                cancel: CancellationToken::new(),
-                approval: None,
-            },
-        );
-        self.attach_stream(owner, generation, session, None, completions);
-    }
-
-    fn attach_stream(
-        &mut self,
-        owner: OwnerAddress,
-        generation: SessionGeneration,
-        mut session: OwnerOpenedSession,
-        skills: Option<session_event_model::SkillView>,
-        completions: &OwnerCompletionPort,
-    ) {
-        let route = Self::transport_run(owner, generation);
-        self.wire.activate_route(route);
-        let Some(held) = self.routes.get_mut(&generation) else {
-            return;
-        };
-        session.register_in_folder_scope(&self.wire, route);
-        let retired = held.cancel.clone();
-        let completion = completions.clone();
-        let wire = Arc::clone(&self.wire);
-        let stream =
-            OwnerStreamTarget::new(owner, route, wire, completion.clone(), retired.clone());
-        self.tasks.spawn(async move {
-            if let Some(view) = skills {
-                let _owner_retired = completion
-                    .send_stream(
-                        owner,
-                        OwnerEvent::SkillView {
-                            run: generation,
-                            view,
-                        },
-                        &retired,
-                    )
-                    .await;
-            }
-            if session.read_stream(stream).await.is_err() {
-                let _owner_retired = completion
-                    .send_stream(owner, OwnerEvent::RunLost(generation), &retired)
-                    .await;
-            }
-        });
     }
 }
 
@@ -609,13 +355,7 @@ impl SessionOwnerPorts for SessionOwnerExecution {
                 self.storage.execute(owner, request, completions)
             }
             OwnerEffect::Wire(SessionWireRequest::Restore { run, via }) => {
-                let result = self.restore(owner, run, via, completions);
-                #[cfg(any(test, feature = "test-support"))]
-                self.wire.fence_dispatch_for_test(
-                    Self::transport_run(owner, run.generation),
-                    acp_client_runtime::owner_wire::FixtureDispatchPoint::Restore,
-                );
-                result
+                self.restore(owner, run, via, completions)
             }
             OwnerEffect::Wire(SessionWireRequest::RestoreMode {
                 run,
@@ -636,18 +376,27 @@ impl SessionOwnerPorts for SessionOwnerExecution {
                 completions,
             ),
             OwnerEffect::Wire(SessionWireRequest::Close(run)) => {
-                let completion = completions.reserve(owner)?;
-                let unavailable = self
-                    .wire
-                    .enqueue_close(owner.incarnation, run, self.session_id(), completion)
-                    .is_err();
+                let completion = completions.reserve(owner)?.map(owner_event_for_close);
+                let unavailable = self.binding.close(run, completion).is_err();
                 Ok(unavailable.then_some(OwnerEvent::Wire(SessionWireResult::CloseNotSent(run))))
             }
-            OwnerEffect::Wire(SessionWireRequest::Create { .. }) => {
-                Err(OwnerTaskError::ExecutorStopped)
+            OwnerEffect::Wire(SessionWireRequest::Create { .. })
+            | OwnerEffect::ActivateCreated { .. } => Err(OwnerTaskError::ExecutorStopped),
+            OwnerEffect::ActivateRestored { run, accepted } => {
+                let result = self.activate(
+                    ActivationSetup::Restored(run),
+                    lifecycle_settings(&accepted),
+                );
+                if let Err(reason) = result {
+                    tracing::debug!(?run, ?reason, "session harness refused activation");
+                }
+                Ok(Some(OwnerEvent::Prepare(RestorePreparation::Activation {
+                    run,
+                    result,
+                })))
             }
             OwnerEffect::PrepareRoute(run) => Ok(Some(OwnerEvent::Prepare(
-                if lock(&self.opens).contains_key(&run.attempt) {
+                if self.binding.opening_is_held(OpenAttempt::Restore(run)) == Held::Held {
                     RestorePreparation::RouteReady(run)
                 } else {
                     RestorePreparation::Failed {
@@ -657,50 +406,7 @@ impl SessionOwnerPorts for SessionOwnerExecution {
                 },
             ))),
             OwnerEffect::PrepareHost { run, catalogue } => {
-                let mut openings = lock(&self.opens);
-                let preparation = match openings.get_mut(&run.attempt) {
-                    Some(entry) => {
-                        entry.session.accept_restore_catalogue(&catalogue);
-                        RestorePreparation::HostReady {
-                            run,
-                            capabilities: entry.session.capabilities().to_session_model(),
-                            settings: entry.session.settings(),
-                            observed:
-                                acp_client_runtime::owner_session_creation::catalogue_evidence(
-                                    entry.session.catalog(),
-                                ),
-                        }
-                    }
-                    None => RestorePreparation::Failed {
-                        run,
-                        stage: PreparationStage::HostSetup,
-                    },
-                };
-                #[cfg(any(test, feature = "test-support"))]
-                {
-                    let failed = move || RestorePreparation::Failed {
-                        run,
-                        stage: PreparationStage::HostSetup,
-                    };
-                    let fixture = self.preparation_fixture.clone();
-                    if let Some(release) = fixture.hold_restore() {
-                        let completion = completions.reserve(owner)?;
-                        self.tasks.spawn(async move {
-                            let _released = release.await;
-                            let result = if fixture.take_restore_fault() {
-                                failed()
-                            } else {
-                                preparation
-                            };
-                            completion.send(OwnerEvent::Prepare(result));
-                        });
-                        return Ok(None);
-                    }
-                    if fixture.take_restore_fault() {
-                        return Ok(Some(OwnerEvent::Prepare(failed())));
-                    }
-                }
-                Ok(Some(OwnerEvent::Prepare(preparation)))
+                self.prepare_harness_settings(owner, run, catalogue, completions)
             }
             OwnerEffect::Authorize {
                 authorization,
@@ -712,7 +418,7 @@ impl SessionOwnerPorts for SessionOwnerExecution {
                     .get(&authorization.run)
                     .map(|route| route.cancel.clone())
                     .unwrap_or_default();
-                match self.work_binding.begin_cancel(
+                match self.binding.begin_cancel(
                     authorization.clone(),
                     &mut || completions.reserve_work_reply(owner),
                     Box::pin(stop.cancelled_owned()),
@@ -733,28 +439,21 @@ impl SessionOwnerPorts for SessionOwnerExecution {
                 authorization,
                 expired,
             } => {
-                #[cfg(any(test, feature = "test-support"))]
-                let run = Self::transport_run(owner, authorization.run);
                 let wait = if expired {
                     CancelDrainWait::Expired
                 } else {
                     CancelDrainWait::Drained
                 };
-                let result = self.work_binding.send_cancel(authorization, wait);
-                #[cfg(any(test, feature = "test-support"))]
-                self.wire.fence_dispatch_for_test(
-                    run,
-                    acp_client_runtime::owner_wire::FixtureDispatchPoint::Cancel,
-                );
+                let result = self.binding.send_cancel(authorization, wait);
                 Ok(Some(OwnerEvent::Dispatch(result)))
             }
             OwnerEffect::Revoke { authorization, .. } => Ok(Some(OwnerEvent::Dispatch(
                 take_back_work(authorization, |authorization| {
-                    self.work_binding.take_back(authorization)
+                    self.binding.take_back(authorization)
                 }),
             ))),
             OwnerEffect::CallbackMembership(change) => {
-                self.wire.apply_membership(owner.incarnation, change);
+                self.binding.set_scope(change);
                 if let TurnMembership::End { turn, .. } = change {
                     self.calls.end_turn(turn);
                 }
@@ -773,29 +472,14 @@ impl SessionOwnerPorts for SessionOwnerExecution {
             OwnerEffect::Publish(batch) => {
                 if let PublicationBatch::Commit { facts, .. } = &batch {
                     for fact in facts {
-                        match fact {
-                            PublicationFact::Live(SessionPublication::Activated {
-                                run, ..
-                            }) => {
-                                self.activate_reader(owner, *run, completions);
-                            }
-                            PublicationFact::Live(SessionPublication::Created(run)) => {
-                                self.activate_created(owner, *run, completions);
-                            }
-                            _ => {}
-                        }
-                    }
-                    for fact in facts {
                         if let PublicationFact::Settings {
                             run,
                             accepted: Some(accepted),
                             ..
                         } = fact
                         {
-                            self.wire.publish_run_settings(
-                                Self::transport_run(owner, *run),
-                                accepted.clone(),
-                            );
+                            self.binding
+                                .use_settings(*run, lifecycle_settings(accepted));
                         }
                     }
                 }
@@ -832,17 +516,12 @@ impl SessionOwnerPorts for SessionOwnerExecution {
             OwnerEffect::RetireRoute(run) => {
                 if let Some(route) = self.routes.remove(&run) {
                     route.cancel.cancel();
-                    if let Some(attempt) = route.load_attempt {
-                        lock(&self.opens).remove(&attempt);
-                    }
                 }
-                self.wire
-                    .apply_membership(owner.incarnation, TurnMembership::Retire(run));
+                self.binding.retire(run);
                 Ok(None)
             }
             OwnerEffect::ReopenRoute(run) => {
-                self.wire
-                    .reopen_route(Self::transport_run(owner, run.generation), run.attempt);
+                self.binding.admit_again(run);
                 Ok(None)
             }
             OwnerEffect::InputQueued(input) => {
@@ -889,7 +568,10 @@ impl SessionOwnerPorts for SessionOwnerExecution {
             }
             OwnerEffect::ProviderStartedTurn(input) => {
                 self.calls.record_active_turn(&input);
-                if let Some(approval) = self.install_approval_for(owner, &input).ok().flatten()
+                if let Some(approval) = self
+                    .install_approval_for(owner, &input, ApprovalLeaseMoment::ObservedTurn)
+                    .ok()
+                    .flatten()
                     && let Some(run) = self.routes.get_mut(&input.generation)
                 {
                     run.approval = Some(approval);
@@ -912,47 +594,6 @@ impl Drop for SessionOwnerExecution {
             route.cancel.cancel();
         }
     }
-}
-
-fn from_wire_failure(error: ExternalProviderRuntimeError) -> RestoreFailure {
-    if let Some(coded) = error.coded_wire_failure() {
-        return RestoreFailure::from_coded(coded);
-    }
-    match error {
-        ExternalProviderRuntimeError::RestoreNoAnswer => RestoreFailure::NoAnswer,
-        _ => RestoreFailure::Disconnected,
-    }
-}
-
-fn restore_failed(run: RunAttempt<LoadAttempt>, failure: RestoreFailure) -> OwnerEvent {
-    OwnerEvent::Wire(SessionWireResult::RestoreFailed { run, failure })
-}
-
-fn setting_unsent(run: RunAttempt<LoadAttempt>, setting: OwnerSetting) -> OwnerEvent {
-    if setting.kind == ProviderSettingKind::Fast {
-        OwnerEvent::Prepare(RestorePreparation::FastOff {
-            run,
-            setting,
-            catalogue: None,
-            observation: SettingEvidence {
-                value: ObservedSetting::Unknown,
-                cause: Some(ObservationCause::Unconfirmed),
-            },
-        })
-    } else {
-        OwnerEvent::Wire(SessionWireResult::RestoreMode {
-            run,
-            setting,
-            outcome: RestoreModeOutcome::Unconfirmed,
-            catalogue: None,
-        })
-    }
-}
-
-fn lock<T>(value: &Mutex<T>) -> MutexGuard<'_, T> {
-    value
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn reserve_work_reply(

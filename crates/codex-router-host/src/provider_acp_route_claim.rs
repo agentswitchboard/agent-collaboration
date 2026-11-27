@@ -99,7 +99,7 @@ impl ProviderAcpRouteClaim {
             }
             EndpointAvailability::Available { .. } => {}
         }
-        if self.supervisor.runtime_for(&target.endpoint).is_none() {
+        if !self.supervisor.has_binding(&target.endpoint) {
             return unavailable(
                 "provider runtime is not ready",
                 "wait for provider startup",

@@ -3,9 +3,8 @@ use crate::provider_fixture_launch;
 
 use agent_automation::{RouteEffectEvidence, SubmissionEffect};
 use codex_router_host::{
-    ExternalProviderBinding, ExternalProviderLaunch, ExternalProviderRuntime,
-    ExternalProviderSupervisor, LiveSessionOwnership, LiveSessionOwnershipCheck,
-    ProviderAcpDeliveryRoute,
+    ExternalProviderLaunch, ExternalProviderRuntime, ExternalProviderSupervisor,
+    LiveSessionOwnership, LiveSessionOwnershipCheck, ProviderAcpDeliveryRoute,
 };
 use collaboration_contracts::AttemptEvidenceSink;
 use collaboration_contracts::DeliveryFuture;
@@ -165,10 +164,7 @@ async fn idle_explicit_queue_is_accepted_and_drains_for_both_providers() {
         let fixture_retirement = runtime.retirement();
         let supervisor = Arc::new(
             ExternalProviderSupervisor::new(
-                vec![ExternalProviderBinding {
-                    identity: binding,
-                    runtime,
-                }],
+                vec![runtime.into_binding(binding)],
                 Arc::clone(&store),
                 fixture_clock.clone(),
             )

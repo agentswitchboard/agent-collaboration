@@ -1,5 +1,5 @@
 use super::*;
-use crate::{ExternalProviderBinding, ExternalProviderLaunch, ExternalProviderRuntime};
+use crate::{ExternalProviderLaunch, ExternalProviderRuntime};
 use collaboration_protocol::{
     CodexGeneration, EndpointId, EndpointRef, GenerationNumber, ProviderBindingId,
     ProviderBindingIdentity, ProviderCapabilities, ProviderCapability, ProviderCapabilityEvidence,
@@ -108,10 +108,7 @@ async fn recorded_session_loads_without_creating_a_replacement() {
     .await
     .expect("runtime");
     let supervisor = ExternalProviderSupervisor::new(
-        vec![ExternalProviderBinding {
-            identity: binding(&target),
-            runtime,
-        }],
+        vec![runtime.into_binding(binding(&target))],
         Arc::clone(&store),
         crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
@@ -174,10 +171,7 @@ async fn live_peer_prevents_provider_load() {
     .await
     .expect("runtime");
     let supervisor = ExternalProviderSupervisor::new(
-        vec![ExternalProviderBinding {
-            identity: binding(&target),
-            runtime,
-        }],
+        vec![runtime.into_binding(binding(&target))],
         Arc::clone(&store),
         crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
@@ -234,10 +228,7 @@ async fn rejected_load_preserves_provider_code_without_creating_replacement() {
     .await
     .expect("runtime");
     let supervisor = ExternalProviderSupervisor::new(
-        vec![ExternalProviderBinding {
-            identity: binding(&target),
-            runtime,
-        }],
+        vec![runtime.into_binding(binding(&target))],
         Arc::clone(&store),
         crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
@@ -253,7 +244,7 @@ async fn rejected_load_preserves_provider_code_without_creating_replacement() {
     .await;
 
     assert!(
-        matches!(&result, ProviderSessionLoadOutcome::Rejected { phase: acp_client_runtime::RestorePhase::Attempted, reason: ProviderSessionLoadRejection::ProviderRejected { code, .. } } if *code == -32001),
+        matches!(&result, ProviderSessionLoadOutcome::Rejected { phase: provider_session_machines::session_owner::RestorePhase::Attempted, reason: ProviderSessionLoadRejection::ProviderRejected { code, .. } } if *code == -32001),
         "{result:?}"
     );
     assert_eq!(

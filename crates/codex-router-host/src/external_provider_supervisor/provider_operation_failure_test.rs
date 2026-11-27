@@ -1,4 +1,6 @@
 use super::*;
+use crate::ExternalProviderRuntimeError;
+use crate::external_provider_supervisor::owner_fixture_failures::legacy_runtime_failure as runtime_failure;
 use collaboration_protocol::ProviderSettingName;
 use provider_session_machines::ProviderSettingKind;
 

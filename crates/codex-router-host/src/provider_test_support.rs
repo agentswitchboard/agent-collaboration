@@ -7,8 +7,8 @@ pub use crate::external_provider_supervisor::HeldResult;
 pub use crate::session_owner_preparation_fixture::{DeliveryAckControl, DeliveryAcknowledgement};
 
 use crate::{
-    ExternalProviderBinding, ExternalProviderLaunch, ExternalProviderRuntime,
-    ExternalProviderRuntimeError, ExternalProviderSupervisor,
+    ExternalProviderLaunch, ExternalProviderRuntime, ExternalProviderRuntimeError,
+    ExternalProviderSupervisor,
 };
 use collaboration_protocol::ProviderBindingIdentity;
 use router_clock::RuntimeClock;
@@ -42,7 +42,7 @@ pub async fn bind_scripted_provider(
     )
     .await?;
     let supervisor = ExternalProviderSupervisor::with_fixture_hub(
-        vec![ExternalProviderBinding { identity, runtime }],
+        vec![runtime.into_binding(identity)],
         store,
         hub.clone(),
         clock,

@@ -3,9 +3,9 @@
 use crate::external_provider_supervisor::ExactTurnSteer;
 use crate::session_owner_calls::InputAcceptance;
 use crate::{
-    ExternalProviderRuntimeError, ExternalProviderSupervisor, ProviderAcpDeliveryRoute,
-    ProviderCancelActiveTurnError, ProviderPromptContentsError, ProviderQueueAdmissionError,
-    ProviderQueueCancellationError, ProviderSteerContentsError,
+    ExternalProviderSupervisor, ProviderAcpDeliveryRoute, ProviderCancelActiveTurnError,
+    ProviderPromptContentsError, ProviderQueueAdmissionError, ProviderQueueCancellationError,
+    ProviderSteerContentsError,
 };
 use crate::{
     external_provider_supervisor::operation_store_deadline_failed, session_store_lane::STORE_WAIT,
@@ -728,44 +728,13 @@ fn steer_target_failure(
 fn map_steer_failure(error: ProviderSteerContentsError) -> CommandFailure {
     match error {
         ProviderSteerContentsError::Admission(error) => map_admission_failure(error),
-        ProviderSteerContentsError::Runtime(error) => map_runtime_failure(error),
+        #[cfg(any(test, feature = "test-support"))]
+        ProviderSteerContentsError::Runtime(error) => {
+            crate::external_provider_supervisor::owner_fixture_failures::map_runtime_failure(error)
+        }
         ProviderSteerContentsError::Operation(error) => {
             CommandFailure::ProviderSteerOperation(error)
         }
-    }
-}
-
-fn map_runtime_failure(error: ExternalProviderRuntimeError) -> CommandFailure {
-    match error {
-        ExternalProviderRuntimeError::Behavior(
-            acp_client_runtime::ProviderError::InvalidSelection,
-        ) => CommandFailure::InvalidSelection,
-        ExternalProviderRuntimeError::Behavior(
-            acp_client_runtime::ProviderError::Unsupported
-            | acp_client_runtime::ProviderError::SourceUnavailable,
-        ) => CommandFailure::Unsupported,
-        ExternalProviderRuntimeError::LocalBusy { .. } => CommandFailure::Busy,
-        // An agent that can't steer: a busy ACP prompt queues instead (D1 R12).
-        ExternalProviderRuntimeError::UnsupportedSteering => {
-            CommandFailure::UnsupportedOperation { operation: "steer" }
-        }
-        ExternalProviderRuntimeError::LocalNotFound
-        | ExternalProviderRuntimeError::SessionReleased
-        | ExternalProviderRuntimeError::ProviderSessionNotFound { .. } => {
-            CommandFailure::SessionNotFound
-        }
-        ExternalProviderRuntimeError::SettingsUnresolved { .. } => {
-            CommandFailure::SettingsUnresolved
-        }
-        ExternalProviderRuntimeError::UnsupportedContent { content_type } => {
-            CommandFailure::UnsupportedContent(content_type)
-        }
-        ExternalProviderRuntimeError::UnsupportedCapability { capability } => {
-            CommandFailure::UnsupportedOperation {
-                operation: capability,
-            }
-        }
-        _ => CommandFailure::ProviderFailure,
     }
 }
 

@@ -6,22 +6,32 @@
 //! receives the client's answer.
 
 use std::{
-    path::PathBuf,
-    sync::{Arc, Mutex},
+    path::{Path, PathBuf},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
-use crate::acp_owner_fixture::FixtureClient as AgentSessionClient;
 use acp_client_runtime::{
     ApprovalPortOutcome, EventSinkClosed, ExternalProviderLaunch, HistoryReplayFuture,
     InteractionFuture, InteractionPort, ProviderPersistenceTarget, RefusedApprovalOffer,
     SessionEventSink,
+    acp_owner_fixture::{FixtureClient, PolicyFixtureClient},
 };
 use codex_router_test_support::node_taps::{
     CatalogRowExpectation, EdgeParty, MessageFamily, NodeStateSnapshot, ProtocolNode, RecordLayer,
     TapCase,
 };
 use provider_session_machines::{SessionGeneration, session_turn_machine::TurnId};
-use session_event_model::{ApprovalRequest, SessionEvent};
+use session_event_model::{
+    ApprovalRequest, QuestionRequest, QuestionResponse, SessionEvent,
+    managed_interaction_refusal::ManagedInteractionRefusal,
+};
+use switchboard_harness_contracts::{
+    ApprovalContext as ScopedApprovalContext, Decision, ExactTurn, RequestCancellation,
+    RequestCancellationSignal, RequestFuture, RequestPolicy, StopRequestsCause,
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::acp_wire_capture::{
@@ -50,6 +60,114 @@ struct BrokerStandIn {
     decisions: Mutex<Vec<ApprovalPortOutcome>>,
 }
 
+struct CountingPolicy {
+    broker: BrokerStandIn,
+    calls: AtomicUsize,
+}
+
+type BrokerPayloads = (
+    ApprovalContext,
+    u64,
+    ApprovalRequest,
+    QuestionRequest,
+    QuestionResponse,
+    ManagedInteractionRefusal,
+);
+
+struct PendingRetirement;
+
+impl RequestCancellationSignal for PendingRetirement {
+    fn is_cancelled(&self) -> bool {
+        false
+    }
+
+    fn cancelled(&self) -> RequestFuture<'_, ()> {
+        Box::pin(std::future::pending())
+    }
+}
+
+impl BrokerStandIn {
+    #[expect(
+        clippy::expect_used,
+        reason = "A poisoned fixture capture must fail the test."
+    )]
+    fn record_approval(
+        &self,
+        context: ApprovalContext,
+        request: ApprovalRequest,
+    ) -> ApprovalPortOutcome {
+        self.approval_contexts
+            .lock()
+            .expect("approval routing records")
+            .push(context);
+        self.accepted.lock().expect("capture lock").push(request);
+        let decision = ApprovalPortOutcome::Selected {
+            option_id: "allow-always".to_owned(),
+            note: None,
+        };
+        self.decisions
+            .lock()
+            .expect("capture lock")
+            .push(decision.clone());
+        decision
+    }
+}
+
+impl RequestPolicy<BrokerPayloads> for CountingPolicy {
+    fn decide_approval(
+        &self,
+        context: ScopedApprovalContext<ApprovalContext>,
+        request: ApprovalRequest,
+        _cancellation: RequestCancellation,
+    ) -> RequestFuture<'_, Decision<ApprovalPortOutcome>> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        Box::pin(
+            async move { Decision::Answer(self.broker.record_approval(context.context, request)) },
+        )
+    }
+
+    fn decide_question(
+        &self,
+        _context: ScopedApprovalContext<ApprovalContext>,
+        _request: QuestionRequest,
+        _cancellation: RequestCancellation,
+    ) -> RequestFuture<'_, Decision<QuestionResponse>> {
+        Box::pin(async { Decision::Answer(QuestionResponse::Cancelled) })
+    }
+
+    fn operation_id(&self, context: &ApprovalContext) -> u64 {
+        context.operation
+    }
+
+    fn binding_retirement(&self, _context: &ApprovalContext) -> Arc<dyn RequestCancellationSignal> {
+        Arc::new(PendingRetirement)
+    }
+
+    fn bind_owner_scope(&self, context: &mut ApprovalContext, turn: ExactTurn) {
+        context.scope = Some((turn.run.generation, turn.turn));
+    }
+
+    fn managed_refusal(&self) -> Option<ManagedInteractionRefusal> {
+        None
+    }
+
+    fn cancel_after_managed_refusal(
+        &self,
+        _context: ScopedApprovalContext<ApprovalContext>,
+    ) -> RequestFuture<'_, ()> {
+        Box::pin(async {})
+    }
+
+    fn stop_all(
+        &self,
+        _context: ApprovalContext,
+        _turn: ExactTurn,
+        _cause: StopRequestsCause,
+    ) -> RequestFuture<'_, ()> {
+        Box::pin(async {})
+    }
+}
+
 impl InteractionPort for BrokerStandIn {
     type Context = ApprovalContext;
     type OperationId = u64;
@@ -65,41 +183,22 @@ impl InteractionPort for BrokerStandIn {
         context.scope = Some((generation, turn));
     }
 
-    #[expect(
-        clippy::expect_used,
-        reason = "Invalid test fixtures must fail immediately instead of masking the failed setup."
-    )]
     fn request_approval(
         &self,
         context: Self::Context,
         request: ApprovalRequest,
-        _turn_cancellation: CancellationToken,
-        _agent_cancellation: CancellationToken,
+        _turn_cancellation: acp_client_runtime::FixtureCancellation,
+        _agent_cancellation: acp_client_runtime::FixtureCancellation,
     ) -> InteractionFuture<'_, ApprovalPortOutcome> {
-        Box::pin(async move {
-            self.approval_contexts
-                .lock()
-                .expect("approval routing records")
-                .push(context);
-            self.accepted.lock().expect("capture lock").push(request);
-            let decision = ApprovalPortOutcome::Selected {
-                option_id: "allow-always".to_owned(),
-                note: None,
-            };
-            self.decisions
-                .lock()
-                .expect("capture lock")
-                .push(decision.clone());
-            decision
-        })
+        Box::pin(async move { self.record_approval(context, request) })
     }
 
     fn request_question(
         &self,
         _context: Self::Context,
         _request: session_event_model::QuestionRequest,
-        _turn_cancellation: CancellationToken,
-        _agent_cancellation: CancellationToken,
+        _turn_cancellation: acp_client_runtime::FixtureCancellation,
+        _agent_cancellation: acp_client_runtime::FixtureCancellation,
     ) -> InteractionFuture<'_, session_event_model::QuestionResponse> {
         Box::pin(async { session_event_model::QuestionResponse::Cancelled })
     }
@@ -158,25 +257,42 @@ async fn run_permission_fixture(
     let root = tempfile::tempdir().expect("fixture root");
     let receipt = root.path().join("wire.jsonl");
     let port = Arc::new(BrokerStandIn::default());
-    let client = AgentSessionClient::initialize(
-        ExternalProviderLaunch {
-            executable: PathBuf::from("node"),
-            arguments: vec![
-                PERMISSION_FIXTURE.to_owned(),
-                mode.to_owned(),
-                receipt.to_string_lossy().into_owned(),
-            ],
-            environment: Vec::new(),
-            persistence_target: ProviderPersistenceTarget::CursorAllowlist,
-        },
+    let client = FixtureClient::initialize(
+        permission_fixture_launch(mode, &receipt),
         Arc::clone(&port),
         Arc::new(DiscardingEventSink),
         Arc::new(crate::test_behavior::TestProviderBehavior),
     )
     .await
     .expect("fixture initializes");
+    run_permission_prompts(&client, root.path(), operations).await;
+    (port, read_capture(&receipt))
+}
+
+fn permission_fixture_launch(mode: &str, receipt: &Path) -> ExternalProviderLaunch {
+    ExternalProviderLaunch {
+        executable: PathBuf::from("node"),
+        arguments: vec![
+            PERMISSION_FIXTURE.to_owned(),
+            mode.to_owned(),
+            receipt.to_string_lossy().into_owned(),
+        ],
+        environment: Vec::new(),
+        persistence_target: ProviderPersistenceTarget::CursorAllowlist,
+    }
+}
+
+#[expect(
+    clippy::expect_used,
+    reason = "The wire fixture must open a session and prepare input."
+)]
+async fn run_permission_prompts(
+    client: &PolicyFixtureClient<BrokerPayloads>,
+    root: &Path,
+    operations: &[u64],
+) {
     client
-        .create_session(root.path().to_path_buf())
+        .create_session(root.to_path_buf())
         .await
         .expect("session opens");
     for &operation in operations {
@@ -200,7 +316,6 @@ async fn run_permission_fixture(
         assert!(result.is_ok(), "prompt result: {result:?}");
     }
     client.shutdown().await;
-    (port, read_capture(&receipt))
 }
 
 /// Renders the outcome in the whole response the agent received.
@@ -219,6 +334,42 @@ fn permission_outcome_kind(answer: &serde_json::Value) -> String {
 #[tokio::test]
 async fn duplicate_callback_in_a_batch_gets_one_reply_and_keeps_its_valid_sibling() {
     let (port, capture) = run_permission_fixture("duplicate-batch", &[1]).await;
+    assert_duplicate_batch(&port, &capture);
+}
+
+#[tokio::test]
+async fn duplicate_callback_in_a_batch_invokes_the_neutral_policy_once_per_request() {
+    let root = tempfile::tempdir().expect("fixture root");
+    let receipt = root.path().join("wire.jsonl");
+    let policy = Arc::new(CountingPolicy {
+        broker: BrokerStandIn::default(),
+        calls: AtomicUsize::new(0),
+    });
+    let client = PolicyFixtureClient::<BrokerPayloads>::initialize(
+        permission_fixture_launch("duplicate-batch", &receipt),
+        policy.clone(),
+        Arc::new(DiscardingEventSink),
+        Arc::new(crate::test_behavior::TestProviderBehavior),
+    )
+    .await
+    .expect("fixture initializes with the neutral policy");
+    run_permission_prompts(&client, root.path(), &[1]).await;
+    // The first batch contributes IDs 91 and 92. The outstanding copy of 91
+    // gets no call. After that batch is flushed, the new 91 gets the third call.
+    assert_eq!(
+        policy.calls.load(Ordering::Relaxed),
+        3,
+        "each unique wire request must invoke the neutral policy"
+    );
+    assert_duplicate_batch(&policy.broker, &read_capture(&receipt));
+}
+
+#[expect(
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    reason = "The fixture requires a batch, a single reused ID, and a readable broker capture."
+)]
+fn assert_duplicate_batch(port: &BrokerStandIn, capture: &[CapturedFrame]) {
     let received: Vec<_> = capture
         .iter()
         .filter(|frame| frame.agent_side == AgentSide::Received)

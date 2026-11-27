@@ -44,8 +44,8 @@ impl InteractionPort for CountingApprovals {
         &self,
         _context: (),
         _request: ApprovalRequest,
-        _turn: CancellationToken,
-        _agent: CancellationToken,
+        _turn: acp_client_runtime::FixtureCancellation,
+        _agent: acp_client_runtime::FixtureCancellation,
     ) -> InteractionFuture<'_, ApprovalPortOutcome> {
         self.asked.fetch_add(1, Ordering::SeqCst);
         Box::pin(async { ApprovalPortOutcome::Cancelled })
@@ -54,8 +54,8 @@ impl InteractionPort for CountingApprovals {
         &self,
         _context: (),
         _request: session_event_model::QuestionRequest,
-        _turn: CancellationToken,
-        _agent: CancellationToken,
+        _turn: acp_client_runtime::FixtureCancellation,
+        _agent: acp_client_runtime::FixtureCancellation,
     ) -> InteractionFuture<'_, session_event_model::QuestionResponse> {
         Box::pin(async { session_event_model::QuestionResponse::Cancelled })
     }

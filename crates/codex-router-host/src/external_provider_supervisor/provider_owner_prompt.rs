@@ -3,9 +3,9 @@
 use super::{
     ConversationOperationFailure, ConversationOperationFailureKind,
     ConversationOperationFailureStage, ConversationOperationSettlement, ExternalProviderSupervisor,
-    OperationId, PreparedOperation, ProviderConversationFuture, ProviderOperationCompletion,
-    ProviderOperationEffect, ProviderOperationKind, SessionRef, admitted_submission,
-    existing_submission, failure, optional_message_text,
+    OperationFailureCause, OperationId, PreparedOperation, ProviderConversationFuture,
+    ProviderOperationCompletion, ProviderOperationEffect, ProviderOperationKind, SessionRef,
+    admitted_submission, existing_submission, failure, optional_message_text,
     provider_admission_policy::{AdmissionClass, AdmissionMode},
     provider_owner_operations::owner_failure,
     provider_prompt_contents::{PromptBusyPolicy, ProviderPromptContentsRequest},
@@ -168,9 +168,12 @@ impl ExternalProviderSupervisor {
                                     .await;
                                 }
                                 match settled {
-                                    Ok(settled) => {
-                                        retained_prompt(&runtime, operation, target, settled)
-                                    }
+                                    Ok(settled) => retained_prompt(
+                                        runtime.connection.as_ref(),
+                                        operation,
+                                        target,
+                                        settled,
+                                    ),
                                     Err(_) => ProviderOperationCompletion::Failure(owner_failure(
                                         operation,
                                         target,
@@ -209,18 +212,25 @@ impl ExternalProviderSupervisor {
         &self,
         request: ProviderPromptContentsRequest,
         binding: &collaboration_protocol::ProviderBindingIdentity,
-        runtime: &crate::ExternalProviderRuntime,
+        runtime: &super::RuntimeBinding,
     ) -> Result<crate::session_owner_door::OwnerDeliveryHandle, ConversationOperationFailure> {
         use provider_session_machines::session_owner::SessionOwnerCommand;
         let target = request.target;
         let operation = request.operation_id;
         #[cfg(test)]
         self.pause_before_owner_prompt_for_test(&operation).await;
-        let provider_id = String::from(target.session_id.clone());
+        let observed = self.observed_capabilities(&target);
         let content = runtime
-            .prepare_owner_prompt(&provider_id, request.input)
+            .connection
+            .prepare_prompt(request.input, observed)
             .await
-            .map_err(|error| runtime_failure(operation.clone(), Some(target.clone()), error))?;
+            .map_err(|error| {
+                runtime_failure(
+                    operation.clone(),
+                    Some(target.clone()),
+                    OperationFailureCause::PromptRefused(error),
+                )
+            })?;
         let owner = self
             .session_owner_for(&target)
             .map_err(|error| owner_failure(operation.clone(), target.clone(), error))?;
@@ -298,7 +308,7 @@ impl ExternalProviderSupervisor {
                 target: target.clone(),
                 operation_id: operation.clone(),
                 binding_generation: binding.generation.clone(),
-                binding_retirement: runtime.retirement(),
+                binding_retirement: runtime.retirement.clone(),
             },
         );
         #[cfg(test)]
@@ -361,36 +371,15 @@ async fn wait_at_steer_fixture(pause: &std::sync::Mutex<Option<super::AdmissionT
 }
 
 pub(super) fn retained_prompt(
-    runtime: &crate::ExternalProviderRuntime,
+    connection: &dyn super::HarnessConnection,
     operation: OperationId,
     target: SessionRef,
     settled: crate::session_owner_calls::OwnedSettlement,
 ) -> ProviderOperationCompletion {
-    let refusal = runtime.take_permission_refusal(&operation);
+    let refusal = connection.take_permission_refusal(&operation);
     let result = match settled.reply {
-        SessionOwnerReply::PromptFailed { failure, .. } => Err(super::prompt_runtime_failure(
-            operation,
-            Some(target.clone()),
-            failure.into(),
-        )),
-        SessionOwnerReply::PromptCompleted { ref completion, .. }
-            if matches!(completion.local_cause.as_ref(),
-                Some(session_event_model::LocalCause::Other(cause)) if cause == "compactionUnconfirmed") =>
-        {
-            Err(runtime_failure(
-                operation,
-                Some(target.clone()),
-                crate::ExternalProviderRuntimeError::CompactionUnconfirmed,
-            ))
-        }
-        SessionOwnerReply::PromptCompleted { ref completion, .. }
-            if completion.local_cause == Some(session_event_model::LocalCause::OutputOverflow) =>
-        {
-            Err(super::prompt_runtime_failure(
-                operation,
-                Some(target.clone()),
-                crate::ExternalProviderRuntimeError::PromptOutputLimitExceeded,
-            ))
+        _ if let Some(cause) = reported_prompt_failure(&settled.reply) => {
+            Err(runtime_failure(operation, Some(target.clone()), cause))
         }
         SessionOwnerReply::PromptCompleted { .. } if let Some(refusal) = refusal => Err(failure(
             ConversationOperationFailureKind::PermissionRejected,
@@ -486,18 +475,10 @@ pub(super) fn retained_prompt(
             operation,
             Some(target.clone()),
         )),
-        _ if runtime.frame_limit_exceeded() => Err(super::prompt_runtime_failure(
+        _ => Err(unsettled_prompt_failure(
             operation,
-            Some(target.clone()),
-            crate::ExternalProviderRuntimeError::FrameLimitExceeded,
-        )),
-        _ => Err(failure(
-            ConversationOperationFailureKind::OutcomeUnknown,
-            ConversationOperationFailureStage::Dispatch,
-            ProviderOperationEffect::Unknown,
-            "provider dispatch outcome is unknown",
-            operation,
-            Some(target.clone()),
+            &target,
+            connection.ended_on_oversized_message(),
         )),
     };
     ProviderOperationCompletion::Owned {
@@ -506,3 +487,51 @@ pub(super) fn retained_prompt(
         saved: settled.saved,
     }
 }
+
+fn reported_prompt_failure(reply: &SessionOwnerReply) -> Option<OperationFailureCause> {
+    match reply {
+        SessionOwnerReply::PromptFailed { failure, .. } => {
+            Some(OperationFailureCause::HarnessCoded(*failure))
+        }
+        SessionOwnerReply::PromptCompleted { completion, .. } => {
+            match completion.local_cause.as_ref() {
+                Some(session_event_model::LocalCause::Other(cause))
+                    if cause == "compactionUnconfirmed" =>
+                {
+                    Some(OperationFailureCause::CompactionUnconfirmed)
+                }
+                Some(session_event_model::LocalCause::OutputOverflow) => {
+                    Some(OperationFailureCause::PromptOutputLimitExceeded)
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn message_size_failure(oversized: bool) -> Option<OperationFailureCause> {
+    oversized.then_some(OperationFailureCause::MessageTooLarge)
+}
+
+fn unsettled_prompt_failure(
+    operation: OperationId,
+    target: &SessionRef,
+    oversized: bool,
+) -> ConversationOperationFailure {
+    match message_size_failure(oversized) {
+        Some(cause) => runtime_failure(operation, Some(target.clone()), cause),
+        None => failure(
+            ConversationOperationFailureKind::OutcomeUnknown,
+            ConversationOperationFailureStage::Dispatch,
+            ProviderOperationEffect::Unknown,
+            "provider dispatch outcome is unknown",
+            operation,
+            Some(target.clone()),
+        ),
+    }
+}
+
+#[cfg(test)]
+#[path = "provider_owner_prompt_failure_test.rs"]
+mod failure_tests;

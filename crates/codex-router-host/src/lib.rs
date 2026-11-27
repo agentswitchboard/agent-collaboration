@@ -1,10 +1,10 @@
 //! Foreground lifecycle control for one shared Codex app-server.
 
-mod acp_interaction_port;
 mod app_server_endpoint_guard;
 mod binding_dispatch_permit;
 #[cfg(any(test, feature = "test-support"))]
 mod binding_store_fixture;
+mod host_request_policy;
 mod live_session_ownership_check;
 mod operation_machines;
 mod provider_operation_custody;
@@ -31,6 +31,7 @@ mod provider_acp_restore_seam_tests;
 mod provider_acp_route_claim;
 mod provider_queue_operation_registry;
 mod provider_session_command_port;
+mod provider_session_scratch;
 mod provider_session_setup;
 #[cfg(any(test, feature = "test-support"))]
 pub mod provider_test_support;
@@ -41,12 +42,21 @@ mod session_owner_delivery_evidence;
 pub mod session_owner_door;
 pub mod session_owner_execution;
 mod session_owner_ingress;
+mod session_owner_lifecycle_reports;
 mod session_owner_notice;
 #[cfg(any(test, feature = "test-support"))]
 mod session_owner_preparation_fixture;
 pub mod session_owner_publication;
 pub mod session_owner_registry;
+#[cfg(test)]
+mod session_owner_scripted_harness_test;
 pub mod session_owner_storage;
+#[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
+mod session_owner_work_observation {
+    pub(crate) use acp_client_runtime::work_call_observation::{
+        WorkObservationKind, WorkObservationSink,
+    };
+}
 pub mod session_store_lane;
 pub use provider_queue_operation_registry::{ProviderQueueCancellationError, ProviderQueuedInput};
 pub use provider_session_command_port::HostSessionCommandPort;
@@ -66,8 +76,8 @@ pub use external_provider_runtime::{
 };
 mod external_provider_supervisor;
 pub use external_provider_supervisor::{
-    ExternalProviderBinding, ExternalProviderSupervisor, ManagedAcpNoticeAdapter,
-    ProviderPromptContentsRequest,
+    ConnectionShutdown, ExternalProviderBinding, ExternalProviderSupervisor, HarnessConnection,
+    ManagedAcpNoticeAdapter, PromptRefusal, PromptSelectionRefusal, ProviderPromptContentsRequest,
 };
 mod global_claude_executable;
 mod host_configuration;
@@ -103,7 +113,7 @@ pub use router_settings::{
 mod provider_startup_composition;
 pub use provider_startup_composition::ExternalProviderStartup;
 mod provider_operation_settlement;
-pub use acp_client_runtime::ProviderSessionActivity;
+pub use provider_session_machines::ProviderSessionActivity;
 pub type ProviderSteeringOutcome = acp_client_runtime::ProviderSteeringOutcome<
     collaboration_protocol::OperationId,
     external_provider_approval_context::ExternalProviderApprovalContext,

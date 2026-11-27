@@ -2,7 +2,6 @@
 
 use crate::session_owner_delivery_evidence::OwnerDeliveryEvidence;
 use crate::session_owner_notice::NoticeWriterTake;
-use acp_client_runtime::ProviderPromptContent;
 use acp_client_runtime::session_owner_task::{OwnerCallerWakes, OwnerCompletion};
 use collaboration_protocol::ProviderIdentity;
 use provider_session_machines::{
@@ -14,7 +13,7 @@ use provider_session_machines::{
     },
     session_turn_machine::TurnId,
 };
-use session_event_model::InputId;
+use session_event_model::{InputId, PreparedPrompt};
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex, MutexGuard},
@@ -25,7 +24,7 @@ use uuid::Uuid;
 
 #[derive(Default)]
 pub struct SessionOwnerCalls {
-    content: Mutex<BTreeMap<InputId, ProviderPromptContent>>,
+    content: Mutex<BTreeMap<InputId, PreparedPrompt>>,
     notices: Mutex<BTreeMap<InputId, NoticeWriterTake>>,
     outstanding: Mutex<BTreeMap<InputId, OwnerInput>>,
     approvals: Mutex<BTreeMap<InputId, crate::ExternalProviderApprovalContext>>,
@@ -94,7 +93,7 @@ impl SessionOwnerCalls {
         }
     }
 
-    pub(crate) fn content(&self, input: &InputId) -> Option<ProviderPromptContent> {
+    pub(crate) fn content(&self, input: &InputId) -> Option<PreparedPrompt> {
         lock(&self.content).get(input).cloned()
     }
 
@@ -124,7 +123,7 @@ impl SessionOwnerCalls {
         }
     }
 
-    pub fn insert_content(&self, input: &OwnerInput, content: ProviderPromptContent) {
+    pub fn insert_content(&self, input: &OwnerInput, content: PreparedPrompt) {
         lock(&self.outstanding).insert(input.input.clone(), input.clone());
         lock(&self.content).insert(input.input.clone(), content);
     }

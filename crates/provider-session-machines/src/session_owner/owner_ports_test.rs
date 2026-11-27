@@ -249,13 +249,13 @@ fn t7_unloaded_run_on_lost_connection_can_restore_only_after_new_epoch() {
 }
 
 #[test]
-fn t1_create_is_not_live_until_the_registry_adopts_the_provider_id() {
+fn t1_create_is_not_live_until_the_adopted_opening_activates() {
     let mut state = fresh();
     let operation = uuid(1);
     command(&mut state, SessionOwnerCommand::Create { operation });
     assert_late(
         &state,
-        OwnerEvent::Create(CreateProgress::Adopted {
+        OwnerEvent::Create(CreateProgress::Activated {
             operation,
             facts: Box::default(),
         }),
@@ -286,14 +286,59 @@ fn t1_create_is_not_live_until_the_registry_adopts_the_provider_id() {
             outcome: CreateOutcome::SessionIdInUse
         })
     );
-    let admitted = apply(
+    assert_late(
+        &state,
+        OwnerEvent::Create(CreateProgress::Activated {
+            operation,
+            facts: Box::default(),
+        }),
+    );
+    let preparing = apply(
         &mut state,
-        OwnerEvent::Create(CreateProgress::Adopted {
+        OwnerEvent::Create(CreateProgress::Configured {
             operation,
             facts: Box::default(),
         }),
     );
     let generation = SessionGeneration::from_number(1);
+    assert_eq!(
+        preparing,
+        vec![OwnerEffect::ActivateCreated {
+            operation,
+            generation,
+            facts: Box::default()
+        }]
+    );
+    assert!(matches!(
+        state.snapshot().lifecycle,
+        SessionLifecycle::NotLoaded { .. }
+    ));
+    let mut refused = state.clone();
+    let refused_effects = apply(
+        &mut refused,
+        OwnerEvent::Create(CreateProgress::Failed {
+            operation,
+            remote: RemoteEffect::Applied,
+        }),
+    );
+    assert_eq!(
+        refused_effects,
+        vec![OwnerEffect::CreateSettled {
+            operation,
+            outcome: CreateOutcome::Failed(RemoteEffect::Applied),
+        }]
+    );
+    assert!(matches!(
+        refused.snapshot().lifecycle,
+        SessionLifecycle::NotLoaded { .. }
+    ));
+    let admitted = apply(
+        &mut state,
+        OwnerEvent::Create(CreateProgress::Activated {
+            operation,
+            facts: Box::default(),
+        }),
+    );
     assert!(admitted.contains(&OwnerEffect::CreateSettled {
         operation,
         outcome: CreateOutcome::Adopted(generation)
@@ -304,7 +349,7 @@ fn t1_create_is_not_live_until_the_registry_adopts_the_provider_id() {
     );
     assert_late(
         &state,
-        OwnerEvent::Create(CreateProgress::Adopted {
+        OwnerEvent::Create(CreateProgress::Activated {
             operation,
             facts: Box::default(),
         }),
@@ -494,6 +539,7 @@ fn t5_late_restore_mode_correlation_releases_only_its_own_fence() {
         &mut state,
         OwnerEvent::Wire(SessionWireResult::Restore {
             run: first,
+            replay: Some(switchboard_harness_contracts::ReplayCompleteness::Complete),
             outcome: WireOutcome::Confirmed(RestoreLoadReadback {
                 catalogue: Arc::default(),
                 router_auto_requested: false,
@@ -645,6 +691,7 @@ fn time_out_restore_fast_off(
         state,
         OwnerEvent::Wire(SessionWireResult::Restore {
             run,
+            replay: Some(switchboard_harness_contracts::ReplayCompleteness::Complete),
             outcome: WireOutcome::Confirmed(RestoreLoadReadback {
                 catalogue: fast_catalogue(true),
                 router_auto_requested: false,
@@ -822,7 +869,7 @@ fn t2_named_steer_does_not_prompt_after_the_harness_requires_a_prompt() {
 }
 
 #[test]
-fn t4_restore_batches_replay_settings_and_idle_only_after_both_prerequisites() {
+fn t4_restore_batches_replay_settings_and_idle_only_after_activation() {
     use session_event_model::{SessionItem, SessionItemKind};
     let mut state = fresh();
     let run = open_wire(&mut state, 1);
@@ -849,10 +896,32 @@ fn t4_restore_batches_replay_settings_and_idle_only_after_both_prerequisites() {
         SessionLifecycle::Loading { .. }
     ));
 
-    let committed = apply(
+    assert_late(&state, activated(run, Ok(())));
+    let activation = apply(
         &mut state,
         OwnerEvent::Prepare(RestorePreparation::RouteReady(run)),
     );
+    assert!(
+        matches!(activation.as_slice(), [OwnerEffect::ActivateRestored { run: exact, .. }] if *exact == run)
+    );
+    assert!(matches!(
+        state.snapshot().lifecycle,
+        SessionLifecycle::Loading { .. }
+    ));
+    let mut refused = state.clone();
+    let refused_effects = apply(
+        &mut refused,
+        activated(run, Err(ActivationRefusal::OpeningNotHeld)),
+    );
+    assert!(publication_for(run.generation, &refused_effects).is_none());
+    assert!(refused_effects.contains(&OwnerEffect::RetireRoute(run.generation)));
+    assert!(matches!(refused.snapshot().last_restore, Some(result)
+    if result.attempt == run && result.disposition == RestoreDisposition::Retired {
+        failure: RestoreFailure::LocalPrerequisite { stage: PreparationStage::Route },
+        remote: RemoteEffect::Applied,
+    }));
+    assert_late(&refused, activated(run, Ok(())));
+    let committed = apply(&mut state, activated(run, Ok(())));
     let batches: Vec<_> = committed
         .iter()
         .filter_map(|effect| match effect {

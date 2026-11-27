@@ -1,10 +1,11 @@
 //! The ACP implementation of one session owner's harness work calls.
 
 use crate::{
-    InteractionPort, OwnerApprovalBindings, approval_turn_cancellation::OwnerCancelDrainExecutor,
-    owner_wire::OwnerAcpWire, provider_prompt_content::acp_blocks_from_prompt_content,
+    AcpRequestPayloads, OwnerApprovalBindings,
+    approval_turn_cancellation::OwnerCancelDrainExecutor, owner_wire::OwnerAcpWire,
+    provider_prompt_content::acp_blocks_from_prompt_content,
 };
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use switchboard_harness_contracts::{
     CancelDrainStart, CancelDrainWait, DispatchAuthorization, DispatchResult, HandOverRefusal,
     HarnessBinding, HarnessContent, ProviderSettingKind, ReplyAdmission, ReservedWorkReply,
@@ -13,18 +14,36 @@ use switchboard_harness_contracts::{
 };
 use tokio_util::task::TaskTracker;
 
-pub struct OwnerAcpBinding<Port: InteractionPort> {
+#[path = "owner_acp_lifecycle.rs"]
+mod lifecycle;
+pub use lifecycle::OwnerAcpProvider;
+
+pub struct OwnerAcpBinding<Port: AcpRequestPayloads> {
     wire: Arc<OwnerAcpWire>,
-    provider_session: String,
+    provider_session: Arc<OnceLock<String>>,
     cancel_drains: OwnerCancelDrainExecutor<Port>,
     tasks: TaskTracker,
 }
 
-impl<Port: InteractionPort> OwnerAcpBinding<Port> {
+impl<Port: AcpRequestPayloads> OwnerAcpBinding<Port> {
     #[must_use]
     pub fn new(
         wire: Arc<OwnerAcpWire>,
         provider_session: String,
+        approvals: OwnerApprovalBindings<Port>,
+        tasks: TaskTracker,
+    ) -> Self {
+        Self::with_session_slot(
+            wire,
+            Arc::new(OnceLock::from(provider_session)),
+            approvals,
+            tasks,
+        )
+    }
+
+    fn with_session_slot(
+        wire: Arc<OwnerAcpWire>,
+        provider_session: Arc<OnceLock<String>>,
         approvals: OwnerApprovalBindings<Port>,
         tasks: TaskTracker,
     ) -> Self {
@@ -35,9 +54,15 @@ impl<Port: InteractionPort> OwnerAcpBinding<Port> {
             tasks,
         }
     }
+
+    fn session(&self) -> Result<&String, WorkOfferRefusal> {
+        self.provider_session
+            .get()
+            .ok_or(WorkOfferRefusal::RouteUnavailable)
+    }
 }
 
-impl<Port: InteractionPort> HarnessBinding for OwnerAcpBinding<Port> {
+impl<Port: AcpRequestPayloads> HarnessBinding for OwnerAcpBinding<Port> {
     fn offer_prompt(
         &self,
         authorization: DispatchAuthorization,
@@ -48,7 +73,7 @@ impl<Port: InteractionPort> HarnessBinding for OwnerAcpBinding<Port> {
         self.wire.offer_work_prompt(
             authorization,
             turn,
-            self.provider_session.clone(),
+            self.session()?.clone(),
             acp_blocks_from_prompt_content(content.blocks()),
             matches!(content, HarnessContent::Compaction(_)),
             reply,
@@ -64,7 +89,7 @@ impl<Port: InteractionPort> HarnessBinding for OwnerAcpBinding<Port> {
     ) -> Result<(), WorkOfferRefusal> {
         self.wire.offer_work_steer(
             authorization,
-            self.provider_session.clone(),
+            self.session()?.clone(),
             acp_blocks_from_prompt_content(content.blocks()),
             idle,
             reply,
@@ -80,7 +105,7 @@ impl<Port: InteractionPort> HarnessBinding for OwnerAcpBinding<Port> {
     ) -> Result<SettingOffer, WorkOfferRefusal> {
         self.wire.offer_work_setting(
             authorization,
-            self.provider_session.clone(),
+            self.session()?.clone(),
             kind,
             wanted.0,
             reply,
@@ -111,13 +136,11 @@ impl<Port: InteractionPort> HarnessBinding for OwnerAcpBinding<Port> {
         reserve_reply: &mut dyn FnMut() -> ReplyAdmission<WorkReply>,
         retired: RunRetirement,
     ) -> CancelDrainStart {
-        self.cancel_drains.begin_work(
-            &self.provider_session,
-            authorization,
-            reserve_reply,
-            &self.tasks,
-            retired,
-        )
+        let Some(session) = self.provider_session.get() else {
+            return CancelDrainStart::AlreadyDrained;
+        };
+        self.cancel_drains
+            .begin_work(session, authorization, reserve_reply, &self.tasks, retired)
     }
 
     fn send_cancel(
@@ -125,9 +148,12 @@ impl<Port: InteractionPort> HarnessBinding for OwnerAcpBinding<Port> {
         authorization: DispatchAuthorization,
         wait: CancelDrainWait,
     ) -> DispatchResult {
+        let Some(session) = self.provider_session.get() else {
+            return DispatchResult::DefinitelyUnsent(authorization);
+        };
         self.cancel_drains.take(
             &self.wire,
-            self.provider_session.clone(),
+            session.clone(),
             authorization,
             wait == CancelDrainWait::Expired,
         )

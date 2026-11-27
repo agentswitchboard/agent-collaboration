@@ -1,9 +1,6 @@
 //! Publish a Cursor plan before asking its Approver whether to proceed.
 
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
+use std::sync::Arc;
 
 use agent_client_protocol::{Agent, ConnectionTo, Dispatch, Error, HandleDispatchFrom, Handled};
 use serde::Deserialize;
@@ -14,10 +11,10 @@ use session_event_model::{
 };
 use tokio_util::sync::CancellationToken;
 
-use super::ActiveApprovalContext;
+use super::OwnerApprovalBindings;
 use crate::provider_cursor_plan_items::{CursorPlanDefinition, CursorPlanItems, CursorTodo};
 use crate::{
-    ApprovalPortOutcome, InteractionPort, SessionEventSink,
+    AcpRequestPayloads, AcpRequestPolicy, ApprovalPortOutcome, SessionEventSink,
     owner_callback_routing::OwnerCallbackRouting,
 };
 
@@ -32,23 +29,23 @@ struct CursorCreatePlan {
     todos: Vec<CursorTodo>,
 }
 
-pub(super) struct ProviderCursorCreatePlanHandler<P: InteractionPort> {
+pub(super) struct ProviderCursorCreatePlanHandler<P: AcpRequestPayloads> {
     tool_registry: Arc<OwnerCallbackRouting>,
     plan_items: Arc<CursorPlanItems>,
     event_sink: Arc<dyn SessionEventSink>,
-    approval_contexts: Arc<Mutex<HashMap<String, ActiveApprovalContext<P>>>>,
-    interaction_port: Arc<P>,
+    approval_bindings: OwnerApprovalBindings<P>,
+    request_policy: Arc<AcpRequestPolicy<P>>,
     shutdown: CancellationToken,
     sink_closed: CancellationToken,
 }
 
-impl<P: InteractionPort> ProviderCursorCreatePlanHandler<P> {
+impl<P: AcpRequestPayloads> ProviderCursorCreatePlanHandler<P> {
     pub(super) fn new(
         tool_registry: Arc<OwnerCallbackRouting>,
         plan_items: Arc<CursorPlanItems>,
         event_sink: Arc<dyn SessionEventSink>,
-        approval_contexts: Arc<Mutex<HashMap<String, ActiveApprovalContext<P>>>>,
-        interaction_port: Arc<P>,
+        approval_bindings: OwnerApprovalBindings<P>,
+        request_policy: Arc<AcpRequestPolicy<P>>,
         shutdown: CancellationToken,
         sink_closed: CancellationToken,
     ) -> Self {
@@ -56,8 +53,8 @@ impl<P: InteractionPort> ProviderCursorCreatePlanHandler<P> {
             tool_registry,
             plan_items,
             event_sink,
-            approval_contexts,
-            interaction_port,
+            approval_bindings,
+            request_policy,
             shutdown,
             sink_closed,
         }
@@ -120,7 +117,7 @@ fn cursor_plan_decision(outcome: ApprovalPortOutcome) -> serde_json::Value {
     }
 }
 
-impl<P: InteractionPort> HandleDispatchFrom<Agent> for ProviderCursorCreatePlanHandler<P> {
+impl<P: AcpRequestPayloads> HandleDispatchFrom<Agent> for ProviderCursorCreatePlanHandler<P> {
     async fn handle_dispatch_from(
         &mut self,
         message: Dispatch,
@@ -155,16 +152,21 @@ impl<P: InteractionPort> HandleDispatchFrom<Agent> for ProviderCursorCreatePlanH
             responder.respond(json!({"outcome":"cancelled"}))?;
             return Ok(Handled::Yes);
         };
-        let context = self.approval_contexts.lock().ok().and_then(|contexts| {
-            contexts
-                .get(&session_id)
-                .filter(|context| {
-                    context.incarnation == run.incarnation
-                        && context.generation == run.generation
-                        && context.turn == Some(turn)
-                })
-                .cloned()
-        });
+        let context = self
+            .approval_bindings
+            .active
+            .lock()
+            .ok()
+            .and_then(|contexts| {
+                contexts
+                    .get(&session_id)
+                    .filter(|context| {
+                        context.incarnation == run.incarnation
+                            && context.generation == run.generation
+                            && context.turn == Some(turn)
+                    })
+                    .cloned()
+            });
         let Some(context) = context else {
             tracing::warn!("Cursor create_plan has no active Turn context");
             responder.respond(json!({"outcome":"cancelled"}))?;
@@ -201,38 +203,41 @@ impl<P: InteractionPort> HandleDispatchFrom<Agent> for ProviderCursorCreatePlanH
             responder.respond(json!({"outcome":"cancelled"}))?;
             return Ok(Handled::Yes);
         }
-        let port = Arc::clone(&self.interaction_port);
+        let port = Arc::clone(&self.request_policy);
         let request_cancellation = responder.cancellation();
-        let response_guard = context
-            .responses
-            .track("cursor/create_plan", responder.id());
-        connection.spawn(async move {
-            if let Some(refusal) = port.managed_refusal() {
-                let queued = responder.respond(refusal.acp_cursor_plan());
-                drop(response_guard);
-                context.cancel_after_refusal(port, refusal).await;
-                return queued;
-            }
-            let agent_cancellation = CancellationToken::new();
-            let decision = port.request_approval(
-                context.approval,
-                approval,
-                context.cancelling,
-                agent_cancellation.clone(),
-            );
-            tokio::pin!(decision);
-            let outcome = tokio::select! {
-                biased;
-                () = request_cancellation.cancelled() => {
-                    agent_cancellation.cancel();
-                    decision.await
+        let Some(response_guard) = context.track_response(
+            "cursor/create_plan",
+            responder.id(),
+            responder.cancellation(),
+        ) else {
+            responder.respond(json!({"outcome":"cancelled"}))?;
+            return Ok(Handled::Yes);
+        };
+        self.approval_bindings
+            .spawn_callback(&connection, async move {
+                if let Some(refusal) = context.managed_refusal(port.as_ref()) {
+                    let declined = json!({"outcome":"cancelled"});
+                    let response = refusal.acp_cursor_plan();
+                    let (open, queued) = response_guard.commit(|open| {
+                        (
+                            open,
+                            responder.respond(if open { response } else { declined }),
+                        )
+                    });
+                    drop(response_guard);
+                    if open && queued.is_ok() && !request_cancellation.is_cancelled() {
+                        context.cancel_after_refusal(port, refusal).await;
+                    }
+                    return queued;
                 }
-                outcome = &mut decision => outcome,
-            };
-            let queued = responder.respond(cursor_plan_decision(outcome));
-            drop(response_guard);
-            queued
-        })?;
+                let outcome = context
+                    .decide_approval(port.as_ref(), approval, request_cancellation)
+                    .await;
+                let response = cursor_plan_decision(outcome);
+                let declined = cursor_plan_decision(ApprovalPortOutcome::Cancelled);
+                response_guard
+                    .commit(|open| responder.respond(if open { response } else { declined }))
+            })?;
         Ok(Handled::Yes)
     }
 

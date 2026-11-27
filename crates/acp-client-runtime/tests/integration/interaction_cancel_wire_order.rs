@@ -43,8 +43,8 @@ impl InteractionPort for HeldInteractionPort {
         &self,
         _context: Self::Context,
         _request: ApprovalRequest,
-        turn_cancellation: CancellationToken,
-        _agent_cancellation: CancellationToken,
+        turn_cancellation: acp_client_runtime::FixtureCancellation,
+        _agent_cancellation: acp_client_runtime::FixtureCancellation,
     ) -> InteractionFuture<'_, ApprovalPortOutcome> {
         let started = Arc::clone(&self.started);
         let cancellation_observed = self.cancellation_observed.clone();
@@ -66,8 +66,8 @@ impl InteractionPort for HeldInteractionPort {
         &self,
         _context: Self::Context,
         _request: QuestionRequest,
-        turn_cancellation: CancellationToken,
-        _agent_cancellation: CancellationToken,
+        turn_cancellation: acp_client_runtime::FixtureCancellation,
+        _agent_cancellation: acp_client_runtime::FixtureCancellation,
     ) -> InteractionFuture<'_, QuestionResponse> {
         let started = Arc::clone(&self.started);
         let cancellation_observed = self.cancellation_observed.clone();

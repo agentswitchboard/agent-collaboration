@@ -1,9 +1,13 @@
 //! Nonblocking publication boundary for Router-owned Session events.
 
-use provider_session_machines::SessionGeneration;
-#[cfg(test)]
-use std::sync::Arc;
-use std::{future::Future, pin::Pin};
+use provider_session_machines::{
+    SessionGeneration,
+    harness_lifecycle::{
+        CallbackAdmission, HarnessCallbackIngress, HarnessSessionId, SessionHarnessPayloads,
+    },
+    session_turn_machine::TurnId,
+};
+use std::{future::Future, pin::Pin, sync::Arc};
 
 use session_event_model::SessionEvent;
 
@@ -122,6 +126,82 @@ pub trait SessionEventSink: Send + Sync + 'static {
                 state: session_event_model::SessionState::Unloaded,
             },
         )
+    }
+}
+
+/// Bridges ACP's synchronous publisher calls to the controller's inline ingress.
+pub struct HarnessCallbackEventSink<Context: Send + 'static> {
+    ingress: Arc<dyn HarnessCallbackIngress<SessionHarnessPayloads<Context>>>,
+}
+
+impl<Context: Send + 'static> HarnessCallbackEventSink<Context> {
+    #[must_use]
+    pub fn new(ingress: Arc<dyn HarnessCallbackIngress<SessionHarnessPayloads<Context>>>) -> Self {
+        Self { ingress }
+    }
+}
+
+impl<Context: Send + 'static> SessionEventSink for HarnessCallbackEventSink<Context> {
+    fn publish_skill_view(
+        &self,
+        session_id: &str,
+        view: session_event_model::SkillView,
+    ) -> Result<(), EventSinkClosed> {
+        publication(
+            self.ingress
+                .report_skill_view(&HarnessSessionId(session_id.to_owned()), view),
+        )
+        .map(|_| ())
+    }
+
+    fn begin_history_replay(&self, _: &str) -> HistoryReplayFuture<'_> {
+        Box::pin(std::future::ready(Ok(())))
+    }
+
+    fn publish(&self, session_id: &str, event: SessionEvent) -> Result<(), EventSinkClosed> {
+        self.publish_in(session_id, self.current_generation(session_id), event)
+            .map(|_| ())
+    }
+
+    fn current_generation(&self, session_id: &str) -> SessionGeneration {
+        self.ingress
+            .current_generation(&HarnessSessionId(session_id.to_owned()))
+    }
+
+    fn publish_in(
+        &self,
+        session_id: &str,
+        generation: SessionGeneration,
+        event: SessionEvent,
+    ) -> Result<GenerationPublication, EventSinkClosed> {
+        publication(self.ingress.report_for_generation(
+            &HarnessSessionId(session_id.to_owned()),
+            generation,
+            event,
+        ))
+    }
+
+    fn publish_for_turn(
+        &self,
+        session_id: &str,
+        generation: SessionGeneration,
+        turn: TurnId,
+        event: SessionEvent,
+    ) -> Result<GenerationPublication, EventSinkClosed> {
+        publication(self.ingress.report_for_turn(
+            &HarnessSessionId(session_id.to_owned()),
+            generation,
+            turn,
+            event,
+        ))
+    }
+}
+
+fn publication(admission: CallbackAdmission) -> Result<GenerationPublication, EventSinkClosed> {
+    match admission {
+        CallbackAdmission::Admitted => Ok(GenerationPublication::Published),
+        CallbackAdmission::Ended => Ok(GenerationPublication::Ended),
+        CallbackAdmission::Unavailable => Err(EventSinkClosed),
     }
 }
 

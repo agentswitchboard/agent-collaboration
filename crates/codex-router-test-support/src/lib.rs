@@ -13,6 +13,7 @@ pub mod node_taps;
 mod owned_cli_process;
 #[cfg(feature = "router-fixtures")]
 pub mod owned_peer_fixture;
+pub mod reply_ledger;
 #[cfg(feature = "router-fixtures")]
 pub mod route_native;
 #[cfg(feature = "router-fixtures")]

@@ -5,6 +5,7 @@
 use super::{BindingSessionSetup, restore_setup};
 use crate::provider_work_roots::{AskOutsideHook, ProviderWorkRoots, WorkRootsHook};
 use collaboration_protocol::ProviderWorkingDirectory;
+use provider_session_machines::harness_lifecycle::SessionWorkRoots;
 use std::path::{Path, PathBuf};
 use switchboard_session_store::ProviderSessionResumeInputs;
 
@@ -33,12 +34,14 @@ fn a_record_from_before_the_resume_inputs_rebuilds_nothing() {
     // Act
     let setup = restore_setup(
         &configured(root.path()),
-        root.path(),
+        root.path().to_owned(),
         &ProviderSessionResumeInputs::default(),
     );
 
     // Assert
-    assert_eq!(setup, acp_client_runtime::SessionRestoreSetup::default());
+    assert_eq!(setup.cwd, root.path());
+    assert_eq!(setup.work_roots, SessionWorkRoots::default());
+    assert_eq!(setup.scratch_folder, None);
 }
 
 /// Oracle: D1 R18, a session in auto works in the configured roots, its
@@ -57,10 +60,10 @@ fn an_auto_record_rebuilds_the_configured_and_named_roots_with_its_scratch_folde
     };
 
     // Act
-    let setup = restore_setup(&configured(root.path()), root.path(), &resume);
+    let setup = restore_setup(&configured(root.path()), root.path().to_owned(), &resume);
 
     // Assert
-    assert_eq!(setup.requested_mode.as_deref(), Some("auto"));
+    assert_eq!(setup.cwd, root.path());
     assert_eq!(setup.scratch_folder.as_deref(), Some(scratch.as_path()));
     assert!(setup.work_roots.router_auto);
     assert_eq!(
@@ -99,15 +102,12 @@ fn a_named_mode_record_rebuilds_only_its_scratch_folder() {
     };
 
     // Act
-    let setup = restore_setup(&configured(root.path()), root.path(), &resume);
+    let setup = restore_setup(&configured(root.path()), root.path().to_owned(), &resume);
 
     // Assert
-    assert_eq!(setup.requested_mode.as_deref(), Some("default"));
+    assert_eq!(setup.cwd, root.path());
     assert_eq!(setup.scratch_folder.as_deref(), Some(scratch.as_path()));
-    assert_eq!(
-        setup.work_roots,
-        acp_client_runtime::SessionWorkRoots::default()
-    );
+    assert_eq!(setup.work_roots, SessionWorkRoots::default());
 }
 
 /// Oracle: owner Decision 3, "old rows keep the fallback": a restore whose
@@ -117,7 +117,7 @@ fn a_named_mode_record_rebuilds_only_its_scratch_folder() {
 fn a_restore_without_a_recorded_mode_keeps_the_mode_already_held() {
     // Arrange
     let setup = BindingSessionSetup::default();
-    let created = acp_client_runtime::PermissionModeReport {
+    let created = provider_session_machines::harness_lifecycle::PermissionModeReport {
         requested: Some("auto".to_owned()),
         actual: Some("auto".to_owned()),
         reason: None,

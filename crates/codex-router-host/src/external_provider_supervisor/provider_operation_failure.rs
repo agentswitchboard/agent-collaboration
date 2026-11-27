@@ -1,13 +1,15 @@
 //! Map provider admission and prompt loss into the operation failure contract.
 
+use super::{OperationFailureCause, PromptRefusal, PromptSelectionRefusal};
 use super::{failure, failure_with_provider_code};
-use crate::ExternalProviderRuntimeError;
 use collaboration_protocol::{
     ConversationOperationFailure, ConversationOperationFailureKind,
     ConversationOperationFailureStage, DeliveryCorrelationId, InvalidProviderSetting,
     InvalidSettingSessionDisposition, NonEmptyText, OperationId, ProviderOperationEffect,
     SessionRef,
 };
+use provider_session_machines::InvalidSettingSessionDisposition as HarnessSettingDisposition;
+use provider_session_machines::session_owner::{ProviderWireFailure, ProviderWireFailureKind};
 
 const MAX_ADVERTISED_CHOICES: usize = 32;
 const MAX_ADVERTISED_SUMMARY_BYTES: usize = 2048;
@@ -16,7 +18,7 @@ const MAX_SETTING_VALUE_DISPLAY_CHARS: usize = 120;
 #[derive(Clone, Copy, Debug)]
 struct ProviderErrorReference {
     provider_code: i64,
-    correlation_id: acp_client_runtime::ProviderErrorCorrelationId,
+    correlation_id: uuid::Uuid,
 }
 
 struct CorrelatedProviderFailureProps {
@@ -35,15 +37,15 @@ pub(super) fn invalid_setting_failure(
     setting: provider_session_machines::ProviderSettingKind,
     value: String,
     advertised: Vec<String>,
-    disposition: acp_client_runtime::InvalidSettingSessionDisposition,
+    disposition: HarnessSettingDisposition,
 ) -> ConversationOperationFailure {
     let (session_status, disposition, fallback_message) = match disposition {
-        acp_client_runtime::InvalidSettingSessionDisposition::Closed => (
+        HarnessSettingDisposition::Closed => (
             "new Session was closed",
             InvalidSettingSessionDisposition::Closed,
             "invalid provider setting; see advertised values; new Session was closed",
         ),
-        acp_client_runtime::InvalidSettingSessionDisposition::RemainsCreated => (
+        HarnessSettingDisposition::RemainsCreated => (
             "new Session remains created and idle",
             InvalidSettingSessionDisposition::RemainsCreated,
             "invalid provider setting; see advertised values; new Session remains created and idle",
@@ -130,24 +132,6 @@ fn format_bounded_advertised_values(advertised: &[String]) -> String {
     displayed_values
 }
 
-pub(super) fn prompt_runtime_failure(
-    operation_id: OperationId,
-    target: Option<SessionRef>,
-    error: ExternalProviderRuntimeError,
-) -> ConversationOperationFailure {
-    if matches!(error, ExternalProviderRuntimeError::TransportFailure) {
-        return failure(
-            ConversationOperationFailureKind::OutcomeUnknown,
-            ConversationOperationFailureStage::Settlement,
-            ProviderOperationEffect::Unknown,
-            "provider connection lost before the agent ended the turn (providerRetired)",
-            operation_id,
-            target,
-        );
-    }
-    runtime_failure(operation_id, target, error)
-}
-
 pub(super) fn admission_failure(
     operation_id: OperationId,
     message: &'static str,
@@ -166,19 +150,15 @@ pub(super) fn admission_failure(
 pub(super) fn restore_operation_failure(
     operation_id: OperationId,
     target: SessionRef,
-    error: acp_client_runtime::RestoreFailure,
+    failure: ProviderWireFailure,
 ) -> ConversationOperationFailure {
-    let reason = (error.phase == acp_client_runtime::RestorePhase::Attempted).then(|| {
-        use crate::provider_acp_session_loading::{closed_restore_reason, load_error_reason};
-        match error.error() {
-            ExternalProviderRuntimeError::SessionReleased => {
-                closed_restore_reason(error.phase).to_owned()
-            }
-            _ => load_error_reason(&error),
-        }
-    });
-    let mut result = runtime_failure(operation_id, Some(target), error.into_error());
-    if let Some(message) = reason.and_then(|reason| NonEmptyText::try_from(reason).ok()) {
+    let reason = crate::provider_acp_session_loading::load_error_reason(failure);
+    let mut result = runtime_failure(
+        operation_id,
+        Some(target),
+        OperationFailureCause::HarnessCoded(failure),
+    );
+    if let Ok(message) = NonEmptyText::try_from(reason) {
         result.message = message;
     }
     result
@@ -187,25 +167,19 @@ pub(super) fn restore_operation_failure(
 pub(super) fn runtime_failure(
     operation_id: OperationId,
     target: Option<SessionRef>,
-    error: ExternalProviderRuntimeError,
+    cause: OperationFailureCause,
 ) -> ConversationOperationFailure {
-    match error {
-        ExternalProviderRuntimeError::HistoryReplayAdmissionFailed => failure(
-            ConversationOperationFailureKind::Unavailable,
-            ConversationOperationFailureStage::Dispatch,
-            ProviderOperationEffect::None,
-            "session history replay admission failed before provider load was dispatched",
-            operation_id,
-            target,
-        ),
-        ExternalProviderRuntimeError::Behavior(error) => {
-            let kind = match error {
-                acp_client_runtime::ProviderError::InvalidSelection
-                | acp_client_runtime::ProviderError::MalformedMetadata => {
+    match cause {
+        OperationFailureCause::HarnessCoded(failure) => {
+            coded_runtime_failure(operation_id, target, failure)
+        }
+        OperationFailureCause::PromptRefused(PromptRefusal::Selection { kind, message }) => {
+            let kind = match kind {
+                PromptSelectionRefusal::InvalidSelection
+                | PromptSelectionRefusal::MalformedMetadata => {
                     ConversationOperationFailureKind::InvalidRequest
                 }
-                acp_client_runtime::ProviderError::Unsupported
-                | acp_client_runtime::ProviderError::SourceUnavailable => {
+                PromptSelectionRefusal::Unsupported | PromptSelectionRefusal::SourceUnavailable => {
                     ConversationOperationFailureKind::UnsupportedCapability
                 }
             };
@@ -213,12 +187,12 @@ pub(super) fn runtime_failure(
                 kind,
                 ConversationOperationFailureStage::Dispatch,
                 ProviderOperationEffect::None,
-                &error.to_string(),
+                &message,
                 operation_id,
                 target,
             )
         }
-        ExternalProviderRuntimeError::CompactionUnconfirmed => failure(
+        OperationFailureCause::CompactionUnconfirmed => failure(
             ConversationOperationFailureKind::ProviderRejected,
             ConversationOperationFailureStage::Settlement,
             ProviderOperationEffect::Applied,
@@ -226,197 +200,7 @@ pub(super) fn runtime_failure(
             operation_id,
             target,
         ),
-        // The session's answer names its state and the valid next steps (D1 M8).
-        ExternalProviderRuntimeError::LocalBusy { answer } => failure(
-            ConversationOperationFailureKind::Busy,
-            ConversationOperationFailureStage::Validation,
-            ProviderOperationEffect::None,
-            &answer,
-            operation_id,
-            target,
-        ),
-        ExternalProviderRuntimeError::SettingsUnresolved { answer } => failure(
-            ConversationOperationFailureKind::SettingsUnresolved,
-            ConversationOperationFailureStage::Validation,
-            ProviderOperationEffect::None,
-            &answer,
-            operation_id,
-            target,
-        ),
-        // The session's state refused the request: its own answer names the
-        // state and the valid next steps (D1 M8).
-        ExternalProviderRuntimeError::SessionStateRefused { answer } => failure(
-            ConversationOperationFailureKind::InvalidRequest,
-            ConversationOperationFailureStage::Validation,
-            ProviderOperationEffect::None,
-            &answer,
-            operation_id,
-            target,
-        ),
-        // The Router closed the session while a load or resume was in
-        // flight; the same refusal as one checked before it (D1 R14).
-        ExternalProviderRuntimeError::SessionReleased => failure(
-            ConversationOperationFailureKind::InvalidRequest,
-            ConversationOperationFailureStage::Validation,
-            ProviderOperationEffect::None,
-            "the session is closed",
-            operation_id,
-            target,
-        ),
-        ExternalProviderRuntimeError::LocalNotFound
-        | ExternalProviderRuntimeError::LocalCancelTargetMismatch => failure(
-            ConversationOperationFailureKind::NotFound,
-            ConversationOperationFailureStage::Validation,
-            ProviderOperationEffect::None,
-            "provider conversation operation is not active",
-            operation_id,
-            target,
-        ),
-        ExternalProviderRuntimeError::AuthenticationRequired {
-            code,
-            correlation_id,
-        } => correlated_provider_failure(CorrelatedProviderFailureProps {
-            kind: ConversationOperationFailureKind::AuthenticationRequired,
-            stage: ConversationOperationFailureStage::Binding,
-            effect: ProviderOperationEffect::None,
-            explanation: "provider authentication is required",
-            operation_id,
-            target,
-            provider_error: ProviderErrorReference {
-                provider_code: code,
-                correlation_id,
-            },
-        }),
-        ExternalProviderRuntimeError::ProviderSessionNotFound {
-            code,
-            correlation_id,
-        } => correlated_provider_failure(CorrelatedProviderFailureProps {
-            kind: ConversationOperationFailureKind::ProviderSessionNotFound,
-            stage: ConversationOperationFailureStage::Binding,
-            effect: ProviderOperationEffect::None,
-            explanation: "the provider no longer knows this session, so start a new session with the same setup",
-            operation_id,
-            target,
-            provider_error: ProviderErrorReference {
-                provider_code: code,
-                correlation_id,
-            },
-        }),
-        ExternalProviderRuntimeError::ResourceNotFound {
-            code,
-            correlation_id,
-        } => correlated_provider_failure(CorrelatedProviderFailureProps {
-            kind: ConversationOperationFailureKind::NotFound,
-            stage: ConversationOperationFailureStage::Binding,
-            effect: ProviderOperationEffect::None,
-            explanation: "provider resource was not found",
-            operation_id,
-            target,
-            provider_error: ProviderErrorReference {
-                provider_code: code,
-                correlation_id,
-            },
-        }),
-        error @ (ExternalProviderRuntimeError::RestoreNoAnswer
-        | ExternalProviderRuntimeError::RestoreDisconnected) => failure(
-            ConversationOperationFailureKind::OutcomeUnknown,
-            ConversationOperationFailureStage::Settlement,
-            ProviderOperationEffect::Unknown,
-            &error.to_string(),
-            operation_id,
-            target,
-        ),
-        ExternalProviderRuntimeError::RestoreFailed {
-            code,
-            correlation_id,
-        } => correlated_provider_failure(CorrelatedProviderFailureProps {
-            kind: ConversationOperationFailureKind::OutcomeUnknown,
-            stage: ConversationOperationFailureStage::Settlement,
-            effect: ProviderOperationEffect::Unknown,
-            explanation: "the provider failed while restoring this session, so retry it",
-            operation_id,
-            target,
-            provider_error: ProviderErrorReference {
-                provider_code: code,
-                correlation_id,
-            },
-        }),
-        ExternalProviderRuntimeError::RestoreRefused {
-            code,
-            correlation_id,
-        } => correlated_provider_failure(CorrelatedProviderFailureProps {
-            kind: ConversationOperationFailureKind::ProviderRejected,
-            stage: ConversationOperationFailureStage::Settlement,
-            effect: ProviderOperationEffect::Unknown,
-            explanation: "the provider refused to restore this session, so check the provider before retrying",
-            operation_id,
-            target,
-            provider_error: ProviderErrorReference {
-                provider_code: code,
-                correlation_id,
-            },
-        }),
-        ExternalProviderRuntimeError::UnsupportedMethod {
-            code,
-            correlation_id,
-        } => correlated_provider_failure(CorrelatedProviderFailureProps {
-            kind: ConversationOperationFailureKind::UnsupportedCapability,
-            stage: ConversationOperationFailureStage::Validation,
-            effect: ProviderOperationEffect::None,
-            explanation: "provider ACP method is unsupported",
-            operation_id,
-            target,
-            provider_error: ProviderErrorReference {
-                provider_code: code,
-                correlation_id,
-            },
-        }),
-        ExternalProviderRuntimeError::InvalidParams {
-            code,
-            correlation_id,
-        } => correlated_provider_failure(CorrelatedProviderFailureProps {
-            kind: ConversationOperationFailureKind::InvalidRequest,
-            stage: ConversationOperationFailureStage::Validation,
-            effect: ProviderOperationEffect::None,
-            explanation: "provider ACP parameters are invalid",
-            operation_id,
-            target,
-            provider_error: ProviderErrorReference {
-                provider_code: code,
-                correlation_id,
-            },
-        }),
-        ExternalProviderRuntimeError::RequestCancelled {
-            code,
-            correlation_id,
-        } => correlated_provider_failure(CorrelatedProviderFailureProps {
-            kind: ConversationOperationFailureKind::ProviderRejected,
-            stage: ConversationOperationFailureStage::Settlement,
-            effect: ProviderOperationEffect::Unknown,
-            explanation: "provider ACP request was cancelled",
-            operation_id,
-            target,
-            provider_error: ProviderErrorReference {
-                provider_code: code,
-                correlation_id,
-            },
-        }),
-        ExternalProviderRuntimeError::ProviderRejected {
-            code,
-            correlation_id,
-        } => correlated_provider_failure(CorrelatedProviderFailureProps {
-            kind: ConversationOperationFailureKind::ProviderRejected,
-            stage: ConversationOperationFailureStage::Settlement,
-            effect: ProviderOperationEffect::Unknown,
-            explanation: "provider rejected the operation after dispatch",
-            operation_id,
-            target,
-            provider_error: ProviderErrorReference {
-                provider_code: code,
-                correlation_id,
-            },
-        }),
-        ExternalProviderRuntimeError::PromptOutputLimitExceeded => failure(
+        OperationFailureCause::PromptOutputLimitExceeded => failure(
             ConversationOperationFailureKind::OutcomeUnknown,
             ConversationOperationFailureStage::Settlement,
             ProviderOperationEffect::Unknown,
@@ -424,7 +208,7 @@ pub(super) fn runtime_failure(
             operation_id,
             target,
         ),
-        ExternalProviderRuntimeError::FrameLimitExceeded => failure(
+        OperationFailureCause::MessageTooLarge => failure(
             ConversationOperationFailureKind::OutcomeUnknown,
             ConversationOperationFailureStage::Settlement,
             ProviderOperationEffect::Unknown,
@@ -432,15 +216,9 @@ pub(super) fn runtime_failure(
             operation_id,
             target,
         ),
-        ExternalProviderRuntimeError::FrameDecodeFailure => failure(
-            ConversationOperationFailureKind::OutcomeUnknown,
-            ConversationOperationFailureStage::Settlement,
-            ProviderOperationEffect::Unknown,
-            "provider frame could not be decoded or classified",
-            operation_id,
-            target,
-        ),
-        ExternalProviderRuntimeError::UnsupportedContent { content_type } => failure(
+        OperationFailureCause::PromptRefused(PromptRefusal::UnsupportedContent {
+            content_type,
+        }) => failure(
             ConversationOperationFailureKind::UnsupportedCapability,
             ConversationOperationFailureStage::Validation,
             ProviderOperationEffect::None,
@@ -453,7 +231,10 @@ pub(super) fn runtime_failure(
             operation_id,
             target,
         ),
-        _ => failure(
+        OperationFailureCause::ResponseUnavailable
+        | OperationFailureCause::PromptRefused(PromptRefusal::Unclassified)
+        | OperationFailureCause::InvalidSetting { .. }
+        | OperationFailureCause::CreatedWithoutSettings { .. } => failure(
             ConversationOperationFailureKind::OutcomeUnknown,
             ConversationOperationFailureStage::Settlement,
             ProviderOperationEffect::Unknown,
@@ -461,6 +242,146 @@ pub(super) fn runtime_failure(
             operation_id,
             target,
         ),
+    }
+}
+
+fn coded_runtime_failure(
+    operation_id: OperationId,
+    target: Option<SessionRef>,
+    failure: ProviderWireFailure,
+) -> ConversationOperationFailure {
+    let ProviderWireFailure {
+        kind,
+        code,
+        correlation_id,
+    } = failure;
+    match kind {
+        ProviderWireFailureKind::AuthenticationRequired => {
+            correlated_provider_failure(CorrelatedProviderFailureProps {
+                kind: ConversationOperationFailureKind::AuthenticationRequired,
+                stage: ConversationOperationFailureStage::Binding,
+                effect: ProviderOperationEffect::None,
+                explanation: "provider authentication is required",
+                operation_id,
+                target,
+                provider_error: ProviderErrorReference {
+                    provider_code: code,
+                    correlation_id,
+                },
+            })
+        }
+        ProviderWireFailureKind::SessionNotFound => {
+            correlated_provider_failure(CorrelatedProviderFailureProps {
+                kind: ConversationOperationFailureKind::ProviderSessionNotFound,
+                stage: ConversationOperationFailureStage::Binding,
+                effect: ProviderOperationEffect::None,
+                explanation: "the provider no longer knows this session, so start a new session with the same setup",
+                operation_id,
+                target,
+                provider_error: ProviderErrorReference {
+                    provider_code: code,
+                    correlation_id,
+                },
+            })
+        }
+        ProviderWireFailureKind::ResourceNotFound => {
+            correlated_provider_failure(CorrelatedProviderFailureProps {
+                kind: ConversationOperationFailureKind::NotFound,
+                stage: ConversationOperationFailureStage::Binding,
+                effect: ProviderOperationEffect::None,
+                explanation: "provider resource was not found",
+                operation_id,
+                target,
+                provider_error: ProviderErrorReference {
+                    provider_code: code,
+                    correlation_id,
+                },
+            })
+        }
+        ProviderWireFailureKind::RestoreFailed => {
+            correlated_provider_failure(CorrelatedProviderFailureProps {
+                kind: ConversationOperationFailureKind::OutcomeUnknown,
+                stage: ConversationOperationFailureStage::Settlement,
+                effect: ProviderOperationEffect::Unknown,
+                explanation: "the provider failed while restoring this session, so retry it",
+                operation_id,
+                target,
+                provider_error: ProviderErrorReference {
+                    provider_code: code,
+                    correlation_id,
+                },
+            })
+        }
+        ProviderWireFailureKind::RestoreRefused => {
+            correlated_provider_failure(CorrelatedProviderFailureProps {
+                kind: ConversationOperationFailureKind::ProviderRejected,
+                stage: ConversationOperationFailureStage::Settlement,
+                effect: ProviderOperationEffect::Unknown,
+                explanation: "the provider refused to restore this session, so check the provider before retrying",
+                operation_id,
+                target,
+                provider_error: ProviderErrorReference {
+                    provider_code: code,
+                    correlation_id,
+                },
+            })
+        }
+        ProviderWireFailureKind::UnsupportedMethod => {
+            correlated_provider_failure(CorrelatedProviderFailureProps {
+                kind: ConversationOperationFailureKind::UnsupportedCapability,
+                stage: ConversationOperationFailureStage::Validation,
+                effect: ProviderOperationEffect::None,
+                explanation: "provider ACP method is unsupported",
+                operation_id,
+                target,
+                provider_error: ProviderErrorReference {
+                    provider_code: code,
+                    correlation_id,
+                },
+            })
+        }
+        ProviderWireFailureKind::InvalidParams => {
+            correlated_provider_failure(CorrelatedProviderFailureProps {
+                kind: ConversationOperationFailureKind::InvalidRequest,
+                stage: ConversationOperationFailureStage::Validation,
+                effect: ProviderOperationEffect::None,
+                explanation: "provider ACP parameters are invalid",
+                operation_id,
+                target,
+                provider_error: ProviderErrorReference {
+                    provider_code: code,
+                    correlation_id,
+                },
+            })
+        }
+        ProviderWireFailureKind::RequestCancelled => {
+            correlated_provider_failure(CorrelatedProviderFailureProps {
+                kind: ConversationOperationFailureKind::ProviderRejected,
+                stage: ConversationOperationFailureStage::Settlement,
+                effect: ProviderOperationEffect::Unknown,
+                explanation: "provider ACP request was cancelled",
+                operation_id,
+                target,
+                provider_error: ProviderErrorReference {
+                    provider_code: code,
+                    correlation_id,
+                },
+            })
+        }
+        ProviderWireFailureKind::Rejected => {
+            correlated_provider_failure(CorrelatedProviderFailureProps {
+                kind: ConversationOperationFailureKind::ProviderRejected,
+                stage: ConversationOperationFailureStage::Settlement,
+                effect: ProviderOperationEffect::Unknown,
+                explanation: "provider rejected the operation after dispatch",
+                operation_id,
+                target,
+                provider_error: ProviderErrorReference {
+                    provider_code: code,
+                    correlation_id,
+                },
+            })
+        }
     }
 }
 
@@ -477,7 +398,7 @@ fn correlated_provider_failure(
         provider_error,
     } = props;
     let correlation_id = match DeliveryCorrelationId::try_from(
-        provider_error.correlation_id.to_string(),
+        provider_error.correlation_id.hyphenated().to_string(),
     ) {
         Ok(correlation_id) => correlation_id,
         Err(_) => {
@@ -514,3 +435,7 @@ fn correlated_provider_failure(
 #[cfg(test)]
 #[path = "provider_operation_failure_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "operation_failure_cause_test.rs"]
+mod cause_tests;

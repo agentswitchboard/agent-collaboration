@@ -157,7 +157,7 @@ export const rows: InventoryRow[] = [
     owner: "router-vocabulary",
     kind: "rust-type",
     defines:
-      "acp-client-runtime ProviderSettingKind to ProviderSettingName (72-80) and AppliedProviderSetting/FailedProviderSetting/NotAppliedProviderSetting copies (82-108); reverse of external_provider_supervisor/provider_settings_control.rs:78",
+      "ProviderSettingKind to ProviderSettingName (72-80) and AppliedProviderSetting/FailedProviderSetting/NotAppliedProviderSetting copies (82-108), with FailedProviderSetting from session-event-model; reverse of external_provider_supervisor/provider_settings_control.rs:78",
     usedBy: [{ crate: "codex-router-host" }],
     duplicateGroup: "provider-setting-mapping",
     disposition: "duplicate",
@@ -169,7 +169,7 @@ export const rows: InventoryRow[] = [
     owner: "router-vocabulary",
     kind: "rust-type",
     defines:
-      "PermissionModeReason to ProviderModeReason (135-147) and AutoRealization to ProviderAutoRealization (149-159), enum-to-enum copies of acp-client-runtime vocabulary",
+      "PermissionModeReason to ProviderModeReason (135-147) and AutoRealization to ProviderAutoRealization (149-159), enum-to-enum copies of switchboard-harness-contracts vocabulary",
     usedBy: [{ crate: "codex-router-host" }],
     duplicateGroup: "provider-setting-mapping",
     disposition: "duplicate",
@@ -192,7 +192,7 @@ export const rows: InventoryRow[] = [
     owner: "router-vocabulary",
     kind: "rust-type",
     defines:
-      "hand-built ConversationOperationSnapshot for Router-queued prompts (256-279) with NotSubmitted reason literal queueCancelled (157); a second constructor beside collaboration-service conversation_operation_projection.rs:8",
+      "hand-built ConversationOperationSnapshot for Router-queued prompts (256-279) with NotSubmitted reason literal queueCancelled (157); the saved-record constructor is in switchboard-session-store conversation_operation_projection.rs:5",
     usedBy: [{ crate: "codex-router-host" }],
     duplicateGroup: "operation-snapshot-construction",
     disposition: "duplicate",

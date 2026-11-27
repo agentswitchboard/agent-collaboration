@@ -7,6 +7,9 @@ use session_event_model::StopReason as ProviderPromptStopReason;
 use std::fmt::{Display, Formatter};
 use std::path::PathBuf;
 
+pub use session_event_model::ExternalProviderApprovalRefusalReason;
+pub use switchboard_harness_contracts::{ExternalProviderCreatedSession, ProviderSessionActivity};
+
 /// The largest prompt output a turn keeps; the rest is cut off.
 pub(crate) const MAX_PROMPT_OUTPUT_BYTES: usize = 1024 * 1024;
 
@@ -67,30 +70,6 @@ pub struct ExternalProviderPromptOutcome {
     pub permission_refusal_reason: Option<ExternalProviderApprovalRefusalReason>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ExternalProviderApprovalRefusalReason {
-    MissingPromptContext,
-    ApprovalBrokerUnavailable,
-    Managed(session_event_model::managed_interaction_refusal::ManagedInteractionRefusal),
-}
-
-impl ExternalProviderApprovalRefusalReason {
-    pub const fn code(self) -> &'static str {
-        match self {
-            Self::MissingPromptContext => "missingPromptContext",
-            Self::ApprovalBrokerUnavailable => "approvalBrokerUnavailable",
-            Self::Managed(refusal) => refusal.code(),
-        }
-    }
-
-    pub const fn message(self) -> &'static str {
-        match self {
-            Self::Managed(refusal) => refusal.reason(),
-            reason => reason.code(),
-        }
-    }
-}
-
 #[cfg(any(test, feature = "test-observation"))]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExternalProviderApprovalRefusalWarning {
@@ -138,14 +117,6 @@ pub(crate) fn classify_mcp_tool_outcome(
     } else {
         ExternalProviderToolOutcome::Unknown
     }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ExternalProviderCreatedSession {
-    pub provider_session_id: String,
-    pub effective_settings: provider_session_machines::EffectiveProviderSettings,
-    /// The requested and actual permission mode, read back from the agent (R3).
-    pub permission_mode: crate::PermissionModeReport,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -366,11 +337,4 @@ pub enum ProviderSteeringOutcome<OperationId, Context> {
     PromptRequired,
     StartedNewTurn,
     Failed,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ProviderSessionActivity {
-    NotLoaded,
-    Idle,
-    Running,
 }

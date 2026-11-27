@@ -1,5 +1,19 @@
 # Release Notes
 
+## 0.1.167
+
+- Published session and message schemas now state the Router's existing identifier rules. UUIDv7 identifiers use canonical lowercase hyphenated text. Provider session IDs contain 1 to 4,096 UTF-8 bytes without NUL.
+
+## 0.1.166
+
+- If the Router loses the local reply for a pending restore, it reports “the provider did not confirm whether it restored the session”. An activation refusal now fails the operation before the session is published as live.
+- If the agent creates a session that the Router cannot activate, the create error includes the recorded session so it can be loaded or resumed.
+- The Router now reports “not enqueued” for a queued close when the writer confirms it never sent the request.
+- If the agent connection ends before confirming a setting, create, load, or resume request that was sent, the Router reports an unknown outcome or a disconnect. A steer or close error first read while the connection is ending also reports an unknown outcome.
+- When a completed create, load, or resume reply and a stop are both ready, the Router uses the reply. A confirmed create keeps the agent’s session ID. If the writer has stopped and the Router cannot admit the restored session, load or resume still reports an unknown restore outcome.
+- A prompt whose successful reply has reached the Router keeps the agent’s stop reason when the session reader retires. If the reader stops before it finishes collecting the output, the result has empty response text.
+- Pending agent approval and question requests end with their turn or connection. A cancellation the Router has already seen takes precedence when it sends a decision.
+
 ## 0.1.165
 
 - A prompt or compaction sent immediately after a provider turn ends waits for that turn’s operation to finish settling, avoiding a spurious busy response.

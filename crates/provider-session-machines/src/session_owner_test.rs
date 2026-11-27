@@ -124,6 +124,7 @@ fn open_wire(state: &mut SessionOwnerState, number: u64) -> RunAttempt<LoadAttem
 fn restore_reply(run: RunAttempt<LoadAttempt>) -> OwnerEvent {
     OwnerEvent::Wire(SessionWireResult::Restore {
         run,
+        replay: Some(switchboard_harness_contracts::ReplayCompleteness::Complete),
         outcome: WireOutcome::Confirmed(RestoreLoadReadback {
             catalogue: Arc::default(),
             router_auto_requested: false,
@@ -150,7 +151,15 @@ fn finish_preparation(
         state,
         OwnerEvent::Prepare(RestorePreparation::RouteReady(run)),
     );
-    apply(state, host_ready(run))
+    let ready = apply(state, host_ready(run));
+    assert!(ready.iter().any(
+        |effect| matches!(effect, OwnerEffect::ActivateRestored { run: exact, .. } if *exact == run)
+    ));
+    apply(state, activated(run, Ok(())))
+}
+
+fn activated(run: RunAttempt<LoadAttempt>, result: Result<(), ActivationRefusal>) -> OwnerEvent {
+    OwnerEvent::Prepare(RestorePreparation::Activation { run, result })
 }
 
 fn restore_live(state: &mut SessionOwnerState, number: u64) -> RunAttempt<LoadAttempt> {

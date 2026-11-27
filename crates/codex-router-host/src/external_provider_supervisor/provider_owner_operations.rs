@@ -123,7 +123,7 @@ pub(super) async fn restore(
                 super::provider_operation_failure::restore_operation_failure(
                     operation,
                     target.clone(),
-                    acp_client_runtime::RestoreFailure::attempted(coded.into()),
+                    coded,
                 ),
             )
         }
@@ -135,7 +135,9 @@ pub(super) async fn restore(
                 RestoreFailure::Lost { .. } => {
                     ConversationOperationFailureKind::ProviderSessionNotFound
                 }
-                RestoreFailure::NoAnswer | RestoreFailure::Disconnected => {
+                RestoreFailure::NoAnswer
+                | RestoreFailure::Disconnected
+                | RestoreFailure::OutcomeUnknown => {
                     ConversationOperationFailureKind::OutcomeUnknown
                 }
                 _ => ConversationOperationFailureKind::Unavailable,

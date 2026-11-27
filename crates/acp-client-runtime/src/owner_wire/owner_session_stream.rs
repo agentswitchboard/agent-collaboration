@@ -1,5 +1,7 @@
 //! Decode SDK session updates into stamped owner facts.
 
+#[cfg(feature = "test-support")]
+use crate::session_owner_task::OwnerCompletionPort;
 use crate::{
     EventSinkClosed, ExternalProviderRuntimeError, HistoryReplayFuture, ProviderBehavior,
     ProviderCapabilityReport, SessionEventSink,
@@ -8,19 +10,24 @@ use crate::{
     acp_transport::TransportRun,
     owner_session_open::{CreatedStream, OpenedSessionRoute, OwnerOpenedSession},
     owner_session_replay::replay_queued_session_updates,
-    owner_wire::{OwnerAcpWire, PromptTerminal},
+    owner_wire::{OwnerAcpWire, PromptTerminalReceiver},
     provider_item_projection::ProviderItemProjection,
     provider_settings_catalog_codec::decode_settings_update,
     provider_update_kind::{is_known_update_kind, safe_update_kind},
-    session_owner_task::OwnerCompletionPort,
 };
 use agent_client_protocol::{
     ActiveSession, Agent, Dispatch, SessionMessage,
     schema::v1::{ContentBlock, SessionNotification, SessionUpdate},
 };
-use futures_util::FutureExt as _;
+use futures_util::{FutureExt as _, future::Either};
 use provider_session_machines::ProviderSettingsCatalog;
+#[cfg(feature = "test-support")]
+use provider_session_machines::harness_lifecycle::{EventPort, EventRefusal, EventSendFuture};
+use provider_session_machines::harness_lifecycle::{
+    SessionLifecycleFact, SessionLifecyclePort, StreamTurn,
+};
 use provider_session_machines::provider_settings_catalog::ProviderSettingsUpdate;
+#[cfg(feature = "test-support")]
 use provider_session_machines::session_owner::{OwnerAddress, OwnerEvent};
 use provider_session_machines::session_turn_machine::TurnId;
 use session_event_model::session_profile_codec::{ProfileState, STATE_METHOD, StateNotification};
@@ -73,18 +80,19 @@ impl SessionEventSink for ProjectionBuffer {
 pub struct ReplayedSessionFacts {
     pub events: Vec<SessionEvent>,
     pub skills: Option<SkillView>,
+    pub completeness: switchboard_harness_contracts::ReplayCompleteness,
 }
 
 pub struct OwnerStreamTarget {
-    pub owner: OwnerAddress,
     pub run: TransportRun,
     pub wire: Arc<OwnerAcpWire>,
-    pub completions: OwnerCompletionPort,
     pub retired: CancellationToken,
-    terminals: mpsc::Receiver<PromptTerminal>,
+    events: SessionLifecyclePort,
+    terminals: PromptTerminalReceiver,
 }
 
 impl OwnerStreamTarget {
+    #[cfg(feature = "test-support")]
     pub fn new(
         owner: OwnerAddress,
         run: TransportRun,
@@ -92,44 +100,125 @@ impl OwnerStreamTarget {
         completions: OwnerCompletionPort,
         retired: CancellationToken,
     ) -> Self {
+        let events = Arc::new(OwnerStreamCompletions {
+            owner,
+            completions,
+            retired: retired.clone(),
+        });
+        Self::for_lifecycle(run, wire, retired, events)
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(crate) fn for_lifecycle(
+        run: TransportRun,
+        wire: Arc<OwnerAcpWire>,
+        retired: CancellationToken,
+        events: SessionLifecyclePort,
+    ) -> Self {
         let terminals = wire.register_reader(run);
         Self {
-            owner,
             run,
             wire,
-            completions,
             retired,
+            events,
             terminals,
+        }
+    }
+
+    pub(crate) fn for_opening_route(
+        route: &crate::acp_transport::LifecycleRoute,
+        wire: Arc<OwnerAcpWire>,
+        retired: CancellationToken,
+        events: SessionLifecyclePort,
+    ) -> Option<Self> {
+        let terminals = wire.register_opening_reader(route)?;
+        Some(Self {
+            run: route.run,
+            wire,
+            retired,
+            events,
+            terminals,
+        })
+    }
+
+    async fn report(&self, fact: SessionLifecycleFact) -> bool {
+        tokio::select! {
+            biased;
+            () = self.retired.cancelled() => false,
+            result = self.events.send(fact) => result.is_ok(),
         }
     }
 
     async fn flush_facts(&self, buffer: &ProjectionBuffer, turn: Option<TurnId>) -> bool {
         for fact in buffer.take() {
-            let event = match fact {
-                StreamFact::Event(event) => OwnerEvent::Stream {
+            let fact = match fact {
+                StreamFact::Event(event) => SessionLifecycleFact::Stream {
                     run: self.run.generation,
-                    expected_turn: turn,
+                    turn: StreamTurn::Observed(turn),
                     event,
                 },
-                StreamFact::Catalogue(update) => OwnerEvent::CatalogueObserved {
+                StreamFact::Catalogue(update) => SessionLifecycleFact::CatalogueObserved {
                     run: self.run.generation,
                     update,
                 },
-                StreamFact::Skills(view) => OwnerEvent::SkillView {
+                StreamFact::Skills(view) => SessionLifecycleFact::SkillView {
                     run: self.run.generation,
                     view,
                 },
             };
-            if self
-                .completions
-                .send_stream(self.owner, event, &self.retired)
-                .await
-                .is_err()
-            {
+            if !self.report(fact).await {
                 return false;
             }
         }
         true
+    }
+}
+
+#[cfg(feature = "test-support")]
+struct OwnerStreamCompletions {
+    owner: OwnerAddress,
+    completions: OwnerCompletionPort,
+    retired: CancellationToken,
+}
+
+#[cfg(feature = "test-support")]
+impl EventPort<SessionLifecycleFact> for OwnerStreamCompletions {
+    fn send<'port>(&'port self, fact: SessionLifecycleFact) -> EventSendFuture<'port>
+    where
+        SessionLifecycleFact: 'port,
+    {
+        Box::pin(async move {
+            let event = match fact {
+                SessionLifecycleFact::Replay { run, events } => OwnerEvent::Replay { run, events },
+                SessionLifecycleFact::Stream { run, turn, event } => {
+                    let StreamTurn::Observed(expected_turn) = turn else {
+                        return Err(EventRefusal::Stopped);
+                    };
+                    OwnerEvent::Stream {
+                        run,
+                        expected_turn,
+                        event,
+                    }
+                }
+                SessionLifecycleFact::CatalogueObserved { run, update } => {
+                    OwnerEvent::CatalogueObserved { run, update }
+                }
+                SessionLifecycleFact::SkillView { run, view } => {
+                    OwnerEvent::SkillView { run, view }
+                }
+                SessionLifecycleFact::ObservedTurnEnded { run, turn, outcome } => {
+                    OwnerEvent::ObservedTurnEnded { run, turn, outcome }
+                }
+                SessionLifecycleFact::OutputLimit { run, turn } => {
+                    OwnerEvent::OutputLimit { run, turn }
+                }
+                SessionLifecycleFact::RunObservationFailed { run } => OwnerEvent::RunLost(run),
+            };
+            self.completions
+                .send_stream(self.owner, event, &self.retired)
+                .await
+                .map_err(|_| EventRefusal::Stopped)
+        })
     }
 }
 
@@ -252,16 +341,18 @@ impl OwnerOpenedSession {
         let Some(OpenedSessionRoute::Restored { updates, .. }) = self.route.as_mut() else {
             return Err(ExternalProviderRuntimeError::HistoryReplayUnavailable);
         };
-        self.projection = Some(replay_queued_session_updates(
+        let (projection, completeness) = replay_queued_session_updates(
             session_id,
             updates,
             Arc::clone(&self.buffer) as Arc<dyn SessionEventSink>,
             Arc::clone(&self.behavior),
             &mut self.catalog,
-        )?);
+        )?;
+        self.projection = Some(projection);
         let mut result = ReplayedSessionFacts {
             events: Vec::new(),
             skills: None,
+            completeness,
         };
         for fact in self.buffer.take() {
             match fact {
@@ -278,16 +369,59 @@ impl OwnerOpenedSession {
     /// Consume the SDK route as a stream executor. Scope and presentation
     /// changes are admitted by the owner against the captured run and turn.
     pub async fn read_stream(
-        mut self,
+        self,
         target: OwnerStreamTarget,
     ) -> Result<(), ExternalProviderRuntimeError> {
+        self.start_stream(target)?.await
+    }
+
+    /// Take a stream locally, including the actual SDK handoff for creates.
+    pub(crate) fn start_stream(
+        self,
+        target: OwnerStreamTarget,
+    ) -> Result<
+        impl Future<Output = Result<(), ExternalProviderRuntimeError>> + Send,
+        ExternalProviderRuntimeError,
+    > {
+        let (start, reader) = self.prepare_stream(target)?;
+        let _reader_retired = start.send(());
+        Ok(reader)
+    }
+
+    /// Transfer the reader to its executor, withhold consumption until the
+    /// binding authorizes the exact accepted run.
+    pub(crate) fn prepare_stream(
+        mut self,
+        target: OwnerStreamTarget,
+    ) -> Result<
+        (
+            tokio::sync::oneshot::Sender<()>,
+            impl Future<Output = Result<(), ExternalProviderRuntimeError>> + Send,
+        ),
+        ExternalProviderRuntimeError,
+    > {
+        let (start, wait_for_start) = tokio::sync::oneshot::channel();
         match self.route.take() {
             Some(OpenedSessionRoute::Restored { sdk, updates }) => {
-                let result = self
-                    .read_updates(SessionUpdates::Restored(updates), target)
-                    .await;
-                drop(sdk);
-                result
+                #[cfg(any(test, feature = "test-observation"))]
+                let wait_for_start =
+                    (!target.wire.take_restored_start_closure_for_test()).then_some(wait_for_start);
+                Ok((
+                    start,
+                    Either::Left(async move {
+                        #[cfg(any(test, feature = "test-observation"))]
+                        let wait_for_start =
+                            wait_for_start.ok_or(ExternalProviderRuntimeError::SessionReleased)?;
+                        wait_for_start
+                            .await
+                            .map_err(|_| ExternalProviderRuntimeError::SessionReleased)?;
+                        let result = self
+                            .read_updates(SessionUpdates::Restored(updates), target)
+                            .await;
+                        drop(sdk);
+                        result
+                    }),
+                ))
             }
             Some(OpenedSessionRoute::Created(activate)) => {
                 let (finished, result) = tokio::sync::oneshot::channel();
@@ -295,12 +429,18 @@ impl OwnerOpenedSession {
                     .send(CreatedStream {
                         opened: self,
                         target,
+                        start: wait_for_start,
                         finished,
                     })
                     .map_err(|_| ExternalProviderRuntimeError::TransportFailure)?;
-                result
-                    .await
-                    .map_err(|_| ExternalProviderRuntimeError::TransportFailure)?
+                Ok((
+                    start,
+                    Either::Right(async move {
+                        result
+                            .await
+                            .map_err(|_| ExternalProviderRuntimeError::TransportFailure)?
+                    }),
+                ))
             }
             None => Err(ExternalProviderRuntimeError::TransportFailure),
         }
@@ -328,6 +468,8 @@ impl OwnerOpenedSession {
             )
         });
         let mut captured = CapturedTurnResponses::default();
+        #[cfg(feature = "test-observation")]
+        target.wire.before_terminal_receive_for_test().await;
         loop {
             tokio::select! {
                 biased;
@@ -339,6 +481,8 @@ impl OwnerOpenedSession {
                     }
                 }
                 Some(terminal) = target.terminals.recv() => {
+                    #[cfg(feature = "test-observation")]
+                    target.wire.after_terminal_receive_for_test().await;
                     while let Some(ready) = updates.read().now_or_never() {
                         let update = ready?;
                         if !self.deliver_update(update, &target, &mut projection, &mut captured).await? {
@@ -406,7 +550,7 @@ impl OwnerOpenedSession {
                 if !target.flush_facts(&self.buffer, Some(turn)).await {
                     return Ok(false);
                 }
-                let end_seen = OwnerEvent::ObservedTurnEnded {
+                let end_seen = SessionLifecycleFact::ObservedTurnEnded {
                     run: target.run.generation,
                     turn,
                     outcome: session_event_model::TurnOutcome::Ended {
@@ -416,11 +560,7 @@ impl OwnerOpenedSession {
                         local_cause: None,
                     },
                 };
-                return Ok(target
-                    .completions
-                    .send_stream(target.owner, end_seen, &target.retired)
-                    .await
-                    .is_ok());
+                return Ok(target.report(end_seen).await);
             }
             return Ok(true);
         }
@@ -447,18 +587,12 @@ impl OwnerOpenedSession {
         )?;
         if let (Some(turn), Some(text), Some(response)) = (turn, text, current.take())
             && response.append(&text)
-            && target
-                .completions
-                .send_stream(
-                    target.owner,
-                    OwnerEvent::OutputLimit {
-                        run: target.run.generation,
-                        turn,
-                    },
-                    &target.retired,
-                )
+            && !target
+                .report(SessionLifecycleFact::OutputLimit {
+                    run: target.run.generation,
+                    turn,
+                })
                 .await
-                .is_err()
         {
             return Ok(false);
         }

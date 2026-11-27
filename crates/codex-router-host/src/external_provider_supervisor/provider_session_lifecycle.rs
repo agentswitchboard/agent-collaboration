@@ -24,16 +24,16 @@ pub(super) fn resume(
             &request.operation_id,
             Some(target.clone()),
         )?;
-        let provider_session_id = String::from(target.session_id.clone());
+        let observed = backend.observed_capabilities(&target);
         if !backend
             .within_admission(
                 deadline,
                 &request.operation_id,
                 Some(&target),
-                runtime.capability_report(&provider_session_id),
+                runtime.connection.capabilities(observed),
             )
             .await?
-            .supports_resume
+            .resume
         {
             return Err(failure(
                 ConversationOperationFailureKind::UnsupportedCapability,
@@ -97,7 +97,7 @@ pub(super) fn close(
             &request.operation_id,
             Some(target.clone()),
         )?;
-        let provider_session_id = String::from(target.session_id.clone());
+        let observed = backend.observed_capabilities(&target);
         // An agent with no session/close is closed by the Router itself: the
         // same interrupt, then a release here (owner: "close should just
         // interrupt the agent and close", every agent).
@@ -106,10 +106,10 @@ pub(super) fn close(
                 deadline,
                 &request.operation_id,
                 Some(&target),
-                runtime.capability_report(&provider_session_id),
+                runtime.connection.capabilities(observed),
             )
             .await?
-            .supports_close;
+            .close;
         // Close interrupts a running turn (D1 R14): the live turn's row
         // doesn't refuse it; an earlier outcome that is unknown and no longer
         // live still does.

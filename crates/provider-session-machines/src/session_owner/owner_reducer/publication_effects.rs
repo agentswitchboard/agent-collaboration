@@ -70,7 +70,10 @@ impl SessionOwnerState {
             }
             OwnerDeadline::Publication(id) => self.ports.awaiting_apply.contains(id),
             OwnerDeadline::Rebase(id) => self.ports.rebase == Some(*id),
-            OwnerDeadline::Create(operation) => self.ports.create == Some(*operation),
+            OwnerDeadline::Create(operation) => self
+                .ports
+                .create
+                .is_some_and(|pending| pending.operation() == *operation),
         }
     }
 

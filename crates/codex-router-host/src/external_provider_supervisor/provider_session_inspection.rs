@@ -15,19 +15,24 @@ pub(super) async fn inspect(
 ) -> Result<ProviderSessionInspectResult, ProviderInspectFailure> {
     let target = request.target;
     use provider_session_machines::session_owner::{HistoryAvailability, ObservedSetting};
-    let runtime = supervisor
-        .runtime_for(&target.endpoint)
+    let binding = supervisor
+        .inner
+        .bindings
+        .get(&target.endpoint)
         .ok_or_else(|| failure(ProviderInspectFailureKind::Unavailable, &target))?;
-    let clock = runtime.owner_clock();
-    let record = router_clock::timeout(clock.as_ref(), std::time::Duration::from_secs(10), async {
-        supervisor
-            .inner
-            .store
-            .lock()
-            .await
-            .session_record(&target)
-            .await
-    })
+    let record = router_clock::timeout(
+        supervisor.inner.clock.as_ref(),
+        std::time::Duration::from_secs(10),
+        async {
+            supervisor
+                .inner
+                .store
+                .lock()
+                .await
+                .session_record(&target)
+                .await
+        },
+    )
     .await
     .map_err(|_| failure(ProviderInspectFailureKind::Unavailable, &target))?
     .map_err(|_| failure(ProviderInspectFailureKind::Unavailable, &target))?
@@ -38,12 +43,14 @@ pub(super) async fn inspect(
         .and_then(|owner| owner.projection.capabilities.clone())
     {
         Some(report) => report,
-        None => runtime
-            .capability_report(&String::from(target.session_id.clone()))
-            .await
-            .to_session_model(),
+        None => {
+            binding
+                .connection
+                .capabilities(supervisor.observed_capabilities(&target))
+                .await
+        }
     };
-    let catalog = supervisor.owner_session_catalog(&target);
+    let catalog = supervisor.owner_session_catalog(&target).await;
     let confirmed_mode = snapshot.as_ref().and_then(|owner| {
         match &owner
             .settings
@@ -70,8 +77,8 @@ pub(super) async fn inspect(
         ProviderHistoryAvailability::HistoryUnavailable
     };
     let requested_mode = record.resume.requested_mode.or_else(|| {
-        runtime
-            .session_setup()
+        binding
+            .session_setup
             .requested_mode(&String::from(target.session_id.clone()))
             .requested_mode
     });
@@ -182,7 +189,7 @@ impl ExternalProviderSupervisor {
         {
             return Err(SessionModelCatalogError::SessionNotFound);
         }
-        let catalog = match self.owner_session_catalog(target) {
+        let catalog = match self.owner_session_catalog(target).await {
             Some(catalog) => catalog,
             None => self
                 .inner

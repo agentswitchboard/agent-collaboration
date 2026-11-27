@@ -3,8 +3,7 @@
 use super::{NoLivePeer, RecordedEvidence, available_directory, provider_binding, request, target};
 use crate::provider_fixture_launch;
 use codex_router_host::{
-    ExternalProviderBinding, ExternalProviderRuntime, ExternalProviderSupervisor,
-    ProviderAcpDeliveryRoute,
+    ExternalProviderRuntime, ExternalProviderSupervisor, ProviderAcpDeliveryRoute,
 };
 use collaboration_contracts::{ProviderConversationBackend, SessionDeliveryRoute};
 use collaboration_protocol::{
@@ -52,10 +51,7 @@ async fn an_already_loaded_session_accepts_delivery_despite_a_mode_difference() 
     ));
     let supervisor = Arc::new(
         ExternalProviderSupervisor::new(
-            vec![ExternalProviderBinding {
-                identity: binding.clone(),
-                runtime,
-            }],
+            vec![runtime.into_binding(binding.clone())],
             Arc::clone(&store),
             fixture_clock.clone(),
         )

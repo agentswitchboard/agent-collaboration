@@ -13,6 +13,13 @@ use provider_session_machines::{
 use session_event_model::{InputId, PromptContent, SessionState};
 use switchboard_session_store::ProviderOperationAdmission;
 
+impl SessionOwnerAddress {
+    #[cfg(debug_assertions)]
+    pub(crate) fn recovery_storage_for_test(&self) -> &SessionOwnerStorage {
+        &self.storage
+    }
+}
+
 async fn operation(
     fixture: &StoreFixture,
     target: &SessionRef,
@@ -103,11 +110,9 @@ async fn owner_door_uses_the_real_acp_connection_for_restore_prompt_and_close() 
         input: InputId::generate(),
         turn: TurnId(Uuid::now_v7()),
     };
-    let content = ProviderPromptContent::from_session_contents(
-        vec![PromptContent::text("Owner route".to_owned()).expect("prompt content")],
-        &acp_client_runtime::ProviderCapabilityReport::default(),
-    )
-    .expect("validated prompt");
+    let content = PreparedPrompt::plain(vec![
+        PromptContent::text("Owner route".to_owned()).expect("prompt content"),
+    ]);
     let sent = owner
         .submit_input(input.clone(), content, PromptAdmission::Direct)
         .await

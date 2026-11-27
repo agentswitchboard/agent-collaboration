@@ -45,14 +45,13 @@ impl SessionDeliveryRoute for ProviderAcpDeliveryRoute {
                     reason: reason.reason,
                 },
                 RouteClaim::CanLoad => {
-                    let Some(runtime) = self.supervisor.runtime_for(&target.endpoint) else {
+                    if !self.supervisor.has_binding(&target.endpoint) {
                         return Ok(RoutePresence::Unreachable {
                             reason: "provider runtime is unavailable".to_owned(),
                         });
-                    };
+                    }
                     let loadability = inspect_provider_session_loadability(
                         &self.supervisor,
-                        runtime.as_ref(),
                         &self.store,
                         self.ownership.as_ref(),
                         &target,
@@ -60,7 +59,7 @@ impl SessionDeliveryRoute for ProviderAcpDeliveryRoute {
                     .await;
                     match loadability {
                         ProviderSessionLoadability::AlreadyLoaded => RoutePresence::Running,
-                        ProviderSessionLoadability::Loadable { .. } => RoutePresence::Wakeable,
+                        ProviderSessionLoadability::Loadable => RoutePresence::Wakeable,
                         ProviderSessionLoadability::UnsupportedLoad => RoutePresence::Unreachable {
                             reason: "provider does not support loading this session".to_owned(),
                         },

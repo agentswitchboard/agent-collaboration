@@ -2,6 +2,7 @@
 //!
 //! This store intentionally has no request, prompt, reply, diagnostic, or transcript input.
 
+use crate::provider_operation_record::ProviderOperationRecord;
 use collaboration_protocol::{
     ConversationBindingIdentity, OperationId, ProviderBindingIdentity, ProviderOperationEffect,
     ProviderOperationKind, ProviderOperationStage, ProviderPromptStopReason,
@@ -119,22 +120,6 @@ pub struct ProviderOperationAdmission {
     pub operation_kind: ProviderOperationKind,
     pub binding: ConversationBindingIdentity,
     pub admitted_at_ms: i64,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ProviderOperationRecord {
-    pub operation_id: OperationId,
-    pub operation_kind: ProviderOperationKind,
-    pub binding: ConversationBindingIdentity,
-    pub target: Option<SessionRef>,
-    pub stage: ProviderOperationStage,
-    pub effect: ProviderOperationEffect,
-    pub reconciliation_state: ProviderReconciliationState,
-    pub admitted_at_ms: i64,
-    pub dispatched_at_ms: Option<i64>,
-    pub terminal_at_ms: Option<i64>,
-    pub terminal_stop_reason: Option<ProviderPromptStopReason>,
-    pub updated_at_ms: i64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

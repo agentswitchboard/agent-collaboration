@@ -1,45 +1,73 @@
 //! Adopt the provider ID before releasing a provisional create.
 
 use super::SessionOwnerDoor;
-use crate::session_owner_execution::SessionOwnerExecution;
-use acp_client_runtime::{
-    ExternalProviderRuntimeError, RequestedProviderSettings,
-    owner_session_creation::OwnerCreatedSetup,
-    owner_session_open::{OwnerOpenedSession, OwnerSessionOpenSetup},
-    session_owner_task::{
-        OwnerCallerWakes, OwnerCompletionPort, OwnerTaskError, SessionOwnerPorts,
-    },
+use crate::{
+    session_owner_execution::SessionOwnerExecution,
+    session_owner_lifecycle_reports::{BoundSessionHarness, LifecycleObservationScope},
+};
+use acp_client_runtime::session_owner_task::{
+    OwnerCallerWakes, OwnerCompletion, OwnerCompletionPort, OwnerTaskError, SessionOwnerPorts,
 };
 use collaboration_protocol::{EndpointRef, OperationId, SessionId, SessionRef};
-use provider_session_machines::session_owner::{
-    CreateOutcome, CreateProgress, OwnerAddress, OwnerEffect, OwnerEvent, PublicationBatch,
-    PublicationFact, RemoteEffect, SessionOwnerCommand, SessionOwnerRefusal, SessionOwnerRejection,
-    SessionPublication, SessionWireRequest,
-};
 use provider_session_machines::session_refusal_answers::effect_in_progress_answer;
+use provider_session_machines::{
+    EffectiveProviderSettings, ProviderSettingsCatalog,
+    harness_lifecycle::{
+        AcceptedRunSettings, ActivationRefusal, ActivationSetup, CreateAttempt,
+        CreatedSettingsFailure, CreatedSetupFact, CreationEffect, HarnessSessionId, Held,
+        InvalidRequestedSetting, OpenAttempt, OpenRequest, OpenSetup, OpeningFact, OpeningFailure,
+        PermissionModeReport, RequestedProviderSettings, ReservedReply,
+    },
+    session_owner::{
+        CreateOutcome, CreateProgress, CreatedSessionFacts, OwnerAddress, OwnerEffect, OwnerEvent,
+        PublicationBatch, RemoteEffect, SessionOwnerCommand, SessionOwnerRefusal,
+        SessionOwnerRejection, SessionWireRequest,
+    },
+};
+use session_event_model::ProviderSettingFailureReason;
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-type PreparedCreate = Result<CreatePreparation, ExternalProviderRuntimeError>;
+type PreparedCreate = Result<CreatePreparation, OwnerCreateFailure>;
 
 enum CreatePreparation {
-    Opened(OwnerOpenedSession, RequestedProviderSettings),
-    Configured(OwnerOpenedSession, Box<OwnerCreatedSetup>),
+    Opened,
+    Configured(Box<OwnerCreateReport>),
+}
+
+pub(crate) struct OwnerCreateReport {
+    pub(crate) session: HarnessSessionId,
+    pub(crate) effective_settings: EffectiveProviderSettings,
+    pub(crate) permission_mode: PermissionModeReport,
+    pub(crate) settings_failure: Option<CreatedSettingsFailure<ProviderSettingFailureReason>>,
+}
+
+pub(crate) enum OwnerCreateFailure {
+    TransportUnavailable,
+    Operation(String),
+    Opening(OpeningFailure),
+    Activation {
+        reason: ActivationRefusal,
+        session: HarnessSessionId,
+        permission_mode: PermissionModeReport,
+    },
+    ClosedAfterInvalidSetting(InvalidRequestedSetting),
 }
 
 struct ProvisionalCreate {
     door: std::sync::Weak<SessionOwnerDoor>,
     endpoint: EndpointRef,
     operation: OperationId,
-    input: Option<(OwnerSessionOpenSetup, RequestedProviderSettings)>,
+    input: Option<(OpenSetup, RequestedProviderSettings)>,
     work_roots: crate::provider_work_roots::ProviderWorkRoots,
+    bound: Option<BoundSessionHarness>,
     prepared: Arc<Mutex<Option<PreparedCreate>>>,
     rebase: Option<PublicationBatch>,
-    settings: Option<OwnerCreatedSetup>,
+    settings: Option<OwnerCreateReport>,
     adopted: Option<SessionOwnerExecution>,
-    response: Option<oneshot::Sender<Result<OwnerCreatedSetup, ExternalProviderRuntimeError>>>,
+    response: Option<oneshot::Sender<Result<OwnerCreateReport, OwnerCreateFailure>>>,
     stop: CancellationToken,
     configuring: Option<CancellationToken>,
 }
@@ -57,24 +85,23 @@ impl SessionOwnerDoor {
             .map(|owner| owner.handle.snapshots())
     }
 
-    pub(crate) async fn create(
+    pub(crate) async fn create_with_harness(
         self: &Arc<Self>,
         endpoint: EndpointRef,
         operation: OperationId,
-        setup: OwnerSessionOpenSetup,
+        setup: OpenSetup,
         requested: RequestedProviderSettings,
         work_roots: crate::provider_work_roots::ProviderWorkRoots,
-    ) -> Result<OwnerCreatedSetup, ExternalProviderRuntimeError> {
+    ) -> Result<OwnerCreateReport, OwnerCreateFailure> {
         if self.retired.is_cancelled() {
-            return Err(ExternalProviderRuntimeError::TransportFailure);
+            return Err(OwnerCreateFailure::TransportUnavailable);
         }
-        let correlation = Uuid::parse_str(operation.as_str()).map_err(|_| {
-            ExternalProviderRuntimeError::Operation("invalid create identity".to_owned())
-        })?;
+        let correlation = Uuid::parse_str(operation.as_str())
+            .map_err(|_| OwnerCreateFailure::Operation("invalid create identity".to_owned()))?;
         let launch = self
             .registry
             .begin_create(operation.clone(), self.connection)
-            .map_err(|error| ExternalProviderRuntimeError::Operation(error.to_string()))?;
+            .map_err(|error| OwnerCreateFailure::Operation(error.to_string()))?;
         let admitted = launch
             .owner
             .handle
@@ -84,7 +111,7 @@ impl SessionOwnerDoor {
                     operation: correlation,
                 },
             )
-            .map_err(|_| ExternalProviderRuntimeError::TransportFailure)?;
+            .map_err(|_| OwnerCreateFailure::TransportUnavailable)?;
         let (response, result) = oneshot::channel();
         let stop = self.shutdown.child_token();
         let recover_roots = work_roots.clone();
@@ -95,6 +122,7 @@ impl SessionOwnerDoor {
             operation,
             input: Some((setup, requested)),
             work_roots,
+            bound: Some(self.bind(&launch.owner, stop.clone())),
             prepared: Arc::default(),
             rebase: None,
             settings: None,
@@ -136,7 +164,7 @@ impl SessionOwnerDoor {
         });
         admitted
             .await
-            .map_err(|_| ExternalProviderRuntimeError::TransportFailure)?
+            .map_err(|_| OwnerCreateFailure::TransportUnavailable)?
             .map_err(|refusal| {
                 let answer = match refusal.rejection {
                     SessionOwnerRejection::Refused(SessionOwnerRefusal::EffectInProgress(
@@ -144,11 +172,11 @@ impl SessionOwnerDoor {
                     )) => effect_in_progress_answer(effect, &refusal.snapshot),
                     other => format!("the session owner refused create: {other:?}"),
                 };
-                ExternalProviderRuntimeError::Operation(answer)
+                OwnerCreateFailure::Operation(answer)
             })?;
         result
             .await
-            .map_err(|_| ExternalProviderRuntimeError::TransportFailure)?
+            .map_err(|_| OwnerCreateFailure::TransportUnavailable)?
     }
 }
 
@@ -162,61 +190,44 @@ impl ProvisionalCreate {
         let door = self.door.upgrade().ok_or(OwnerTaskError::ExecutorStopped)?;
         let (setup, requested) = self.input.take().ok_or(OwnerTaskError::ExecutorStopped)?;
         let completion = completions.reserve(address)?;
-        let receipt = match door.wire.create(address.incarnation, setup) {
-            Ok(receipt) => receipt,
-            Err(_) => {
-                return Ok(Some(OwnerEvent::Create(CreateProgress::Failed {
-                    operation,
-                    remote: RemoteEffect::None,
-                })));
-            }
-        };
-        let prepared = self.prepared.clone();
-        let stop = self.stop.clone();
-        #[cfg(test)]
-        let preparation_fixture = door.preparation_fixture.clone();
-        door.tasks.spawn(async move {
-            let acquired = tokio::select! {
-                result = receipt => result,
-                () = stop.cancelled() => return,
-            };
-            let result = match acquired {
-                Ok(Ok(session)) => Ok(CreatePreparation::Opened(session, requested)),
-                Ok(Err(error)) => Err(error),
-                Err(_) => Err(ExternalProviderRuntimeError::TransportFailure),
-            };
-            let event = match &result {
-                Ok(CreatePreparation::Opened(session, _)) => {
-                    OwnerEvent::Create(CreateProgress::ProviderId {
-                        operation,
-                        provider_id: session.provider_id(),
-                    })
-                }
-                Ok(CreatePreparation::Configured(_, _)) => return,
-                Err(error) => OwnerEvent::Create(CreateProgress::Failed {
-                    operation,
-                    remote: if error
-                        .coded_wire_failure()
-                        .is_some_and(|failure| failure.definitely_no_effect())
-                    {
-                        RemoteEffect::None
-                    } else {
-                        RemoteEffect::Unknown
-                    },
-                }),
-            };
+        let bound = self.bound.as_mut().ok_or(OwnerTaskError::ExecutorStopped)?;
+        let reply = Box::new(CreateOpeningReply {
+            operation,
+            completion,
+            prepared: self.prepared.clone(),
             #[cfg(test)]
-            if result.is_ok()
-                && let Some(release) = preparation_fixture.hold_create()
-            {
-                tokio::select! {
-                    released = release => { let _released = released; }
-                    () = stop.cancelled() => return,
-                }
-            }
-            save(&prepared, Some(result));
-            completion.send(event);
+            stop: self.stop.clone(),
+            #[cfg(test)]
+            tasks: door.tasks.clone(),
+            #[cfg(test)]
+            preparation_fixture: door.preparation_fixture.clone(),
         });
+        #[cfg(not(test))]
+        let _door = door;
+        let events = bound
+            .observations
+            .observed_at(LifecycleObservationScope::Creating, self.stop.clone());
+        let request = OpenRequest::Create {
+            owner: address,
+            attempt: CreateAttempt(operation),
+            setup,
+            requested,
+        };
+        if bound
+            .binding
+            .open(
+                request,
+                reply,
+                events,
+                Box::pin(self.stop.clone().cancelled_owned()),
+            )
+            .is_err()
+        {
+            return Ok(Some(OwnerEvent::Create(CreateProgress::Failed {
+                operation,
+                remote: RemoteEffect::None,
+            })));
+        }
         Ok(None)
     }
 
@@ -242,9 +253,17 @@ impl ProvisionalCreate {
             endpoint: self.endpoint.clone(),
             session_id: id,
         };
-        let Some(Ok(CreatePreparation::Opened(opened, requested))) = take(&self.prepared) else {
+        let Some(Ok(CreatePreparation::Opened)) = take(&self.prepared) else {
             return Err(OwnerTaskError::ExecutorStopped);
         };
+        if self.bound.as_ref().is_none_or(|bound| {
+            bound
+                .binding
+                .opening_is_held(OpenAttempt::Create(CreateAttempt(operation)))
+                != Held::Held
+        }) {
+            return Err(OwnerTaskError::ExecutorStopped);
+        }
         let mut sessions = door
             .sessions
             .lock()
@@ -263,12 +282,13 @@ impl ProvisionalCreate {
                 Err(_) => return Err(OwnerTaskError::ExecutorStopped),
             };
         let (owner, mut ports) = door
-            .prepare_adopted(
+            .prepare_adopted_with_binding(
                 target.clone(),
                 registered,
                 Some(lane),
                 None,
                 self.work_roots.clone(),
+                self.bound.take().ok_or(OwnerTaskError::ExecutorStopped)?,
             )
             .map_err(|_| OwnerTaskError::ExecutorStopped)?;
         if let Some(batch) = self.rebase.take()
@@ -281,60 +301,83 @@ impl ProvisionalCreate {
         {
             completions.reserve(address)?.send(result);
         }
+        let session = HarnessSessionId(String::from(target.session_id.clone()));
         sessions.insert(target, owner);
         self.adopted = Some(ports);
         drop(sessions);
-        self.configure(
-            door.as_ref(),
-            address,
-            operation,
-            opened,
-            requested,
-            completions,
-        )?;
+        self.configure(address, operation, session, completions)?;
         Ok(None)
     }
 
     fn configure(
         &mut self,
-        door: &SessionOwnerDoor,
         address: OwnerAddress,
         operation: Uuid,
-        mut opened: OwnerOpenedSession,
-        requested: RequestedProviderSettings,
+        session: HarnessSessionId,
         completions: &OwnerCompletionPort,
     ) -> Result<(), OwnerTaskError> {
-        let completion = completions.reserve(address)?;
-        let prepared_slot = self.prepared.clone();
-        let clock = door.clock.clone();
-        let stop = self.stop.child_token();
-        self.configuring = Some(stop.clone());
-        door.tasks.spawn(async move {
-            let result = tokio::select! {
-                biased;
-                () = stop.cancelled() => return,
-                result = opened.configure_create(&requested, clock.as_ref()) => result,
-            };
-            let (prepared, event) = match result {
-                Ok(settings) => {
-                    let facts = Box::new(settings.owner_facts(&opened));
-                    (
-                        Ok(CreatePreparation::Configured(opened, Box::new(settings))),
-                        CreateProgress::Adopted { operation, facts },
-                    )
+        let prepared = self.prepared.clone();
+        let completion = completions.reserve(address)?.map_if(move |fact| {
+            let (report, settings_failure) = match fact {
+                CreatedSetupFact::Configured { attempt, report } if attempt.0 == operation => {
+                    (report, None)
                 }
-                Err(error) => (
-                    Err(error),
-                    CreateProgress::Failed {
+                CreatedSetupFact::RemainsCreated {
+                    attempt,
+                    report,
+                    failure,
+                } if attempt.0 == operation => (report, Some(failure)),
+                CreatedSetupFact::ClosedAfterInvalidSetting { attempt, failure }
+                    if attempt.0 == operation =>
+                {
+                    save(
+                        &prepared,
+                        Some(Err(OwnerCreateFailure::ClosedAfterInvalidSetting(failure))),
+                    );
+                    return Some(OwnerEvent::Create(CreateProgress::Failed {
                         operation,
                         remote: RemoteEffect::Applied,
-                    },
-                ),
+                    }));
+                }
+                _ => return None,
             };
-            save(&prepared_slot, Some(prepared));
-            completion.send(OwnerEvent::Create(event));
+            let facts = Box::new(CreatedSessionFacts {
+                capabilities: report.setup.capabilities,
+                settings: report.setup.settings,
+                observed: report.setup.observed,
+                catalogue: Arc::new(ProviderSettingsCatalog::from_record(report.catalogue)),
+                router_auto_requested: report.router_auto_requested,
+                mode_reason: report.permission_mode.reason,
+                keep_fast_off: report.keep_fast_off,
+                failed_setting: report.failed_setting,
+            });
+            save(
+                &prepared,
+                Some(Ok(CreatePreparation::Configured(Box::new(
+                    OwnerCreateReport {
+                        session,
+                        effective_settings: report.effective_settings,
+                        permission_mode: report.permission_mode,
+                        settings_failure,
+                    },
+                )))),
+            );
+            Some(OwnerEvent::Create(CreateProgress::Configured {
+                operation,
+                facts,
+            }))
         });
-        Ok(())
+        let stop = self.stop.child_token();
+        self.configuring = Some(stop.clone());
+        self.adopted
+            .as_ref()
+            .ok_or(OwnerTaskError::ExecutorStopped)?
+            .configure_created(
+                CreateAttempt(operation),
+                completion,
+                Box::pin(stop.cancelled_owned()),
+            )
+            .map_err(|_| OwnerTaskError::ExecutorStopped)
     }
 
     fn reply(
@@ -350,13 +393,13 @@ impl ProvisionalCreate {
             CreateOutcome::Adopted(_) => self
                 .settings
                 .take()
-                .ok_or(ExternalProviderRuntimeError::TransportFailure),
-            CreateOutcome::SessionIdInUse => Err(ExternalProviderRuntimeError::Operation(
+                .ok_or(OwnerCreateFailure::TransportUnavailable),
+            CreateOutcome::SessionIdInUse => Err(OwnerCreateFailure::Operation(
                 "this session id is already in use".to_owned(),
             )),
             CreateOutcome::Failed(_) => match take(&self.prepared) {
                 Some(Err(error)) => Err(error),
-                _ => Err(ExternalProviderRuntimeError::TransportFailure),
+                _ => Err(OwnerCreateFailure::TransportUnavailable),
             },
         };
         if let Some(response) = self.response.take() {
@@ -411,28 +454,47 @@ impl SessionOwnerPorts for ProvisionalCreate {
                 self.rebase = Some(batch);
                 Ok(None)
             }
-            OwnerEffect::Publish(batch) => {
+            OwnerEffect::ActivateCreated {
+                operation,
+                generation,
+                facts,
+            } => {
                 let ports = self
                     .adopted
                     .as_mut()
                     .ok_or(OwnerTaskError::ExecutorStopped)?;
-                if matches!(&batch, PublicationBatch::Commit { facts, .. } if facts.iter().any(|fact| {
-                    matches!(fact, PublicationFact::Live(SessionPublication::Created(_)))
-                })) {
-                    let Some(Ok(CreatePreparation::Configured(opened, settings))) =
-                        take(&self.prepared)
-                    else {
-                        return Err(OwnerTaskError::ExecutorStopped);
-                    };
-                    ports.prepare_created(opened);
-                    self.settings = Some(*settings);
-                }
-                ports.execute(
-                    address,
-                    OwnerEffect::Publish(batch),
-                    completions,
-                    caller_wakes,
-                )
+                let Some(Ok(CreatePreparation::Configured(settings))) = take(&self.prepared) else {
+                    return Err(OwnerTaskError::ExecutorStopped);
+                };
+                let setup = ActivationSetup::Created {
+                    attempt: CreateAttempt(operation),
+                    generation,
+                };
+                let accepted = AcceptedRunSettings {
+                    catalogue: facts.catalogue.as_ref().clone().into_record(),
+                    router_auto_requested: facts.router_auto_requested,
+                };
+                let progress = match ports.activate(setup, accepted) {
+                    Ok(()) => {
+                        self.settings = Some(*settings);
+                        CreateProgress::Activated { operation, facts }
+                    }
+                    Err(reason) => {
+                        save(
+                            &self.prepared,
+                            Some(Err(OwnerCreateFailure::Activation {
+                                reason,
+                                session: settings.session,
+                                permission_mode: settings.permission_mode,
+                            })),
+                        );
+                        CreateProgress::Failed {
+                            operation,
+                            remote: RemoteEffect::Applied,
+                        }
+                    }
+                };
+                Ok(Some(OwnerEvent::Create(progress)))
             }
             other => self
                 .adopted
@@ -440,6 +502,72 @@ impl SessionOwnerPorts for ProvisionalCreate {
                 .ok_or(OwnerTaskError::ExecutorStopped)?
                 .execute(address, other, completions, caller_wakes),
         }
+    }
+}
+
+struct CreateOpeningReply {
+    operation: Uuid,
+    completion: OwnerCompletion,
+    prepared: Arc<Mutex<Option<PreparedCreate>>>,
+    #[cfg(test)]
+    stop: CancellationToken,
+    #[cfg(test)]
+    tasks: tokio_util::task::TaskTracker,
+    #[cfg(test)]
+    preparation_fixture: Arc<crate::session_owner_preparation_fixture::PreparationFixture>,
+}
+
+impl ReservedReply<OpeningFact> for CreateOpeningReply {
+    fn send(self: Box<Self>, reply: OpeningFact) {
+        let operation = self.operation;
+        let (prepared, progress) = match reply {
+            OpeningFact::Created { attempt, session } if attempt.0 == operation => (
+                Ok(CreatePreparation::Opened),
+                CreateProgress::ProviderId {
+                    operation,
+                    provider_id: session.0,
+                },
+            ),
+            OpeningFact::CreateFailed {
+                attempt,
+                remote,
+                failure,
+            } if attempt.0 == operation => (
+                Err(OwnerCreateFailure::Opening(failure)),
+                CreateProgress::Failed {
+                    operation,
+                    remote: match remote {
+                        CreationEffect::None => RemoteEffect::None,
+                        CreationEffect::Applied => RemoteEffect::Applied,
+                        CreationEffect::Unknown => RemoteEffect::Unknown,
+                    },
+                },
+            ),
+            _ => return,
+        };
+        #[cfg(test)]
+        if prepared.is_ok()
+            && let Some(release) = self.preparation_fixture.hold_create()
+        {
+            let Self {
+                stop,
+                tasks,
+                completion,
+                prepared: slot,
+                ..
+            } = *self;
+            tasks.spawn(async move {
+                tokio::select! {
+                    _released = release => {}
+                    () = stop.cancelled() => return,
+                }
+                save(&slot, Some(prepared));
+                completion.send(OwnerEvent::Create(progress));
+            });
+            return;
+        }
+        save(&self.prepared, Some(prepared));
+        self.completion.send(OwnerEvent::Create(progress));
     }
 }
 

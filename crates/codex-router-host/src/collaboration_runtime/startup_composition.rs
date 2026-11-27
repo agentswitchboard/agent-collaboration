@@ -386,7 +386,7 @@ impl CollaborationRuntime {
                 create_private_socket_directory(&socket_directory)?;
             }
             for description in provider_face_endpoints {
-                if supervisor.runtime_for(&description.endpoint).is_none() {
+                if !supervisor.has_binding(&description.endpoint) {
                     continue;
                 }
                 let endpoint = message_board::SessionEndpointRef {

@@ -1,7 +1,7 @@
 //! Steer through the fixture's actual owner and ACP port.
 
-use super::{FixtureClient, FixtureInput, FixtureResult, fixture_error, lock};
-use crate::{InteractionPort, ProviderSteeringOutcome, ProviderTurnInput};
+use super::{FixtureInput, FixtureResult, PolicyFixtureClient, fixture_error, lock};
+use crate::{AcpRequestPayloads, ProviderSteeringOutcome, ProviderTurnInput};
 use provider_session_machines::{
     session_owner::{
         OwnerInput, RemoteEffect, SessionOwnerCommand, SessionOwnerReply, SteerOrigin,
@@ -11,7 +11,7 @@ use provider_session_machines::{
 use session_event_model::InputId;
 use uuid::Uuid;
 
-impl<P: InteractionPort> FixtureClient<P> {
+impl<P: AcpRequestPayloads> PolicyFixtureClient<P> {
     pub async fn steer_contents_with_input(
         &self,
         id: String,
@@ -67,7 +67,9 @@ impl<P: InteractionPort> FixtureClient<P> {
                 remote: RemoteEffect::Applied,
                 ..
             } => ProviderSteeringOutcome::Injected {
-                running_operation_id: joined.as_ref().map(P::operation_id),
+                running_operation_id: joined
+                    .as_ref()
+                    .map(|context| self.connection.policy_operation_id(context)),
                 joined_turn: joined,
             },
             SessionOwnerReply::SteerStarted { .. } | SessionOwnerReply::PromptCompleted { .. } => {

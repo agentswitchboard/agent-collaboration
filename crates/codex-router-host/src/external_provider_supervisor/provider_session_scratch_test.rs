@@ -1,43 +1,8 @@
 use super::prepare_provider_session_scratch;
-use std::os::unix::fs::PermissionsExt;
-
-#[tokio::test]
-async fn each_create_gets_its_own_private_stamped_folder() {
-    let root = tempfile::tempdir().unwrap();
-    let scratch_root = root.path().join("scratch");
-    let clock = crate::external_provider_runtime::acp_scripted_fixture::manual_clock();
-    let first = prepare_provider_session_scratch(Some(&scratch_root), clock.as_ref())
-        .await
-        .unwrap()
-        .unwrap();
-    let second = prepare_provider_session_scratch(Some(&scratch_root), clock.as_ref())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_ne!(first, second);
-    for folder in [&first, &second] {
-        assert_eq!(folder.parent(), Some(scratch_root.as_path()));
-        let name = folder.file_name().unwrap().to_str().unwrap();
-        let id = name.strip_prefix("session-").unwrap();
-        assert_eq!(uuid::Uuid::parse_str(id).unwrap().get_version_num(), 7);
-        let mode = std::fs::metadata(folder).unwrap().permissions().mode();
-        assert_eq!(mode & 0o077, 0, "owner-private");
-        assert!(
-            folder
-                .join(codex_native_integration::SCRATCH_LAST_USED_FILE_NAME)
-                .is_file(),
-            "stamped as used, so the sweep keeps it"
-        );
-    }
-}
 
 #[tokio::test]
 async fn a_supervisor_without_a_scratch_root_grants_no_folder() {
-    let clock = crate::external_provider_runtime::acp_scripted_fixture::manual_clock();
-    assert_eq!(
-        prepare_provider_session_scratch(None, clock.as_ref()).await,
-        Ok(None)
-    );
+    assert_eq!(prepare_provider_session_scratch(None).await, Ok(None));
 }
 
 /// Oracle: R4 as corrected in r2 — a Claude or Cursor session created through
@@ -45,9 +10,7 @@ async fn a_supervisor_without_a_scratch_root_grants_no_folder() {
 /// Router's scratch root, and nothing else.
 #[tokio::test]
 async fn supervisor_create_grants_the_agent_a_fresh_session_folder() {
-    use crate::external_provider_supervisor::{
-        ExternalProviderBinding, ExternalProviderSupervisor,
-    };
+    use crate::external_provider_supervisor::ExternalProviderSupervisor;
     use collaboration_contracts::ProviderConversationBackend;
     use collaboration_protocol::{
         ConversationCreateRequest, ConversationOperationSettlement,
@@ -84,13 +47,13 @@ async fn supervisor_create_grants_the_agent_a_fresh_session_folder() {
     let binding = crate::external_provider_supervisor::tests::binding();
     let requester = crate::external_provider_supervisor::tests::requester();
     let backend = ExternalProviderSupervisor::new_with_hub(
-        vec![ExternalProviderBinding {
-            identity: binding.clone(),
-            runtime,
-        }],
+        vec![runtime.into_binding(binding.clone())],
         std::sync::Arc::new(tokio::sync::Mutex::new(store)),
         None,
-        Some(scratch_root.clone()),
+        Some(crate::provider_session_scratch::provider_scratch_preparer(
+            scratch_root.clone(),
+            clock.clone(),
+        )),
         clock,
     )
     .unwrap();

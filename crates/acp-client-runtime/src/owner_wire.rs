@@ -1,42 +1,71 @@
 //! ACP frames submitted through the session owner's ordered writer.
 
+mod owner_opening_offers;
+pub(crate) use owner_opening_offers::RestoreOffer;
+mod owner_output;
+pub(crate) use owner_output::OwnerAcpOutput;
+#[cfg(any(test, feature = "test-observation"))]
+mod owner_opening_test_control;
+#[cfg(any(test, feature = "test-observation"))]
+pub use crate::owner_opening_disposal::{OpeningDisposalKind, OpeningDisposalProbe};
+#[cfg(feature = "test-observation")]
+pub use crate::provider_transport_diagnostics::TransportEnd;
+#[cfg(feature = "test-observation")]
+pub use owner_opening_test_control::{
+    OpeningAsyncPause, OrderedWriterPause, ProviderConnectionEnd, WriterExitObservation,
+};
+#[cfg(any(test, feature = "test-observation"))]
+pub use owner_opening_test_control::{OpeningPause, OpeningPausePoint, OpeningReaderEnd};
+pub(crate) mod owner_restore_update_router;
 pub mod owner_session_open;
 pub mod owner_session_setting;
 pub mod owner_session_stream;
 mod owner_work_offers;
+mod prompt_terminal;
+pub(crate) use prompt_terminal::PromptTerminalReceiver;
+#[cfg(feature = "test-observation")]
+pub use prompt_terminal::TerminalAdmission;
+use prompt_terminal::{PromptTerminalSender, prompt_terminal_channel};
+mod writer_reply_signals;
 
 use crate::acp_transport::{
-    AcpTransport, CallbackKind, CallbackResolution, OrderedOutput, SlotEvidence, TransportRefusal,
-    TransportRun,
+    AcpTransport, CallbackKind, CallbackResolution, SlotEvidence, TransportRefusal, TransportRun,
 };
 use crate::owner_session_open::{
-    OpenFrame, OpenRequest, OwnerOpenConfiguration, OwnerSessionOpenReceipt, OwnerSessionOpenSetup,
+    OpenFrame, OpenReply, OpenRequest, OwnerSessionOpenReceipt, OwnerSessionOpenSetup,
 };
 use crate::owner_session_setting::{CorrelatedSetting, OwnerSettingWirePlan, SettingCorrelation};
-use crate::provider_prompt_result_codec::decode_prompt_result;
+#[cfg(feature = "test-support")]
 use crate::session_owner_task::OwnerCompletion;
-use agent_client_protocol::schema::v1::{CancelNotification, CloseSessionRequest, ErrorCode};
-use agent_client_protocol::{Agent, ConnectionTo, Error, JsonRpcMessage as _, UntypedMessage};
+use agent_client_protocol::schema::v1::CancelNotification;
+use agent_client_protocol::{Error, UntypedMessage};
+#[cfg(any(test, feature = "test-support"))]
+use agent_client_protocol::{JsonRpcMessage as _, schema::v1::CloseSessionRequest};
 use provider_session_machines::SessionGeneration;
+use provider_session_machines::harness_lifecycle::{CloseFact, LifecycleReply, SettingFact};
+#[cfg(feature = "test-support")]
+use provider_session_machines::harness_lifecycle::{
+    owner_event_for_close, owner_event_for_restore_setting,
+};
 use provider_session_machines::session_lifecycle_machine::{CloseAttempt, LoadAttempt, RestoreVia};
 use provider_session_machines::session_owner::{
-    DispatchAuthorization, DispatchResult, OwnerEvent, OwnerIncarnation, OwnerSetting,
-    PromptCompletion, RunAttempt, SessionWireResult, TurnMembership, WireOutcome,
+    DispatchAuthorization, DispatchResult, OwnerIncarnation, OwnerSetting, RunAttempt,
+    TurnMembership,
 };
 use provider_session_machines::session_turn_machine::TurnId;
 use provider_session_machines::tool_ownership::{ToolObservation, ToolOwnershipEffect};
+use session_event_model::ProviderAuthStatus;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     num::NonZeroUsize,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
 };
 use switchboard_harness_contracts::{
-    HandOverRefusal, ReservedWorkReply, SteerIdlePolicy, WorkReply,
+    HandOverRefusal, HarnessOwnerEvents, InputId, OwnerEvidence, ReservedWorkReply, SteerIdlePolicy,
 };
+#[cfg(test)]
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
-use tokio_util::{sync::CancellationToken, task::TaskTracker};
-use uuid::Uuid;
 
 enum AcpFrame {
     Request {
@@ -47,6 +76,13 @@ enum AcpFrame {
     Open(OpenFrame),
     #[cfg(feature = "test-observation")]
     FixtureDispatchFence(FixtureDispatchPoint, oneshot::Sender<Result<(), Error>>),
+    #[cfg(feature = "test-observation")]
+    FixtureStopWriter,
+    #[cfg(feature = "test-observation")]
+    FixturePauseWriter {
+        before_dequeue: owner_opening_test_control::AsyncBarrier,
+        during_drain: owner_opening_test_control::AsyncBarrier,
+    },
 }
 
 #[cfg(feature = "test-observation")]
@@ -65,7 +101,7 @@ enum ResponseKind {
         authorization: DispatchAuthorization,
         turn: TurnId,
         compact: bool,
-        reader: Option<mpsc::Sender<PromptTerminal>>,
+        reader: Option<PromptTerminalSender>,
         completion: ReservedWorkReply,
     },
     Steer {
@@ -75,7 +111,7 @@ enum ResponseKind {
     },
     Close {
         run: RunAttempt<CloseAttempt>,
-        completion: OwnerCompletion,
+        completion: LifecycleReply<CloseFact>,
     },
     Setting(Box<CorrelatedSetting>),
 }
@@ -88,81 +124,22 @@ pub enum OwnerWireRefusal {
     Encoding,
 }
 
+pub(crate) type AcpOwnerEvents = dyn HarnessOwnerEvents<ProviderAuthStatus>;
+
 pub struct OwnerAcpWire {
     transport: AcpTransport<AcpFrame>,
-    readers: Mutex<BTreeMap<TransportRun, mpsc::Sender<PromptTerminal>>>,
+    route_edits: Mutex<()>,
+    #[cfg(any(test, feature = "test-observation"))]
+    opening_test: owner_opening_test_control::OpeningTestControls,
+    readers: Mutex<BTreeMap<TransportRun, PromptTerminalSender>>,
     restore_updates: Arc<crate::owner_restore_updates::RestoreUpdates>,
     cursor_plans: Arc<crate::provider_cursor_plan_items::CursorPlanItems>,
     behavior: Arc<dyn crate::ProviderBehavior>,
+    owner_events: Mutex<BTreeMap<OwnerIncarnation, Weak<AcpOwnerEvents>>>,
     #[cfg(feature = "test-observation")]
     fixture_dispatch: Mutex<FixtureDispatchObservation>,
-}
-
-pub(crate) struct PromptTerminal {
-    pub(crate) turn: TurnId,
-    pub(crate) compact: bool,
-    authorization: DispatchAuthorization,
-    reply: Option<Result<serde_json::Value, Error>>,
-    completion: ReservedWorkReply,
-}
-
-impl PromptTerminal {
-    fn route(self, reader: Option<mpsc::Sender<Self>>, connection_lost: bool) {
-        if connection_lost {
-            self.completion.send(WorkReply::ConnectionLost);
-        } else if let Some(reader) = reader {
-            if let Err(undelivered) = reader.try_send(self) {
-                undelivered.into_inner().finish(String::new(), None);
-            }
-        } else {
-            self.finish(String::new(), None);
-        }
-    }
-
-    pub(crate) fn stop_reason(&self) -> Option<session_event_model::StopReason> {
-        decode_prompt_result(self.reply.as_ref()?.as_ref().ok()?).ok()
-    }
-
-    pub(crate) fn finish(
-        self,
-        response: String,
-        local_cause: Option<session_event_model::LocalCause>,
-    ) {
-        if let Some(Err(error)) = &self.reply
-            && let Some(failure) =
-                crate::provider_acp_error_mapping::acp_operation_error(error.clone())
-                    .coded_wire_failure()
-        {
-            self.completion
-                .send(WorkReply::Dispatch(DispatchResult::PromptFailed {
-                    authorization: self.authorization,
-                    failure,
-                }));
-            return;
-        }
-        let outcome = match self.reply {
-            Some(Ok(reply)) => {
-                decode_prompt_result(&reply).map_or(WireOutcome::Unknown, |stop_reason| {
-                    WireOutcome::Confirmed(PromptCompletion {
-                        stop_reason,
-                        local_cause,
-                        response,
-                    })
-                })
-            }
-            _ => WireOutcome::Unknown,
-        };
-        self.completion
-            .send(WorkReply::Dispatch(DispatchResult::PromptFinished {
-                authorization: self.authorization,
-                outcome,
-            }));
-    }
-}
-
-pub(crate) struct OwnerAcpOutput {
-    output: mpsc::Receiver<OrderedOutput<AcpFrame>>,
-    restore_updates: Arc<crate::owner_restore_updates::RestoreUpdates>,
+    #[cfg(feature = "test-observation")]
+    fixture_created_handoff: Mutex<Option<crate::owner_session_open::CreatedHandoffFault>>,
 }
 
 impl OwnerAcpWire {
@@ -175,6 +152,14 @@ impl OwnerAcpWire {
         self.transport.handover_test.arm(point, input)
     }
 
+    #[cfg(all(debug_assertions, feature = "test-observation"))]
+    pub fn try_recovered_handover_for_test(
+        &self,
+        authorization: &DispatchAuthorization,
+    ) -> Result<DispatchResult, HandOverRefusal> {
+        self.hand_over_work(authorization, || true)
+    }
+
     pub(crate) fn new(
         capacity: NonZeroUsize,
         behavior: Arc<dyn crate::ProviderBehavior>,
@@ -184,18 +169,46 @@ impl OwnerAcpWire {
         (
             Self {
                 transport,
+                route_edits: Mutex::default(),
+                #[cfg(any(test, feature = "test-observation"))]
+                opening_test: Default::default(),
                 readers: Mutex::default(),
                 restore_updates: restore_updates.clone(),
                 cursor_plans: Arc::default(),
                 behavior,
+                owner_events: Mutex::default(),
                 #[cfg(feature = "test-observation")]
                 fixture_dispatch: Mutex::default(),
+                #[cfg(feature = "test-observation")]
+                fixture_created_handoff: Mutex::default(),
             },
             OwnerAcpOutput {
                 output,
                 restore_updates,
+                #[cfg(feature = "test-observation")]
+                drain_pause: None,
             },
         )
+    }
+
+    /// Close the next created SDK reader's exact activation channel on demand.
+    #[cfg(feature = "test-observation")]
+    pub fn close_created_handoff_for_test(&self) -> (oneshot::Sender<()>, oneshot::Receiver<()>) {
+        let (close, close_requested) = oneshot::channel();
+        let (closed, closure_observed) = oneshot::channel();
+        let previous = self
+            .fixture_created_handoff
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .replace(crate::owner_session_open::CreatedHandoffFault {
+                close_requested,
+                closed,
+            });
+        assert!(
+            previous.is_none(),
+            "the earlier create handoff fault has not been used"
+        );
+        (close, closure_observed)
     }
 
     /// Arms a one-shot wire fence for an actual owner dispatch attempt.
@@ -228,6 +241,10 @@ impl OwnerAcpWire {
     }
 
     pub fn open_route(&self, run: TransportRun, session: String) {
+        let _route_edit = self
+            .route_edits
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.transport.open_route(run, session);
     }
 
@@ -260,22 +277,51 @@ impl OwnerAcpWire {
         via: RestoreVia,
         setup: OwnerSessionOpenSetup,
     ) -> Result<OwnerSessionOpenReceipt, TransportRefusal> {
-        let updates = self.restore_updates.open(run, session.clone());
+        self.restore_opening(run, attempt, session, via, setup)
+            .map(|(_instance, receipt)| receipt)
+    }
+
+    pub(crate) fn restore_opening(
+        &self,
+        run: TransportRun,
+        attempt: LoadAttempt,
+        session: String,
+        via: RestoreVia,
+        setup: OwnerSessionOpenSetup,
+    ) -> Result<
+        (
+            crate::owner_opening_instance::OpeningInstance,
+            OwnerSessionOpenReceipt,
+        ),
+        TransportRefusal,
+    > {
+        let _edit = self
+            .route_edits
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let tap = crate::owner_opening_instance::OpeningInstance::default();
+        if !self.transport.attach_restore_registration(run, None, &tap) {
+            return Err(TransportRefusal::RouteUnavailable);
+        }
+        let updates = self
+            .restore_updates
+            .open_instance(run, session.clone(), &tap);
         let reply = self.enqueue_open(
             run,
             OpenRequest::Restore {
                 provider_id: session,
                 attempt,
+                tap: tap.clone(),
                 updates,
                 via,
                 setup,
             },
         );
         if reply.is_err() {
-            self.restore_updates.retire(run);
-            self.restore_updates.reply_settled(run);
+            self.restore_updates.discard_unoffered(run, &tap);
+            self.transport.clear_restore_registration(run, &tap);
         }
-        reply
+        reply.map(|receipt| (tap, receipt))
     }
 
     fn enqueue_open(
@@ -283,14 +329,43 @@ impl OwnerAcpWire {
         run: TransportRun,
         request: OpenRequest,
     ) -> Result<OwnerSessionOpenReceipt, TransportRefusal> {
-        let (respond, result) = oneshot::channel();
-        self.transport
-            .enqueue_control(run, AcpFrame::Open(OpenFrame { request, respond }))?;
+        let (frame, result) = self.prepare_open(request, OpenReply::Direct);
+        self.transport.enqueue_control(run, frame)?;
         Ok(result)
     }
 
-    pub fn activate_route(&self, run: TransportRun) {
-        self.transport.activate_route(run);
+    fn prepare_open<Outcome>(
+        &self,
+        request: OpenRequest,
+        reply: impl FnOnce(oneshot::Sender<Outcome>) -> OpenReply,
+    ) -> (AcpFrame, oneshot::Receiver<Outcome>) {
+        let (respond, result) = oneshot::channel();
+        #[cfg(feature = "test-observation")]
+        let created_handoff_fault = if matches!(&request, OpenRequest::New(_)) {
+            self.fixture_created_handoff
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+        } else {
+            None
+        };
+        (
+            AcpFrame::Open(OpenFrame {
+                request,
+                respond: reply(respond),
+                #[cfg(feature = "test-observation")]
+                created_handoff_fault,
+            }),
+            result,
+        )
+    }
+
+    pub fn activate_route(&self, run: TransportRun) -> bool {
+        self.transport.activate_route(run)
+    }
+
+    pub(crate) fn writer_has_stopped(&self) -> bool {
+        self.transport.writer_has_stopped()
     }
 
     #[must_use]
@@ -307,6 +382,11 @@ impl OwnerAcpWire {
     }
 
     pub fn apply_membership(&self, owner: OwnerIncarnation, change: TurnMembership) {
+        let _route_edit = matches!(change, TurnMembership::Retire(_)).then(|| {
+            self.route_edits
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        });
         self.transport.apply_membership(owner, change);
         if let TurnMembership::End { run, turn } = change {
             self.cursor_plans.forget_turn(
@@ -323,12 +403,16 @@ impl OwnerAcpWire {
                 generation,
             };
             self.restore_updates.retire(run);
-            self.cursor_plans.forget_run(run);
-            self.readers
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .remove(&run);
+            self.clear_run_resources(run);
         }
+    }
+
+    fn clear_run_resources(&self, run: TransportRun) {
+        self.cursor_plans.forget_run(run);
+        self.readers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&run);
     }
 
     pub(crate) fn cursor_plan_items(
@@ -367,8 +451,10 @@ impl OwnerAcpWire {
         )
     }
 
-    pub(crate) fn register_reader(&self, run: TransportRun) -> mpsc::Receiver<PromptTerminal> {
-        let (send, receive) = mpsc::channel(1);
+    pub(crate) fn register_reader(&self, run: TransportRun) -> PromptTerminalReceiver {
+        let (send, receive) = prompt_terminal_channel();
+        #[cfg(feature = "test-observation")]
+        let send = send.with_observer(self.terminal_admission_observer_for_test());
         self.readers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -413,27 +499,57 @@ impl OwnerAcpWire {
         self.transport.route_for_session(session)
     }
 
-    pub(crate) fn forward_restored_update(
-        &self,
-        session: &str,
-        message: agent_client_protocol::Dispatch,
-    ) -> Option<agent_client_protocol::Dispatch> {
-        self.restore_updates
-            .forward(session, self.route_for_session(session), message)
-    }
-
     pub(crate) fn session_for_route(&self, run: TransportRun) -> Option<String> {
         self.transport.session_for_route(run)
     }
 
-    pub(crate) fn routed_sessions(&self) -> Vec<String> {
-        self.transport.routed_sessions()
+    pub(crate) fn register_owner_events(
+        &self,
+        owner: OwnerIncarnation,
+        events: &Arc<AcpOwnerEvents>,
+    ) {
+        self.owner_events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(owner, Arc::downgrade(events));
+    }
+
+    pub(crate) fn unregister_owner_events(
+        &self,
+        owner: OwnerIncarnation,
+        events: &Arc<AcpOwnerEvents>,
+    ) {
+        let mut registered = self
+            .owner_events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if registered
+            .get(&owner)
+            .is_some_and(|registered| registered.ptr_eq(&Arc::downgrade(events)))
+        {
+            registered.remove(&owner);
+        }
+    }
+
+    pub(crate) fn auth_observation_targets(&self) -> (Vec<Arc<AcpOwnerEvents>>, Vec<String>) {
+        let routes = self.transport.routed_owner_sessions();
+        let registered = self
+            .owner_events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let owner_ports = registered.values().filter_map(Weak::upgrade).collect();
+        let unbound_sessions = routes
+            .into_iter()
+            .filter_map(|(owner, session)| (!registered.contains_key(&owner)).then_some(session))
+            .collect();
+        (owner_ports, unbound_sessions)
     }
 
     pub(crate) fn allows_explicit_tool_request(&self, session: &str, tool: &str) -> bool {
         self.transport.allows_explicit_tool_request(session, tool)
     }
 
+    #[cfg(feature = "test-support")]
     pub fn reapply_setting(
         &self,
         owner: OwnerIncarnation,
@@ -442,33 +558,78 @@ impl OwnerAcpWire {
         plan: OwnerSettingWirePlan,
         completion: OwnerCompletion,
     ) -> Result<(), TransportRefusal> {
-        let correlation = match setting.kind {
-            provider_session_machines::ProviderSettingKind::Fast => {
-                SettingCorrelation::RestoreFastOff {
-                    run,
-                    setting,
-                    completion,
-                }
-            }
-            _ => SettingCorrelation::RestoreMode {
-                run,
-                setting,
-                completion,
-            },
-        };
-        let (message, setting) = plan.correlate(correlation);
+        self.reapply_lifecycle_setting(
+            owner,
+            run,
+            setting,
+            plan,
+            completion.map(owner_event_for_restore_setting),
+        )
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(crate) fn reapply_lifecycle_setting(
+        &self,
+        owner: OwnerIncarnation,
+        run: RunAttempt<LoadAttempt>,
+        setting: OwnerSetting,
+        plan: OwnerSettingWirePlan,
+        completion: LifecycleReply<SettingFact>,
+    ) -> Result<(), TransportRefusal> {
         self.transport.enqueue_request(
             TransportRun {
                 incarnation: owner,
                 generation: run.generation,
             },
-            AcpFrame::Request {
-                message,
-                correlation: ResponseKind::Setting(Box::new(setting)),
-            },
+            restore_setting_frame(run, setting, plan, completion),
         )
     }
 
+    pub(crate) fn reapply_exact_setting(
+        &self,
+        route: &crate::acp_transport::LifecycleRoute,
+        run: RunAttempt<LoadAttempt>,
+        setting: OwnerSetting,
+        plan: OwnerSettingWirePlan,
+        claim: &crate::owner_opening_instance::OpeningOffer,
+        completion: LifecycleReply<SettingFact>,
+    ) -> Result<(), TransportRefusal> {
+        self.transport.enqueue_lifecycle_request(
+            route,
+            claim,
+            restore_setting_frame(run, setting, plan, completion),
+        )
+    }
+}
+
+fn restore_setting_frame(
+    run: RunAttempt<LoadAttempt>,
+    setting: OwnerSetting,
+    plan: OwnerSettingWirePlan,
+    completion: LifecycleReply<SettingFact>,
+) -> AcpFrame {
+    let correlation = match setting.kind {
+        provider_session_machines::ProviderSettingKind::Fast => {
+            SettingCorrelation::RestoreFastOff {
+                run,
+                setting,
+                completion,
+            }
+        }
+        _ => SettingCorrelation::RestoreMode {
+            run,
+            setting,
+            completion,
+        },
+    };
+    let (message, setting) = plan.correlate(correlation);
+    AcpFrame::Request {
+        message,
+        correlation: ResponseKind::Setting(Box::new(setting)),
+    }
+}
+
+impl OwnerAcpWire {
     pub(crate) fn take(
         &self,
         authorization: &DispatchAuthorization,
@@ -515,20 +676,33 @@ impl OwnerAcpWire {
     pub fn abandon_incarnation(
         &self,
         owner: OwnerIncarnation,
-    ) -> Vec<(DispatchAuthorization, SlotEvidence)> {
-        let evidence = self.revoke_incarnation(owner);
+        asked_inputs: &BTreeSet<InputId>,
+    ) -> OwnerEvidence {
+        let evidence = self.transport.give_up_owner(owner, asked_inputs);
         for generation in self.transport.runs_of(owner) {
             self.apply_membership(owner, TurnMembership::Retire(generation));
         }
         evidence
     }
 
+    #[cfg(feature = "test-support")]
     pub fn enqueue_close(
         &self,
         owner: OwnerIncarnation,
         run: RunAttempt<CloseAttempt>,
         session: String,
         completion: OwnerCompletion,
+    ) -> Result<(), OwnerWireRefusal> {
+        self.enqueue_lifecycle_close(owner, run, session, completion.map(owner_event_for_close))
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn enqueue_lifecycle_close(
+        &self,
+        owner: OwnerIncarnation,
+        run: RunAttempt<CloseAttempt>,
+        session: String,
+        completion: LifecycleReply<CloseFact>,
     ) -> Result<(), OwnerWireRefusal> {
         let frame = AcpFrame::Request {
             message: CloseSessionRequest::new(session)
@@ -547,220 +721,9 @@ impl OwnerAcpWire {
     }
 }
 
-impl OwnerAcpOutput {
-    pub(crate) async fn run(
-        mut self,
-        connection: ConnectionTo<Agent>,
-        configuration: OwnerOpenConfiguration,
-        shutdown: CancellationToken,
-        input_ended: CancellationToken,
-    ) {
-        let shutdown = shutdown.child_token();
-        let replies = TaskTracker::new();
-        loop {
-            let next = tokio::select! {
-                biased;
-                () = shutdown.cancelled() => break,
-                next = self.output.recv() => next,
-            };
-            let Some(OrderedOutput { frame, run }) = next else {
-                break;
-            };
-            match frame {
-                AcpFrame::Open(open) => open.start(
-                    run,
-                    &connection,
-                    &configuration,
-                    &replies,
-                    shutdown.clone(),
-                    self.restore_updates.clone(),
-                ),
-                AcpFrame::Cancel(notification) => {
-                    if connection.send_notification(notification).is_err() {
-                        tracing::debug!("ACP cancel could not leave the ordered writer");
-                    }
-                }
-                #[cfg(feature = "test-observation")]
-                AcpFrame::FixtureDispatchFence(point, complete) => {
-                    let after = match point {
-                        FixtureDispatchPoint::Cancel => "session/cancel",
-                        FixtureDispatchPoint::Restore => "session/load",
-                    };
-                    let result = UntypedMessage::new(
-                        "fixture/orderedDispatchFence",
-                        serde_json::json!({"after":after}),
-                    )
-                    .and_then(|fence| connection.send_notification(fence));
-                    let _fixture_gone = complete.send(result);
-                }
-                AcpFrame::Request {
-                    message,
-                    correlation,
-                } => {
-                    let behavior = configuration.behavior.clone();
-                    #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
-                    let witness = match &correlation {
-                        ResponseKind::Prompt { authorization, .. }
-                        | ResponseKind::Steer { authorization, .. } => {
-                            Some((authorization, message.method.clone()))
-                        }
-                        ResponseKind::Close { .. } | ResponseKind::Setting(_) => None,
-                    };
-                    let request = connection.send_request(message);
-                    #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
-                    if let Some((authorization, method)) = witness {
-                        crate::work_call_observation::record_frame_id(
-                            authorization,
-                            &method,
-                            request.id(),
-                        );
-                    }
-                    let request = request.block_task();
-                    let shutdown = shutdown.clone();
-                    let input_ended = input_ended.clone();
-                    let connection = connection.clone();
-                    replies.spawn(async move {
-                        let (response, connection_lost) = ResponseKind::read_reply(
-                            matches!(&correlation, ResponseKind::Prompt { .. }),
-                            request,
-                            &shutdown,
-                            |error| {
-                                connection.is_incoming_closed()
-                                    || input_ended.is_cancelled()
-                                    || agent_client_protocol::is_incoming_transport_closed(error)
-                            },
-                        )
-                        .await;
-                        correlation.complete(response, connection_lost, behavior.as_ref());
-                    });
-                }
-            }
-        }
-        shutdown.cancel();
-        replies.close();
-        replies.wait().await;
-    }
-}
-
-impl ResponseKind {
-    async fn read_reply(
-        prompt_pending: bool,
-        request: impl std::future::Future<Output = Result<serde_json::Value, Error>>,
-        shutdown: &CancellationToken,
-        incoming_lost: impl FnOnce(&Error) -> bool,
-    ) -> (Option<Result<serde_json::Value, Error>>, bool) {
-        let response = tokio::select! {
-            biased;
-            reply = request => Some(reply),
-            () = shutdown.cancelled() => None,
-        };
-        let connection_lost = response.as_ref().is_none_or(|reply| {
-            reply.as_ref().is_err_and(|error| {
-                // The SDK can wake a prompt with an unmarked internal error
-                // after the process exits, before incoming EOF is observed.
-                (prompt_pending && shutdown.is_cancelled()) || incoming_lost(error)
-            })
-        });
-        (response, connection_lost)
-    }
-
-    fn complete(
-        self,
-        reply: Option<Result<serde_json::Value, Error>>,
-        connection_lost: bool,
-        behavior: &dyn crate::ProviderBehavior,
-    ) {
-        match self {
-            Self::Prompt {
-                authorization,
-                turn,
-                compact,
-                reader,
-                completion,
-            } => PromptTerminal {
-                turn,
-                compact,
-                authorization,
-                reply,
-                completion,
-            }
-            .route(reader, connection_lost),
-            Self::Setting(setting) => {
-                setting.settle(if connection_lost { None } else { reply }, behavior);
-            }
-            Self::Steer {
-                authorization,
-                idle,
-                completion,
-            } => {
-                completion.send(WorkReply::Dispatch(settle_steer_reply(
-                    authorization,
-                    idle,
-                    reply,
-                )));
-            }
-            Self::Close { run, completion } => {
-                let outcome = match reply {
-                    Some(Ok(_)) => WireOutcome::Confirmed(()),
-                    Some(Err(error)) if definite_refusal(&error) => WireOutcome::Refused,
-                    _ => WireOutcome::Unknown,
-                };
-                completion.send(OwnerEvent::Wire(SessionWireResult::Close { run, outcome }));
-            }
-        }
-    }
-}
-
-fn settle_steer_reply(
-    authorization: DispatchAuthorization,
-    idle: SteerIdlePolicy,
-    reply: Option<Result<serde_json::Value, Error>>,
-) -> DispatchResult {
-    match reply {
-        Some(Ok(reply)) => match reply.get("outcome").and_then(serde_json::Value::as_str) {
-            Some("startedNewTurn") => DispatchResult::SteerStartedNewTurn {
-                authorization,
-                turn: TurnId(Uuid::now_v7()),
-            },
-            Some("promptRequired") => match idle {
-                SteerIdlePolicy::AllowOwnerPrompt => DispatchResult::PromptRequired {
-                    authorization,
-                    replacement_turn: TurnId(Uuid::now_v7()),
-                },
-                SteerIdlePolicy::Refuse => DispatchResult::SteerNeedsPrompt(authorization),
-            },
-            Some("injected") => DispatchResult::SteerFinished {
-                authorization,
-                outcome: WireOutcome::Confirmed(()),
-            },
-            Some("failed") => DispatchResult::SteerFinished {
-                authorization,
-                outcome: WireOutcome::Refused,
-            },
-            _ => DispatchResult::SteerInvalidReply(authorization),
-        },
-        Some(Err(error)) if definite_refusal(&error) => DispatchResult::SteerFinished {
-            authorization,
-            outcome: WireOutcome::Refused,
-        },
-        _ => DispatchResult::SteerFinished {
-            authorization,
-            outcome: WireOutcome::Unknown,
-        },
-    }
-}
-
+#[cfg(test)]
+#[path = "owner_wire/owner_output_stop_test.rs"]
+pub(crate) mod output_stop_tests;
 #[cfg(test)]
 #[path = "owner_wire_test.rs"]
 mod tests;
-
-pub(crate) fn definite_refusal(error: &Error) -> bool {
-    !agent_client_protocol::is_incoming_transport_closed(error)
-        && matches!(
-            error.code,
-            ErrorCode::MethodNotFound
-                | ErrorCode::InvalidParams
-                | ErrorCode::AuthRequired
-                | ErrorCode::ResourceNotFound
-        )
-}

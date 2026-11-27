@@ -43,10 +43,7 @@ async fn initialization_authentication_precedes_models_and_is_once_per_connectio
         ProviderOperationStore::open(&root.path().join("provider-operations.sqlite")).await?,
     ));
     let backend = ExternalProviderSupervisor::new(
-        vec![ExternalProviderBinding {
-            identity: binding(endpoint.clone(), "cursor")?,
-            runtime,
-        }],
+        vec![runtime.into_binding(binding(endpoint.clone(), "cursor")?)],
         store.clone(),
         fixture_clock.clone(),
     )?;

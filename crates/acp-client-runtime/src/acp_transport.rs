@@ -1,8 +1,14 @@
 //! Ordered ACP output and the transport's authorization fence.
 
+mod lifecycle_routes;
+mod restore_registration;
+pub(crate) use lifecycle_routes::ReadmitOutcome;
+pub(crate) use restore_registration::RestoreSelection;
+
 use crate::callback_router::CallbackRouter;
 pub use crate::callback_router::{CallbackKind, CallbackResolution};
 use crate::in_folder_allowance::{InFolderGrant, InFolderPermission};
+use crate::owner_opening_instance::OpeningInstance;
 pub use crate::transport_run::TransportRun;
 use crate::transport_run::authorization_run;
 use agent_client_protocol::schema::v1::PermissionOptionId;
@@ -17,14 +23,18 @@ use provider_session_machines::{
     tool_ownership::{ToolObservation, ToolOwnershipEffect},
 };
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     num::NonZeroUsize,
-    sync::{Mutex, MutexGuard},
+    sync::{
+        Arc, Mutex, MutexGuard,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
-use switchboard_harness_contracts::HandOverRefusal;
 pub use switchboard_harness_contracts::SlotEvidence;
+use switchboard_harness_contracts::{HandOverRefusal, InputId, OwnerEvidence, OwnerInputEvidence};
 
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum TransportRefusal {
@@ -82,6 +92,70 @@ struct ConnectionRoute {
     closing: Option<CloseAttempt>,
     folders: Option<InFolderGrant>,
     settings: Option<AcceptedRunSettings>,
+    lifecycle: Option<LifecycleRoute>,
+    restore_registration: Option<OpeningInstance>,
+}
+
+#[derive(Clone)]
+pub(crate) struct LifecycleRoute {
+    pub(crate) run: TransportRun,
+    lifetime: Arc<RouteLifetime>,
+}
+
+struct RouteLifetime {
+    removed: AtomicBool,
+    notify_removed: CancellationToken,
+}
+
+impl LifecycleRoute {
+    pub(crate) fn new(run: TransportRun) -> Self {
+        Self {
+            run,
+            lifetime: Arc::new(RouteLifetime {
+                removed: AtomicBool::new(false),
+                notify_removed: CancellationToken::new(),
+            }),
+        }
+    }
+
+    pub(crate) fn is_removed(&self) -> bool {
+        self.lifetime.removed.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn mark_removed(&self) {
+        self.lifetime.removed.store(true, Ordering::Release);
+    }
+
+    pub(crate) async fn removed(&self) {
+        self.lifetime.notify_removed.cancelled().await;
+    }
+
+    pub(crate) fn notify_removed(&self) {
+        self.lifetime.notify_removed.cancel();
+    }
+
+    pub(crate) fn is_same_as(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.lifetime, &other.lifetime)
+    }
+}
+
+impl ConnectionRoute {
+    fn new(session: String, lifecycle: Option<LifecycleRoute>) -> Self {
+        Self {
+            session,
+            closing: None,
+            folders: None,
+            settings: None,
+            lifecycle,
+            restore_registration: None,
+        }
+    }
+
+    fn names(&self, route: &LifecycleRoute) -> bool {
+        self.lifecycle
+            .as_ref()
+            .is_some_and(|current| current.is_same_as(route))
+    }
 }
 
 enum AuthorizationSlot<Frame> {
@@ -121,12 +195,19 @@ struct TransportState<Frame> {
 
 impl<Frame> TransportState<Frame> {
     fn route_for_session(&self, session: &str) -> Option<TransportRun> {
-        let mut matches = self
-            .routes
-            .iter()
-            .filter(|(_, route)| route.session == session);
-        let (run, _) = matches.next()?;
-        matches.next().is_none().then_some(*run)
+        self.find_route_for_session(session).map(|(run, _)| run)
+    }
+
+    fn find_route_for_session(&self, session: &str) -> Option<(TransportRun, &ConnectionRoute)> {
+        let mut matches = self.routes.iter().filter(|(_, route)| {
+            route.session == session
+                && !route
+                    .lifecycle
+                    .as_ref()
+                    .is_some_and(LifecycleRoute::is_removed)
+        });
+        let (run, route) = matches.next()?;
+        matches.next().is_none().then_some((*run, route))
     }
 }
 
@@ -169,19 +250,30 @@ impl<Frame> AcpTransport<Frame> {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    pub(crate) fn writer_has_stopped(&self) -> bool {
+        self.ordered.is_closed()
+    }
+
+    pub(crate) async fn writer_stopped(&self) {
+        self.ordered.closed().await;
+    }
+
     pub fn open_route(&self, run: TransportRun, session: String) {
         let mut state = self.state();
-        state.routes.entry(run).or_insert(ConnectionRoute {
-            session,
-            closing: None,
-            folders: None,
-            settings: None,
-        });
+        state
+            .routes
+            .entry(run)
+            .or_insert_with(|| ConnectionRoute::new(session, None));
         state.callbacks.open(run);
     }
 
-    pub fn activate_route(&self, run: TransportRun) {
-        self.state().callbacks.activate(run);
+    pub fn activate_route(&self, run: TransportRun) -> bool {
+        let mut state = self.state();
+        state
+            .routes
+            .get(&run)
+            .is_some_and(|route| route.closing.is_none())
+            && state.callbacks.activate(run)
     }
 
     #[must_use]
@@ -204,11 +296,11 @@ impl<Frame> AcpTransport<Frame> {
             .map(|route| route.session.clone())
     }
 
-    pub(crate) fn routed_sessions(&self) -> Vec<String> {
+    pub(crate) fn routed_owner_sessions(&self) -> Vec<(OwnerIncarnation, String)> {
         self.state()
             .routes
-            .values()
-            .map(|route| route.session.clone())
+            .iter()
+            .map(|(run, route)| (run.incarnation, route.session.clone()))
             .collect()
     }
 
@@ -294,6 +386,7 @@ impl<Frame> AcpTransport<Frame> {
 
     pub fn apply_membership(&self, incarnation: OwnerIncarnation, change: TurnMembership) {
         let mut state = self.state();
+        let mut retired = None;
         match change {
             TurnMembership::Provisional { run, turn } => {
                 state.callbacks.begin_turn(
@@ -338,8 +431,16 @@ impl<Frame> AcpTransport<Frame> {
                 };
                 if let Some(route) = state.routes.remove(&run) {
                     state.callbacks.retire(&route.session, run);
+                    if let Some(lifecycle) = &route.lifecycle {
+                        lifecycle.mark_removed();
+                    }
+                    retired = Some(route);
                 }
             }
+        }
+        drop(state);
+        if let Some(route) = retired.and_then(|route| route.lifecycle) {
+            route.notify_removed();
         }
     }
 
@@ -530,10 +631,52 @@ impl<Frame> AcpTransport<Frame> {
         &self,
         incarnation: OwnerIncarnation,
     ) -> Vec<(DispatchAuthorization, SlotEvidence)> {
+        Self::revoke_owner_slots(&mut self.state(), incarnation)
+    }
+
+    /// Withdraw pending offers and answer each asked input using the same locked ledger.
+    pub(crate) fn give_up_owner(
+        &self,
+        incarnation: OwnerIncarnation,
+        asked_inputs: &BTreeSet<InputId>,
+    ) -> OwnerEvidence {
         let mut state = self.state();
+        let mut by_input = BTreeMap::<InputId, Vec<_>>::new();
+        for (authorization, evidence) in Self::revoke_owner_slots(&mut state, incarnation) {
+            if asked_inputs.contains(&authorization.input_id) {
+                by_input
+                    .entry(authorization.input_id.clone())
+                    .or_default()
+                    .push((authorization, evidence));
+            }
+        }
+        let answers = asked_inputs
+            .iter()
+            .map(|input| {
+                let answer = match by_input.remove(input) {
+                    None => OwnerInputEvidence::NeverOffered,
+                    Some(slots) if slots.iter().any(|(_, slot)| *slot == SlotEvidence::Taken) => {
+                        OwnerInputEvidence::Taken { slots }
+                    }
+                    Some(slots) if slots.iter().all(|(_, slot)| *slot == SlotEvidence::Revoked) => {
+                        OwnerInputEvidence::Withdrawn { slots }
+                    }
+                    Some(slots) => OwnerInputEvidence::NoEvidence { slots },
+                };
+                (input.clone(), answer)
+            })
+            .collect();
+        drop(state);
+        answers
+    }
+
+    fn revoke_owner_slots(
+        state: &mut TransportState<Frame>,
+        incarnation: OwnerIncarnation,
+    ) -> Vec<(DispatchAuthorization, SlotEvidence)> {
         let TransportState {
             slot, callbacks, ..
-        } = &mut *state;
+        } = state;
         slot.iter_mut()
             .filter(|(key, _)| key.incarnation == incarnation)
             .map(|(key, entry)| {
@@ -553,7 +696,8 @@ impl<Frame> AcpTransport<Frame> {
             .collect()
     }
 
-    /// Called after terminal settlement no longer needs the slot's evidence.
+    /// Production retains slots across route retirement and until owner recovery.
+    /// Removing one would make an earlier offer look never offered at hand-back.
     pub fn forget(&self, authorization: &DispatchAuthorization) {
         self.state().slot.remove(authorization);
     }

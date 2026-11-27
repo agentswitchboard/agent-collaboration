@@ -1,7 +1,8 @@
 //! Immediate settings actions use the durable Session inventory for authority.
 
+use provider_session_machines::ProviderSettingKind;
+
 use super::ExternalProviderSupervisor;
-use crate::ExternalProviderRuntimeError;
 use crate::provider_operation_settlement::effective_settings;
 use collaboration_protocol::{
     ProviderIdentity, ProviderSettingName, ProviderSettingsAcceptRequest, ProviderSettingsFailure,
@@ -134,6 +135,7 @@ pub(super) async fn apply(
             && request.value == acp_client_runtime::AUTO_PERMISSION_MODE)
         && let Some(advertised) = owner
             .catalog()
+            .await
             .and_then(|catalog| catalog.unavailable_selection(kind, &request.value))
     {
         return Err(ProviderSettingsFailure {
@@ -179,8 +181,10 @@ pub(super) async fn apply(
                 value,
                 expected_model: expected_model.map(SettingValueId),
                 reuse_confirmed: supervisor
-                    .runtime_for(&request.target.endpoint)
-                    .is_some_and(|runtime| runtime.can_reuse_setting_confirmation(kind)),
+                    .inner
+                    .bindings
+                    .get(&request.target.endpoint)
+                    .is_some_and(|binding| binding.connection.reuses_setting_confirmation(kind)),
             }
         }
     };
@@ -264,15 +268,7 @@ pub(super) async fn apply(
     };
     match remote {
         RemoteEffect::Unknown => {
-            return Err(setting_error(
-                &request,
-                ExternalProviderRuntimeError::SettingOutcomeUnknown {
-                    provider_session_id: String::from(request.target.session_id.clone()),
-                    setting: kind,
-                    value: request.value.clone(),
-                },
-            )
-            .into());
+            return Err(setting_outcome_unknown(&request.target, kind, request.value).into());
         }
         RemoteEffect::None
             if !(request.setting == ProviderSettingName::Fast && request.value == "auto") =>
@@ -389,103 +385,22 @@ fn result(
     }
 }
 
-fn setting_error(
-    request: &ProviderSettingsSetRequest,
-    error: ExternalProviderRuntimeError,
-) -> ProviderSettingsFailure {
-    match error {
-        // Setting and value come from the runtime error, so a fast failure
-        // after a model change says fast and off (D1 R9).
-        ExternalProviderRuntimeError::InvalidSetting {
-            setting,
-            value,
-            advertised,
-            ..
-        } => ProviderSettingsFailure {
-            kind: ProviderSettingsFailureKind::InvalidSetting,
-            stage: None,
-            target: Some(request.target.clone()),
-            message: "setting value requires an unambiguous advertised provider option".into(),
-            setting: Some(crate::provider_operation_settlement::provider_setting_name(
-                setting,
-            )),
-            value: Some(value),
-            advertised,
-        },
-        error @ ExternalProviderRuntimeError::FastNotOffered => ProviderSettingsFailure {
-            kind: ProviderSettingsFailureKind::ProviderRejected,
-            stage: None,
-            target: Some(request.target.clone()),
-            message: error.to_string(),
-            setting: Some(ProviderSettingName::Fast),
-            value: Some("off".to_owned()),
-            advertised: Vec::new(),
-        },
-        ExternalProviderRuntimeError::SettingFailed { setting, value, .. } => {
-            ProviderSettingsFailure {
-                kind: ProviderSettingsFailureKind::ProviderRejected,
-                stage: None,
-                target: Some(request.target.clone()),
-                message: "provider rejected the setting; current reported values remain effective"
-                    .into(),
-                setting: Some(crate::provider_operation_settlement::provider_setting_name(
-                    setting,
-                )),
-                value: Some(value),
-                advertised: Vec::new(),
-            }
-        }
-        ExternalProviderRuntimeError::SettingOutcomeUnknown { setting, value, .. } => {
-            ProviderSettingsFailure {
-                kind: ProviderSettingsFailureKind::OutcomeUnknown,
-                stage: None,
-                target: Some(request.target.clone()),
-                message: "provider setting outcome is unknown; Session remains gated".into(),
-                setting: Some(crate::provider_operation_settlement::provider_setting_name(
-                    setting,
-                )),
-                value: Some(value),
-                advertised: Vec::new(),
-            }
-        }
-        other => {
-            let mut failure = plain_error(&request.target, other);
-            if failure.kind == ProviderSettingsFailureKind::OutcomeUnknown {
-                failure.setting = Some(request.setting);
-                failure.value = Some(request.value.clone());
-            }
-            failure
-        }
-    }
-}
-
-fn plain_error(
+pub(super) fn setting_outcome_unknown(
     target: &SessionRef,
-    error: ExternalProviderRuntimeError,
+    setting: ProviderSettingKind,
+    value: String,
 ) -> ProviderSettingsFailure {
-    let busy_answer;
-    let (kind, message) = match error {
-        // The session's answer names its state and the valid next steps (D1 M8).
-        ExternalProviderRuntimeError::LocalBusy { answer } => {
-            busy_answer = answer;
-            (ProviderSettingsFailureKind::Busy, busy_answer.as_str())
-        }
-        ExternalProviderRuntimeError::LocalNotFound => (
-            ProviderSettingsFailureKind::NotFound,
-            "provider Session is not loaded",
-        ),
-        ExternalProviderRuntimeError::TransportFailure
-        | ExternalProviderRuntimeError::FrameDecodeFailure
-        | ExternalProviderRuntimeError::FrameLimitExceeded => (
-            ProviderSettingsFailureKind::OutcomeUnknown,
-            "provider setting outcome is unknown; Session remains gated",
-        ),
-        _ => (
-            ProviderSettingsFailureKind::Unavailable,
-            "provider settings action is unavailable",
-        ),
-    };
-    failure(kind, target, message)
+    ProviderSettingsFailure {
+        kind: ProviderSettingsFailureKind::OutcomeUnknown,
+        stage: None,
+        target: Some(target.clone()),
+        message: "provider setting outcome is unknown; Session remains gated".into(),
+        setting: Some(crate::provider_operation_settlement::provider_setting_name(
+            setting,
+        )),
+        value: Some(value),
+        advertised: Vec::new(),
+    }
 }
 
 fn failure(

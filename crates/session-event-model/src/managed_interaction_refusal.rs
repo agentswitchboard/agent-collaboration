@@ -113,3 +113,27 @@ impl ManagedInteractionRefusal {
         json!({"outcome":"cancelled"})
     }
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExternalProviderApprovalRefusalReason {
+    MissingPromptContext,
+    ApprovalBrokerUnavailable,
+    Managed(ManagedInteractionRefusal),
+}
+
+impl ExternalProviderApprovalRefusalReason {
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::MissingPromptContext => "missingPromptContext",
+            Self::ApprovalBrokerUnavailable => "approvalBrokerUnavailable",
+            Self::Managed(refusal) => refusal.code(),
+        }
+    }
+
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::Managed(refusal) => refusal.reason(),
+            reason => reason.code(),
+        }
+    }
+}

@@ -1,5 +1,7 @@
 use super::*;
-use crate::session_owner_door::OwnerDoorError;
+use crate::session_owner_door::{OwnerDoorError, SessionOwnerAddress};
+use collaboration_contracts::SessionEventHub;
+use collaboration_protocol::{ProviderIdentity, ProviderReconciliationState};
 use provider_session_machines::{
     session_lifecycle_machine::{CloseAttempt, SessionLifecycle},
     session_owner::SessionOwnerCommand,
@@ -8,7 +10,12 @@ use provider_session_machines::{
 async fn recovered_prompt_failure(taken: bool, recovery_first: bool) {
     let rig = RestoreRig::new();
     rig.seed_session().await;
-    let host = rig.open_host("silent-prompts").await;
+    let (host, hub) = rig
+        .open_host_with_fixture_arguments(
+            &["plain-prompts", "silent-prompts"],
+            Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        )
+        .await;
     rig.assert_loads(&host).await;
     let old_owner = host.session_owner_for(&rig.target).expect("session owner");
     let runtime = host.runtime_for(&rig.target.endpoint).expect("runtime");
@@ -18,7 +25,10 @@ async fn recovered_prompt_failure(taken: bool, recovery_first: bool) {
     // before it can create a transport authorization.
     let capacity = (!taken).then(|| old_owner.hold_completion_capacity());
     let operation = OperationId::generate();
-    let prompt = host.prompt(rig.prompt_request(operation.clone(), "in-flight admission"));
+    let input = session_event_model::InputId::generate();
+    let mut request = rig.prompt_request(operation.clone(), "in-flight admission");
+    request.input_id = Some(input.clone());
+    let prompt = host.prompt(request);
     tokio::pin!(prompt);
     tokio::select! {
         result = acknowledgement.reached => { let _observed = result.expect("delivery acknowledgement edge"); },
@@ -30,25 +40,19 @@ async fn recovered_prompt_failure(taken: bool, recovery_first: bool) {
         // Discard the acknowledgement while keeping a real writer take. A
         // different command then fails the old owner before a prompt result.
         rig.until_wire_request("prompts").await;
-        let snapshot = old_owner.snapshots().borrow().clone();
-        let SessionLifecycle::Live { generation } = snapshot.lifecycle else {
-            panic!("taken prompt must have a live owner");
-        };
-        let capacity = old_owner.hold_completion_capacity();
-        let failure = old_owner
-            .admit(SessionOwnerCommand::Close {
-                generation,
-                attempt: CloseAttempt(uuid::Uuid::now_v7()),
-            })
-            .await
-            .expect_err("owner stops before acknowledging close");
-        assert!(matches!(failure, OwnerDoorError::OwnerStopped));
-        drop(capacity);
+        fail_live_owner(&old_owner).await;
     }
 
     recovery_reached
         .await
         .expect("failed owner recovery has its evidence");
+    let successor = host
+        .session_owner_for(&rig.target)
+        .expect("replacement installed");
+    assert_ne!(
+        successor.snapshots().borrow().owner,
+        old_owner.snapshots().borrow().owner,
+    );
     if recovery_first {
         release_recovery.send(()).expect("release recovery");
         old_owner.wait_for_recovery_replies().await;
@@ -88,6 +92,7 @@ async fn recovered_prompt_failure(taken: bool, recovery_first: bool) {
             rig.wire_receipt()["prompts"],
             serde_json::json!([rig.target.session_id])
         );
+        assert_uncertain_dispatch_mark(&rig, &operation).await;
     } else {
         assert_eq!(failure.effect, ProviderOperationEffect::None);
         assert_eq!(
@@ -97,8 +102,60 @@ async fn recovered_prompt_failure(taken: bool, recovery_first: bool) {
         assert_eq!(rig.wire_receipt()["prompts"], serde_json::json!([]));
         assert_unsent_row(&host, &operation).await;
         rig.assert_loads(&host).await;
+        assert_replay_has_no_input(&rig, &hub, &input).await;
     }
     host.shutdown().await.expect("shut down fixture");
+    if taken {
+        assert_uncertain_dispatch_mark(&rig, &operation).await;
+        let wire_receipt = rig.root.path().join("wire.json");
+        std::fs::rename(
+            &wire_receipt,
+            rig.root.path().join("first-provider-wire.json"),
+        )
+        .expect("retain the first provider's wire receipt before reopening");
+        let (reopened, reopened_hub) = rig
+            .open_host_with_fixture_arguments(
+                &["plain-prompts", "restored-in-auto"],
+                Arc::new(acp_provider_adapters::StandardAcpBehavior),
+            )
+            .await;
+        let refusal = reopened
+            .load(rig.load_request(OperationId::generate()))
+            .await
+            .expect_err("the old unknown dispatch blocks a fresh load and replay");
+        assert_eq!(refusal.kind, ConversationOperationFailureKind::Busy);
+        assert!(String::from(refusal.message).contains(operation.as_str()));
+        let target = ProviderIdentity::session_to_board(&rig.target).expect("hub target");
+        let history = reopened_hub
+            .attach(target.clone())
+            .await
+            .expect("saved session");
+        assert_eq!(history.epoch, 0, "the refused load did not start replay");
+        assert!(history.snapshot.is_empty());
+        assert_eq!(
+            reopened_hub
+                .state(target)
+                .await
+                .expect("saved session state"),
+            session_event_model::SessionState::Unloaded,
+        );
+        if wire_receipt
+            .try_exists()
+            .expect("reopened provider receipt path")
+        {
+            assert!(
+                rig.wire_receipt()["prompts"]
+                    .as_array()
+                    .expect("wire prompts")
+                    .is_empty(),
+                "restore did not resend the old taken input"
+            );
+        }
+        reopened
+            .shutdown()
+            .await
+            .expect("shut down reopened fixture");
+    }
     if !taken {
         let reopened = rig.open_host("restored-in-auto").await;
         assert_unsent_row(&reopened, &operation).await;
@@ -136,6 +193,87 @@ async fn recovered_prompt_failure(taken: bool, recovery_first: bool) {
     }
 }
 
+async fn fail_live_owner(owner: &SessionOwnerAddress) {
+    let snapshot = owner.snapshots().borrow().clone();
+    let SessionLifecycle::Live { generation } = snapshot.lifecycle else {
+        panic!("failed prompt must have a live owner");
+    };
+    let capacity = owner.hold_completion_capacity();
+    let failure = owner
+        .admit(SessionOwnerCommand::Close {
+            generation,
+            attempt: CloseAttempt(uuid::Uuid::now_v7()),
+        })
+        .await
+        .expect_err("owner stops before acknowledging close");
+    assert!(matches!(failure, OwnerDoorError::OwnerStopped));
+    drop(capacity);
+}
+
+#[cfg(debug_assertions)]
+async fn fail_live_owner_on_delivery(owner: &SessionOwnerAddress) {
+    use provider_session_machines::{
+        session_owner::{DeliveryInput, OwnerInput, PromptAdmission},
+        session_turn_machine::TurnId,
+    };
+    let SessionLifecycle::Live { generation } = owner.snapshots().borrow().lifecycle else {
+        panic!("the offered input still belongs to a live owner");
+    };
+    let capacity = owner.hold_completion_capacity();
+    let failure = owner
+        .admit(SessionOwnerCommand::PlaceDelivery {
+            input: OwnerInput {
+                generation,
+                input: session_event_model::InputId::generate(),
+                operation: uuid::Uuid::now_v7(),
+                turn: TurnId(uuid::Uuid::now_v7()),
+            },
+            delivery: DeliveryInput::Prompt {
+                admission: PromptAdmission::Queue,
+                selected: Vec::new(),
+            },
+        })
+        .await
+        .expect_err("the owner stops when it cannot reserve the second input's placement reply");
+    assert!(matches!(failure, OwnerDoorError::OwnerStopped));
+    drop(capacity);
+}
+
+async fn assert_uncertain_dispatch_mark(rig: &RestoreRig, operation: &OperationId) {
+    let record = rig
+        .store()
+        .await
+        .inspect(operation)
+        .await
+        .expect("inspect operation")
+        .expect("operation retains its durable dispatch mark");
+    assert_eq!(record.stage, ProviderOperationStage::MayHaveDispatched);
+    assert_eq!(record.effect, ProviderOperationEffect::Unknown);
+    assert_eq!(
+        record.reconciliation_state,
+        ProviderReconciliationState::Unresolved
+    );
+}
+
+async fn assert_replay_has_no_input(
+    rig: &RestoreRig,
+    hub: &switchboard_session_events::ProviderSessionEventHub,
+    input: &session_event_model::InputId,
+) {
+    let target = ProviderIdentity::session_to_board(&rig.target).expect("hub target");
+    let replay = hub.attach(target).await.expect("restored session replay");
+    assert_ne!(replay.epoch, 0, "load published a new replay epoch");
+    assert!(
+        replay.snapshot.iter().all(|observed| {
+            !matches!(&observed.event,
+            session_event_model::SessionEvent::TurnStarted { input_id, .. }
+                | session_event_model::SessionEvent::InputAccepted { input_id, .. }
+                if input_id == input)
+        }),
+        "the failed input did not appear as a fresh submission in replay"
+    );
+}
+
 async fn assert_unsent_row(host: &ExternalProviderSupervisor, operation: &OperationId) {
     let shown = host
         .show(ConversationOperationShowRequest {
@@ -156,6 +294,138 @@ async fn assert_unsent_row(host: &ExternalProviderSupervisor, operation: &Operat
             .await
             .expect("query uncertain operations")
             .contains(operation)
+    );
+}
+
+#[cfg(debug_assertions)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+async fn failed_owner_withdraws_an_offered_prompt_and_fences_both_old_writes() {
+    use crate::session_store_lane::{MarkedInput, SessionStoreOfferError};
+    use acp_client_runtime::handover_test_control::HandoverPausePoint;
+    use provider_session_machines::session_owner::{AuthorizationTarget, DispatchResult};
+
+    let rig = RestoreRig::new();
+    rig.seed_session().await;
+    let (host, hub) = rig
+        .open_host_with_fixture_arguments(
+            &["plain-prompts", "silent-prompts"],
+            Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        )
+        .await;
+    rig.assert_loads(&host).await;
+    let previous = host.session_owner_for(&rig.target).expect("original owner");
+    let runtime = host.runtime_for(&rig.target.endpoint).expect("ACP runtime");
+    let (recovery_reached, release_recovery) = runtime.preparation_fixture.pause_recovery();
+    let acknowledgement = runtime.preparation_fixture.pause_delivery_ack(true);
+    let operation = OperationId::generate();
+    let input = session_event_model::InputId::generate();
+    let paused =
+        runtime.pause_work_handover_for_test(HandoverPausePoint::AfterOffer, input.clone());
+    let mut request = rig.prompt_request(operation.clone(), "offered before owner failure");
+    request.input_id = Some(input.clone());
+    let prompt = host.prompt(request);
+    tokio::pin!(prompt);
+
+    let authorization = tokio::select! {
+        offered = paused.reached => offered.expect("the exact ACP offer was recorded"),
+        result = &mut prompt => panic!("prompt answered before the writer offer: {result:?}"),
+    };
+    assert_eq!(authorization.target, AuthorizationTarget::NewTurn);
+    assert_eq!(
+        authorization.incarnation,
+        previous.snapshots().borrow().owner.incarnation
+    );
+    assert_eq!(authorization.input_id, input);
+    assert_uncertain_dispatch_mark(&rig, &operation).await;
+    assert_eq!(rig.wire_receipt()["prompts"], serde_json::json!([]));
+
+    let writer_capacity = previous
+        .hold_provider_writer_capacity()
+        .expect("the real ACP writer capacity fixture is installed");
+    paused
+        .release
+        .send(())
+        .expect("allow hand-over with the writer full");
+    tokio::select! {
+        result = acknowledgement.reached => { let _observed = result.expect("prompt admission acknowledgement"); },
+        result = &mut prompt => panic!("prompt answered before its acknowledgement edge: {result:?}"),
+    }
+    fail_live_owner_on_delivery(&previous).await;
+    recovery_reached
+        .await
+        .expect("the production door handed the lane to its successor");
+    let successor = host
+        .session_owner_for(&rig.target)
+        .expect("replacement owner");
+    assert_ne!(
+        successor.snapshots().borrow().owner.incarnation,
+        authorization.incarnation
+    );
+
+    drop(writer_capacity);
+    assert_eq!(
+        runtime.try_recovered_handover_for_test(&authorization),
+        Ok(DispatchResult::DefinitelyUnsent(authorization.clone())),
+        "a late take of the withdrawn slot cannot enqueue",
+    );
+    assert!(
+        matches!(
+            previous
+                .recovery_storage_for_test()
+                .try_recovered_mark_for_test(
+                    authorization.incarnation,
+                    MarkedInput {
+                        input: input.clone(),
+                        operation: operation.clone()
+                    },
+                ),
+            Err(SessionStoreOfferError::Replaced),
+        ),
+        "the replaced controller cannot append a store mark"
+    );
+
+    release_recovery
+        .send(())
+        .expect("release the recovery reply");
+    previous.wait_for_recovery_replies().await;
+    acknowledgement
+        .release
+        .send(())
+        .expect("release the displaced caller");
+    prompt
+        .await
+        .expect("the admitted operation exposes the recovered result");
+    acknowledgement
+        .finished
+        .await
+        .expect("caller handled its acknowledgement");
+    let failure = host
+        .wait(wait_request(operation.clone()))
+        .await
+        .expect_err("withdrawn prompt was never sent");
+    assert_eq!(failure.effect, ProviderOperationEffect::None);
+    assert_confirmed_withdrawal(&rig, &operation).await;
+    rig.assert_loads(&host).await;
+    assert_replay_has_no_input(&rig, &hub, &input).await;
+    assert_eq!(rig.wire_receipt()["prompts"], serde_json::json!([]));
+    host.shutdown().await.expect("shut down fixture");
+    assert_confirmed_withdrawal(&rig, &operation).await;
+}
+
+#[cfg(debug_assertions)]
+async fn assert_confirmed_withdrawal(rig: &RestoreRig, operation: &OperationId) {
+    let record = rig
+        .store()
+        .await
+        .inspect(operation)
+        .await
+        .expect("inspect operation")
+        .expect("withdrawn operation retains its durable settlement");
+    assert_eq!(record.stage, ProviderOperationStage::Terminal);
+    assert_eq!(record.effect, ProviderOperationEffect::None);
+    assert_eq!(
+        record.reconciliation_state,
+        ProviderReconciliationState::Confirmed
     );
 }
 
@@ -226,14 +496,10 @@ async fn queued_receipt_after_owner_failure(replace_owner: bool) {
         generation,
         turn: TurnId(uuid::Uuid::now_v7()),
     };
-    let content = acp_client_runtime::ProviderPromptContent::from_session_contents(
-        vec![
-            session_event_model::PromptContent::text("awaiting a dispatch mark".to_owned())
-                .expect("text"),
-        ],
-        &acp_client_runtime::ProviderCapabilityReport::default(),
-    )
-    .expect("provider text");
+    let content = session_event_model::PreparedPrompt::plain(vec![
+        session_event_model::PromptContent::text("awaiting a dispatch mark".to_owned())
+            .expect("text"),
+    ]);
     let delivery = owner.start_delivery(
         input.clone(),
         content,
@@ -349,15 +615,15 @@ async fn real_create_result_wakes_with_the_adopted_owner_already_live() {
         .owner_door(&rig.target.endpoint)
         .expect("real owner door");
     let operation = OperationId::generate();
-    let create = door.create(
+    let create = door.create_with_harness(
         rig.target.endpoint.clone(),
         operation.clone(),
-        acp_client_runtime::owner_session_open::OwnerSessionOpenSetup {
+        provider_session_machines::harness_lifecycle::OpenSetup {
             cwd: rig.root.path().to_owned(),
             scratch_folder: None,
             work_roots: Default::default(),
         },
-        acp_client_runtime::RequestedProviderSettings::default(),
+        Default::default(),
         Default::default(),
     );
     tokio::pin!(create);
@@ -392,8 +658,10 @@ async fn real_create_result_wakes_with_the_adopted_owner_already_live() {
     let at_wake = at_wake
         .await
         .expect("the real result sender wakes its caller");
-    let created = create.await.expect("create completed");
-    assert!(!created.created.provider_session_id.is_empty());
+    let Ok(created) = create.await else {
+        panic!("create did not complete");
+    };
+    assert!(!created.session.0.is_empty());
     assert!(
         matches!(at_wake, SessionLifecycle::Live { .. }),
         "Host create result woke its caller before the adopted snapshot was live: {at_wake:?}"

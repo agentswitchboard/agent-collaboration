@@ -10,6 +10,10 @@ use tokio::sync::oneshot;
 pub(crate) struct PreparationFixture {
     restore_pause: Mutex<Option<PreparationPause>>,
     #[cfg(test)]
+    restore_completion_queued: Mutex<Option<oneshot::Sender<()>>>,
+    #[cfg(test)]
+    harness_loss_pause: Mutex<Option<PreparationPause>>,
+    #[cfg(test)]
     create_pause: Mutex<Option<PreparationPause>>,
     delivery_ack: Mutex<Option<DeliveryAckPause>>,
     #[cfg(test)]
@@ -252,6 +256,43 @@ impl PreparationFixture {
 
     pub(crate) fn pause_restore(&self) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
         Self::arm(&self.restore_pause)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pause_harness_loss(&self) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+        Self::arm(&self.harness_loss_pause)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hold_harness_loss(&self) -> Option<oneshot::Receiver<()>> {
+        Self::enter(&self.harness_loss_pause)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn observe_restore_completion_queued(&self) -> oneshot::Receiver<()> {
+        let (queued, observed) = oneshot::channel();
+        let old = self
+            .restore_completion_queued
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .replace(queued);
+        assert!(
+            old.is_none(),
+            "a previous restore completion witness is still armed"
+        );
+        observed
+    }
+
+    #[cfg(test)]
+    pub(crate) fn witness_restore_completion_queued(&self) {
+        if let Some(queued) = self
+            .restore_completion_queued
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            let _fixture_stopped_waiting = queued.send(());
+        }
     }
 
     #[cfg(test)]

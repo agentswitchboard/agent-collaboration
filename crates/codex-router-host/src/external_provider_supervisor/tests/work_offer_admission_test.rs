@@ -43,8 +43,11 @@ async fn check_approval_lease_at_offer(path: OfferPath) {
         .supervisor
         .session_owner_for(&rig.target)
         .expect("stored owner");
-    let held_writer =
-        matches!(path, OfferPath::FullWriter).then(|| owner.hold_provider_writer_capacity());
+    let held_writer = matches!(path, OfferPath::FullWriter).then(|| {
+        owner
+            .hold_provider_writer_capacity()
+            .expect("real provider writer hold")
+    });
     let runtime = rig
         .supervisor
         .runtime_for(&rig.target.endpoint)
@@ -65,7 +68,7 @@ async fn check_approval_lease_at_offer(path: OfferPath) {
         .held_work_approval_for_test(&provider_session)
         .expect("approval installed before the offer");
     if matches!(path, OfferPath::Refused) {
-        runtime.retire_work_route_for_test(&authorization);
+        runtime.retire_provider_route_for_test(authorization.incarnation, authorization.run);
     }
     pause.release.send(()).expect("release offer");
     if matches!(path, OfferPath::FullWriter) {

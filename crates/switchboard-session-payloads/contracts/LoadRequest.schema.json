@@ -1,0 +1,56 @@
+{
+  "$defs": {
+    "MachineId": {
+      "description": "The Router install's durable identity, shared with central.",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      "type": "string"
+    },
+    "SessionId": {
+      "description": "One agent conversation, as its provider (Claude Code, Codex) minted it:\nstored as given, 1 to 4096 UTF-8 bytes without NUL.",
+      "maxLength": 4096,
+      "minLength": 1,
+      "pattern": "^[^\\u0000]+$",
+      "type": "string",
+      "x-maxUtf8Bytes": 4096
+    },
+    "SessionOperationId": {
+      "description": "One operation on a session, made by the caller before it sends, so a repeat can be recognised.",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      "type": "string"
+    },
+    "SessionRef": {
+      "additionalProperties": false,
+      "description": "The one session address (owner, 2026-11-18): the Router install that holds\nthe session, by its machine id, and the provider's session id. Used on the\nwire, at central and by agents. It has no endpoint: which harness holds a\nsession is the Router's own business.",
+      "properties": {
+        "machineId": {
+          "$ref": "#/$defs/MachineId"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        }
+      },
+      "required": [
+        "machineId",
+        "sessionId"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The caller's request to start a session load under an operation ID it already holds.",
+  "properties": {
+    "operationId": {
+      "$ref": "#/$defs/SessionOperationId"
+    },
+    "target": {
+      "$ref": "#/$defs/SessionRef"
+    }
+  },
+  "required": [
+    "target",
+    "operationId"
+  ],
+  "title": "LoadRequest",
+  "type": "object"
+}

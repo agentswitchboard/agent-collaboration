@@ -18,6 +18,7 @@ pub use approval_choice::*;
 pub use capability_report::*;
 pub use input_identity::*;
 pub use interaction_request::*;
+pub use managed_interaction_refusal::ExternalProviderApprovalRefusalReason;
 pub use message_board::{Identity, SessionRef};
 pub use prompt_content::*;
 pub use provider_skill::*;

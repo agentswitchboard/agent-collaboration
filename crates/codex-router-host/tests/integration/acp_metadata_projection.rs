@@ -3,9 +3,7 @@
 use std::{collections::VecDeque, path::PathBuf, sync::Arc};
 
 use acp_client_runtime::{ExternalProviderLaunch, ProviderPersistenceTarget};
-use codex_router_host::{
-    ExternalProviderBinding, ExternalProviderRuntime, ExternalProviderSupervisor,
-};
+use codex_router_host::{ExternalProviderRuntime, ExternalProviderSupervisor};
 use collaboration_contracts::{ProviderConversationBackend, SessionEventHub};
 use collaboration_protocol::{
     ConversationLoadRequest, ConversationOperationWaitRequest, ConversationPromptRequest,
@@ -75,10 +73,7 @@ async fn check_metadata_projection(replay: bool) {
     .await
     .expect("ACP initializes");
     let supervisor = ExternalProviderSupervisor::with_fixture_hub(
-        vec![ExternalProviderBinding {
-            identity: binding,
-            runtime,
-        }],
+        vec![runtime.into_binding(binding)],
         store,
         hub.clone(),
         clock,

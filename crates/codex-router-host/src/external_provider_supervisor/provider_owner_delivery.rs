@@ -2,8 +2,8 @@
 
 use super::{
     ConversationOperationFailureKind, ConversationOperationFailureStage,
-    ExternalProviderSupervisor, PreparedOperation, ProviderOperationCompletion,
-    ProviderOperationEffect, ProviderOperationKind, failure,
+    ExternalProviderSupervisor, OperationFailureCause, PreparedOperation,
+    ProviderOperationCompletion, ProviderOperationEffect, ProviderOperationKind, failure,
     provider_admission_policy::{AdmissionClass, AdmissionMode, NoticeAdmissionPlacement},
     provider_owner_operations::owner_failure,
     provider_owner_prompt::{SessionQueuePlan, WarmRun, explicit_steer_refusal, retained_prompt},
@@ -257,10 +257,10 @@ impl ExternalProviderSupervisor {
             return Ok(InputAcceptance::Unsent { reason: None });
         }
         let preview = match &request.input {
-            acp_client_runtime::ProviderTurnInput::Prompt(prompt) => {
+            session_event_model::ProviderTurnInput::Prompt(prompt) => {
                 crate::provider_queue_operation_registry::queued_content_preview(&prompt.content)
             }
-            acp_client_runtime::ProviderTurnInput::Compact => String::new(),
+            session_event_model::ProviderTurnInput::Compact => String::new(),
         };
         let id = Uuid::parse_str(operation.as_str()).map_err(|_| {
             failure(
@@ -272,16 +272,22 @@ impl ExternalProviderSupervisor {
                 Some(target.clone()),
             )
         })?;
-        let provider_id = String::from(target.session_id.clone());
+        let observed = self.observed_capabilities(&target);
         let content = self
             .within_admission(
                 deadline,
                 &operation,
                 Some(&target),
-                runtime.prepare_owner_prompt(&provider_id, request.input),
+                runtime.connection.prepare_prompt(request.input, observed),
             )
             .await?
-            .map_err(|error| runtime_failure(operation.clone(), Some(target.clone()), error))?;
+            .map_err(|error| {
+                runtime_failure(
+                    operation.clone(),
+                    Some(target.clone()),
+                    OperationFailureCause::PromptRefused(error),
+                )
+            })?;
         let can_queue = matches!(
             admission,
             DeliveryAdmission::Requested(MessageDelivery::Auto | MessageDelivery::Queue)
@@ -402,7 +408,7 @@ impl ExternalProviderSupervisor {
                 offer,
                 sink.retain_queued_dispatch(),
                 effect.clone(),
-                runtime.owner_clock(),
+                self.inner.clock.clone(),
             );
             (Some(writer), Some(intake))
         } else {
@@ -451,7 +457,7 @@ impl ExternalProviderSupervisor {
                         target: target.clone(),
                         operation_id: operation.clone(),
                         binding_generation: binding.generation.clone(),
-                        binding_retirement: runtime.retirement(),
+                        binding_retirement: runtime.retirement.clone(),
                     },
                 );
                 owner
@@ -488,7 +494,7 @@ impl ExternalProviderSupervisor {
                                 } else {
                                     completion_backend.queued_operation_registry().clear(&operation);
                                 }
-                                retained_prompt(&runtime, operation, target, settled)
+                                retained_prompt(runtime.connection.as_ref(), operation, target, settled)
                             }
                             Err(_) => ProviderOperationCompletion::Failure(failure(
                                 ConversationOperationFailureKind::OutcomeUnknown,

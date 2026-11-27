@@ -228,7 +228,11 @@ impl OwnerTransition {
 
     fn apply_wire(&mut self, result: SessionWireResult) -> OwnerResult {
         match result {
-            SessionWireResult::Restore { run, outcome } => self.restore_on_wire(run, outcome),
+            SessionWireResult::Restore {
+                run,
+                outcome,
+                replay,
+            } => self.restore_on_wire(run, outcome, replay),
             SessionWireResult::RestoreFailed { run, failure } => {
                 self.restore_failed_on_wire(run, failure)
             }

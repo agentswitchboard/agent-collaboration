@@ -1,6 +1,18 @@
 //! Host-owned admission and settlement for external ACP provider operations.
 
+mod harness_connection;
 mod provider_admission_policy;
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) use harness_connection::HarnessConnectionTestSupport;
+pub use harness_connection::{
+    ConnectionShutdown, ExternalProviderBinding, HarnessConnection, PromptRefusal,
+    PromptSelectionRefusal,
+};
+mod operation_failure_cause;
+pub(crate) use operation_failure_cause::OperationFailureCause;
+#[cfg(any(test, feature = "test-support"))]
+#[path = "external_provider_runtime/owner_fixture_failures.rs"]
+pub(crate) mod owner_fixture_failures;
 mod provider_operation_admission;
 mod provider_operation_index;
 #[cfg(any(test, feature = "test-support"))]
@@ -22,10 +34,12 @@ pub(crate) use provider_owner_prompt::{SessionQueuePlan, WarmRun};
 mod provider_prompt_contents;
 pub use provider_prompt_contents::{PromptBusyPolicy, ProviderPromptContentsRequest};
 mod provider_conversation_backend;
+mod provider_create_result;
 mod provider_full_access_guard;
 mod provider_session_inspection;
 mod provider_session_lifecycle;
 mod provider_session_scratch;
+pub(crate) use provider_session_scratch::PrepareProviderScratch;
 mod provider_settings_control;
 #[cfg(test)]
 pub(crate) use provider_settings_control::snapshot_settings;
@@ -33,17 +47,19 @@ pub(crate) use provider_settings_control::snapshot_settings;
 mod supervisor_named_points;
 #[cfg(test)]
 mod supervisor_test_pauses;
-use provider_operation_failure::{
-    admission_failure, invalid_setting_failure, prompt_runtime_failure, runtime_failure,
-};
+use provider_operation_failure::{admission_failure, invalid_setting_failure, runtime_failure};
 
+#[cfg(test)]
+use crate::ExternalProviderRuntime;
+#[cfg(test)]
+use crate::ExternalProviderRuntimeError;
 use crate::provider_operation_custody::CustodyEnd;
 use crate::provider_operation_settlement::{
     ProviderOperationCompletion, effective_settings, optional_message_text,
     provider_applied_setting, provider_failed_setting, provider_session_record,
 };
 use crate::provider_queue_operation_registry::ProviderQueueOperationRegistry;
-use crate::{ExternalProviderRuntime, ExternalProviderRuntimeError};
+use crate::provider_session_setup::BindingSessionSetup;
 use collaboration_contracts::ProviderConversationBackend;
 use collaboration_contracts::ProviderConversationFuture;
 use collaboration_contracts::ProviderSessionInspectFuture;
@@ -63,10 +79,9 @@ use collaboration_protocol::{
     ProviderOperationStage, ProviderReconciliationState, ProviderSessionInspectRequest,
     ProviderSettingsAcceptRequest, ProviderSettingsSetRequest, SessionId, SessionRef,
 };
-use collaboration_service::conversation_operation_snapshot as snapshot_from_record;
+use session_event_model::CapabilityReport;
 use std::{
     collections::HashMap,
-    path::PathBuf,
     sync::{Arc, Mutex as StdMutex},
     time::Duration,
 };
@@ -74,16 +89,12 @@ use switchboard_session_store::ProviderOperationAdmission;
 use switchboard_session_store::ProviderOperationAdmissionResult;
 use switchboard_session_store::ProviderOperationRecord;
 use switchboard_session_store::ProviderOperationStore;
+use switchboard_session_store::conversation_operation_snapshot as snapshot_from_record;
 use tokio::sync::Mutex;
-use tokio_util::task::TaskTracker;
+use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 const MAX_RETAINED_SETTLEMENTS: usize = 256;
 const OPERATION_DRAIN_BUDGET: Duration = Duration::from_secs(10);
-
-pub struct ExternalProviderBinding {
-    pub identity: ProviderBindingIdentity,
-    pub runtime: ExternalProviderRuntime,
-}
 
 #[derive(Clone)]
 pub struct ExternalProviderSupervisor {
@@ -91,7 +102,7 @@ pub struct ExternalProviderSupervisor {
 }
 
 struct SupervisorInner {
-    bindings: HashMap<EndpointRef, RuntimeBinding>,
+    bindings: HashMap<EndpointRef, Arc<RuntimeBinding>>,
     store: Arc<Mutex<ProviderOperationStore>>,
     clock: Arc<dyn router_clock::RuntimeClock>,
     session_token_at_creation: Arc<dyn SessionTokenAtCreation>,
@@ -104,9 +115,7 @@ struct SupervisorInner {
     /// Wakes schedulers on publication and retention when custody ends.
     completions: tokio::sync::watch::Sender<u64>,
     queued_operations: ProviderQueueOperationRegistry,
-    /// `<router root>/scratch`: each Claude or Cursor session created here gets
-    /// its own `session-<uuidv7>` folder in it (R4). `None` grants no folder.
-    scratch_root: Option<PathBuf>,
+    prepare_scratch: Option<PrepareProviderScratch>,
     settings_catalogs:
         Arc<Mutex<HashMap<SessionRef, provider_session_machines::ProviderSettingsCatalog>>>,
     started_at_ms: i64,
@@ -150,6 +159,10 @@ struct AdmissionTestPause {
 
 struct RuntimeBinding {
     identity: ProviderBindingIdentity,
+    connection: Arc<dyn HarnessConnection>,
+    retirement: CancellationToken,
+    session_setup: BindingSessionSetup,
+    #[cfg(test)]
     runtime: Arc<ExternalProviderRuntime>,
     owners: Arc<crate::session_owner_door::SessionOwnerDoor>,
 }
@@ -160,15 +173,15 @@ impl ExternalProviderSupervisor {
     }
 
     /// Sets the work-roots rule sessions on `endpoint` start with (D1 R18);
-    /// the binding's runtime keeps it, so every path that restores one of its
+    /// the binding keeps it, so every path that restores one of its
     /// sessions rebuilds the same roots.
     pub(crate) fn set_work_roots(
         &self,
         endpoint: &EndpointRef,
         work_roots: crate::provider_work_roots::ProviderWorkRoots,
     ) {
-        if let Some(runtime) = self.runtime_for(endpoint) {
-            runtime.session_setup().set_work_roots(work_roots);
+        if let Some(binding) = self.inner.bindings.get(endpoint) {
+            binding.session_setup.set_work_roots(work_roots);
         }
     }
 
@@ -176,8 +189,10 @@ impl ExternalProviderSupervisor {
         &self,
         endpoint: &EndpointRef,
     ) -> crate::provider_work_roots::ProviderWorkRoots {
-        self.runtime_for(endpoint)
-            .map(|runtime| runtime.session_setup().work_roots())
+        self.inner
+            .bindings
+            .get(endpoint)
+            .map(|binding| binding.session_setup.work_roots())
             .unwrap_or_default()
     }
 
@@ -192,6 +207,7 @@ impl ExternalProviderSupervisor {
             .map(|entry| entry.identity.runtime.provider)
     }
 
+    #[cfg(test)]
     pub(crate) fn runtime_for(
         &self,
         endpoint: &EndpointRef,
@@ -216,7 +232,7 @@ impl ExternalProviderSupervisor {
             .ok_or(crate::session_owner_door::OwnerDoorError::Unavailable)?;
         binding
             .owners
-            .open(target.clone(), binding.runtime.session_setup().work_roots())
+            .open(target.clone(), binding.session_setup.work_roots())
     }
 
     fn owner_door(
@@ -243,23 +259,45 @@ impl ExternalProviderSupervisor {
         Some(snapshot)
     }
 
-    pub(crate) fn owner_session_catalog(
+    pub(crate) fn has_binding(&self, endpoint: &EndpointRef) -> bool {
+        self.inner.bindings.contains_key(endpoint)
+    }
+
+    pub(crate) fn clock(&self) -> Arc<dyn router_clock::RuntimeClock> {
+        self.inner.clock.clone()
+    }
+
+    pub(crate) async fn session_capabilities(
+        &self,
+        target: &SessionRef,
+    ) -> Option<CapabilityReport> {
+        let binding = self.inner.bindings.get(&target.endpoint)?;
+        let observed = self.observed_capabilities(target);
+        Some(binding.connection.capabilities(observed).await)
+    }
+
+    fn observed_capabilities(&self, target: &SessionRef) -> Option<CapabilityReport> {
+        self.owner_session_snapshot(target)?.projection.capabilities
+    }
+
+    pub(crate) async fn owner_session_catalog(
         &self,
         target: &SessionRef,
     ) -> Option<provider_session_machines::ProviderSettingsCatalog> {
-        self.inner
+        let owner = self
+            .inner
             .bindings
             .get(&target.endpoint)?
             .owners
-            .existing(target)?
-            .catalog()
+            .existing(target)?;
+        owner.catalog().await
     }
 
     pub(crate) fn owner_session_activity(
         &self,
         target: &SessionRef,
-    ) -> crate::ProviderSessionActivity {
-        use crate::ProviderSessionActivity;
+    ) -> provider_session_machines::ProviderSessionActivity {
+        use provider_session_machines::ProviderSessionActivity;
         use provider_session_machines::{
             session_lifecycle_machine::SessionLifecycle, session_turn_machine::SessionTurn,
         };
@@ -331,14 +369,14 @@ impl ExternalProviderSupervisor {
         bindings: Vec<ExternalProviderBinding>,
         store: Arc<Mutex<ProviderOperationStore>>,
         hub: Option<Arc<switchboard_session_events::ProviderSessionEventHub>>,
-        scratch_root: Option<PathBuf>,
+        prepare_scratch: Option<PrepareProviderScratch>,
         clock: Arc<dyn router_clock::RuntimeClock>,
     ) -> Result<Self, &'static str> {
         Self::new_with_session_tokens(
             bindings,
             store,
             hub,
-            scratch_root,
+            prepare_scratch,
             clock,
             Arc::new(collaboration_contracts::V0SessionTokenIssuer),
         )
@@ -348,7 +386,7 @@ impl ExternalProviderSupervisor {
         bindings: Vec<ExternalProviderBinding>,
         store: Arc<Mutex<ProviderOperationStore>>,
         hub: Option<Arc<switchboard_session_events::ProviderSessionEventHub>>,
-        scratch_root: Option<PathBuf>,
+        prepare_scratch: Option<PrepareProviderScratch>,
         clock: Arc<dyn router_clock::RuntimeClock>,
         session_token_at_creation: Arc<dyn SessionTokenAtCreation>,
     ) -> Result<Self, &'static str> {
@@ -383,8 +421,33 @@ impl ExternalProviderSupervisor {
             if runtimes.contains_key(&endpoint) {
                 return Err("external provider endpoint binding must be unique");
             }
-            let runtime = Arc::new(binding.runtime);
-            let owners = runtime.session_owner_door(Arc::clone(&store), Arc::clone(&owner_hub));
+            let build_door = || {
+                let owners = crate::session_owner_door::SessionOwnerDoor::new(
+                    #[cfg(any(test, feature = "test-support"))]
+                    binding.test_support.hold_writer_capacity,
+                    |tasks| binding.connection.session_provider(tasks),
+                    clock.clone(),
+                    store.clone(),
+                    owner_hub.clone(),
+                    binding.retirement.clone(),
+                    #[cfg(any(test, feature = "test-support"))]
+                    binding.test_support.preparation_fixture,
+                );
+                #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
+                let owners = owners.with_work_observer(binding.work_observer);
+                let owners = Arc::new(owners);
+                binding.ingress.attach(&owners);
+                owners
+            };
+            #[cfg(not(test))]
+            let owners = build_door();
+            #[cfg(test)]
+            let owners = binding
+                .runtime
+                .fixture_owner_door()
+                .unwrap_or_else(build_door);
+            #[cfg(test)]
+            binding.runtime.remember_fixture_door(&owners);
             let permit = uncertainty.slot(&endpoint);
             permit.identity.get_or_init(|| binding.identity.clone());
             let operations = Arc::downgrade(&live_operations);
@@ -445,11 +508,15 @@ impl ExternalProviderSupervisor {
             owners.install_binding_permit(permit);
             runtimes.insert(
                 endpoint,
-                RuntimeBinding {
+                Arc::new(RuntimeBinding {
                     identity: binding.identity,
-                    runtime,
+                    connection: binding.connection,
+                    retirement: binding.retirement,
+                    session_setup: BindingSessionSetup::default(),
+                    #[cfg(test)]
+                    runtime: binding.runtime,
                     owners,
-                },
+                }),
             );
         }
         Ok(Self {
@@ -464,7 +531,7 @@ impl ExternalProviderSupervisor {
                 uncertainty,
                 completions,
                 queued_operations,
-                scratch_root,
+                prepare_scratch,
                 settings_catalogs,
                 started_at_ms,
                 #[cfg(test)]
@@ -512,8 +579,7 @@ impl ExternalProviderSupervisor {
         endpoint: &EndpointRef,
         operation_id: &OperationId,
         target: Option<SessionRef>,
-    ) -> Result<(ProviderBindingIdentity, Arc<ExternalProviderRuntime>), ConversationOperationFailure>
-    {
+    ) -> Result<(ProviderBindingIdentity, Arc<RuntimeBinding>), ConversationOperationFailure> {
         let binding = self.inner.bindings.get(endpoint).ok_or_else(|| {
             failure(
                 ConversationOperationFailureKind::NotFound,
@@ -524,7 +590,7 @@ impl ExternalProviderSupervisor {
                 target.clone(),
             )
         })?;
-        if binding.runtime.retirement().is_cancelled() {
+        if binding.retirement.is_cancelled() {
             return Err(failure(
                 ConversationOperationFailureKind::Unavailable,
                 ConversationOperationFailureStage::Binding,
@@ -534,7 +600,7 @@ impl ExternalProviderSupervisor {
                 target,
             ));
         }
-        Ok((binding.identity.clone(), Arc::clone(&binding.runtime)))
+        Ok((binding.identity.clone(), Arc::clone(binding)))
     }
 
     #[expect(
@@ -635,17 +701,17 @@ impl ExternalProviderSupervisor {
     pub async fn shutdown(&self) -> Result<(), &'static str> {
         let _cancel_operation_cleanup = self.inner.operation_cleanup_cancel.clone().drop_guard();
         for binding in self.inner.bindings.values() {
-            binding.runtime.retirement().cancel();
+            binding.retirement.cancel();
         }
         for binding in self.inner.bindings.values() {
-            router_clock::timeout(
-                self.inner.clock.as_ref(),
-                Duration::from_secs(10),
-                binding.runtime.shutdown(),
-            )
-            .await
-            .map_err(|_| "external provider runtime shutdown timed out")?;
-            if binding.runtime.shutdown_failed() {
+            let shutdown =
+                router_clock::timeout(self.inner.clock.as_ref(), Duration::from_secs(10), async {
+                    binding.owners.shutdown().await;
+                    binding.connection.shutdown().await
+                })
+                .await
+                .map_err(|_| "external provider runtime shutdown timed out")?;
+            if matches!(shutdown, ConnectionShutdown::OwnerFailedToJoin) {
                 return Err("external provider runtime owner failed to join");
             }
         }

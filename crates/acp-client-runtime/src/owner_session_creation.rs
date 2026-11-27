@@ -12,13 +12,21 @@ use crate::{
 use agent_client_protocol::{Agent, schema::v1::CloseSessionRequest};
 use provider_session_machines::{
     ProviderSettingKind,
-    session_owner::{CreatedSessionFacts, InitialSettingFailure, ObservedSetting, SettingEvidence},
+    harness_lifecycle::{
+        CreateAttempt, CreatedSettingsFailure, CreatedSetupFact, CreatedSetupReport,
+        HarnessSessionId, SessionCreatedSetupFact, SetupReport,
+    },
+    session_owner::{
+        CreatedSessionFacts, InitialSettingFailure, InitialSettingObservation, ObservedSetting,
+        SettingEvidence,
+    },
     session_setting_machine::{SettingApplication, SettingValueId},
 };
 use router_clock::RuntimeClock;
 use session_event_model::ProviderSettingFailureReason;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use switchboard_harness_contracts::InvalidRequestedSetting;
 use uuid::Uuid;
 
 pub struct OwnerCreatedSetup {
@@ -26,6 +34,13 @@ pub struct OwnerCreatedSetup {
     pub settings_failure: Option<ExternalProviderRuntimeError>,
     keep_fast_off: bool,
     failed_setting: Option<InitialSettingFailure>,
+}
+
+struct ConfiguredCreate {
+    permission_mode: crate::PermissionModeReport,
+    keep_fast_off: bool,
+    failed_setting: Option<InitialSettingFailure>,
+    failure: Option<CreatedSettingsFailure<ProviderSettingFailureReason>>,
 }
 
 impl OwnerCreatedSetup {
@@ -51,7 +66,92 @@ impl OwnerOpenedSession {
         requested: &RequestedProviderSettings,
         clock: &dyn RuntimeClock,
     ) -> Result<OwnerCreatedSetup, ExternalProviderRuntimeError> {
+        let ConfiguredCreate {
+            permission_mode,
+            keep_fast_off,
+            failed_setting,
+            failure,
+        } = self
+            .configure_create_setup(requested, clock)
+            .await
+            .map_err(|failure| {
+                invalid_setting_error(failure, InvalidSettingSessionDisposition::Closed)
+            })?;
         let provider_session_id = self.provider_id();
+        let settings_failure = failure.map(|failure| match failure {
+            CreatedSettingsFailure::Invalid(failure) => {
+                invalid_setting_error(failure, InvalidSettingSessionDisposition::RemainsCreated)
+            }
+            CreatedSettingsFailure::Partial {
+                applied,
+                failed,
+                not_applied,
+            } => ExternalProviderRuntimeError::CreatedWithoutSettings {
+                provider_session_id: provider_session_id.clone(),
+                applied,
+                failed,
+                not_applied,
+                permission_mode: Box::new(permission_mode.clone()),
+            },
+        });
+        Ok(OwnerCreatedSetup {
+            created: ExternalProviderCreatedSession {
+                provider_session_id,
+                effective_settings: self.catalog.effective_settings(),
+                permission_mode,
+            },
+            settings_failure,
+            keep_fast_off,
+            failed_setting,
+        })
+    }
+
+    pub(crate) async fn configure_lifecycle_create(
+        &mut self,
+        attempt: CreateAttempt,
+        requested: &RequestedProviderSettings,
+        clock: &dyn RuntimeClock,
+    ) -> SessionCreatedSetupFact {
+        let ConfiguredCreate {
+            permission_mode,
+            keep_fast_off,
+            failed_setting,
+            failure,
+        } = match self.configure_create_setup(requested, clock).await {
+            Ok(configured) => configured,
+            Err(failure) => {
+                return CreatedSetupFact::ClosedAfterInvalidSetting { attempt, failure };
+            }
+        };
+        let report = Box::new(CreatedSetupReport {
+            setup: SetupReport {
+                capabilities: self.capabilities().to_session_model(),
+                settings: self.settings(),
+                observed: catalogue_evidence(self.catalog()),
+            },
+            catalogue: self.catalog.clone().into_record(),
+            effective_settings: self.catalog.effective_settings(),
+            router_auto_requested: permission_mode.requested.as_deref()
+                == Some(crate::AUTO_PERMISSION_MODE),
+            permission_mode,
+            keep_fast_off,
+            failed_setting,
+        });
+        match failure {
+            Some(failure) => CreatedSetupFact::RemainsCreated {
+                attempt,
+                report,
+                failure,
+            },
+            None => CreatedSetupFact::Configured { attempt, report },
+        }
+    }
+
+    async fn configure_create_setup(
+        &mut self,
+        requested: &RequestedProviderSettings,
+        clock: &dyn RuntimeClock,
+    ) -> Result<ConfiguredCreate, InvalidRequestedSetting> {
         let keep_fast_off = fast_off_requested(requested.fast, &self.catalog);
         let InitialSettingsOutcome {
             applied,
@@ -69,32 +169,45 @@ impl OwnerOpenedSession {
         )
         .await;
         let failed_setting = failure.as_ref().map(|failure| {
-            let (kind, attempted, unknown, confirmed_current) = match failure {
-                SettingSetupFailure::Invalid { kind, value, .. } => (*kind, value, false, false),
+            let (kind, attempted, observation) = match failure {
+                SettingSetupFailure::Invalid { kind, value, .. } => (
+                    *kind,
+                    value,
+                    InitialSettingObservation::Known {
+                        confirmed_current: false,
+                    },
+                ),
                 SettingSetupFailure::Agent {
                     kind,
                     value,
                     confirmed_current,
                     ..
-                } => (*kind, value, false, *confirmed_current),
-                SettingSetupFailure::Uncertain { kind, value, .. } => (*kind, value, true, false),
+                } => (
+                    *kind,
+                    value,
+                    InitialSettingObservation::Known {
+                        confirmed_current: *confirmed_current,
+                    },
+                ),
+                SettingSetupFailure::Uncertain { kind, value, .. } => {
+                    (*kind, value, InitialSettingObservation::Unknown)
+                }
             };
             InitialSettingFailure {
                 kind,
                 attempted: SettingValueId(attempted.clone()),
                 application: SettingApplication(Uuid::now_v7()),
-                unknown,
-                confirmed_current,
+                observation,
             }
         });
-        if failed_setting
-            .as_ref()
-            .is_some_and(|failure| failure.kind == ProviderSettingKind::Mode && failure.unknown)
-        {
+        if failed_setting.as_ref().is_some_and(|failure| {
+            failure.kind == ProviderSettingKind::Mode
+                && failure.observation == InitialSettingObservation::Unknown
+        }) {
             self.catalog.mode_observation =
                 provider_session_machines::ProviderModeObservation::Unconfirmed;
         }
-        let settings_failure = match failure {
+        let failure = match failure {
             None => None,
             Some(SettingSetupFailure::Invalid {
                 kind,
@@ -110,21 +223,16 @@ impl OwnerOpenedSession {
                 } else {
                     false
                 };
-                let error = ExternalProviderRuntimeError::InvalidSetting {
-                    setting: kind,
+                let failure = InvalidRequestedSetting {
+                    session: HarnessSessionId(self.provider_id()),
+                    kind,
                     value,
                     advertised,
-                    provider_session_id: provider_session_id.clone(),
-                    disposition: if closed {
-                        InvalidSettingSessionDisposition::Closed
-                    } else {
-                        InvalidSettingSessionDisposition::RemainsCreated
-                    },
                 };
                 if closed {
-                    return Err(error);
+                    return Err(failure);
                 }
-                Some(error)
+                Some(CreatedSettingsFailure::Invalid(failure))
             }
             Some(failure) => {
                 let failed = match failure {
@@ -149,26 +257,33 @@ impl OwnerOpenedSession {
                         reason: ProviderSettingFailureReason::OutcomeUnknown,
                     },
                 };
-                Some(ExternalProviderRuntimeError::CreatedWithoutSettings {
-                    provider_session_id: provider_session_id.clone(),
+                Some(CreatedSettingsFailure::Partial {
                     not_applied: untried_settings(requested, &self.catalog, failed.kind)
                         .into_boxed_slice(),
                     applied: applied.into_boxed_slice(),
                     failed,
-                    permission_mode: Box::new(permission_mode.clone()),
                 })
             }
         };
-        Ok(OwnerCreatedSetup {
-            created: ExternalProviderCreatedSession {
-                provider_session_id,
-                effective_settings: self.catalog.effective_settings(),
-                permission_mode,
-            },
-            settings_failure,
+        Ok(ConfiguredCreate {
+            permission_mode,
             keep_fast_off,
             failed_setting,
+            failure,
         })
+    }
+}
+
+fn invalid_setting_error(
+    failure: InvalidRequestedSetting,
+    disposition: InvalidSettingSessionDisposition,
+) -> ExternalProviderRuntimeError {
+    ExternalProviderRuntimeError::InvalidSetting {
+        provider_session_id: failure.session.0,
+        setting: failure.kind,
+        value: failure.value,
+        advertised: failure.advertised,
+        disposition,
     }
 }
 

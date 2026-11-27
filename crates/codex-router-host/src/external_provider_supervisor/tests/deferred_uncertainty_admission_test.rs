@@ -8,6 +8,7 @@
 //! records every request it reads.
 
 use super::*;
+use std::path::PathBuf;
 
 /// The text of the send each control refuses; no agent frame may carry it.
 const CONTROL_TEXT: &str = "control";
@@ -62,10 +63,7 @@ impl ControlFixture {
         ));
         let supervisor = Arc::new(
             ExternalProviderSupervisor::new(
-                vec![ExternalProviderBinding {
-                    identity: binding(),
-                    runtime,
-                }],
+                vec![runtime.into_binding(binding())],
                 Arc::clone(&store),
                 crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
             )

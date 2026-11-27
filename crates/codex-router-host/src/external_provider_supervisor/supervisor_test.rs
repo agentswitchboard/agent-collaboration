@@ -1,3 +1,4 @@
+use crate::external_provider_supervisor::owner_fixture_failures::legacy_runtime_failure as runtime_failure;
 #[path = "tests/deferred_uncertainty_admission_test.rs"]
 mod deferred_uncertainty_admission_tests;
 #[path = "tests/owner_skill_queue_test.rs"]
@@ -22,6 +23,7 @@ use collaboration_protocol::{
     ProviderWorkingDirectory, PushId, RouterAccess, SessionId, UuidIdentity,
 };
 use std::io::{self, Write};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex};
 
 struct PreparedPromptFixture {
@@ -172,10 +174,7 @@ async fn delivery_prompt_reports_submission_before_turn_settles() {
         .await
         .expect("operation store opens");
     let backend = ExternalProviderSupervisor::new(
-        vec![ExternalProviderBinding {
-            identity: binding(),
-            runtime,
-        }],
+        vec![runtime.into_binding(binding())],
         Arc::new(Mutex::new(store)),
         crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
@@ -226,10 +225,7 @@ async fn delivery_prompt_without_loaded_session_is_known_not_submitted() {
         .await
         .expect("operation store");
     let backend = ExternalProviderSupervisor::new(
-        vec![ExternalProviderBinding {
-            identity: binding(),
-            runtime,
-        }],
+        vec![runtime.into_binding(binding())],
         Arc::new(Mutex::new(store)),
         crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
@@ -291,10 +287,7 @@ async fn router_queue_drains_provider_prompts_in_fifo_order() {
     .expect("fixture initializes");
     let backend = Arc::new(
         ExternalProviderSupervisor::with_fixture_hub(
-            vec![ExternalProviderBinding {
-                identity: binding(),
-                runtime,
-            }],
+            vec![runtime.into_binding(binding())],
             Arc::clone(&store),
             Arc::clone(&hub),
             clock,
@@ -427,10 +420,7 @@ async fn router_queue_shutdown_drops_an_unstarted_prompt() {
     ));
     let backend = Arc::new(
         ExternalProviderSupervisor::new(
-            vec![ExternalProviderBinding {
-                identity: binding(),
-                runtime,
-            }],
+            vec![runtime.into_binding(binding())],
             Arc::clone(&store),
             crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
         )
@@ -533,10 +523,7 @@ async fn provider_retirement_settles_queued_input_without_resubmission() {
     ));
     let backend = Arc::new(
         ExternalProviderSupervisor::new(
-            vec![ExternalProviderBinding {
-                identity: binding(),
-                runtime,
-            }],
+            vec![runtime.into_binding(binding())],
             Arc::clone(&store),
             crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
         )

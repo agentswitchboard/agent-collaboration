@@ -1,19 +1,23 @@
 //! Start and address a session-owner task through the Host registry.
 
+#[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
+use crate::session_owner_work_observation::WorkObservationSink;
 use crate::{
     session_owner_calls::{
         CancelReceipt, CancelTarget, InputAcceptance, OwnedSettlement, SessionOwnerCalls,
     },
     session_owner_execution::SessionOwnerExecution,
+    session_owner_lifecycle_reports::{
+        BoundSessionHarness, SessionHarnessProvider, SessionOwnerLifecycleReports,
+    },
     session_owner_publication::SessionOwnerPublisher,
     session_owner_registry::{RegisteredOwner, SessionOwnerRegistry},
     session_owner_storage::SessionOwnerStorage,
 };
-use acp_client_runtime::{
-    ProviderPromptContent, owner_wire::OwnerAcpWire, session_owner_task::OwnerMailboxUnavailable,
-};
+use acp_client_runtime::session_owner_task::OwnerMailboxUnavailable;
 use collaboration_protocol::SessionRef;
 use provider_session_machines::{
+    harness_lifecycle::{CatalogueFact, CatalogueRequest, ReservedReply},
     session_lifecycle_machine::{LoadAttempt, RestoreVia},
     session_owner::{
         ConnectionEpoch, OwnerEvent, OwnerInput, PromptAdmission, SessionOwnerCommand,
@@ -21,6 +25,7 @@ use provider_session_machines::{
     },
 };
 use router_clock::RuntimeClock;
+use session_event_model::PreparedPrompt;
 use std::{
     collections::BTreeMap,
     num::NonZeroUsize,
@@ -52,9 +57,11 @@ pub struct SessionOwnerDoor {
     registry: Arc<SessionOwnerRegistry>,
     clock: Arc<dyn RuntimeClock>,
     hub: Arc<ProviderSessionEventHub>,
-    wire: Arc<OwnerAcpWire>,
-    approvals:
-        acp_client_runtime::OwnerApprovalBindings<crate::acp_interaction_port::HostInteractionPort>,
+    #[cfg(any(test, feature = "test-support"))]
+    hold_writer_capacity: Option<Arc<HoldProviderWriterCapacity>>,
+    provider: Arc<SessionHarnessProvider>,
+    #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
+    work_observer: Option<Arc<dyn WorkObservationSink>>,
     connection: ConnectionEpoch,
     retired: CancellationToken,
     shutdown: CancellationToken,
@@ -69,11 +76,16 @@ pub(crate) trait SessionOwnerSnapshotObserver: Send + Sync + 'static {
     fn observe(&self, session: &str, previous: &SessionSnapshot, current: &SessionSnapshot);
 }
 
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) type HoldProviderWriterCapacity = dyn Fn() -> Box<dyn Send> + Send + Sync;
+
 pub struct SessionOwnerAddress {
     owner: RegisteredOwner,
     calls: Arc<SessionOwnerCalls>,
     storage: SessionOwnerStorage,
-    wire: Arc<OwnerAcpWire>,
+    provider: Arc<SessionHarnessProvider>,
+    #[cfg(any(test, feature = "test-support"))]
+    hold_writer_capacity: Option<Arc<HoldProviderWriterCapacity>>,
     #[cfg(any(test, feature = "test-support"))]
     preparation_fixture: Arc<crate::session_owner_preparation_fixture::PreparationFixture>,
 }
@@ -85,10 +97,10 @@ pub(crate) struct OwnerDeliveryHandle {
 
 impl SessionOwnerDoor {
     pub(crate) fn new(
-        wire: Arc<OwnerAcpWire>,
-        approvals: acp_client_runtime::OwnerApprovalBindings<
-            crate::acp_interaction_port::HostInteractionPort,
+        #[cfg(any(test, feature = "test-support"))] hold_writer_capacity: Option<
+            Arc<HoldProviderWriterCapacity>,
         >,
+        build_provider: impl FnOnce(TaskTracker) -> Arc<SessionHarnessProvider>,
         clock: Arc<dyn RuntimeClock>,
         store: Arc<AsyncMutex<ProviderOperationStore>>,
         hub: Arc<ProviderSessionEventHub>,
@@ -98,6 +110,8 @@ impl SessionOwnerDoor {
         >,
     ) -> Self {
         let mailbox = NonZeroUsize::new(32).unwrap_or(NonZeroUsize::MIN);
+        let tasks = TaskTracker::new();
+        let provider = build_provider(tasks.clone());
         Self {
             registry: Arc::new(SessionOwnerRegistry::new(
                 store,
@@ -107,17 +121,26 @@ impl SessionOwnerDoor {
             )),
             clock,
             hub,
-            wire,
-            approvals,
+            #[cfg(any(test, feature = "test-support"))]
+            hold_writer_capacity,
+            provider,
+            #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
+            work_observer: None,
             connection: ConnectionEpoch(Uuid::now_v7()),
             retired,
             shutdown: CancellationToken::new(),
-            tasks: TaskTracker::new(),
+            tasks,
             sessions: Mutex::default(),
             snapshot_observer: Arc::default(),
             #[cfg(any(test, feature = "test-support"))]
             preparation_fixture,
         }
+    }
+
+    #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
+    pub(crate) fn with_work_observer(mut self, observer: Arc<dyn WorkObservationSink>) -> Self {
+        self.work_observer = Some(observer);
+        self
     }
 
     pub(crate) fn install_binding_permit(
@@ -186,6 +209,34 @@ impl SessionOwnerDoor {
         replaced: Option<provider_session_machines::session_owner::OwnerIncarnation>,
         work_roots: crate::provider_work_roots::ProviderWorkRoots,
     ) -> Result<(Arc<SessionOwnerAddress>, SessionOwnerExecution), OwnerDoorError> {
+        let bound = self.bind(&registered.owner, self.shutdown.clone());
+        self.prepare_adopted_with_binding(target, registered, lane, replaced, work_roots, bound)
+    }
+
+    fn bind(&self, owner: &RegisteredOwner, stopped: CancellationToken) -> BoundSessionHarness {
+        let observations = SessionOwnerLifecycleReports::new(owner.address, &owner.handle, stopped);
+        #[cfg(test)]
+        let observations = {
+            let fixture = self.preparation_fixture.clone();
+            observations.with_harness_loss_hold(Box::new(move || fixture.hold_harness_loss()))
+        };
+        let observations = Arc::new(observations);
+        let binding = self.provider.bind(owner.address, observations.clone());
+        BoundSessionHarness {
+            binding,
+            observations,
+        }
+    }
+
+    fn prepare_adopted_with_binding(
+        &self,
+        target: SessionRef,
+        registered: crate::session_owner_registry::RegisteredSession,
+        lane: Option<crate::session_store_lane::SessionStoreLaneTask>,
+        replaced: Option<provider_session_machines::session_owner::OwnerIncarnation>,
+        work_roots: crate::provider_work_roots::ProviderWorkRoots,
+        bound: BoundSessionHarness,
+    ) -> Result<(Arc<SessionOwnerAddress>, SessionOwnerExecution), OwnerDoorError> {
         let session_id = String::from(target.session_id.clone());
         let board = collaboration_protocol::ProviderIdentity::session_to_board(&target)
             .map_err(|_| OwnerDoorError::Unavailable)?;
@@ -214,8 +265,8 @@ impl SessionOwnerDoor {
         );
         let ports = SessionOwnerExecution::new(
             target.clone(),
-            self.wire.clone(),
-            self.approvals.clone(),
+            bound.binding,
+            bound.observations,
             storage.clone(),
             SessionOwnerPublisher::new(inbox, self.clock.clone(), self.tasks.clone()),
             calls.clone(),
@@ -223,18 +274,8 @@ impl SessionOwnerDoor {
         );
         #[cfg(any(test, feature = "test-support"))]
         let ports = ports.with_preparation_fixture(self.preparation_fixture.clone());
-        let retired = self.retired.clone();
-        let stop = self.shutdown.clone();
-        let completion = registered_owner.handle.completion_port();
-        let address = registered_owner.address;
-        self.tasks.spawn(async move {
-            tokio::select! {
-                () = stop.cancelled() => {}
-                () = retired.cancelled() => {
-                    let _owner_gone = completion.send_stream(address, OwnerEvent::ConnectionLost, &stop).await;
-                }
-            }
-        });
+        #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
+        let ports = ports.with_work_observer(self.work_observer.clone());
         let mut snapshots = registered_owner.handle.snapshots();
         let mut previous = snapshots.borrow_and_update().clone();
         let observer = Arc::clone(&self.snapshot_observer);
@@ -269,7 +310,9 @@ impl SessionOwnerDoor {
             owner: registered_owner,
             calls,
             storage,
-            wire: self.wire.clone(),
+            provider: self.provider.clone(),
+            #[cfg(any(test, feature = "test-support"))]
+            hold_writer_capacity: self.hold_writer_capacity.clone(),
             #[cfg(any(test, feature = "test-support"))]
             preparation_fixture: self.preparation_fixture.clone(),
         });
@@ -390,13 +433,12 @@ impl SessionOwnerAddress {
     pub(crate) fn report_event(
         &self,
         event: OwnerEvent,
-    ) -> Result<(), acp_client_runtime::EventSinkClosed> {
+    ) -> Result<(), acp_client_runtime::session_owner_task::OwnerTaskError> {
         let completion = self
             .owner
             .handle
             .completion_port()
-            .reserve(self.owner.address)
-            .map_err(|_| acp_client_runtime::EventSinkClosed)?;
+            .reserve(self.owner.address)?;
         completion.send(event);
         Ok(())
     }
@@ -405,7 +447,9 @@ impl SessionOwnerAddress {
         self.owner.handle.snapshots()
     }
 
-    pub(crate) fn catalog(&self) -> Option<provider_session_machines::ProviderSettingsCatalog> {
+    pub(crate) async fn catalog(
+        &self,
+    ) -> Option<provider_session_machines::ProviderSettingsCatalog> {
         let snapshot = self.snapshots();
         let provider_session_machines::session_lifecycle_machine::SessionLifecycle::Live {
             generation,
@@ -413,11 +457,22 @@ impl SessionOwnerAddress {
         else {
             return None;
         };
-        self.wire
-            .session_catalog(acp_client_runtime::acp_transport::TransportRun {
-                incarnation: self.owner.address.incarnation,
-                generation,
-            })
+        let (reply, received) = oneshot::channel();
+        self.provider
+            .model_catalogue(
+                CatalogueRequest::Session {
+                    owner: self.owner.address,
+                    run: generation,
+                },
+                Box::new(SessionCatalogueReply(reply)),
+            )
+            .ok()?;
+        match received.await.ok()? {
+            CatalogueFact::Reported(record) => {
+                Some(provider_session_machines::ProviderSettingsCatalog::from_record(record))
+            }
+            CatalogueFact::Unavailable(_) => None,
+        }
     }
 
     pub(crate) async fn cancel_queued(
@@ -502,7 +557,7 @@ impl SessionOwnerAddress {
     pub async fn submit_input(
         &self,
         input: OwnerInput,
-        content: ProviderPromptContent,
+        content: PreparedPrompt,
         admission: PromptAdmission,
     ) -> Result<OwnedSettlement, OwnerDoorError> {
         let command = prompt_with_requirements(input.clone(), admission, &content);
@@ -533,7 +588,7 @@ impl SessionOwnerAddress {
     pub(crate) async fn start_delivery(
         &self,
         input: OwnerInput,
-        content: ProviderPromptContent,
+        content: PreparedPrompt,
         command: SessionOwnerCommand,
     ) -> Result<OwnerDeliveryHandle, OwnerDoorError> {
         self.start_delivery_with_evidence(input, content, command, None, None)
@@ -543,7 +598,7 @@ impl SessionOwnerAddress {
     pub(crate) async fn start_delivery_with_evidence(
         &self,
         input: OwnerInput,
-        content: ProviderPromptContent,
+        content: PreparedPrompt,
         command: SessionOwnerCommand,
         evidence: Option<crate::session_owner_delivery_evidence::OwnerDeliveryEvidence>,
         cold_restore: Option<LoadAttempt>,
@@ -708,15 +763,23 @@ impl SessionOwnerAddress {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn hold_provider_writer_capacity(&self) -> impl Sized + use<> {
-        self.wire.hold_writer_capacity_for_test()
+    pub fn hold_provider_writer_capacity(&self) -> Option<Box<dyn Send>> {
+        self.hold_writer_capacity.as_ref().map(|hold| hold())
+    }
+}
+
+struct SessionCatalogueReply(oneshot::Sender<CatalogueFact>);
+
+impl ReservedReply<CatalogueFact> for SessionCatalogueReply {
+    fn send(self: Box<Self>, fact: CatalogueFact) {
+        let _caller_gone = self.0.send(fact);
     }
 }
 
 fn prompt_with_requirements(
     input: OwnerInput,
     admission: PromptAdmission,
-    content: &ProviderPromptContent,
+    content: &PreparedPrompt,
 ) -> SessionOwnerCommand {
     if content.selected_skills().is_empty() {
         SessionOwnerCommand::Prompt { input, admission }
@@ -735,6 +798,7 @@ mod tests;
 
 #[path = "session_owner_door_creation.rs"]
 mod creation;
+pub(crate) use creation::{OwnerCreateFailure, OwnerCreateReport};
 
 #[path = "session_owner_door_recovery.rs"]
 mod recovery;

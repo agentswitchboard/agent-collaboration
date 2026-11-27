@@ -207,7 +207,7 @@ export const rows: InventoryRow[] = [
     owner: "router-vocabulary",
     kind: "method-table",
     defines:
-      "acp_client_runtime InvalidSettingSessionDisposition to protocol InvalidSettingSessionDisposition, with the setting kind named through provider_setting_name (70)",
+      "switchboard-harness-contracts InvalidSettingSessionDisposition to protocol InvalidSettingSessionDisposition, with the setting kind named through provider_setting_name (70)",
     usedBy: [{ part: "N4" }],
     duplicateGroup: "provider-setting-mapping",
     disposition: "duplicate",

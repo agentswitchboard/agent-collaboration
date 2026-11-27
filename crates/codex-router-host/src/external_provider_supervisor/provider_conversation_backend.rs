@@ -1,3 +1,4 @@
+use super::provider_create_result::project_owner_create;
 use super::{
     Arc, ConversationBindingIdentity, ConversationCancelRequest, ConversationCloseRequest,
     ConversationCreateRequest, ConversationLoadRequest, ConversationOperationFailureKind,
@@ -7,18 +8,23 @@ use super::{
     ConversationOperationWaitOutput, ConversationOperationWaitRequest,
     ConversationOperationWaitResult, ConversationOutputUnavailableReason,
     ConversationPromptRequest, ConversationResumeRequest, Duration, EndpointRef,
-    ExternalProviderRuntimeError, ExternalProviderSupervisor, OperationId, PathBuf,
-    PreparedOperation, ProviderBindingIdentity, ProviderConversationBackend,
-    ProviderConversationFuture, ProviderOperationCompletion, ProviderOperationEffect,
-    ProviderOperationKind, ProviderOperationStage, ProviderPromptContentsRequest,
-    ProviderReconciliationState, ProviderSessionInspectFuture, ProviderSessionInspectRequest,
-    ProviderSettingsAcceptRequest, ProviderSettingsFuture, ProviderSettingsSetRequest, SessionId,
-    SessionRef, admitted_submission, effective_settings, existing_submission, failure,
-    invalid_setting_failure, provider_applied_setting, provider_failed_setting,
-    provider_session_inspection, provider_session_lifecycle, provider_session_record,
-    provider_settings_control, runtime_failure, snapshot_failure, snapshot_from_record,
-    unavailable_failure,
+    ExternalProviderSupervisor, OperationFailureCause, OperationId, PreparedOperation,
+    ProviderBindingIdentity, ProviderConversationBackend, ProviderConversationFuture,
+    ProviderOperationCompletion, ProviderOperationEffect, ProviderOperationKind,
+    ProviderOperationStage, ProviderPromptContentsRequest, ProviderReconciliationState,
+    ProviderSessionInspectFuture, ProviderSessionInspectRequest, ProviderSettingsAcceptRequest,
+    ProviderSettingsFuture, ProviderSettingsSetRequest, SessionId, SessionRef, admitted_submission,
+    effective_settings, existing_submission, failure, invalid_setting_failure,
+    provider_applied_setting, provider_failed_setting, provider_session_inspection,
+    provider_session_lifecycle, provider_session_record, provider_settings_control,
+    runtime_failure, snapshot_failure, snapshot_from_record, unavailable_failure,
 };
+use crate::session_owner_door::OwnerCreateFailure;
+use provider_session_machines::{
+    InvalidSettingSessionDisposition,
+    harness_lifecycle::{FastRequest, OpenSetup, RequestedProviderSettings},
+};
+use std::path::PathBuf;
 
 impl ProviderConversationBackend for ExternalProviderSupervisor {
     fn resume(
@@ -180,11 +186,11 @@ impl ProviderConversationBackend for ExternalProviderSupervisor {
                         Vec::new()
                     };
                     let named_work_roots = request.work_roots;
-                    let scratch_root = backend.inner.scratch_root.clone();
+                    let prepare_scratch = backend.inner.prepare_scratch.clone();
                     let completion_inner = Arc::clone(&backend.inner);
                     let completion_backend = backend.clone();
                     backend.spawn_operation_for_handoff(operation_id.clone(), live, async move {
-                        let scratch_folder = match super::provider_session_scratch::prepare_provider_session_scratch(scratch_root.as_deref(), completion_inner.clock.as_ref()).await {
+                        let scratch_folder = match super::provider_session_scratch::prepare_provider_session_scratch(prepare_scratch.as_ref()).await {
                             Ok(scratch_folder) => scratch_folder,
                             Err(message) => {
                                 return ProviderOperationCompletion::Failure(failure(
@@ -203,94 +209,45 @@ impl ProviderConversationBackend for ExternalProviderSupervisor {
                         let Some(owner_door) = completion_backend.owner_door(&endpoint) else {
                             return ProviderOperationCompletion::Failure(unavailable_failure(operation_id, None));
                         };
-                        let created = owner_door.create(
+                        let result = owner_door.create_with_harness(
                             endpoint.clone(),
                             operation_id.clone(),
-                            acp_client_runtime::owner_session_open::OwnerSessionOpenSetup { cwd, scratch_folder, work_roots },
-                            acp_client_runtime::RequestedProviderSettings {
+                            OpenSetup { cwd, scratch_folder, work_roots },
+                            RequestedProviderSettings {
                                 mode: requested_settings.mode,
                                 model: requested_settings.model,
                                 effort: requested_settings.effort,
                                 fast: if requested_settings.fast == Some(collaboration_protocol::FastSetting::Auto) {
-                                    acp_client_runtime::FastRequest::Leave
+                                    FastRequest::Leave
                                 } else {
-                                    acp_client_runtime::FastRequest::OffIfOffered
+                                    FastRequest::OffIfOffered
                                 },
                             },
                             configured_roots,
-                        ).await.and_then(|setup| setup.settings_failure.map_or(Ok(setup.created), Err));
-                        let completion = match created {
-                            Ok(created) => {
-                                match SessionId::try_from(created.provider_session_id) {
-                                    Ok(session_id) => {
-                                        let target = SessionRef {
-                                            endpoint,
-                                            session_id,
-                                        };
-                                        if let Some(catalog) = completion_backend.owner_session_catalog(&target) {
-                                            completion_inner.record_settings_catalog(target.clone(), catalog).await;
-                                        }
-                                        let mut observed = effective_settings(requested_policy.clone());
-                                        observed.mode = created.effective_settings.mode;
-                                        observed.model = created.effective_settings.model;
-                                        observed.effort = created.effective_settings.effort;
-                                        observed.fast = created.effective_settings.fast.map(crate::provider_operation_settlement::provider_fast_state);
-                                        observed.requested_mode = created.permission_mode.requested;
-                                        observed.mode_reason = created.permission_mode.reason.map(crate::provider_operation_settlement::provider_mode_reason);
-                                        runtime.session_setup().record_requested_mode(&String::from(target.session_id.clone()), crate::provider_session_setup::RequestedModeRecord { requested_mode: observed.requested_mode.clone(), mode_reason: observed.mode_reason });
-                                        ProviderOperationCompletion::Success {
-                                            settlement: ConversationOperationSettlement::Created {
-                                                target: target.clone(),
-                                                effective_settings: observed,
-                                            },
-                                            target: Some(target.clone()),
-                                            session_record: Some(Box::new(
-                                                provider_session_record(
-                                                    target,
-                                                    working_directory,
-                                                    requested_policy,
-                                                    created_by,
-                                                    approver,
-                                                    resume,
-                                                    completion_inner.now_ms(),
-                                                ),
-                                            )),
-                                        }
-                                    }
-                                    Err(_) => ProviderOperationCompletion::Failure(failure(
-                                        ConversationOperationFailureKind::ProtocolViolation,
-                                        ConversationOperationFailureStage::Settlement,
-                                        ProviderOperationEffect::Applied,
-                                        "provider returned an invalid conversation identity",
-                                        operation_id,
-                                        None,
-                                    )),
-                                }
-                            }
-                            Err(ExternalProviderRuntimeError::CreatedWithoutSettings {
-                                provider_session_id,
-                                applied,
-                                failed,
-                                not_applied,
-                                permission_mode,
-                            }) => {
-                                match SessionId::try_from(provider_session_id) {
+                        ).await;
+                        let completion = if let Err(OwnerCreateFailure::Activation {
+                            reason,
+                            session,
+                            permission_mode,
+                        }) = result {
+                            tracing::debug!(?reason, "session harness refused create activation");
+                            match SessionId::try_from(session.0) {
                                 Ok(session_id) => {
+                                    runtime.session_setup.record_created_mode(
+                                        &String::from(session_id.clone()),
+                                        &permission_mode,
+                                    );
                                     let target = SessionRef { endpoint, session_id };
-                                    if let Some(catalog) = completion_backend.owner_session_catalog(&target) {
-                                        completion_inner.record_settings_catalog(target.clone(), catalog).await;
-                                    }
-                                    // Show keeps the requested mode and reason of a partial start too.
-                                    runtime.session_setup().record_created_mode(&String::from(target.session_id.clone()), &permission_mode);
-                                    ProviderOperationCompletion::Success {
-                                        settlement: ConversationOperationSettlement::CreatedWithoutSettings {
-                                            target: target.clone(),
-                                            applied: applied.into_iter().map(provider_applied_setting).collect(),
-                                            failed: vec![provider_failed_setting(failed)],
-                                            not_applied: not_applied.into_iter().map(crate::provider_operation_settlement::provider_not_applied_setting).collect(),
-                                        },
-                                        target: Some(target.clone()),
-                                        session_record: Some(Box::new(provider_session_record(
+                                    ProviderOperationCompletion::FailureWithSession {
+                                        failure: failure(
+                                            ConversationOperationFailureKind::Unavailable,
+                                            ConversationOperationFailureStage::Settlement,
+                                            ProviderOperationEffect::Applied,
+                                            "the provider created the session but could not activate it. Load or resume the recorded session",
+                                            operation_id,
+                                            Some(target.clone()),
+                                        ),
+                                        session_record: Box::new(provider_session_record(
                                             target,
                                             working_directory,
                                             requested_policy,
@@ -298,42 +255,93 @@ impl ProviderConversationBackend for ExternalProviderSupervisor {
                                             approver,
                                             resume,
                                             completion_inner.now_ms(),
-                                        ))),
+                                        )),
                                     }
                                 }
                                 Err(_) => ProviderOperationCompletion::Failure(failure(
                                     ConversationOperationFailureKind::ProtocolViolation,
                                     ConversationOperationFailureStage::Settlement,
                                     ProviderOperationEffect::Applied,
-                                    "provider returned an invalid conversation identity after partial settings",
+                                    "provider returned an invalid conversation identity",
                                     operation_id,
                                     None,
                                 )),
-                                }
                             }
-                            Err(ExternalProviderRuntimeError::InvalidSetting {
-                                setting,
-                                value,
-                                advertised,
-                                provider_session_id,
-                                disposition,
-                            }) => {
-                                let target = SessionId::try_from(provider_session_id)
-                                    .ok()
-                                    .map(|session_id| SessionRef { endpoint, session_id });
-                                let failure = invalid_setting_failure(
-                                    operation_id,
-                                    target.clone(),
-                                    setting,
-                                    value,
-                                    advertised,
-                                    disposition,
-                                );
-                                match (target, disposition) {
-                                    (Some(target), acp_client_runtime::InvalidSettingSessionDisposition::RemainsCreated) => {
-                                        ProviderOperationCompletion::FailureWithSession {
-                                            failure,
-                                            session_record: Box::new(provider_session_record(
+                        } else {
+                            let created = project_owner_create(result)
+                                .and_then(|setup| setup.settings_failure.map_or(Ok(setup.created), Err));
+                            match created {
+                                Ok(created) => {
+                                    match SessionId::try_from(created.provider_session_id) {
+                                        Ok(session_id) => {
+                                            let target = SessionRef {
+                                                endpoint,
+                                                session_id,
+                                            };
+                                            if let Some(catalog) = completion_backend.owner_session_catalog(&target).await {
+                                                completion_inner.record_settings_catalog(target.clone(), catalog).await;
+                                            }
+                                            let mut observed = effective_settings(requested_policy.clone());
+                                            observed.mode = created.effective_settings.mode;
+                                            observed.model = created.effective_settings.model;
+                                            observed.effort = created.effective_settings.effort;
+                                            observed.fast = created.effective_settings.fast.map(crate::provider_operation_settlement::provider_fast_state);
+                                            observed.requested_mode = created.permission_mode.requested;
+                                            observed.mode_reason = created.permission_mode.reason.map(crate::provider_operation_settlement::provider_mode_reason);
+                                            runtime.session_setup.record_requested_mode(&String::from(target.session_id.clone()), crate::provider_session_setup::RequestedModeRecord { requested_mode: observed.requested_mode.clone(), mode_reason: observed.mode_reason });
+                                            ProviderOperationCompletion::Success {
+                                                settlement: ConversationOperationSettlement::Created {
+                                                    target: target.clone(),
+                                                    effective_settings: observed,
+                                                },
+                                                target: Some(target.clone()),
+                                                session_record: Some(Box::new(
+                                                    provider_session_record(
+                                                        target,
+                                                        working_directory,
+                                                        requested_policy,
+                                                        created_by,
+                                                        approver,
+                                                        resume,
+                                                        completion_inner.now_ms(),
+                                                    ),
+                                                )),
+                                            }
+                                        }
+                                        Err(_) => ProviderOperationCompletion::Failure(failure(
+                                            ConversationOperationFailureKind::ProtocolViolation,
+                                            ConversationOperationFailureStage::Settlement,
+                                            ProviderOperationEffect::Applied,
+                                            "provider returned an invalid conversation identity",
+                                            operation_id,
+                                            None,
+                                        )),
+                                    }
+                                }
+                                Err(OperationFailureCause::CreatedWithoutSettings {
+                                    provider_session_id,
+                                    applied,
+                                    failed,
+                                    not_applied,
+                                    permission_mode,
+                                }) => {
+                                    match SessionId::try_from(provider_session_id) {
+                                    Ok(session_id) => {
+                                        let target = SessionRef { endpoint, session_id };
+                                        if let Some(catalog) = completion_backend.owner_session_catalog(&target).await {
+                                            completion_inner.record_settings_catalog(target.clone(), catalog).await;
+                                        }
+                                        // Show keeps the requested mode and reason of a partial start too.
+                                        runtime.session_setup.record_created_mode(&String::from(target.session_id.clone()), &permission_mode);
+                                        ProviderOperationCompletion::Success {
+                                            settlement: ConversationOperationSettlement::CreatedWithoutSettings {
+                                                target: target.clone(),
+                                                applied: applied.into_iter().map(provider_applied_setting).collect(),
+                                                failed: vec![provider_failed_setting(failed)],
+                                                not_applied: not_applied.into_iter().map(crate::provider_operation_settlement::provider_not_applied_setting).collect(),
+                                            },
+                                            target: Some(target.clone()),
+                                            session_record: Some(Box::new(provider_session_record(
                                                 target,
                                                 working_directory,
                                                 requested_policy,
@@ -341,17 +349,61 @@ impl ProviderConversationBackend for ExternalProviderSupervisor {
                                                 approver,
                                                 resume,
                                                 completion_inner.now_ms(),
-                                            )),
+                                            ))),
                                         }
                                     }
-                                    _ => ProviderOperationCompletion::Failure(failure),
+                                    Err(_) => ProviderOperationCompletion::Failure(failure(
+                                        ConversationOperationFailureKind::ProtocolViolation,
+                                        ConversationOperationFailureStage::Settlement,
+                                        ProviderOperationEffect::Applied,
+                                        "provider returned an invalid conversation identity after partial settings",
+                                        operation_id,
+                                        None,
+                                    )),
+                                    }
                                 }
+                                Err(OperationFailureCause::InvalidSetting {
+                                    setting,
+                                    value,
+                                    advertised,
+                                    provider_session_id,
+                                    disposition,
+                                }) => {
+                                    let target = SessionId::try_from(provider_session_id)
+                                        .ok()
+                                        .map(|session_id| SessionRef { endpoint, session_id });
+                                    let failure = invalid_setting_failure(
+                                        operation_id,
+                                        target.clone(),
+                                        setting,
+                                        value,
+                                        advertised,
+                                        disposition,
+                                    );
+                                    match (target, disposition) {
+                                        (Some(target), InvalidSettingSessionDisposition::RemainsCreated) => {
+                                            ProviderOperationCompletion::FailureWithSession {
+                                                failure,
+                                                session_record: Box::new(provider_session_record(
+                                                    target,
+                                                    working_directory,
+                                                    requested_policy,
+                                                    created_by,
+                                                    approver,
+                                                    resume,
+                                                    completion_inner.now_ms(),
+                                                )),
+                                            }
+                                        }
+                                        _ => ProviderOperationCompletion::Failure(failure),
+                                    }
+                                }
+                                Err(error) => ProviderOperationCompletion::Failure(runtime_failure(
+                                    operation_id,
+                                    None,
+                                    error,
+                                )),
                             }
-                            Err(error) => ProviderOperationCompletion::Failure(runtime_failure(
-                                operation_id,
-                                None,
-                                error,
-                            )),
                         };
                         let session = match &completion {
                             ProviderOperationCompletion::Success { session_record: Some(record), .. }
@@ -385,7 +437,7 @@ impl ProviderConversationBackend for ExternalProviderSupervisor {
                 &request.operation_id,
                 Some(target.clone()),
             )?;
-            if !runtime.admission().supports_load {
+            if !runtime.connection.capabilities(None).await.load {
                 return Err(failure(
                     ConversationOperationFailureKind::UnsupportedCapability,
                     ConversationOperationFailureStage::Binding,

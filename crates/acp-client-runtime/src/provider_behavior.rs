@@ -3,18 +3,8 @@
 use session_event_model::{PromptContent, ProviderSubmission, SkillView, ToolCallStatus};
 use std::path::PathBuf;
 
-/// The folders a Router-started session in auto works in without asking,
-/// beyond its working folder (D1 R18): its scratch folder and the Router's
-/// work roots that exist, and for Claude the command its hook runs to make
-/// it ask outside them.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct SessionWorkRoots {
-    pub roots: Vec<PathBuf>,
-    pub ask_outside_command: Option<String>,
-    /// The session starts in Router auto, so its agent must not run without
-    /// the boundary these roots define.
-    pub router_auto: bool,
-}
+pub use session_event_model::ProviderTurnInput;
+pub use switchboard_harness_contracts::SessionWorkRoots;
 
 /// What a load or resume rebuilds of the setup a session was created with
 /// (D1 R18; owner Decision 3): the mode its create asked for, its scratch
@@ -109,12 +99,6 @@ pub enum StatedPermissionTarget {
 pub enum ProviderInitializationAuthentication {
     NotRequested,
     RequiredAgentMethod { method_id: &'static str },
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ProviderTurnInput {
-    Prompt(ProviderSubmission),
-    Compact,
 }
 
 /// Why a prompt wasn't dispatched. Each session refusal carries its one-line

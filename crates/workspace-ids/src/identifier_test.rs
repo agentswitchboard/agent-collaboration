@@ -1,9 +1,34 @@
 use super::{
     ApprovalRequestId, AreaId, CentralSessionId, MachineId, ProjectId, RouterRunId, SessionId,
     SessionOperationId, SessionOperationIdError, SessionRef, WorkspaceId,
+    assert_uuid_v7_identifier_schemas,
 };
 use serde::de::DeserializeOwned;
 use std::str::FromStr;
+
+#[test]
+fn every_workspace_uuid_v7_schema_requires_the_canonical_spelling() {
+    assert_uuid_v7_identifier_schemas();
+}
+
+#[test]
+fn session_id_schema_states_the_byte_limit_and_nul_refusal() {
+    let mut schema = serde_json::to_value(schemars::schema_for!(SessionId)).unwrap();
+    let keywords = schema.as_object_mut().unwrap();
+    for annotation in ["$schema", "description", "title"] {
+        keywords.remove(annotation);
+    }
+    assert_eq!(
+        schema,
+        serde_json::json!({
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": r"^[^\u0000]+$",
+            "x-maxUtf8Bytes": 4096
+        }),
+    );
+}
 
 #[test]
 fn router_run_id_requires_canonical_uuid_v7() {

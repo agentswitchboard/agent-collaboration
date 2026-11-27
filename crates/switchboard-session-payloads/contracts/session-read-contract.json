@@ -1,0 +1,74 @@
+{
+  "deferredRoots": [
+    "InspectResult",
+    "LoadResult",
+    "WatchRecord",
+    "WatchEnd"
+  ],
+  "inherited": {
+    "policy": "Inherited from workspace-ids. Each root includes the rules for the types it uses.",
+    "types": [
+      {
+        "additionalRefusals": [],
+        "name": "SessionOperationId",
+        "roots": [
+          "LoadRequest",
+          "LoadQuery"
+        ],
+        "rustReader": "Requires a lower-case, hyphenated canonical RFC 4122 UUIDv7.",
+        "schema": "String with a lower-case, hyphenated RFC 4122 UUIDv7 pattern."
+      },
+      {
+        "additionalRefusals": [],
+        "name": "SessionId",
+        "roots": [
+          "Item",
+          "LoadRequest",
+          "LoadQuery"
+        ],
+        "rustReader": "Requires 1 to 4096 UTF-8 bytes and refuses NUL.",
+        "schema": "String with 1 to 4096 characters, a pattern that excludes NUL, and x-maxUtf8Bytes set to 4096."
+      },
+      {
+        "additionalRefusals": [],
+        "name": "MachineId",
+        "roots": [
+          "Item",
+          "LoadRequest",
+          "LoadQuery"
+        ],
+        "rustReader": "Requires the same UUID representation.",
+        "schema": "String with a lower-case, hyphenated RFC 4122 UUIDv7 pattern."
+      },
+      {
+        "additionalRefusals": [],
+        "name": "SessionRef",
+        "roots": [
+          "Item",
+          "LoadRequest",
+          "LoadQuery"
+        ],
+        "rustReader": "Requires the named pair and applies the inherited identifier readers.",
+        "schema": "Closed object requiring machineId and sessionId with their inherited schema rules."
+      }
+    ]
+  },
+  "jsonParserBoundary": "Duplicate keys and numeric token spellings inside raw values are handled by the JSON parser.",
+  "name": "session-read-contract",
+  "plainValidatorLimitations": [
+    {
+      "detail": "A plain validator ignores x-maxUtf8Bytes. The contract test registers it and the consumer generates a UTF-8 byte-length check.",
+      "rule": "checked-utf8-byte-limits"
+    },
+    {
+      "detail": "JSON Schema accepts an integral JSON number such as 1.0. The Rust timestamp reader requires an integer token.",
+      "rule": "first-seen-integer-token"
+    }
+  ],
+  "roots": [
+    "Item",
+    "LoadRequest",
+    "LoadQuery"
+  ],
+  "version": 1
+}
