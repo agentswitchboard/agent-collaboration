@@ -376,6 +376,8 @@ impl CentralObject {
                 decide_alarm: host.decide_alarm.clone(),
                 #[cfg(feature = "test-support")]
                 fail_after_write: self.controls.fail_approval_after_write.clone(),
+                #[cfg(feature = "test-support")]
+                approval_write_probe: self.controls.approval_write_probe.clone(),
             },
             ending_transport.clone(),
             clock.clone(),

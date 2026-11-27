@@ -7,17 +7,19 @@ use super::{
 
 type PolicyError = Box<dyn std::error::Error>;
 pub(super) const CRATES_IO: &str = "registry+https://github.com/rust-lang/crates.io-index";
+const STATE_MACHINE_CORE: &str = "state-machine-core";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DependencySource {
     WorkspaceContract,
+    WorkspaceStateMachineCore,
     CratesIo,
     Other,
 }
 
 fn permits(owner: &str, kind: DependencyKind, name: &str, source: DependencySource) -> bool {
     use DependencyKind::{Dev, Normal};
-    use DependencySource::{CratesIo, WorkspaceContract};
+    use DependencySource::{CratesIo, WorkspaceContract, WorkspaceStateMachineCore};
 
     if owner == HARNESS_CONTRACTS.0 {
         return matches!(
@@ -27,6 +29,8 @@ fn permits(owner: &str, kind: DependencyKind, name: &str, source: DependencySour
     }
 
     (kind, name, source) == (Normal, HARNESS_CONTRACTS.0, WorkspaceContract)
+        || (owner == HARNESS_SHARED_MECHANICS.0
+            && (kind, name, source) == (Normal, STATE_MACHINE_CORE, WorkspaceStateMachineCore))
         || matches!(
             (kind, name, source),
             (Normal, "tokio" | "tokio-util", CratesIo) | (Dev, "hegeltest", CratesIo)
@@ -37,19 +41,21 @@ fn workspace_harness_package<'a>(
     metadata: &'a CargoMetadata,
     name: &str,
 ) -> Result<&'a CargoPackage, PolicyError> {
-    metadata
-        .packages
-        .iter()
-        .find(|package| {
-            package.name == name
-                && package.source.is_none()
-                && metadata.workspace_members.contains(&package.id)
-        })
+    find_workspace_package(metadata, name)
         .ok_or_else(|| format!("harness stage workspace package missing: {name}").into())
+}
+
+fn find_workspace_package<'a>(metadata: &'a CargoMetadata, name: &str) -> Option<&'a CargoPackage> {
+    metadata.packages.iter().find(|package| {
+        package.name == name
+            && package.source.is_none()
+            && metadata.workspace_members.contains(&package.id)
+    })
 }
 
 pub(super) fn check_declared(metadata: &CargoMetadata) -> Result<(), PolicyError> {
     let contract = workspace_harness_package(metadata, HARNESS_CONTRACTS.0)?;
+    let machine_core = find_workspace_package(metadata, STATE_MACHINE_CORE);
     for package in [
         contract,
         workspace_harness_package(metadata, HARNESS_SHARED_MECHANICS.0)?,
@@ -61,6 +67,12 @@ pub(super) fn check_declared(metadata: &CargoMetadata) -> Result<(), PolicyError
                 && dependency.path.as_deref() == contract.manifest_path.parent()
             {
                 DependencySource::WorkspaceContract
+            } else if machine_core.is_some_and(|core| {
+                dependency.name == core.name
+                    && dependency.source.is_none()
+                    && dependency.path.as_deref() == core.manifest_path.parent()
+            }) {
+                DependencySource::WorkspaceStateMachineCore
             } else if dependency.path.is_none() && dependency.source.as_deref() == Some(CRATES_IO) {
                 DependencySource::CratesIo
             } else {
@@ -80,6 +92,7 @@ pub(super) fn check_declared(metadata: &CargoMetadata) -> Result<(), PolicyError
 
 pub(super) fn check_resolved(metadata: &CargoMetadata) -> Result<(), PolicyError> {
     let contract = workspace_harness_package(metadata, HARNESS_CONTRACTS.0)?;
+    let machine_core = find_workspace_package(metadata, STATE_MACHINE_CORE);
     for package in [
         contract,
         workspace_harness_package(metadata, HARNESS_SHARED_MECHANICS.0)?,
@@ -103,6 +116,8 @@ pub(super) fn check_resolved(metadata: &CargoMetadata) -> Result<(), PolicyError
                 })?;
             let source = if target.id == contract.id {
                 DependencySource::WorkspaceContract
+            } else if machine_core.is_some_and(|core| target.id == core.id) {
+                DependencySource::WorkspaceStateMachineCore
             } else if !metadata.workspace_members.contains(&target.id)
                 && target.source.as_deref() == Some(CRATES_IO)
             {

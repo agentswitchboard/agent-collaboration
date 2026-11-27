@@ -10,6 +10,7 @@ publish.workspace = true
 harness-work-observation = []
 
 [dependencies]
+state-machine-core.workspace = true
 switchboard-harness-contracts.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true

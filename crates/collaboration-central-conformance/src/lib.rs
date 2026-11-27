@@ -5,6 +5,12 @@ pub mod alarm_input_scenarios;
 pub mod approval_authority_scenarios;
 #[cfg(feature = "session-link-test-support")]
 pub mod approval_cleanup_fairness;
+#[cfg(all(
+    feature = "session-link-test-support",
+    feature = "signin-test-support",
+    not(target_arch = "wasm32")
+))]
+pub mod approval_dispatch_rollback;
 #[cfg(feature = "session-link-test-support")]
 pub mod approval_erasure_scenarios;
 #[cfg(feature = "session-link-test-support")]
