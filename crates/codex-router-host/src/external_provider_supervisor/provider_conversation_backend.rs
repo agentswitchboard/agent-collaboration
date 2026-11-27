@@ -135,7 +135,7 @@ impl ProviderConversationBackend for ExternalProviderSupervisor {
                 .as_ref()
                 .and_then(|settings| settings.mode.as_deref())
                 == Some("auto")
-                && let crate::provider_work_roots::WorkRootsHook::Unavailable(reason) =
+                && let crate::provider_session_setup::session_work_roots::WorkRootsHook::Unavailable(reason) =
                     backend.work_roots_for(&binding.endpoint).hook
             {
                 return Err(failure(
@@ -174,7 +174,7 @@ impl ProviderConversationBackend for ExternalProviderSupervisor {
                     let configured_roots = if auto {
                         backend.work_roots_for(&endpoint)
                     } else {
-                        crate::provider_work_roots::ProviderWorkRoots::default()
+                        crate::provider_session_setup::session_work_roots::ProviderWorkRoots::default()
                     };
                     let named_roots: Vec<PathBuf> = if auto {
                         request

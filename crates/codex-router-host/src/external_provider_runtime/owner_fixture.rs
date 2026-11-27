@@ -63,7 +63,7 @@ impl RuntimeFixture {
         self.door
             .open(
                 target.clone(),
-                crate::provider_work_roots::ProviderWorkRoots::default(),
+                crate::provider_session_setup::session_work_roots::ProviderWorkRoots::default(),
             )
             .map_err(fixture_error)
     }

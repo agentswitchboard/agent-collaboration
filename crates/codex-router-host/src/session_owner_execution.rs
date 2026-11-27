@@ -48,7 +48,7 @@ pub struct SessionOwnerExecution {
     calls: Arc<SessionOwnerCalls>,
     tasks: TaskTracker,
     routes: BTreeMap<SessionGeneration, OwnerRun>,
-    work_roots: crate::provider_work_roots::ProviderWorkRoots,
+    work_roots: crate::provider_session_setup::session_work_roots::ProviderWorkRoots,
     #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
     work_observer: Option<Arc<dyn WorkObservationSink>>,
     #[cfg(any(test, feature = "test-support"))]
@@ -80,7 +80,7 @@ impl SessionOwnerExecution {
         storage: SessionOwnerStorage,
         publisher: SessionOwnerPublisher,
         calls: Arc<SessionOwnerCalls>,
-        work_roots: crate::provider_work_roots::ProviderWorkRoots,
+        work_roots: crate::provider_session_setup::session_work_roots::ProviderWorkRoots,
     ) -> Self {
         let tasks = storage.task_tracker();
         Self {

@@ -167,7 +167,7 @@ impl SessionOwnerDoor {
     pub(crate) fn open(
         self: &Arc<Self>,
         target: SessionRef,
-        work_roots: crate::provider_work_roots::ProviderWorkRoots,
+        work_roots: crate::provider_session_setup::session_work_roots::ProviderWorkRoots,
     ) -> Result<Arc<SessionOwnerAddress>, OwnerDoorError> {
         if self.retired.is_cancelled() {
             return Err(OwnerDoorError::Unavailable);
@@ -207,7 +207,7 @@ impl SessionOwnerDoor {
         registered: crate::session_owner_registry::RegisteredSession,
         lane: Option<crate::session_store_lane::SessionStoreLaneTask>,
         replaced: Option<provider_session_machines::session_owner::OwnerIncarnation>,
-        work_roots: crate::provider_work_roots::ProviderWorkRoots,
+        work_roots: crate::provider_session_setup::session_work_roots::ProviderWorkRoots,
     ) -> Result<(Arc<SessionOwnerAddress>, SessionOwnerExecution), OwnerDoorError> {
         let bound = self.bind(&registered.owner, self.shutdown.clone());
         self.prepare_adopted_with_binding(target, registered, lane, replaced, work_roots, bound)
@@ -234,7 +234,7 @@ impl SessionOwnerDoor {
         registered: crate::session_owner_registry::RegisteredSession,
         lane: Option<crate::session_store_lane::SessionStoreLaneTask>,
         replaced: Option<provider_session_machines::session_owner::OwnerIncarnation>,
-        work_roots: crate::provider_work_roots::ProviderWorkRoots,
+        work_roots: crate::provider_session_setup::session_work_roots::ProviderWorkRoots,
         bound: BoundSessionHarness,
     ) -> Result<(Arc<SessionOwnerAddress>, SessionOwnerExecution), OwnerDoorError> {
         let session_id = String::from(target.session_id.clone());

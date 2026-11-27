@@ -3,7 +3,8 @@
 //! on stdin, and answers "ask" on stdout for a path outside the roots, or
 //! nothing.
 
-use super::{AskOutsideHook, install_work_roots_hook, session_work_roots};
+use super::install_work_roots_hook;
+use crate::provider_session_setup::session_work_roots::AskOutsideHook;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -258,30 +259,6 @@ fn input_it_cannot_read_asks() {
     // Assert
     assert!(unterminated.is_ask(), "an unreadable command asks");
     assert!(unplaced.is_ask(), "a call with no working folder asks");
-}
-
-/// Oracle: R18's session list, "the session's project tmp/ ... any roots its
-/// creator names at start": the configured roots, then the project's tmp/,
-/// then the named roots, each once.
-#[test]
-fn a_sessions_roots_add_its_project_tmp_and_named_roots_once() {
-    // Arrange
-    let configured = vec![PathBuf::from("/a"), PathBuf::from("/b")];
-    let named = vec![PathBuf::from("/b"), PathBuf::from("/c")];
-
-    // Act
-    let roots = session_work_roots(&configured, Path::new("/project"), &named);
-
-    // Assert
-    assert_eq!(
-        roots,
-        vec![
-            PathBuf::from("/a"),
-            PathBuf::from("/b"),
-            PathBuf::from("/project/tmp"),
-            PathBuf::from("/c"),
-        ]
-    );
 }
 
 /// Oracle: D1 R18 and the Verifier's f11cb0c38 finding: a relative path is a

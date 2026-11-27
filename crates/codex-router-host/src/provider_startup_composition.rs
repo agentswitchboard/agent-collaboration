@@ -268,7 +268,7 @@ pub(crate) async fn compose_provider_startup(
                         // and project tmp/ folders still bound them (D1 R18).
                         let hook = match binding.provider {
                             ProviderKind::Cursor => {
-                                crate::provider_work_roots::WorkRootsHook::NotNeeded
+                                crate::provider_session_setup::session_work_roots::WorkRootsHook::NotNeeded
                             }
                             ProviderKind::ClaudeCode => claude_work_roots_hook(
                                 launch_node,
@@ -278,7 +278,7 @@ pub(crate) async fn compose_provider_startup(
                         };
                         work_roots.push((
                             description.endpoint.clone(),
-                            crate::provider_work_roots::ProviderWorkRoots {
+                            crate::provider_session_setup::session_work_roots::ProviderWorkRoots {
                                 roots: binding.work_roots.clone(),
                                 hook,
                             },
@@ -488,8 +488,8 @@ fn claude_work_roots_hook(
     node: Option<std::path::PathBuf>,
     hook_directory: Option<&std::path::Path>,
     installed: &mut Option<std::path::PathBuf>,
-) -> crate::provider_work_roots::WorkRootsHook {
-    use crate::provider_work_roots::{AskOutsideHook, WorkRootsHook};
+) -> crate::provider_session_setup::session_work_roots::WorkRootsHook {
+    use crate::provider_session_setup::session_work_roots::{AskOutsideHook, WorkRootsHook};
     let Some(node) = node else {
         tracing::warn!("the Claude launch runs no known Node, so Claude can't start in auto");
         return WorkRootsHook::Unavailable("the Claude launch runs no known Node".to_owned());

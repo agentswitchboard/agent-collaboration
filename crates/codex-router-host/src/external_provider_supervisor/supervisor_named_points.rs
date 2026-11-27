@@ -90,7 +90,7 @@ impl ExternalProviderSupervisor {
         let door = self
             .owner_door(endpoint)
             .ok_or(crate::ExternalProviderRuntimeError::LocalNotFound)?;
-        let roots = crate::provider_work_roots::ProviderWorkRoots::default();
+        let roots = crate::provider_session_setup::session_work_roots::ProviderWorkRoots::default();
         let result = door
             .create_with_harness(
                 endpoint.clone(),

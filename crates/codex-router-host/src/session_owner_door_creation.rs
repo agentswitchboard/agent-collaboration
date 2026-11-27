@@ -61,7 +61,7 @@ struct ProvisionalCreate {
     endpoint: EndpointRef,
     operation: OperationId,
     input: Option<(OpenSetup, RequestedProviderSettings)>,
-    work_roots: crate::provider_work_roots::ProviderWorkRoots,
+    work_roots: crate::provider_session_setup::session_work_roots::ProviderWorkRoots,
     bound: Option<BoundSessionHarness>,
     prepared: Arc<Mutex<Option<PreparedCreate>>>,
     rebase: Option<PublicationBatch>,
@@ -91,7 +91,7 @@ impl SessionOwnerDoor {
         operation: OperationId,
         setup: OpenSetup,
         requested: RequestedProviderSettings,
-        work_roots: crate::provider_work_roots::ProviderWorkRoots,
+        work_roots: crate::provider_session_setup::session_work_roots::ProviderWorkRoots,
     ) -> Result<OwnerCreateReport, OwnerCreateFailure> {
         if self.retired.is_cancelled() {
             return Err(OwnerCreateFailure::TransportUnavailable);
