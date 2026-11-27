@@ -308,6 +308,21 @@ fn exported_item_schema_requires_a_javascript_safe_integer_for_first_seen_time()
         schema.pointer("/$defs/FirstSeenAtMs/format").is_none(),
         "consumer must use its bounded integer branch"
     );
+    assert!(
+        schema
+            .pointer("/properties/firstSeenAtMs/default")
+            .is_none()
+            && schema.pointer("/$defs/FirstSeenAtMs/default").is_none(),
+        "the first-seen timestamp must have no schema default"
+    );
+    assert!(
+        schema
+            .get("required")
+            .and_then(Value::as_array)
+            .unwrap()
+            .contains(&json!("firstSeenAtMs")),
+        "the first-seen timestamp must be listed as required"
+    );
     assert_eq!(
         FirstSeenAtMs::try_from(9_007_199_254_740_992),
         Err(FirstSeenAtMsError)

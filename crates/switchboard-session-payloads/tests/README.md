@@ -7,7 +7,7 @@ The integration target exercises the load request and query, the typed session i
 - `contracts/<RustType>.schema.json` contains the Draft 2020-12 schema for each root.
 - `contracts/<RustType>.fixtures.json` contains named canonical values serialized from Rust.
 - `contracts/Item.reads.json` pairs accepted input with its expected canonical value.
-- `contracts/Item.negatives.json` gives each refused input's root, reader path and reason. A schema exception is named when the instance schema accepts a token the reader refuses.
+- `contracts/Item.negatives.json` gives each refused input's root, reader path and reason. `schemaExpressible` records schema parity, and `schemaException` names the gap when the schema accepts a token the reader refuses.
 - `contracts/session-read-contract.json` names the version, exported roots, deferred roots and validation limits.
 
 The validator registers `x-maxUtf8Bytes` for byte limits on text. The generated decimal pattern has an explicit end-of-input assertion. The semantic test verifies that a final line feed is refused.
@@ -19,6 +19,7 @@ UPDATE_SESSION_READ_CONTRACT=1 cargo nextest run --locked -p switchboard-session
 ```
 
 With update mode absent the same test compares the fixtures and manifest and checks both the JSON structure and exact bytes of every file.
+The refused timestamp fixtures retain Serde's error wording for negative, fractional and integral floating-point tokens. A change to that wording will fail the drift test.
 
 ```sh
 cargo nextest run --locked -p switchboard-session-payloads --no-tests fail

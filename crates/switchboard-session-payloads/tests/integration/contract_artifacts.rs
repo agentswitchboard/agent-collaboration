@@ -18,6 +18,7 @@ use super::{
 };
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct RefusedExample {
     name: &'static str,
     root: &'static str,
@@ -90,6 +91,30 @@ fn session_read_contract_artifacts_match_generation() {
     ] {
         check_artifact(name, &value);
     }
+    check_contract_file_inventory();
+}
+
+fn check_contract_file_inventory() {
+    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("contracts");
+    let actual = fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect::<std::collections::BTreeSet<_>>();
+    let expected = [
+        "Item.schema.json",
+        "LoadRequest.schema.json",
+        "LoadQuery.schema.json",
+        "Item.fixtures.json",
+        "Item.negatives.json",
+        "Item.reads.json",
+        "LoadRequest.fixtures.json",
+        "LoadQuery.fixtures.json",
+        "session-read-contract.json",
+    ]
+    .map(std::ffi::OsString::from)
+    .into_iter()
+    .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(actual, expected, "session-read contract file inventory");
 }
 
 fn check_accepted<T>(name: &str, expected: &T, validator: &jsonschema::Validator)
@@ -278,7 +303,7 @@ fn refused_items(validator: &jsonschema::Validator) -> Vec<RefusedExample> {
             "id-control-character",
             &item,
             "/id",
-            json!("id\u{009f}"),
+            json!("id\u{0001}"),
             "id",
             "identifier text contains a control character",
         ),
