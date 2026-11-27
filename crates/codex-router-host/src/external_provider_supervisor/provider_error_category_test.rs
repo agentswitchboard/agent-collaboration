@@ -1,6 +1,6 @@
 //! Independent closed-category/public-failure oracles; all peer payloads are synthetic.
 use super::{ExternalProviderRuntime, ExternalProviderRuntimeError};
-use crate::external_provider_supervisor::owner_fixture_failures::{
+use crate::provider_test_support::acp_failures::{
     legacy_prompt_runtime_failure as prompt_runtime_failure,
     legacy_runtime_failure as runtime_failure,
 };

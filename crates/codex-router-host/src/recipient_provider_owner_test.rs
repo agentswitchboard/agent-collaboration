@@ -90,10 +90,10 @@ async fn managed_loading_owner_counts_with_or_without_a_saved_record() {
         store.mark_may_have_dispatched(&operation, 0).await.unwrap();
     }
     let owner = supervisor.session_owner_for(&target).unwrap();
-    let (reached, release) = supervisor
-        .runtime_for(&target.endpoint)
-        .unwrap()
-        .pause_restore_preparation();
+    let (reached, release) =
+        crate::provider_test_support::fixture_runtime_for(&supervisor, &target.endpoint)
+            .unwrap()
+            .pause_restore_preparation();
     let restore = owner.restore_explicit(correlation, RestoreVia::Load, Box::new(record.clone()));
     let check = async {
         reached.await.unwrap();

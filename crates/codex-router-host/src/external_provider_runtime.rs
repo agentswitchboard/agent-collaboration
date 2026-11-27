@@ -21,7 +21,7 @@ use switchboard_session_events::ProviderSessionEventHub;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 #[cfg(any(test, feature = "test-support"))]
-use crate::external_provider_supervisor::HarnessConnectionTestSupport;
+use crate::external_provider_supervisor::{FixtureOwnerDoorSlot, HarnessConnectionTestSupport};
 use crate::{
     ConnectionShutdown, ExternalProviderBinding, HarnessConnection, PromptRefusal,
     PromptSelectionRefusal,
@@ -101,8 +101,8 @@ mod initialization_authentication_tests;
 pub struct ExternalProviderRuntime {
     client: AgentSessionClient<HostRequestPayloads>,
     owner_ingress: Arc<SessionOwnerIngress>,
-    #[cfg(test)]
-    owner_door: std::sync::OnceLock<Arc<crate::session_owner_door::SessionOwnerDoor>>,
+    #[cfg(any(test, feature = "test-support"))]
+    owner_door_slot: FixtureOwnerDoorSlot,
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) preparation_fixture:
         Arc<crate::session_owner_preparation_fixture::PreparationFixture>,
@@ -130,10 +130,14 @@ impl ExternalProviderRuntime {
         let test_support = HarnessConnectionTestSupport {
             hold_writer_capacity: Some(self.fixture_writer_capacity()),
             preparation_fixture: self.preparation_fixture.clone(),
+            owner_door_slot: self.owner_door_slot.clone(),
         };
         let runtime = Arc::new(self);
-        #[cfg(test)]
-        let fixture_runtime = runtime.clone();
+        #[cfg(any(test, feature = "test-support"))]
+        crate::provider_test_support::register_fixture_runtime(
+            &test_support.owner_door_slot,
+            &runtime,
+        );
         ExternalProviderBinding::new(
             identity,
             runtime,
@@ -143,8 +147,6 @@ impl ExternalProviderRuntime {
             test_support,
             #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
             acp_client_runtime::work_call_observation::host_work_observation_sink(),
-            #[cfg(test)]
-            fixture_runtime,
         )
     }
 
@@ -237,27 +239,12 @@ impl ExternalProviderRuntime {
     }
 
     #[cfg(test)]
-    pub(crate) fn fixture_owner_door(
-        &self,
-    ) -> Option<Arc<crate::session_owner_door::SessionOwnerDoor>> {
-        self.owner_door.get().cloned()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn remember_fixture_door(
-        &self,
-        door: &Arc<crate::session_owner_door::SessionOwnerDoor>,
-    ) {
-        let _existing = self.owner_door.set(door.clone());
-    }
-
-    #[cfg(test)]
     pub(crate) fn session_owner_door(
         &self,
         store: Arc<tokio::sync::Mutex<switchboard_session_store::ProviderOperationStore>>,
         hub: Arc<switchboard_session_events::ProviderSessionEventHub>,
     ) -> Arc<crate::session_owner_door::SessionOwnerDoor> {
-        self.owner_door
+        self.owner_door_slot
             .get_or_init(|| {
                 let door = crate::session_owner_door::SessionOwnerDoor::new(
                     Some(self.fixture_writer_capacity()),
@@ -300,8 +287,8 @@ impl ExternalProviderRuntime {
         Ok(Self {
             client,
             owner_ingress,
-            #[cfg(test)]
-            owner_door: std::sync::OnceLock::new(),
+            #[cfg(any(test, feature = "test-support"))]
+            owner_door_slot: Arc::default(),
             #[cfg(any(test, feature = "test-support"))]
             preparation_fixture: Arc::default(),
             #[cfg(test)]
@@ -338,8 +325,8 @@ impl ExternalProviderRuntime {
         Ok(Self {
             client,
             owner_ingress,
-            #[cfg(test)]
-            owner_door: std::sync::OnceLock::new(),
+            #[cfg(any(test, feature = "test-support"))]
+            owner_door_slot: Arc::default(),
             #[cfg(any(test, feature = "test-support"))]
             preparation_fixture: Arc::default(),
             #[cfg(test)]
@@ -381,8 +368,8 @@ impl ExternalProviderRuntime {
         Ok(Self {
             client,
             owner_ingress,
-            #[cfg(test)]
-            owner_door: std::sync::OnceLock::new(),
+            #[cfg(any(test, feature = "test-support"))]
+            owner_door_slot: Arc::default(),
             #[cfg(any(test, feature = "test-support"))]
             preparation_fixture: Arc::default(),
             #[cfg(test)]
@@ -436,7 +423,7 @@ impl ExternalProviderRuntime {
         Ok(Self {
             client,
             owner_ingress,
-            owner_door: std::sync::OnceLock::new(),
+            owner_door_slot: Arc::default(),
             preparation_fixture: Arc::default(),
             #[cfg(test)]
             fixture: tokio::sync::OnceCell::new(),
@@ -461,7 +448,7 @@ impl ExternalProviderRuntime {
     ) -> acp_client_runtime::ProviderCapabilityReport {
         let connection = self.client.connection_capability_report().await;
         let observed = self
-            .owner_door
+            .owner_door_slot
             .get()
             .and_then(|door| door.existing_provider_session(provider_session_id))
             .and_then(|owner| owner.snapshots().borrow().projection.capabilities.clone());
@@ -489,7 +476,7 @@ impl ExternalProviderRuntime {
 
     #[cfg(test)]
     pub async fn shutdown(&self) {
-        if let Some(door) = self.owner_door.get() {
+        if let Some(door) = self.owner_door_slot.get() {
             door.shutdown().await;
         }
         self.client.shutdown().await;

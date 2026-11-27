@@ -129,14 +129,14 @@ fn a_restore_without_a_recorded_mode_keeps_the_mode_already_held() {
     // Act
     setup.record_restored_mode(
         "session-1",
-        &acp_client_runtime::PermissionModeReport::default(),
+        &provider_session_machines::harness_lifecycle::PermissionModeReport::default(),
     );
     let kept = setup.requested_mode("session-1");
     setup.record_restored_mode(
         "session-2",
-        &acp_client_runtime::PermissionModeReport {
+        &provider_session_machines::harness_lifecycle::PermissionModeReport {
             requested: Some("plan".to_owned()),
-            ..acp_client_runtime::PermissionModeReport::default()
+            ..provider_session_machines::harness_lifecycle::PermissionModeReport::default()
         },
     );
     let restored = setup.requested_mode("session-2");

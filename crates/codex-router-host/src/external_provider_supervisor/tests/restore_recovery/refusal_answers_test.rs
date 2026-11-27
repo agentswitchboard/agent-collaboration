@@ -22,8 +22,7 @@ async fn connection_loss_during_a_held_opening_refuses_queued_work_and_late_acti
             Arc::new(acp_provider_adapters::StandardAcpBehavior),
         )
         .await;
-    let runtime = host
-        .runtime_for(&rig.target.endpoint)
+    let runtime = crate::provider_test_support::fixture_runtime_for(&host, &rig.target.endpoint)
         .expect("provider runtime");
     let (held, release) = runtime.preparation_fixture.pause_restore();
     let restoring = OperationId::generate();
@@ -101,8 +100,7 @@ async fn retired_acp_connection_refuses_host_ready_before_the_owner_consumes_los
             Arc::new(acp_provider_adapters::StandardAcpBehavior),
         )
         .await;
-    let runtime = host
-        .runtime_for(&rig.target.endpoint)
+    let runtime = crate::provider_test_support::fixture_runtime_for(&host, &rig.target.endpoint)
         .expect("provider runtime");
     let owner = host
         .session_owner_for(&rig.target)
@@ -213,8 +211,7 @@ async fn connection_loss_after_close_is_offered_keeps_the_outcome_unknown() {
         .await;
     rig.assert_loads(&host).await;
     let owner = host.session_owner_for(&rig.target).expect("live owner");
-    let runtime = host
-        .runtime_for(&rig.target.endpoint)
+    let runtime = crate::provider_test_support::fixture_runtime_for(&host, &rig.target.endpoint)
         .expect("provider runtime");
     let close = OperationId::generate();
     host.close(ConversationCloseRequest {

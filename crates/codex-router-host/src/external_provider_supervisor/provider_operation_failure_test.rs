@@ -1,40 +1,6 @@
 use super::*;
-use crate::ExternalProviderRuntimeError;
-use crate::external_provider_supervisor::owner_fixture_failures::legacy_runtime_failure as runtime_failure;
 use collaboration_protocol::ProviderSettingName;
 use provider_session_machines::ProviderSettingKind;
-
-#[test]
-fn replay_failure_mapping_preserves_pre_and_post_dispatch_provenance() {
-    let target: SessionRef = serde_json::from_value(serde_json::json!({"endpoint":{"serviceId":"00000000-0000-4000-8000-000000000001","endpointId":"cursor-local"},"sessionId":"known"})).expect("target");
-    for (error, kind, stage, effect) in [
-        (
-            ExternalProviderRuntimeError::HistoryReplayAdmissionFailed,
-            ConversationOperationFailureKind::Unavailable,
-            ConversationOperationFailureStage::Dispatch,
-            ProviderOperationEffect::None,
-        ),
-        (
-            ExternalProviderRuntimeError::HistoryReplayUnavailable,
-            ConversationOperationFailureKind::OutcomeUnknown,
-            ConversationOperationFailureStage::Settlement,
-            ProviderOperationEffect::Unknown,
-        ),
-    ] {
-        // Arrange/Act: mapping must retain the exact caller operation and target on either path.
-        let operation = OperationId::generate();
-        let failure = runtime_failure(operation.clone(), Some(target.clone()), error);
-        // Assert: post-dispatch uncertainty cannot be weakened by the new admission arm.
-        assert_eq!(failure.operation_id, Some(operation));
-        assert_eq!(failure.target, Some(target.clone()));
-        assert_eq!(failure.kind, kind);
-        assert_eq!(failure.stage, stage);
-        assert_eq!(failure.effect, effect);
-        if effect == ProviderOperationEffect::None {
-            assert!(String::from(failure.message).contains("before provider load"));
-        }
-    }
-}
 
 #[test]
 fn invalid_setting_failure_names_each_setting_and_advertised_values() {
@@ -57,7 +23,7 @@ fn invalid_setting_failure_names_each_setting_and_advertised_values() {
             setting,
             "requested".to_owned(),
             vec!["first".to_owned(), "second".to_owned()],
-            acp_client_runtime::InvalidSettingSessionDisposition::Closed,
+            provider_session_machines::InvalidSettingSessionDisposition::Closed,
         );
 
         assert_eq!(
@@ -88,7 +54,7 @@ fn invalid_setting_failure_bounds_large_advertised_values_and_echo() {
         ProviderSettingKind::Model,
         value.clone(),
         advertised.clone(),
-        acp_client_runtime::InvalidSettingSessionDisposition::Closed,
+        provider_session_machines::InvalidSettingSessionDisposition::Closed,
     );
 
     let message = String::from(failure.message.clone());

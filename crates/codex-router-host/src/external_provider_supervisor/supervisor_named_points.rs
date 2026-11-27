@@ -104,7 +104,7 @@ impl ExternalProviderSupervisor {
                 roots,
             )
             .await;
-        crate::external_provider_supervisor::owner_fixture_failures::fixture_created_session(result)
+        crate::provider_test_support::acp_failures::fixture_created_session(result)
     }
 
     /// Pauses the accepted terminal write at its place in the store lane.

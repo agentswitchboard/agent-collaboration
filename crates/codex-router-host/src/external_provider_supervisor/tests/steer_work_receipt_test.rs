@@ -104,8 +104,7 @@ fn request(rig: &SteeringSession, text: &str) -> ProviderPromptContentsRequest {
 }
 
 fn stop_before_offer(rig: &SteeringSession, input: InputId) -> HandoverPause {
-    rig.supervisor
-        .runtime_for(&rig.target.endpoint)
+    crate::provider_test_support::fixture_runtime_for(&rig.supervisor, &rig.target.endpoint)
         .expect("provider runtime")
         .pause_work_handover_for_test(HandoverPausePoint::BeforeOffer, input)
 }
@@ -326,10 +325,9 @@ async fn prompt_required_does_not_offer_the_replacement_until_the_undo_receipt()
     assert_eq!(new_authorization.input_id, input);
     assert_eq!(new_authorization.target, AuthorizationTarget::NewTurn);
     assert!(new_authorization.authorization_seq > original.authorization_seq);
-    let runtime = rig
-        .supervisor
-        .runtime_for(&rig.target.endpoint)
-        .expect("provider runtime");
+    let runtime =
+        crate::provider_test_support::fixture_runtime_for(&rig.supervisor, &rig.target.endpoint)
+            .expect("provider runtime");
     let replacement_turn = runtime
         .held_work_approval_for_test(&String::from(rig.target.session_id.clone()))
         .expect("replacement turn");
@@ -601,10 +599,9 @@ async fn named_steer_reports_stale_generation_after_its_marked_run_is_replaced()
         .expect("steer admission task")
         .expect("steer admitted on the old run");
     let answer = wait_for_fixture_operation(&rig, operation).await;
-    let runtime = rig
-        .supervisor
-        .runtime_for(&rig.target.endpoint)
-        .expect("fixture runtime");
+    let runtime =
+        crate::provider_test_support::fixture_runtime_for(&rig.supervisor, &rig.target.endpoint)
+            .expect("fixture runtime");
     let legacy_id = OperationId::generate();
     let legacy = crate::external_provider_supervisor::provider_owner_prompt::retained_prompt(
         runtime.as_ref(),

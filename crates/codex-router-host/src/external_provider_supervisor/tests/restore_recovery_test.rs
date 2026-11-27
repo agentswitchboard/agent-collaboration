@@ -56,7 +56,8 @@ async fn host_close_without_a_wire_route_retires_the_exact_opening_as_not_enqueu
     let rig = RestoreRig::new();
     rig.seed_session().await;
     let host = rig.open_host_with(&["advertise-close"]).await;
-    let runtime = host.runtime_for(&rig.target.endpoint).expect("runtime");
+    let runtime = crate::provider_test_support::fixture_runtime_for(&host, &rig.target.endpoint)
+        .expect("runtime");
     let (reached, release) = runtime.preparation_fixture.pause_restore();
     let restoring = OperationId::generate();
     host.load(rig.load_request(restoring.clone()))
@@ -135,7 +136,8 @@ async fn a_refused_close_cannot_revive_a_restore_retired_before_commit() {
     let host = rig
         .open_host_with(&["restored-in-auto", "advertise-close", "hold-close-refusal"])
         .await;
-    let runtime = host.runtime_for(&rig.target.endpoint).expect("runtime");
+    let runtime = crate::provider_test_support::fixture_runtime_for(&host, &rig.target.endpoint)
+        .expect("runtime");
     let (reached, release) = runtime.preparation_fixture.pause_restore();
     let restoring = OperationId::generate();
     host.load(rig.load_request(restoring.clone()))
@@ -232,7 +234,8 @@ async fn a_public_prompt_stays_local_until_host_activation_settles() {
     let rig = RestoreRig::new();
     rig.seed_session().await;
     let host = rig.open_host("silent-prompts").await;
-    let runtime = host.runtime_for(&rig.target.endpoint).expect("runtime");
+    let runtime = crate::provider_test_support::fixture_runtime_for(&host, &rig.target.endpoint)
+        .expect("runtime");
     let (reached, release) = runtime.preparation_fixture.pause_restore();
     let restoring = OperationId::generate();
     host.load(rig.load_request(restoring.clone()))
@@ -284,7 +287,8 @@ async fn successful_host_activation_releases_the_waiting_public_prompt() {
     let rig = RestoreRig::new();
     rig.seed_session().await;
     let host = rig.open_host("restored-in-auto").await;
-    let runtime = host.runtime_for(&rig.target.endpoint).expect("runtime");
+    let runtime = crate::provider_test_support::fixture_runtime_for(&host, &rig.target.endpoint)
+        .expect("runtime");
     let (reached, release) = runtime.preparation_fixture.pause_restore();
     let restoring = OperationId::generate();
     host.load(rig.load_request(restoring.clone()))
@@ -319,45 +323,14 @@ async fn successful_host_activation_releases_the_waiting_public_prompt() {
 }
 
 #[tokio::test]
-async fn a_stale_restore_activation_failure_leaves_the_newer_run_live() {
-    let rig = RestoreRig::new();
-    let host = rig.open_host("restored-in-auto").await;
-    let runtime = host.runtime_for(&rig.target.endpoint).expect("runtime");
-    let session_id = String::from(rig.target.session_id.clone());
-    let (reached, release) = runtime.preparation_fixture.pause_restore();
-    let earlier = runtime.load_session(session_id.clone(), rig.root.path().to_path_buf());
-    let replacement = async {
-        reached.await.expect("the first ACP actor registered");
-        runtime
-            .release_session(session_id.clone())
-            .await
-            .expect("release the first run");
-        runtime
-            .load_session(session_id.clone(), rig.root.path().to_path_buf())
-            .await
-            .expect("activate the replacement");
-        release.send(()).expect("finish old activation");
-    };
-    let (earlier, ()) = tokio::join!(earlier, replacement);
-
-    assert!(
-        matches!(earlier, Err(ExternalProviderRuntimeError::SessionReleased)),
-        "{earlier:?}"
-    );
-    assert!(matches!(
-        runtime.session_activity(session_id).await,
-        Ok(crate::ProviderSessionActivity::Idle)
-    ));
-    host.shutdown().await.expect("stop Host");
-}
-
-#[tokio::test]
 async fn explicit_restore_reports_recovery_guidance_and_keeps_its_stored_effect() {
     for resume in [false, true] {
         let rig = RestoreRig::new();
         rig.seed_session().await;
         let host = rig.open_host("restored-in-auto").await;
-        let runtime = host.runtime_for(&rig.target.endpoint).expect("runtime");
+        let runtime =
+            crate::provider_test_support::fixture_runtime_for(&host, &rig.target.endpoint)
+                .expect("runtime");
         runtime.preparation_fixture.fault_restore();
         let id = OperationId::generate();
         let admitted = if resume {

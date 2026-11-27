@@ -222,10 +222,9 @@ async fn busy_with_steering_uses_the_running_owner_answer_after_the_turn_ends() 
         .expect("input");
     direct.busy = super::provider_prompt_contents::PromptBusyPolicy::RefuseBusy;
     let operation = direct.operation_id.clone();
-    let runtime = rig
-        .supervisor
-        .runtime_for(&rig.target.endpoint)
-        .expect("runtime");
+    let runtime =
+        crate::provider_test_support::fixture_runtime_for(&rig.supervisor, &rig.target.endpoint)
+            .expect("runtime");
     let acknowledgement = runtime.preparation_fixture.pause_delivery_ack(false);
     let refused = rig.supervisor.prompt_contents(direct);
     tokio::pin!(refused);

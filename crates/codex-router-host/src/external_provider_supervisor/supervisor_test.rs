@@ -1,4 +1,4 @@
-use crate::external_provider_supervisor::owner_fixture_failures::legacy_runtime_failure as runtime_failure;
+use crate::provider_test_support::acp_failures::legacy_runtime_failure as runtime_failure;
 #[path = "tests/deferred_uncertainty_admission_test.rs"]
 mod deferred_uncertainty_admission_tests;
 #[path = "tests/owner_skill_queue_test.rs"]
@@ -14,7 +14,7 @@ mod steered_input_join_tests;
 #[path = "tests/uncertainty_admission_test.rs"]
 mod uncertainty_admission_tests;
 use super::*;
-use crate::ExternalProviderLaunch;
+use crate::{ExternalProviderLaunch, ExternalProviderRuntime, ExternalProviderRuntimeError};
 use collaboration_protocol::{
     CodexGeneration, ConversationCreateRequest, EndpointId, GenerationNumber, MessageText,
     PositiveSeconds, ProviderBindingId, ProviderCapabilities, ProviderCapability,
@@ -359,8 +359,7 @@ async fn router_queue_drains_provider_prompts_in_fifo_order() {
         );
     }
 
-    let retirement = backend
-        .runtime_for(&endpoint())
+    let retirement = crate::provider_test_support::fixture_runtime_for(&backend, &endpoint())
         .expect("provider runtime")
         .retirement();
     for ((operation_id, mut offer), expected) in dispatch_offers.into_iter().zip(expected_lines) {
@@ -589,8 +588,7 @@ async fn provider_retirement_settles_queued_input_without_resubmission() {
             .expect("queue accepted"),
         crate::session_owner_calls::InputAcceptance::Queued
     );
-    backend
-        .runtime_for(&endpoint())
+    crate::provider_test_support::fixture_runtime_for(&backend, &endpoint())
         .expect("provider runtime")
         .shutdown()
         .await;

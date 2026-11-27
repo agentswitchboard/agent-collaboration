@@ -256,10 +256,10 @@ async fn closing_acp_during_queue_ack_leaves_a_custodian_until_the_real_write() 
     assert!(loaded.get("result").is_some(), "{loaded}");
     let host = fixture.supervisor.clone();
     let target = protocol_session(&fixture.session).expect("provider session");
-    let acknowledgement = host
-        .runtime_for(&target.endpoint)
-        .expect("provider runtime")
-        .pause_delivery_ack(false);
+    let acknowledgement =
+        crate::provider_test_support::fixture_runtime_for(&host, &target.endpoint)
+            .expect("provider runtime")
+            .pause_delivery_ack(false);
     let before = host.live_operation_ids();
     let mut commits = fixture.store.lock().await.subscribe_commits();
 

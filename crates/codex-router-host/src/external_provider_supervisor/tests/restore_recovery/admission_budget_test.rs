@@ -604,7 +604,7 @@ async fn restore_refusal_with_terminal_held(fail_terminal: bool) {
             "the inspection owns the store"
         );
         assert!(live.holds_custody());
-        host.runtime_for(&rig.target.endpoint)
+        crate::provider_test_support::fixture_runtime_for(&host, &rig.target.endpoint)
             .unwrap()
             .shutdown()
             .await;
