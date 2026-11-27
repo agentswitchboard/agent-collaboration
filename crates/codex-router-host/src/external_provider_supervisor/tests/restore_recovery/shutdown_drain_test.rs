@@ -8,12 +8,8 @@ const DRAIN_ELAPSED: &str = "external provider operation drain timed out";
 async fn shutdown_completes_when_a_reserved_admission_drops_without_a_result() {
     let rig = RestoreRig::new();
     let host = rig.open_host("restored-in-auto").await;
-    let runtime = &host
-        .inner
-        .bindings
-        .get(&rig.target.endpoint)
-        .expect("binding")
-        .runtime;
+    let runtime = crate::provider_test_support::fixture_runtime_for(&host, &rig.target.endpoint)
+        .expect("binding runtime");
     runtime.shutdown().await;
     let (entered, reserving) = oneshot::channel();
     let (_release, release) = oneshot::channel();
@@ -77,11 +73,8 @@ async fn shutdown_completes_when_a_reserved_admission_drops_without_a_result() {
 async fn shutdown_spends_one_budget_on_results_and_the_task_join() {
     let rig = RestoreRig::new();
     let host = rig.open_host("restored-in-auto").await;
-    host.inner
-        .bindings
-        .get(&rig.target.endpoint)
-        .expect("binding")
-        .runtime
+    crate::provider_test_support::fixture_runtime_for(&host, &rig.target.endpoint)
+        .expect("binding runtime")
         .shutdown()
         .await;
     let operation = OperationId::generate();
@@ -156,11 +149,8 @@ async fn shutdown_deadline_releases_a_late_dispatch_writer_with_no_acknowledgeme
         host.inner.store.try_lock().is_err(),
         "the late writer holds the store"
     );
-    host.inner
-        .bindings
-        .get(&rig.target.endpoint)
-        .expect("binding")
-        .runtime
+    crate::provider_test_support::fixture_runtime_for(&host, &rig.target.endpoint)
+        .expect("binding runtime")
         .shutdown()
         .await;
 

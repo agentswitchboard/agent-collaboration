@@ -90,7 +90,7 @@ impl ExternalProviderSupervisor {
         let door = self
             .owner_door(endpoint)
             .ok_or(crate::ExternalProviderRuntimeError::LocalNotFound)?;
-        let roots = crate::provider_work_roots::ProviderWorkRoots::default();
+        let roots = crate::provider_session_setup::session_work_roots::ProviderWorkRoots::default();
         let result = door
             .create_with_harness(
                 endpoint.clone(),
@@ -104,7 +104,7 @@ impl ExternalProviderSupervisor {
                 roots,
             )
             .await;
-        crate::external_provider_supervisor::owner_fixture_failures::fixture_created_session(result)
+        crate::provider_test_support::acp_failures::fixture_created_session(result)
     }
 
     /// Pauses the accepted terminal write at its place in the store lane.

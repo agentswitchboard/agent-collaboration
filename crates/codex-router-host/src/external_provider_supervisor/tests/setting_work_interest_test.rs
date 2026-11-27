@@ -57,10 +57,9 @@ async fn setting_with_no_waiter_never_reaches_the_offer_record() {
         .session_owner_for(&rig.target)
         .expect("setting owner");
     let (_, input, command) = setting_work(&owner);
-    let runtime = rig
-        .supervisor
-        .runtime_for(&rig.target.endpoint)
-        .expect("fixture runtime");
+    let runtime =
+        crate::provider_test_support::fixture_runtime_for(&rig.supervisor, &rig.target.endpoint)
+            .expect("fixture runtime");
     let pause = runtime.pause_work_handover_for_test(HandoverPausePoint::BeforeOffer, input);
 
     tokio::select! {
@@ -82,10 +81,9 @@ async fn setting_that_loses_its_waiter_at_the_writer_question_publishes_no_frame
         .session_owner_for(&rig.target)
         .expect("setting owner");
     let (operation, input, command) = setting_work(&owner);
-    let runtime = rig
-        .supervisor
-        .runtime_for(&rig.target.endpoint)
-        .expect("fixture runtime");
+    let runtime =
+        crate::provider_test_support::fixture_runtime_for(&rig.supervisor, &rig.target.endpoint)
+            .expect("fixture runtime");
     let waiter = owner.expect_work_settlement_for_test(operation);
     let before =
         runtime.pause_work_handover_for_test(HandoverPausePoint::BeforeQuestion, input.clone());
@@ -153,10 +151,9 @@ async fn an_unrealized_auto_mode_settles_inline_without_an_offer() {
     setting.kind = ProviderSettingKind::Mode;
     value.0 = "auto".into();
     let setting = *setting;
-    let runtime = rig
-        .supervisor
-        .runtime_for(&rig.target.endpoint)
-        .expect("fixture runtime");
+    let runtime =
+        crate::provider_test_support::fixture_runtime_for(&rig.supervisor, &rig.target.endpoint)
+            .expect("fixture runtime");
     let pause = runtime.pause_work_handover_for_test(HandoverPausePoint::BeforeOffer, input);
 
     let settled = tokio::select! {

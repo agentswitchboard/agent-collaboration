@@ -57,7 +57,7 @@ async fn a_refused_create_activation_keeps_the_applied_session_for_public_restor
         runtime.retirement(),
         Default::default(),
     ));
-    assert!(runtime.owner_door.set(door.clone()).is_ok());
+    assert!(runtime.owner_door_slot.set(door.clone()).is_ok());
     let host = ExternalProviderSupervisor::with_fixture_hub(
         vec![runtime.into_binding(binding.clone())],
         store,

@@ -142,6 +142,14 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         mut self,
         schedule: Arc<dyn Fn(LinkCallCompletion) + Send + Sync>,
     ) -> Self {
+        #[cfg(feature = "test-support")]
+        let schedule = {
+            let pauses = self.execution.pause_points().clone();
+            Arc::new(move |work| {
+                pauses.record_approval_delivery_scheduled();
+                schedule(work);
+            })
+        };
         self.approval_delivery_completion = Some(schedule);
         self
     }

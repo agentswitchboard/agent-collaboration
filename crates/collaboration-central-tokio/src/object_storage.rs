@@ -56,6 +56,8 @@ pub struct ObjectStorage {
     fail_session_loan: std::sync::atomic::AtomicBool,
     #[cfg(feature = "test-support")]
     fail_approval_after_write: std::sync::atomic::AtomicBool,
+    #[cfg(feature = "test-support")]
+    approval_write_probe: central_link_call_composition::ApprovalWriteProbe,
     /// Kept in memory after commit (Program Design, "the one alarm"; Tokio).
     alarm: watch::Sender<Option<SyncTime>>,
     publication_status: watch::Sender<AlarmPublicationStatus>,
@@ -111,6 +113,8 @@ impl ObjectStorage {
             fail_session_loan: Default::default(),
             #[cfg(feature = "test-support")]
             fail_approval_after_write: Default::default(),
+            #[cfg(feature = "test-support")]
+            approval_write_probe: Default::default(),
             alarm: watch::Sender::new(None),
             publication_status: watch::Sender::new(AlarmPublicationStatus::Published {
                 deadline: None,

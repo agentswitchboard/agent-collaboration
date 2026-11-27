@@ -279,3 +279,40 @@ async fn assert_restore_mode_reply(
     );
     host.shutdown().await.expect("fixture shutdown");
 }
+
+#[tokio::test]
+async fn a_stale_restore_activation_failure_leaves_the_newer_run_live() {
+    let rig = RestoreRig::new();
+    let host = rig.open_host("restored-in-auto").await;
+    let runtime = crate::provider_test_support::fixture_runtime_for(&host, &rig.target.endpoint)
+        .expect("runtime");
+    let session_id = String::from(rig.target.session_id.clone());
+    let (reached, release) = runtime.preparation_fixture.pause_restore();
+    let earlier = runtime.load_session(session_id.clone(), rig.root.path().to_path_buf());
+    let replacement = async {
+        reached.await.expect("the first ACP actor registered");
+        runtime
+            .release_session(session_id.clone())
+            .await
+            .expect("release the first run");
+        runtime
+            .load_session(session_id.clone(), rig.root.path().to_path_buf())
+            .await
+            .expect("activate the replacement");
+        release.send(()).expect("finish old activation");
+    };
+    let (earlier, ()) = tokio::join!(earlier, replacement);
+
+    assert!(
+        matches!(
+            earlier,
+            Err(crate::ExternalProviderRuntimeError::SessionReleased)
+        ),
+        "{earlier:?}"
+    );
+    assert!(matches!(
+        runtime.session_activity(session_id).await,
+        Ok(crate::ProviderSessionActivity::Idle)
+    ));
+    host.shutdown().await.expect("stop Host");
+}

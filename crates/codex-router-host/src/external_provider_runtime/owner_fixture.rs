@@ -63,7 +63,7 @@ impl RuntimeFixture {
         self.door
             .open(
                 target.clone(),
-                crate::provider_work_roots::ProviderWorkRoots::default(),
+                crate::provider_session_setup::session_work_roots::ProviderWorkRoots::default(),
             )
             .map_err(fixture_error)
     }
@@ -202,10 +202,7 @@ impl ExternalProviderRuntime {
                 Default::default(),
             )
             .await;
-        let id =
-            crate::external_provider_supervisor::owner_fixture_failures::fixture_created_session(
-                result,
-            )?;
+        let id = crate::provider_test_support::acp_failures::fixture_created_session(result)?;
         let record = RuntimeFixture::record(fixture.target(id.clone())?, cwd)?;
         fixture
             .store

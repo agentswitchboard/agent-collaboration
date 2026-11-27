@@ -17,7 +17,18 @@ mod scope;
 mod model_ledger;
 
 #[cfg(test)]
+mod approval_atomicity_delivery_recovery;
+#[cfg(test)]
+mod approval_atomicity_erasure_cleanup;
+#[cfg(test)]
+mod approval_atomicity_person;
+#[cfg(test)]
+mod approval_atomicity_raise_stop;
+#[cfg(test)]
+mod approval_atomicity_session;
+#[cfg(test)]
 mod approval_decision_log_cases;
+#[cfg(test)]
 mod approval_retention_boundary;
 #[cfg(test)]
 mod approval_store_atomicity;
@@ -29,6 +40,8 @@ mod approval_store_guards;
 mod approval_store_review_cases;
 #[cfg(test)]
 mod approval_store_stop_markers;
+#[cfg(test)]
+mod native_session_approval_fixture;
 #[cfg(test)]
 mod unproven_call_lifecycle;
 

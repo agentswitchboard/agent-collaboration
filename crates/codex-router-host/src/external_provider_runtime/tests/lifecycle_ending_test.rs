@@ -36,7 +36,7 @@ async fn check_run_retirement(trigger: RetirementTrigger) {
     wait_for_hub_state(&fixture, session_id, SessionState::Idle)
         .await
         .expect("published initial activation");
-    let door = runtime.owner_door.get().expect("real ACP owner door");
+    let door = runtime.owner_door_slot.get().expect("real ACP owner door");
     let owner = door
         .existing_provider_session(session_id)
         .expect("registered owner");

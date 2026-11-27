@@ -1,9 +1,12 @@
 //! Keys for the supervisor’s public operation failure projection.
 
 use super::PromptRefusal;
-use acp_client_runtime::{AppliedProviderSetting, NotAppliedProviderSetting, PermissionModeReport};
+use provider_session_machines::harness_lifecycle::{
+    AppliedProviderSetting, NotAppliedProviderSetting,
+};
 use provider_session_machines::{
-    InvalidSettingSessionDisposition, ProviderSettingKind, session_owner::ProviderWireFailure,
+    InvalidSettingSessionDisposition, ProviderSettingKind, harness_lifecycle::PermissionModeReport,
+    session_owner::ProviderWireFailure,
 };
 use session_event_model::FailedProviderSetting;
 

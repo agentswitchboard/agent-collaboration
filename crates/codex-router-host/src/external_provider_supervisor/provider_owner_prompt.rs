@@ -12,11 +12,11 @@ use super::{
     runtime_failure,
 };
 use crate::session_store_lane::STORE_WAIT;
-use acp_client_runtime::acp_transport::TransportRun;
 use collaboration_protocol::{
     ConversationOperationQueueState, MessageDelivery, NonEmptyText, ProviderOperationStage,
     ProviderPromptStopReason,
 };
+use provider_session_machines::harness_lifecycle::TransportRun;
 use provider_session_machines::{
     SessionGeneration,
     session_lifecycle_answers::state_answer,

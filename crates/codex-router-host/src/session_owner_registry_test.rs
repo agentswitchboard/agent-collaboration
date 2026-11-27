@@ -4,7 +4,7 @@ use crate::session_owner_door::SessionOwnerDoor;
 use crate::session_store_lane::{
     SessionStoreSettlement, SessionStoreTicket, SessionStoreWrite, tests::StoreFixture,
 };
-use acp_client_runtime::acp_transport::{TransportRefusal, TransportRun};
+use acp_client_runtime::acp_transport::{AcpTransport, TransportRefusal};
 use acp_client_runtime::session_owner_task::{
     OwnerCompletionPort, OwnerTaskError, SessionOwnerPorts,
 };
@@ -12,6 +12,7 @@ use collaboration_protocol::{
     ConversationBindingIdentity, ProviderOperationEffect, ProviderOperationKind,
     ProviderOperationStage, ProviderReconciliationState,
 };
+use provider_session_machines::harness_lifecycle::TransportRun;
 use provider_session_machines::{
     session_lifecycle_machine::{LoadAttempt, RestoreVia, SessionLifecycle},
     session_owner::{
@@ -26,6 +27,43 @@ use provider_session_machines::{
 };
 use session_event_model::InputId;
 use switchboard_session_store::ProviderOperationAdmission;
+
+impl SessionOwnerRegistry {
+    /// Called by the task monitor after the old owner stops offering effects.
+    /// It fences the registry compare-and-swap, transport revocation and lane
+    /// handover against a concurrent attempt to replace the same entry.
+    pub fn replace_failed_session<'connection, Frame: 'connection>(
+        &self,
+        target: &SessionRef,
+        failed: OwnerIncarnation,
+        connection: ConnectionEpoch,
+        transports: impl IntoIterator<Item = &'connection AcpTransport<Frame>>,
+    ) -> Result<
+        FailedOwnerSettlement<Vec<(DispatchAuthorization, SlotEvidence)>>,
+        SessionOwnerRegistryError,
+    > {
+        let mut slots = Vec::new();
+        let settled = self.replace_failed_with(
+            target,
+            failed,
+            connection,
+            BTreeSet::new(),
+            |incarnation, inputs| {
+                slots = transports
+                    .into_iter()
+                    .flat_map(|transport| transport.revoke_incarnation(incarnation))
+                    .collect();
+                answer_complete_acp_snapshot(inputs, &slots)
+            },
+        )?;
+        Ok(FailedOwnerSettlement {
+            replacement: settled.replacement,
+            handover: settled.handover,
+            slot_evidence: slots,
+            inputs: settled.inputs,
+        })
+    }
+}
 
 fn connection() -> ConnectionEpoch {
     ConnectionEpoch(Uuid::now_v7())

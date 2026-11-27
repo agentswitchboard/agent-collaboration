@@ -2,17 +2,16 @@
 
 mod harness_connection;
 mod provider_admission_policy;
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) use harness_connection::HarnessConnectionTestSupport;
 pub use harness_connection::{
     ConnectionShutdown, ExternalProviderBinding, HarnessConnection, PromptRefusal,
     PromptSelectionRefusal,
 };
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) use harness_connection::{FixtureOwnerDoorSlot, HarnessConnectionTestSupport};
+#[cfg(test)]
+pub(crate) mod coded_restore_failure_cases;
 mod operation_failure_cause;
 pub(crate) use operation_failure_cause::OperationFailureCause;
-#[cfg(any(test, feature = "test-support"))]
-#[path = "external_provider_runtime/owner_fixture_failures.rs"]
-pub(crate) mod owner_fixture_failures;
 mod provider_operation_admission;
 mod provider_operation_index;
 #[cfg(any(test, feature = "test-support"))]
@@ -26,6 +25,10 @@ mod provider_operation_handoff;
 #[path = "external_provider_supervisor/provider_operation_property_test.rs"]
 mod provider_operation_properties;
 mod provider_owner_delivery;
+#[cfg(test)]
+pub(crate) mod retention_fixture;
+#[cfg(test)]
+mod retention_signals_test;
 pub use provider_notice_delivery::ManagedAcpNoticeAdapter;
 pub(crate) use provider_owner_delivery::ExactTurnSteer;
 mod provider_owner_operations;
@@ -35,24 +38,29 @@ mod provider_prompt_contents;
 pub use provider_prompt_contents::{PromptBusyPolicy, ProviderPromptContentsRequest};
 mod provider_conversation_backend;
 mod provider_create_result;
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) use provider_create_result::provider_create_failure;
 mod provider_full_access_guard;
 mod provider_session_inspection;
 mod provider_session_lifecycle;
 mod provider_session_scratch;
 pub(crate) use provider_session_scratch::PrepareProviderScratch;
 mod provider_settings_control;
+pub(crate) mod restore_failure_text;
 #[cfg(test)]
 pub(crate) use provider_settings_control::snapshot_settings;
 #[cfg(any(test, feature = "test-support"))]
 mod supervisor_named_points;
 #[cfg(test)]
 mod supervisor_test_pauses;
-use provider_operation_failure::{admission_failure, invalid_setting_failure, runtime_failure};
+#[cfg(test)]
+pub(crate) use provider_operation_failure::assert_failure;
+#[cfg(not(test))]
+use provider_operation_failure::runtime_failure;
+#[cfg(test)]
+pub(crate) use provider_operation_failure::runtime_failure;
+use provider_operation_failure::{admission_failure, invalid_setting_failure};
 
-#[cfg(test)]
-use crate::ExternalProviderRuntime;
-#[cfg(test)]
-use crate::ExternalProviderRuntimeError;
 use crate::provider_operation_custody::CustodyEnd;
 use crate::provider_operation_settlement::{
     ProviderOperationCompletion, effective_settings, optional_message_text,
@@ -79,6 +87,8 @@ use collaboration_protocol::{
     ProviderOperationStage, ProviderReconciliationState, ProviderSessionInspectRequest,
     ProviderSettingsAcceptRequest, ProviderSettingsSetRequest, SessionId, SessionRef,
 };
+#[cfg(test)]
+pub(crate) use provider_settings_control::{failure as settings_failure, setting_outcome_unknown};
 use session_event_model::CapabilityReport;
 use std::{
     collections::HashMap,
@@ -162,8 +172,8 @@ struct RuntimeBinding {
     connection: Arc<dyn HarnessConnection>,
     retirement: CancellationToken,
     session_setup: BindingSessionSetup,
-    #[cfg(test)]
-    runtime: Arc<ExternalProviderRuntime>,
+    #[cfg(any(test, feature = "test-support"))]
+    owner_door_slot: FixtureOwnerDoorSlot,
     owners: Arc<crate::session_owner_door::SessionOwnerDoor>,
 }
 
@@ -178,7 +188,7 @@ impl ExternalProviderSupervisor {
     pub(crate) fn set_work_roots(
         &self,
         endpoint: &EndpointRef,
-        work_roots: crate::provider_work_roots::ProviderWorkRoots,
+        work_roots: crate::provider_session_setup::session_work_roots::ProviderWorkRoots,
     ) {
         if let Some(binding) = self.inner.bindings.get(endpoint) {
             binding.session_setup.set_work_roots(work_roots);
@@ -188,7 +198,7 @@ impl ExternalProviderSupervisor {
     fn work_roots_for(
         &self,
         endpoint: &EndpointRef,
-    ) -> crate::provider_work_roots::ProviderWorkRoots {
+    ) -> crate::provider_session_setup::session_work_roots::ProviderWorkRoots {
         self.inner
             .bindings
             .get(endpoint)
@@ -207,15 +217,15 @@ impl ExternalProviderSupervisor {
             .map(|entry| entry.identity.runtime.provider)
     }
 
-    #[cfg(test)]
-    pub(crate) fn runtime_for(
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn fixture_owner_door_slot(
         &self,
         endpoint: &EndpointRef,
-    ) -> Option<Arc<ExternalProviderRuntime>> {
+    ) -> Option<&FixtureOwnerDoorSlot> {
         self.inner
             .bindings
             .get(endpoint)
-            .map(|entry| Arc::clone(&entry.runtime))
+            .map(|entry| &entry.owner_door_slot)
     }
 
     pub(crate) fn session_owner_for(
@@ -421,6 +431,8 @@ impl ExternalProviderSupervisor {
             if runtimes.contains_key(&endpoint) {
                 return Err("external provider endpoint binding must be unique");
             }
+            #[cfg(any(test, feature = "test-support"))]
+            let owner_door_slot = binding.test_support.owner_door_slot.clone();
             let build_door = || {
                 let owners = crate::session_owner_door::SessionOwnerDoor::new(
                     #[cfg(any(test, feature = "test-support"))]
@@ -439,15 +451,14 @@ impl ExternalProviderSupervisor {
                 binding.ingress.attach(&owners);
                 owners
             };
-            #[cfg(not(test))]
+            #[cfg(not(any(test, feature = "test-support")))]
             let owners = build_door();
-            #[cfg(test)]
-            let owners = binding
-                .runtime
-                .fixture_owner_door()
-                .unwrap_or_else(build_door);
-            #[cfg(test)]
-            binding.runtime.remember_fixture_door(&owners);
+            #[cfg(any(test, feature = "test-support"))]
+            let owners = {
+                let owners = owner_door_slot.get().cloned().unwrap_or_else(build_door);
+                let _existing = owner_door_slot.set(owners.clone());
+                owners
+            };
             let permit = uncertainty.slot(&endpoint);
             permit.identity.get_or_init(|| binding.identity.clone());
             let operations = Arc::downgrade(&live_operations);
@@ -513,8 +524,8 @@ impl ExternalProviderSupervisor {
                     connection: binding.connection,
                     retirement: binding.retirement,
                     session_setup: BindingSessionSetup::default(),
-                    #[cfg(test)]
-                    runtime: binding.runtime,
+                    #[cfg(any(test, feature = "test-support"))]
+                    owner_door_slot,
                     owners,
                 }),
             );
@@ -924,7 +935,7 @@ fn snapshot_failure(
     clippy::expect_used,
     reason = "A malformed fixed fixture must fail its test."
 )]
-fn failure(
+pub(crate) fn failure(
     kind: ConversationOperationFailureKind,
     stage: ConversationOperationFailureStage,
     effect: ProviderOperationEffect,

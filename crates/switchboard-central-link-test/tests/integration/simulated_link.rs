@@ -429,8 +429,13 @@ type DriverReadReport = (ReadBytesSender, Vec<u8>);
 #[derive(Clone, Default)]
 struct ReadProbe {
     report: Arc<Mutex<Option<ReadBytesSender>>>,
-    discard: Arc<Mutex<Option<ReadBytesSender>>>,
+    discard: Arc<Mutex<Option<DiscardedRead>>>,
     replay: Arc<Mutex<DeferredRead>>,
+}
+
+struct DiscardedRead {
+    matches: fn(&[u8]) -> bool,
+    report: ReadBytesSender,
 }
 
 #[derive(Default)]
@@ -447,8 +452,18 @@ impl ReadProbe {
     }
 
     fn discard_next_read(&self) -> oneshot::Receiver<Vec<u8>> {
+        self.discard_matching_read(|_| true)
+    }
+
+    fn discard_matching_read(&self, matches: fn(&[u8]) -> bool) -> oneshot::Receiver<Vec<u8>> {
         let (report, observed) = oneshot::channel();
-        assert!(self.discard.lock().unwrap().replace(report).is_none());
+        assert!(
+            self.discard
+                .lock()
+                .unwrap()
+                .replace(DiscardedRead { matches, report })
+                .is_none()
+        );
         observed
     }
 
@@ -469,6 +484,17 @@ struct ResettableRead<Reader> {
     read_to_report: Option<DriverReadReport>,
 }
 
+impl<Reader> ResettableRead<Reader> {
+    fn note_read(&mut self, bytes: &[u8]) {
+        if !bytes.is_empty() {
+            let report = self.read_probe.report.lock().unwrap().take();
+            if let Some(report) = report {
+                self.read_to_report = Some((report, bytes.to_vec()));
+            }
+        }
+    }
+}
+
 impl<Reader: AsyncRead + Unpin> AsyncRead for ResettableRead<Reader> {
     fn poll_read(
         mut self: Pin<&mut Self>,
@@ -483,41 +509,56 @@ impl<Reader: AsyncRead + Unpin> AsyncRead for ResettableRead<Reader> {
         if let Some((report, bytes)) = self.read_to_report.take() {
             let _ = report.send(bytes);
         }
-        {
+        let before = buffer.filled().len();
+        let replayed = {
             let mut replay = self.read_probe.replay.lock().unwrap();
             if !replay.bytes.is_empty() {
                 let length = replay.bytes.len().min(buffer.remaining());
                 buffer.put_slice(replay.bytes.make_contiguous().get(..length).unwrap());
                 replay.bytes.drain(..length);
-                return Poll::Ready(Ok(()));
+                true
+            } else {
+                replay.waker = Some(context.waker().clone());
+                false
             }
-            replay.waker = Some(context.waker().clone());
+        };
+        if replayed {
+            self.note_read(buffer.filled().get(before..).unwrap());
+            return Poll::Ready(Ok(()));
         }
         let discard_armed = self.read_probe.discard.lock().unwrap().is_some();
         if discard_armed {
             let mut bytes = [0; 4096];
-            let mut held = ReadBuf::new(&mut bytes);
+            let capacity = bytes.len().min(buffer.remaining());
+            let mut held = ReadBuf::new(bytes.get_mut(..capacity).unwrap());
             let read = Pin::new(&mut self.reader).poll_read(context, &mut held);
             if matches!(read, Poll::Ready(Ok(()))) && !held.filled().is_empty() {
-                let report = self.read_probe.discard.lock().unwrap().take().unwrap();
-                report.send(held.filled().to_vec()).unwrap();
-                context.waker().wake_by_ref();
-                return Poll::Pending;
+                let discarded = {
+                    let mut discard = self.read_probe.discard.lock().unwrap();
+                    if discard
+                        .as_ref()
+                        .is_some_and(|watch| (watch.matches)(held.filled()))
+                    {
+                        discard.take()
+                    } else {
+                        None
+                    }
+                };
+                if let Some(discarded) = discarded {
+                    discarded.report.send(held.filled().to_vec()).unwrap();
+                    context.waker().wake_by_ref();
+                    return Poll::Pending;
+                }
+                buffer.put_slice(held.filled());
+                self.note_read(held.filled());
             }
             return read;
         }
-        let before = buffer.filled().len();
         let read = Pin::new(&mut self.reader).poll_read(context, buffer);
         if let Poll::Ready(Ok(())) = read
-            && let Some(bytes) = buffer
-                .filled()
-                .get(before..)
-                .filter(|bytes| !bytes.is_empty())
+            && let Some(bytes) = buffer.filled().get(before..)
         {
-            let report = self.read_probe.report.lock().unwrap().take();
-            if let Some(report) = report {
-                self.read_to_report = Some((report, bytes.to_vec()));
-            }
+            self.note_read(bytes);
         }
         read
     }

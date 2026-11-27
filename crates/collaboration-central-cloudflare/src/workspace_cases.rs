@@ -18,6 +18,7 @@ mod workspace_turn_cases;
 #[derive(Default)]
 pub(crate) struct Controls {
     pub(super) fail_approval_after_write: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub(super) approval_write_probe: central_link_call_composition::ApprovalWriteProbe,
     pub(super) fail_reserved_session_reply: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub(super) fail_typed_refusal_send: std::cell::Cell<bool>,
     pub(super) faults: std::sync::Arc<fleet_runtime::TestFaults>,
@@ -262,6 +263,16 @@ pub(super) async fn control(
         );
         return Response::from_json(&true);
     }
+    if path == "/test/approval-write-probe-arm" {
+        object
+            .controls
+            .approval_write_probe
+            .arm(request.json().await?);
+        return Response::from_json(&true);
+    }
+    if path == "/test/approval-write-probe-trace" {
+        return Response::from_json(&object.controls.approval_write_probe.trace());
+    }
     if path == "/test/fail-reserved-session-reply" {
         object.controls.fail_reserved_session_reply.store(
             request.json::<bool>().await?,
@@ -468,6 +479,12 @@ pub(super) async fn control(
             let point: Point = request.json().await?;
             Response::from_json(&runtime.runtime().pause_points().central_count(point.into()))
         }
+        "/test/approval-delivery-scheduled-count" => Response::from_json(
+            &runtime
+                .runtime()
+                .pause_points()
+                .approval_delivery_scheduled_count(),
+        ),
         "/test/until-mac-delivery-count" => {
             let (point, minimum): (Point, u64) = request.json().await?;
             runtime

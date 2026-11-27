@@ -13,19 +13,19 @@ use std::sync::Arc;
 use switchboard_harness_contracts::{LoadAttempt, OwnerSetting, RunAttempt};
 
 pub use switchboard_harness_contracts::{
-    AUTO_PERMISSION_MODE, AcceptedRunSettings, ActivationRefusal, ActivationSetup, ApprovalLease,
-    ApprovalLeaseBinding, ApprovalLeaseRefusalReason, BeforeOfferApprovalLeaseRefusal,
-    CallbackAdmission, CatalogueFact, CatalogueRequest, CloseFact, CloseUncertainty, CreateAttempt,
-    CreatedSettingsFailure, CreatedSetupFact, CreatedSetupReport, CreationEffect, EventPort,
-    EventRefusal, EventSendFuture, ExactTurn, FastRequest, HandOverRefusal, HarnessCallbackIngress,
-    HarnessContent, HarnessLifecyclePayloads, HarnessOwnerEvents, HarnessOwnerRecovery,
-    HarnessProvider, HarnessSessionId, Held, HeldOpeningKind, InvalidRequestedSetting,
-    LifecycleEventPort, LifecycleFact, LifecycleMove, LifecycleRefusal, LifecycleReply,
-    ObservedTurnApprovalLeaseRefusal, OpenAttempt, OpenRequest, OpenSetup, OpeningFact,
-    OpeningFailure, OwnerHarnessBinding, PermissionModeReport, ReplayCompleteness,
-    RequestedProviderSettings, ReservedReply, RestoreLoadReadback, RestoreSettingRefusal,
-    RestoredOpening, RunRetirement, SessionWorkRoots, SettingAttempt, SettingFact, SetupReport,
-    SlotEvidence, StreamTurn, TransportRun, WorkReply,
+    AUTO_PERMISSION_MODE, AcceptedRunSettings, ActivationRefusal, ActivationSetup,
+    AppliedProviderSetting, ApprovalLease, ApprovalLeaseBinding, ApprovalLeaseRefusalReason,
+    BeforeOfferApprovalLeaseRefusal, CallbackAdmission, CatalogueFact, CatalogueRequest, CloseFact,
+    CloseUncertainty, CreateAttempt, CreatedSettingsFailure, CreatedSetupFact, CreatedSetupReport,
+    CreationEffect, EventPort, EventRefusal, EventSendFuture, ExactTurn, FastRequest,
+    HandOverRefusal, HarnessCallbackIngress, HarnessContent, HarnessLifecyclePayloads,
+    HarnessOwnerEvents, HarnessOwnerRecovery, HarnessProvider, HarnessSessionId, Held,
+    HeldOpeningKind, InvalidRequestedSetting, LifecycleEventPort, LifecycleFact, LifecycleMove,
+    LifecycleRefusal, LifecycleReply, NotAppliedProviderSetting, ObservedTurnApprovalLeaseRefusal,
+    OpenAttempt, OpenRequest, OpenSetup, OpeningFact, OpeningFailure, OwnerHarnessBinding,
+    PermissionModeReport, ReplayCompleteness, RequestedProviderSettings, ReservedReply,
+    RestoreLoadReadback, RestoreSettingRefusal, RestoredOpening, RunRetirement, SessionWorkRoots,
+    SettingAttempt, SettingFact, SetupReport, SlotEvidence, StreamTurn, TransportRun, WorkReply,
 };
 
 pub struct SessionHarnessPayloads<ApprovalContext>(PhantomData<fn() -> ApprovalContext>);

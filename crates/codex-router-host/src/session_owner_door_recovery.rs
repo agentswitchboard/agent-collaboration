@@ -22,7 +22,7 @@ impl SessionOwnerDoor {
         mut task: SessionOwnerTask,
         mut ports: SessionOwnerExecution,
         mut owner: Arc<SessionOwnerAddress>,
-        work_roots: crate::provider_work_roots::ProviderWorkRoots,
+        work_roots: crate::provider_session_setup::session_work_roots::ProviderWorkRoots,
     ) {
         let weak = Arc::downgrade(self);
         let stop = self.shutdown.clone();
@@ -53,7 +53,7 @@ impl SessionOwnerDoor {
         &self,
         target: &SessionRef,
         previous: &Arc<SessionOwnerAddress>,
-        work_roots: crate::provider_work_roots::ProviderWorkRoots,
+        work_roots: crate::provider_session_setup::session_work_roots::ProviderWorkRoots,
     ) -> Option<(
         SessionOwnerTask,
         SessionOwnerExecution,
