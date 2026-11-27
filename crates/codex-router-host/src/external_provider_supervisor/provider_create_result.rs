@@ -1,21 +1,20 @@
 //! Project neutral create settlements into the current provider API.
 
+use super::OperationFailureCause;
 use crate::session_owner_door::{OwnerCreateFailure, OwnerCreateReport};
-use acp_client_runtime::{
-    ExternalProviderCreatedSession, ExternalProviderRuntimeError, InvalidSettingSessionDisposition,
-};
+use acp_client_runtime::{ExternalProviderCreatedSession, InvalidSettingSessionDisposition};
 use provider_session_machines::harness_lifecycle::{
     CreatedSettingsFailure, InvalidRequestedSetting, OpeningFailure,
 };
 
 pub(crate) struct ProviderCreatedOwnerSetup {
     pub(crate) created: ExternalProviderCreatedSession,
-    pub(crate) settings_failure: Option<ExternalProviderRuntimeError>,
+    pub(crate) settings_failure: Option<OperationFailureCause>,
 }
 
 pub(crate) fn project_owner_create(
     result: Result<OwnerCreateReport, OwnerCreateFailure>,
-) -> Result<ProviderCreatedOwnerSetup, ExternalProviderRuntimeError> {
+) -> Result<ProviderCreatedOwnerSetup, OperationFailureCause> {
     result
         .map(provider_created_setup)
         .map_err(provider_create_failure)
@@ -37,7 +36,7 @@ fn provider_created_setup(report: OwnerCreateReport) -> ProviderCreatedOwnerSetu
             applied,
             failed,
             not_applied,
-        } => ExternalProviderRuntimeError::CreatedWithoutSettings {
+        } => OperationFailureCause::CreatedWithoutSettings {
             provider_session_id: session.0.clone(),
             applied,
             failed,
@@ -55,16 +54,19 @@ fn provider_created_setup(report: OwnerCreateReport) -> ProviderCreatedOwnerSetu
     }
 }
 
-fn provider_create_failure(failure: OwnerCreateFailure) -> ExternalProviderRuntimeError {
+pub(crate) fn provider_create_failure(failure: OwnerCreateFailure) -> OperationFailureCause {
     match failure {
-        OwnerCreateFailure::TransportUnavailable => ExternalProviderRuntimeError::TransportFailure,
+        // Transport loss, failed activation, harness diagnostics, and uncoded openings
+        // share the same unavailable-response row of the caller’s failure table.
+        OwnerCreateFailure::TransportUnavailable => OperationFailureCause::ResponseUnavailable,
+        OwnerCreateFailure::Operation(diagnostic) => {
+            drop(diagnostic);
+            OperationFailureCause::ResponseUnavailable
+        }
         OwnerCreateFailure::Activation { reason, .. } => {
             tracing::debug!(?reason, "session harness refused create activation");
-            ExternalProviderRuntimeError::Operation(
-                "the provider created the session but could not activate it".to_owned(),
-            )
+            OperationFailureCause::ResponseUnavailable
         }
-        OwnerCreateFailure::Operation(message) => ExternalProviderRuntimeError::Operation(message),
         OwnerCreateFailure::ClosedAfterInvalidSetting(failure) => {
             invalid_setting(failure, InvalidSettingSessionDisposition::Closed)
         }
@@ -73,16 +75,16 @@ fn provider_create_failure(failure: OwnerCreateFailure) -> ExternalProviderRunti
                 reported: Some(failure),
             }
             | OpeningFailure::Refused(failure)
-            | OpeningFailure::ProviderError(failure) => failure.into(),
-            OpeningFailure::Unavailable { diagnostic } => {
-                ExternalProviderRuntimeError::Operation(diagnostic)
+            | OpeningFailure::ProviderError(failure) => {
+                OperationFailureCause::HarnessCoded(failure)
             }
             OpeningFailure::Lost { reported: None }
             | OpeningFailure::Disconnected
             | OpeningFailure::OutcomeUnknown
             | OpeningFailure::NoAnswer
             | OpeningFailure::ReplayNotKnown
-            | OpeningFailure::Closed => ExternalProviderRuntimeError::TransportFailure,
+            | OpeningFailure::Closed
+            | OpeningFailure::Unavailable { .. } => OperationFailureCause::ResponseUnavailable,
         },
     }
 }
@@ -90,8 +92,8 @@ fn provider_create_failure(failure: OwnerCreateFailure) -> ExternalProviderRunti
 fn invalid_setting(
     failure: InvalidRequestedSetting,
     disposition: InvalidSettingSessionDisposition,
-) -> ExternalProviderRuntimeError {
-    ExternalProviderRuntimeError::InvalidSetting {
+) -> OperationFailureCause {
+    OperationFailureCause::InvalidSetting {
         setting: failure.kind,
         value: failure.value,
         advertised: failure.advertised,

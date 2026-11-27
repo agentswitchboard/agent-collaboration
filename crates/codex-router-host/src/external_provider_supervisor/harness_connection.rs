@@ -8,7 +8,7 @@ use std::sync::Arc;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 use crate::{
-    ExternalProviderRuntimeError, session_owner_ingress::SessionOwnerIngress,
+    session_owner_ingress::SessionOwnerIngress,
     session_owner_lifecycle_reports::SessionHarnessProvider,
 };
 
@@ -28,7 +28,7 @@ pub trait HarnessConnection: Send + Sync {
         &self,
         input: ProviderTurnInput,
         observed: Option<CapabilityReport>,
-    ) -> RequestFuture<'_, Result<PreparedPrompt, ExternalProviderRuntimeError>>;
+    ) -> RequestFuture<'_, Result<PreparedPrompt, PromptRefusal>>;
 
     fn take_permission_refusal(
         &self,
@@ -37,6 +37,27 @@ pub trait HarnessConnection: Send + Sync {
     fn reuses_setting_confirmation(&self, kind: ProviderSettingKind) -> bool;
     fn ended_on_oversized_message(&self) -> bool;
     fn shutdown(&self) -> RequestFuture<'_, ConnectionShutdown>;
+}
+
+/// Why prompt preparation refused before the harness received a request.
+#[derive(Debug, Eq, PartialEq)]
+pub enum PromptRefusal {
+    Selection {
+        kind: PromptSelectionRefusal,
+        message: String,
+    },
+    UnsupportedContent {
+        content_type: &'static str,
+    },
+    Unclassified,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PromptSelectionRefusal {
+    InvalidSelection,
+    MalformedMetadata,
+    Unsupported,
+    SourceUnavailable,
 }
 
 pub enum ConnectionShutdown {

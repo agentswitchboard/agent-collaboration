@@ -4,7 +4,15 @@ mod harness_connection;
 mod provider_admission_policy;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use harness_connection::HarnessConnectionTestSupport;
-pub use harness_connection::{ConnectionShutdown, ExternalProviderBinding, HarnessConnection};
+pub use harness_connection::{
+    ConnectionShutdown, ExternalProviderBinding, HarnessConnection, PromptRefusal,
+    PromptSelectionRefusal,
+};
+mod operation_failure_cause;
+pub(crate) use operation_failure_cause::OperationFailureCause;
+#[cfg(any(test, feature = "test-support"))]
+#[path = "external_provider_runtime/owner_fixture_failures.rs"]
+pub(crate) mod owner_fixture_failures;
 mod provider_operation_admission;
 mod provider_operation_index;
 #[cfg(any(test, feature = "test-support"))]
@@ -26,6 +34,7 @@ pub(crate) use provider_owner_prompt::{SessionQueuePlan, WarmRun};
 mod provider_prompt_contents;
 pub use provider_prompt_contents::{PromptBusyPolicy, ProviderPromptContentsRequest};
 mod provider_conversation_backend;
+mod provider_create_result;
 mod provider_full_access_guard;
 mod provider_session_inspection;
 mod provider_session_lifecycle;
@@ -38,12 +47,11 @@ pub(crate) use provider_settings_control::snapshot_settings;
 mod supervisor_named_points;
 #[cfg(test)]
 mod supervisor_test_pauses;
-use provider_operation_failure::{
-    admission_failure, invalid_setting_failure, prompt_runtime_failure, runtime_failure,
-};
+use provider_operation_failure::{admission_failure, invalid_setting_failure, runtime_failure};
 
 #[cfg(test)]
 use crate::ExternalProviderRuntime;
+#[cfg(test)]
 use crate::ExternalProviderRuntimeError;
 use crate::provider_operation_custody::CustodyEnd;
 use crate::provider_operation_settlement::{

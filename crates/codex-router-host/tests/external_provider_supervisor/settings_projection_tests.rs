@@ -236,3 +236,180 @@ async fn provider_create_projects_effective_partial_and_invalid_settings() -> Te
     }
     Ok(())
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn create_failure_causes_preserve_the_partial_settlement_and_both_invalid_dispositions()
+-> TestResult {
+    use collaboration_protocol::{
+        AppliedProviderSetting, ConversationOperationFailureStage, FailedProviderSetting,
+        InvalidSettingSessionDisposition, NotAppliedProviderSetting,
+    };
+    use session_event_model::ProviderSettingFailureReason;
+
+    let clock = crate::provider_test_clock();
+    for mode in ["partial", "partial_first", "invalid", "invalid_no_close"] {
+        let root = tempfile::tempdir()?;
+        let provider_endpoint = endpoint("cursor-local")?;
+        let creator = actor(provider_endpoint.clone(), "creator")?;
+        let runtime = ExternalProviderRuntime::initialize(
+            launch("supervisor-settings-create-agent.ts", vec![mode.to_owned()]),
+            Arc::new(acp_provider_adapters::StandardAcpBehavior),
+            clock.clone(),
+        )
+        .await?;
+        let backend = supervisor(
+            &root,
+            vec![(binding(provider_endpoint.clone(), "cursor")?, runtime)],
+            clock.clone(),
+        )
+        .await?;
+        let (requested_mode, model) = if mode.starts_with("invalid") {
+            ("auto", "wrong")
+        } else {
+            ("ask", "b")
+        };
+        let operation_id = OperationId::generate();
+        operation(
+            backend
+                .create(ConversationCreateRequest {
+                    work_roots: Vec::new(),
+                    settings: Some(ProviderRequestedSettings {
+                        mode: Some(requested_mode.to_owned()),
+                        model: Some(model.to_owned()),
+                        ..Default::default()
+                    }),
+                    operation_id: operation_id.clone(),
+                    endpoint: provider_endpoint,
+                    generation: Some(generation()?),
+                    working_directory: working_directory()?,
+                    created_by: creator.clone().into(),
+                    approver: creator.into(),
+                    requested_policy: policy(),
+                })
+                .await,
+        )?;
+
+        let result = wait(&backend, operation_id.clone()).await;
+        let mut store =
+            ProviderOperationStore::open(&root.path().join("provider-operations.sqlite")).await?;
+        if mode.starts_with("partial") {
+            let ConversationOperationWaitOutput::Available {
+                settlement:
+                    ConversationOperationSettlement::CreatedWithoutSettings {
+                        target,
+                        applied,
+                        failed,
+                        not_applied,
+                    },
+            } = operation(result)?.output
+            else {
+                return Err("expected the partial create settlement".into());
+            };
+            let expected_reason = ProviderSettingFailureReason::Other(
+                "provider rejected the ACP operation (ACP code -32603)".to_owned(),
+            );
+            if mode == "partial" {
+                ensure_eq!(
+                    applied,
+                    vec![AppliedProviderSetting {
+                        setting: ProviderSettingName::Mode,
+                        value: "ask".to_owned()
+                    }]
+                );
+                ensure_eq!(
+                    failed,
+                    vec![FailedProviderSetting {
+                        setting: ProviderSettingName::Model,
+                        value: "b".to_owned(),
+                        reason: expected_reason
+                    }]
+                );
+                ensure!(not_applied.is_empty());
+                let shown = backend
+                    .inspect_session(ProviderSessionInspectRequest {
+                        target: target.clone(),
+                    })
+                    .await
+                    .map_err(|error| error.message)?;
+                ensure_eq!(
+                    shown
+                        .settings_catalog
+                        .as_ref()
+                        .and_then(|catalog| catalog.current_mode.as_deref()),
+                    Some("ask")
+                );
+            } else {
+                ensure!(applied.is_empty());
+                ensure_eq!(
+                    failed,
+                    vec![FailedProviderSetting {
+                        setting: ProviderSettingName::Mode,
+                        value: "ask".to_owned(),
+                        reason: expected_reason
+                    }]
+                );
+                ensure_eq!(
+                    not_applied,
+                    vec![NotAppliedProviderSetting {
+                        setting: ProviderSettingName::Model,
+                        value: "b".to_owned()
+                    }]
+                );
+            }
+            let record = store
+                .session_record(&target)
+                .await?
+                .ok_or("partial create has no stored session")?;
+            ensure_eq!(record.target, target);
+            ensure_eq!(record.resume.requested_mode.as_deref(), Some("ask"));
+        } else {
+            let failure = result.expect_err("invalid settings fail create");
+            let (disposition, expected_message, retains_session) = if mode == "invalid" {
+                (
+                    InvalidSettingSessionDisposition::Closed,
+                    "invalid provider setting model=\"wrong\"; advertised: \"a\", \"b\"; new Session was closed",
+                    false,
+                )
+            } else {
+                (
+                    InvalidSettingSessionDisposition::RemainsCreated,
+                    "invalid provider setting model=\"wrong\"; advertised: \"a\", \"b\"; new Session remains created and idle",
+                    true,
+                )
+            };
+            ensure_eq!(
+                (
+                    failure.kind,
+                    failure.stage,
+                    failure.effect,
+                    failure.provider_code,
+                    String::from(failure.message)
+                ),
+                (
+                    ConversationOperationFailureKind::InvalidSetting,
+                    ConversationOperationFailureStage::Settlement,
+                    ProviderOperationEffect::Applied,
+                    None,
+                    expected_message.to_owned()
+                )
+            );
+            ensure_eq!(failure.operation_id, Some(operation_id));
+            let detail = failure.invalid_setting.ok_or("expected setting details")?;
+            ensure_eq!(detail.setting, ProviderSettingName::Model);
+            ensure_eq!(detail.value, "wrong");
+            ensure_eq!(detail.advertised, vec!["a".to_owned(), "b".to_owned()]);
+            ensure_eq!(detail.session_disposition, disposition);
+            let target = failure
+                .target
+                .ok_or("invalid create failure lost its target")?;
+            ensure_eq!(String::from(target.session_id.clone()), "settings-session");
+            ensure_eq!(
+                store.session_record(&target).await?.is_some(),
+                retains_session
+            );
+        }
+        backend.shutdown().await.map_err(str::to_owned)?;
+    }
+    Ok(())
+}

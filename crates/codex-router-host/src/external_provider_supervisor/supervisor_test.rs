@@ -1,3 +1,4 @@
+use crate::external_provider_supervisor::owner_fixture_failures::legacy_runtime_failure as runtime_failure;
 #[path = "tests/deferred_uncertainty_admission_test.rs"]
 mod deferred_uncertainty_admission_tests;
 #[path = "tests/owner_skill_queue_test.rs"]

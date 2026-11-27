@@ -1,12 +1,15 @@
 //! Load a recorded provider session only after checking live peer ownership.
 use crate::external_provider_supervisor::SessionQueuePlan;
 use crate::{
-    ExternalProviderRuntimeError, ExternalProviderSupervisor, LiveSessionOwnership,
-    LiveSessionOwnershipCheck, ProviderSessionActivity,
+    ExternalProviderSupervisor, LiveSessionOwnership, LiveSessionOwnershipCheck,
+    ProviderSessionActivity,
 };
-use acp_client_runtime::{RestoreFailure, RestorePhase, acp_transport::TransportRun};
+use acp_client_runtime::acp_transport::TransportRun;
 use collaboration_contracts::LoadPolicy;
 use collaboration_protocol::{DeliveryCorrelationId, SessionRef};
+use provider_session_machines::session_owner::{
+    ProviderWireFailure, ProviderWireFailureKind, RestorePhase,
+};
 use std::sync::Arc;
 use switchboard_session_store::ProviderOperationStore;
 use tokio::sync::Mutex;
@@ -273,12 +276,9 @@ fn owner_restore_outcome(
     result: provider_session_machines::session_owner::RestoreResult,
 ) -> ProviderSessionLoadOutcome {
     use provider_session_machines::session_owner::{
-        RestoreDisposition, RestoreFailure as OwnerFailure, RestorePhase as OwnerPhase,
+        RestoreDisposition, RestoreFailure as OwnerFailure,
     };
-    let phase = match result.phase {
-        OwnerPhase::Preflight => RestorePhase::Preflight,
-        OwnerPhase::Attempted => RestorePhase::Attempted,
-    };
+    let phase = result.phase;
     match result.disposition {
         RestoreDisposition::Restored { .. } => ProviderSessionLoadOutcome::Ready,
         RestoreDisposition::Retired {
@@ -288,131 +288,96 @@ fn owner_restore_outcome(
         RestoreDisposition::Retired { failure, .. }
             if let Some(coded) = failure.coded_evidence() =>
         {
-            load_error_outcome(&RestoreFailure::attempted(coded.into()))
+            coded_load_outcome(coded)
         }
         RestoreDisposition::Retired { failure, .. } => load_failure(phase, failure.next_step()),
     }
 }
 /// What a failed load means for the work that asked for it.
-fn load_error_outcome(failure: &RestoreFailure) -> ProviderSessionLoadOutcome {
-    let phase = failure.phase;
-    match failure.error() {
-        // A close won while this load was in flight: the connection
-        // dropped the restored session.
-        ExternalProviderRuntimeError::SessionReleased => {
-            ProviderSessionLoadOutcome::ClosedWhileLoading { phase }
-        }
-        ExternalProviderRuntimeError::ProviderSessionNotFound {
-            code,
-            correlation_id,
-        } => {
-            let correlation_id = match DeliveryCorrelationId::try_from(correlation_id.to_string()) {
-                Ok(correlation_id) => correlation_id,
-                Err(_) => {
-                    return load_failure(
-                        phase,
-                        "provider error reference was invalid, so retry this session",
-                    );
-                }
-            };
+pub(crate) fn coded_load_outcome(failure: ProviderWireFailure) -> ProviderSessionLoadOutcome {
+    let ProviderWireFailure {
+        kind,
+        code,
+        correlation_id,
+    } = failure;
+    let phase = RestorePhase::Attempted;
+    match kind {
+        ProviderWireFailureKind::SessionNotFound => {
+            let correlation_id =
+                match DeliveryCorrelationId::try_from(correlation_id.hyphenated().to_string()) {
+                    Ok(correlation_id) => correlation_id,
+                    Err(_) => {
+                        return load_failure(
+                            phase,
+                            "provider error reference was invalid, so retry this session",
+                        );
+                    }
+                };
             ProviderSessionLoadOutcome::Rejected {
                 phase,
                 reason: ProviderSessionLoadRejection::SessionNotFound {
-                    code: *code,
+                    code,
                     correlation_id,
                 },
             }
         }
-        ExternalProviderRuntimeError::RestoreRefused {
-            code,
-            correlation_id,
-        }
-        | ExternalProviderRuntimeError::AuthenticationRequired {
-            code,
-            correlation_id,
-        }
-        | ExternalProviderRuntimeError::ProviderRejected {
-            code,
-            correlation_id,
-        } => {
-            let correlation_id = match DeliveryCorrelationId::try_from(correlation_id.to_string()) {
-                Ok(correlation_id) => correlation_id,
-                Err(_) => {
-                    return load_failure(
-                        phase,
-                        "provider error reference was invalid, so retry this session",
-                    );
-                }
-            };
+        ProviderWireFailureKind::RestoreRefused
+        | ProviderWireFailureKind::AuthenticationRequired
+        | ProviderWireFailureKind::Rejected => {
+            let correlation_id =
+                match DeliveryCorrelationId::try_from(correlation_id.hyphenated().to_string()) {
+                    Ok(correlation_id) => correlation_id,
+                    Err(_) => {
+                        return load_failure(
+                            phase,
+                            "provider error reference was invalid, so retry this session",
+                        );
+                    }
+                };
             ProviderSessionLoadOutcome::Rejected {
                 phase,
                 reason: ProviderSessionLoadRejection::ProviderRejected {
-                    code: *code,
+                    code,
                     correlation_id,
                 },
             }
         }
-        ExternalProviderRuntimeError::ResourceNotFound {
-            code,
-            correlation_id,
-        } => coded_load_failure(
+        ProviderWireFailureKind::ResourceNotFound => coded_load_failure(
             phase,
             "provider resource was not found, so check the provider before retrying",
-            *code,
-            *correlation_id,
-        ),
-        ExternalProviderRuntimeError::RestoreFailed {
             code,
             correlation_id,
-        } => coded_load_failure(
+        ),
+        ProviderWireFailureKind::RestoreFailed => coded_load_failure(
             phase,
             "the provider failed while restoring this session, so retry it",
-            *code,
-            *correlation_id,
-        ),
-        ExternalProviderRuntimeError::UnsupportedMethod {
             code,
             correlation_id,
-        } => coded_load_failure(
+        ),
+        ProviderWireFailureKind::UnsupportedMethod => coded_load_failure(
             phase,
             "provider ACP method is unsupported, so check the provider's restore support before retrying",
-            *code,
-            *correlation_id,
-        ),
-        ExternalProviderRuntimeError::InvalidParams {
             code,
             correlation_id,
-        } => coded_load_failure(
+        ),
+        ProviderWireFailureKind::InvalidParams => coded_load_failure(
             phase,
             "provider ACP parameters are invalid, so check the session setup before retrying",
-            *code,
-            *correlation_id,
-        ),
-        ExternalProviderRuntimeError::RequestCancelled {
             code,
             correlation_id,
-        } => coded_load_failure(
+        ),
+        ProviderWireFailureKind::RequestCancelled => coded_load_failure(
             phase,
             "provider ACP request was cancelled, so retry the restore when ready",
-            *code,
-            *correlation_id,
+            code,
+            correlation_id,
         ),
-        error => {
-            let reason = match (error, phase) {
-                (ExternalProviderRuntimeError::SinkClosed | ExternalProviderRuntimeError::HistoryReplayUnavailable, RestorePhase::Attempted) =>
-                    "the Router could not publish the restored session's replay or settings, so reconnect and retry this session".to_owned(),
-                (ExternalProviderRuntimeError::RestoreNoAnswer | ExternalProviderRuntimeError::RestoreDisconnected, _)
-                | (_, RestorePhase::Preflight) => error.to_string(),
-                (_, RestorePhase::Attempted) => format!("{error}, so retry this session"),
-            };
-            load_failure(phase, reason)
-        }
     }
 }
 
 /// Shared recovery wording for explicit restores and inputs waiting on a load.
-pub(crate) fn load_error_reason(error: &RestoreFailure) -> String {
-    match load_error_outcome(error) {
+pub(crate) fn load_error_reason(failure: ProviderWireFailure) -> String {
+    match coded_load_outcome(failure) {
         ProviderSessionLoadOutcome::Ready | ProviderSessionLoadOutcome::AlreadyLoaded => {
             "the session couldn't be loaded".to_owned()
         }
@@ -479,17 +444,18 @@ fn coded_load_failure(
     phase: RestorePhase,
     explanation: &'static str,
     provider_code: i64,
-    correlation_id: acp_client_runtime::ProviderErrorCorrelationId,
+    correlation_id: uuid::Uuid,
 ) -> ProviderSessionLoadOutcome {
-    let correlation_id = match DeliveryCorrelationId::try_from(correlation_id.to_string()) {
-        Ok(correlation_id) => correlation_id,
-        Err(_) => {
-            return load_failure(
-                phase,
-                "provider error reference was invalid, so retry this session",
-            );
-        }
-    };
+    let correlation_id =
+        match DeliveryCorrelationId::try_from(correlation_id.hyphenated().to_string()) {
+            Ok(correlation_id) => correlation_id,
+            Err(_) => {
+                return load_failure(
+                    phase,
+                    "provider error reference was invalid, so retry this session",
+                );
+            }
+        };
     load_failure(
         phase,
         format!(
@@ -499,7 +465,10 @@ fn coded_load_failure(
     )
 }
 
-fn load_failure(phase: RestorePhase, reason: impl Into<String>) -> ProviderSessionLoadOutcome {
+pub(crate) fn load_failure(
+    phase: RestorePhase,
+    reason: impl Into<String>,
+) -> ProviderSessionLoadOutcome {
     ProviderSessionLoadOutcome::Unavailable {
         phase,
         reason: reason.into(),
