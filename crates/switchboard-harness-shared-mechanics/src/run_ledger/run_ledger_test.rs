@@ -427,7 +427,10 @@ fn replacing_a_run_resets_its_record_but_keeps_all_three_slot_states() {
         assert_eq!(slot(&ledger, &key), Some(evidence));
         assert_eq!(
             ledger.offer(key, None, 40),
-            Err(OfferRefusal::AuthorizationSequenceOnRecord)
+            Err(RefusedOffer {
+                refusal: OfferRefusal::AuthorizationSequenceOnRecord,
+                frame: 40
+            })
         );
     }
 }
@@ -441,7 +444,10 @@ fn a_marked_run_refuses_an_offer_before_creating_a_slot() {
 
     assert_eq!(
         ledger.offer(key.clone(), None, 10),
-        Err(OfferRefusal::Closing)
+        Err(RefusedOffer {
+            refusal: OfferRefusal::Closing,
+            frame: 10
+        })
     );
     assert_eq!(slot(&ledger, &key), None);
 }
@@ -463,14 +469,20 @@ fn a_recorded_sequence_wins_over_a_standing_offer_and_is_free_after_forget() {
     );
     assert_eq!(
         ledger.offer(collision.clone(), None, 33),
-        Err(OfferRefusal::AuthorizationSequenceOnRecord)
+        Err(RefusedOffer {
+            refusal: OfferRefusal::AuthorizationSequenceOnRecord,
+            frame: 33
+        })
     );
     let second = authorization(run, 1, 2, AuthorizationTarget::Session);
     assert_eq!(ledger.offer(second.clone(), None, 20), Ok(()));
 
     assert_eq!(
         ledger.offer(collision.clone(), None, 33),
-        Err(OfferRefusal::AuthorizationSequenceOnRecord)
+        Err(RefusedOffer {
+            refusal: OfferRefusal::AuthorizationSequenceOnRecord,
+            frame: 33
+        })
     );
     assert_eq!(slot(&ledger, &second), Some(SlotEvidence::Offered));
     ledger.forget(&second);
@@ -490,7 +502,10 @@ fn another_sequence_cannot_stand_for_the_same_run_and_input() {
 
     assert_eq!(
         ledger.offer(second.clone(), None, 20),
-        Err(OfferRefusal::OtherAuthorizationOffered)
+        Err(RefusedOffer {
+            refusal: OfferRefusal::OtherAuthorizationOffered,
+            frame: 20
+        })
     );
     assert_eq!(slot(&ledger, &second), None);
     assert_eq!(slot(&ledger, &first), Some(SlotEvidence::Offered));

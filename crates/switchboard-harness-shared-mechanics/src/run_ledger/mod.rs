@@ -1,5 +1,6 @@
 //! One harness connection's runs and its ordered writer's work offers.
 
+mod ledger_outcomes;
 mod offer_slot_machine;
 mod route_close_machine;
 mod turn_membership_machine;
@@ -12,6 +13,10 @@ use switchboard_harness_contracts::{
     TransportRun, TurnId, TurnMembership,
 };
 
+pub use ledger_outcomes::{
+    HandOverCommit, MembershipOutcome, NoSuchOffer, OfferRefusal, ReadmitOutcome, RefusedOffer,
+    RetiredRun, RouteRefusal, RunOpening,
+};
 use offer_slot_machine::{OfferSlotEvent, OfferSlotMachine, OfferSlotRefusal, OfferSlotState};
 use route_close_machine::{RouteCloseEvent, RouteCloseMachine, RouteCloseRefusal, RouteCloseState};
 use turn_membership_machine::{TurnMembershipEvent, TurnMembershipMachine};
@@ -91,67 +96,9 @@ impl<Frame> OfferRecord<Frame> {
     }
 }
 
-#[derive(Debug, Eq, PartialEq)]
-pub struct RetiredRun {
-    pub run: TransportRun,
-    pub session: String,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RunOpening {
-    Opened,
-    AlreadyOpen,
-}
-
-#[derive(Debug, Eq, PartialEq)]
-pub enum MembershipOutcome {
-    Applied,
-    Ended {
-        run: TransportRun,
-        turn: TurnId,
-        session: String,
-    },
-    Retired(RetiredRun),
-    Ignored(TurnMembershipRefusal),
-    NoSuchRun,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RouteRefusal {
-    RouteUnavailable,
-    Closing,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum OfferRefusal {
-    RouteUnavailable,
-    Closing,
-    WorkDoesNotFitAuthorization,
-    OtherAuthorizationOffered,
-    AuthorizationSequenceOnRecord,
-}
-
-impl From<RouteRefusal> for OfferRefusal {
-    fn from(refusal: RouteRefusal) -> Self {
-        match refusal {
-            RouteRefusal::RouteUnavailable => Self::RouteUnavailable,
-            RouteRefusal::Closing => Self::Closing,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct NoSuchOffer;
-
 pub enum HandOverCheck<'ledger, Frame> {
     Settled(DispatchResult),
     Ready(ReadyHandOver<'ledger, Frame>),
-}
-
-#[derive(Debug, Eq, PartialEq)]
-pub enum HandOverCommit<Frame> {
-    Send { run: TransportRun, frame: Frame },
-    Unsent(DispatchResult),
 }
 
 /// A checked offer. The exclusive borrow keeps its slot and turn unchanged
@@ -200,14 +147,6 @@ impl ReadyClose<'_> {
             *self.0 = next;
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ReadmitOutcome {
-    Reopened,
-    RouteLost,
-    MarkerAbsent,
-    DifferentMarker,
 }
 
 impl<Frame> RunLedger<Frame> {
@@ -311,8 +250,21 @@ impl<Frame> RunLedger<Frame> {
         authorization: DispatchAuthorization,
         new_turn: Option<TurnId>,
         frame: Frame,
+    ) -> Result<(), RefusedOffer<Frame>> {
+        if let Err(refusal) = self.check_offer(&authorization, new_turn) {
+            return Err(RefusedOffer { refusal, frame });
+        }
+        self.offers
+            .insert(authorization, OfferRecord::Offered { frame, new_turn });
+        Ok(())
+    }
+
+    fn check_offer(
+        &self,
+        authorization: &DispatchAuthorization,
+        new_turn: Option<TurnId>,
     ) -> Result<(), OfferRefusal> {
-        let run = authorization_run(&authorization);
+        let run = authorization_run(authorization);
         self.check_takes_requests(run)?;
         if (authorization.target == AuthorizationTarget::NewTurn) != new_turn.is_some() {
             return Err(OfferRefusal::WorkDoesNotFitAuthorization);
@@ -330,8 +282,6 @@ impl<Frame> RunLedger<Frame> {
         if other_offer_stands {
             return Err(OfferRefusal::OtherAuthorizationOffered);
         }
-        self.offers
-            .insert(authorization, OfferRecord::Offered { frame, new_turn });
         Ok(())
     }
 
@@ -353,11 +303,18 @@ impl<Frame> RunLedger<Frame> {
             }
             Ok(OfferSlotState::Taken) => {
                 let OfferRecord::Offered { new_turn, .. } = slot else {
+                    debug_assert!(
+                        false,
+                        "hand-over reducer accepted a slot that was not offered"
+                    );
                     return Err(NoSuchOffer);
                 };
                 *new_turn
             }
-            Ok(OfferSlotState::Offered | OfferSlotState::Revoked) => return Err(NoSuchOffer),
+            Ok(OfferSlotState::Offered | OfferSlotState::Revoked) => {
+                debug_assert!(false, "hand-over reducer accepted without taking the slot");
+                return Err(NoSuchOffer);
+            }
         };
         let run = authorization_run(authorization);
         if self.check_takes_requests(run).is_err() {
@@ -366,7 +323,10 @@ impl<Frame> RunLedger<Frame> {
                 authorization.clone(),
             )));
         }
-        let membership = self.membership(run).ok_or(NoSuchOffer)?;
+        let Some(membership) = self.membership(run) else {
+            debug_assert!(false, "run that takes requests must have membership");
+            return Err(NoSuchOffer);
+        };
         let taken_membership = new_turn
             .map(|turn| {
                 TurnMembershipMachine::reduce(membership, TurnMembershipEvent::TakeNew { turn })
@@ -578,6 +538,9 @@ fn revoke_slot<Frame>(
     slot.evidence()
 }
 
+#[cfg(test)]
+#[path = "run_ledger_frame_custody_test.rs"]
+mod frame_custody_tests;
 #[cfg(test)]
 #[path = "run_ledger_model_test.rs"]
 mod model_tests;

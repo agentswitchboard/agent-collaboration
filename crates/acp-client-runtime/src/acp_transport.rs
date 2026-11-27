@@ -5,19 +5,18 @@ mod restore_registration;
 pub(crate) use lifecycle_routes::ReadmitOutcome;
 pub(crate) use restore_registration::RestoreSelection;
 
-use crate::callback_router::CallbackRouter;
+use crate::callback_router::ToolClaims;
 pub use crate::callback_router::{CallbackKind, CallbackResolution};
 use crate::in_folder_allowance::{InFolderGrant, InFolderPermission};
 use crate::owner_opening_instance::OpeningInstance;
 pub use crate::transport_run::TransportRun;
-use crate::transport_run::authorization_run;
 use agent_client_protocol::schema::v1::PermissionOptionId;
 use provider_session_machines::{
     SessionGeneration,
     session_lifecycle_machine::CloseAttempt,
     session_owner::{
-        AcceptedRunSettings, AuthorizationTarget, DispatchAuthorization, DispatchResult,
-        OwnerIncarnation, TurnMembership,
+        AcceptedRunSettings, DispatchAuthorization, DispatchResult, OwnerIncarnation,
+        TurnMembership,
     },
     session_turn_machine::TurnId,
     tool_ownership::{ToolObservation, ToolOwnershipEffect},
@@ -34,7 +33,14 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 pub use switchboard_harness_contracts::SlotEvidence;
-use switchboard_harness_contracts::{HandOverRefusal, InputId, OwnerEvidence, OwnerInputEvidence};
+use switchboard_harness_contracts::{HandOverRefusal, InputId, OwnerEvidence};
+use switchboard_harness_shared_mechanics::run_ledger::{
+    HandOverCheck, HandOverCommit, MembershipOutcome, NoSuchOffer, OfferRefusal, RefusedOffer,
+    RouteRefusal, RunLedger, RunOpening,
+};
+
+#[cfg(test)]
+use provider_session_machines::session_owner::{AuthorizationTarget, OwnerInputEvidence};
 
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum TransportRefusal {
@@ -71,6 +77,27 @@ impl From<TransportOfferRefusal> for TransportRefusal {
     }
 }
 
+impl From<OfferRefusal> for TransportOfferRefusal {
+    fn from(refusal: OfferRefusal) -> Self {
+        match refusal {
+            OfferRefusal::RouteUnavailable => Self::RouteUnavailable,
+            OfferRefusal::Closing => Self::Closing,
+            OfferRefusal::WorkDoesNotFitAuthorization => Self::WorkDoesNotFitAuthorization,
+            OfferRefusal::OtherAuthorizationOffered => Self::OtherAuthorizationOffered,
+            OfferRefusal::AuthorizationSequenceOnRecord => Self::AuthorizationSequenceOnRecord,
+        }
+    }
+}
+
+impl From<RouteRefusal> for TransportRefusal {
+    fn from(refusal: RouteRefusal) -> Self {
+        match refusal {
+            RouteRefusal::RouteUnavailable => Self::RouteUnavailable,
+            RouteRefusal::Closing => Self::Closing,
+        }
+    }
+}
+
 impl From<HandOverRefusal> for TransportRefusal {
     fn from(refusal: HandOverRefusal) -> Self {
         match refusal {
@@ -87,9 +114,7 @@ pub struct OrderedOutput<Frame> {
     pub frame: Frame,
 }
 
-struct ConnectionRoute {
-    session: String,
-    closing: Option<CloseAttempt>,
+struct AcpRoute {
     folders: Option<InFolderGrant>,
     settings: Option<AcceptedRunSettings>,
     lifecycle: Option<LifecycleRoute>,
@@ -139,11 +164,9 @@ impl LifecycleRoute {
     }
 }
 
-impl ConnectionRoute {
-    fn new(session: String, lifecycle: Option<LifecycleRoute>) -> Self {
+impl AcpRoute {
+    fn new(lifecycle: Option<LifecycleRoute>) -> Self {
         Self {
-            session,
-            closing: None,
             folders: None,
             settings: None,
             lifecycle,
@@ -158,39 +181,10 @@ impl ConnectionRoute {
     }
 }
 
-enum AuthorizationSlot<Frame> {
-    Offered {
-        frame: Frame,
-        new_turn: Option<TurnId>,
-    },
-    Taken,
-    Revoked,
-}
-
-impl<Frame> AuthorizationSlot<Frame> {
-    fn evidence(&self) -> SlotEvidence {
-        match self {
-            Self::Offered { .. } => SlotEvidence::Offered,
-            Self::Taken => SlotEvidence::Taken,
-            Self::Revoked => SlotEvidence::Revoked,
-        }
-    }
-
-    fn revoke(&mut self) -> Option<TurnId> {
-        if matches!(self, Self::Taken) {
-            return None;
-        }
-        match std::mem::replace(self, Self::Revoked) {
-            Self::Offered { new_turn, .. } => new_turn,
-            _ => None,
-        }
-    }
-}
-
 struct TransportState<Frame> {
-    routes: BTreeMap<TransportRun, ConnectionRoute>,
-    slot: BTreeMap<DispatchAuthorization, AuthorizationSlot<Frame>>,
-    callbacks: CallbackRouter,
+    ledger: RunLedger<Frame>,
+    routes: BTreeMap<TransportRun, AcpRoute>,
+    claims: ToolClaims,
 }
 
 impl<Frame> TransportState<Frame> {
@@ -198,16 +192,21 @@ impl<Frame> TransportState<Frame> {
         self.find_route_for_session(session).map(|(run, _)| run)
     }
 
-    fn find_route_for_session(&self, session: &str) -> Option<(TransportRun, &ConnectionRoute)> {
-        let mut matches = self.routes.iter().filter(|(_, route)| {
-            route.session == session
-                && !route
-                    .lifecycle
-                    .as_ref()
-                    .is_some_and(LifecycleRoute::is_removed)
+    fn find_route_for_session(&self, session: &str) -> Option<(TransportRun, &AcpRoute)> {
+        let mut matches = self.ledger.runs_named(session).filter_map(|run| {
+            let route = self.routes.get(&run)?;
+            (!route
+                .lifecycle
+                .as_ref()
+                .is_some_and(LifecycleRoute::is_removed))
+            .then_some((run, route))
         });
         let (run, route) = matches.next()?;
-        matches.next().is_none().then_some((*run, route))
+        matches.next().is_none().then_some((run, route))
+    }
+
+    fn debug_check_run_keys(&self) {
+        debug_assert!(self.routes.keys().copied().eq(self.ledger.run_keys()));
     }
 }
 
@@ -224,9 +223,9 @@ impl<Frame> AcpTransport<Frame> {
     pub fn new(capacity: NonZeroUsize) -> (Self, mpsc::Receiver<OrderedOutput<Frame>>) {
         let (ordered, output) = mpsc::channel(capacity.get());
         let state = Mutex::new(TransportState {
+            ledger: RunLedger::default(),
             routes: BTreeMap::new(),
-            slot: BTreeMap::new(),
-            callbacks: CallbackRouter::default(),
+            claims: ToolClaims::default(),
         });
         (
             Self {
@@ -260,29 +259,24 @@ impl<Frame> AcpTransport<Frame> {
 
     pub fn open_route(&self, run: TransportRun, session: String) {
         let mut state = self.state();
-        state
-            .routes
-            .entry(run)
-            .or_insert_with(|| ConnectionRoute::new(session, None));
-        state.callbacks.open(run);
+        if state.ledger.open_run(run, session) == RunOpening::Opened {
+            state.routes.insert(run, AcpRoute::new(None));
+            state.claims.open(run);
+        }
+        state.debug_check_run_keys();
     }
 
     pub fn activate_route(&self, run: TransportRun) -> bool {
-        let mut state = self.state();
-        state
-            .routes
-            .get(&run)
-            .is_some_and(|route| route.closing.is_none())
-            && state.callbacks.activate(run)
+        self.state().ledger.activate_run(run)
     }
 
     #[must_use]
     pub fn current_turn(&self, run: TransportRun) -> Option<TurnId> {
-        self.state().callbacks.current_turn(run)
+        self.state().ledger.current_turn(run)
     }
 
     pub(crate) fn provider_started_turn(&self, run: TransportRun) -> Option<TurnId> {
-        self.state().callbacks.provider_started_turn(run)
+        self.state().ledger.provider_started_turn(run)
     }
 
     pub(crate) fn route_for_session(&self, session: &str) -> Option<TransportRun> {
@@ -290,17 +284,14 @@ impl<Frame> AcpTransport<Frame> {
     }
 
     pub(crate) fn session_for_route(&self, run: TransportRun) -> Option<String> {
-        self.state()
-            .routes
-            .get(&run)
-            .map(|route| route.session.clone())
+        self.state().ledger.session_of(run).map(str::to_owned)
     }
 
     pub(crate) fn routed_owner_sessions(&self) -> Vec<(OwnerIncarnation, String)> {
         self.state()
-            .routes
-            .iter()
-            .map(|(run, route)| (run.incarnation, route.session.clone()))
+            .ledger
+            .owner_sessions()
+            .map(|(owner, session)| (owner, session.to_owned()))
             .collect()
     }
 
@@ -309,15 +300,18 @@ impl<Frame> AcpTransport<Frame> {
         let Some(run) = state.route_for_session(session) else {
             return false;
         };
-        state
-            .callbacks
-            .allows_explicit_tool_request(session, run, tool)
+        state.claims.allows_explicit_tool_request(
+            session,
+            run,
+            tool,
+            state.ledger.current_turn(run),
+        )
     }
 
     pub(crate) fn current_scope(&self, session: &str) -> Option<(TransportRun, TurnId)> {
         let state = self.state();
         let run = state.route_for_session(session)?;
-        Some((run, state.callbacks.current_turn(run)?))
+        Some((run, state.ledger.current_turn(run)?))
     }
 
     pub(crate) fn install_folders(&self, run: TransportRun, folders: InFolderGrant) {
@@ -351,12 +345,12 @@ impl<Frame> AcpTransport<Frame> {
     ) -> Option<PermissionOptionId> {
         let state = self.state();
         let route = state.routes.get(&run)?;
-        if route.closing.is_some()
+        if state.ledger.check_takes_requests(run).is_err()
             || state.route_for_session(session) != Some(run)
-            || state.callbacks.current_turn(run) != Some(turn)
+            || state.ledger.current_turn(run) != Some(turn)
             || !state
-                .callbacks
-                .allows_explicit_tool_request(session, run, tool)
+                .claims
+                .allows_explicit_tool_request(session, run, tool, Some(turn))
         {
             return None;
         }
@@ -386,58 +380,24 @@ impl<Frame> AcpTransport<Frame> {
 
     pub fn apply_membership(&self, incarnation: OwnerIncarnation, change: TurnMembership) {
         let mut state = self.state();
-        let mut retired = None;
-        match change {
-            TurnMembership::Provisional { run, turn } => {
-                state.callbacks.begin_turn(
-                    TransportRun {
-                        incarnation,
-                        generation: run,
-                    },
-                    turn,
-                );
+        let retired = match state.ledger.apply_membership(incarnation, change) {
+            MembershipOutcome::Applied
+            | MembershipOutcome::Ignored(_)
+            | MembershipOutcome::NoSuchRun => None,
+            MembershipOutcome::Ended { run, turn, session } => {
+                state.claims.end_turn(&session, run, turn);
+                None
             }
-            TurnMembership::ObservedEligible { run, turn } => {
-                state.callbacks.observe_eligible_turn(
-                    TransportRun {
-                        incarnation,
-                        generation: run,
-                    },
-                    turn,
-                );
-            }
-            TurnMembership::RemoveOnRevoke { run, turn } => {
-                state.callbacks.revoke_new_turn(
-                    TransportRun {
-                        incarnation,
-                        generation: run,
-                    },
-                    turn,
-                );
-            }
-            TurnMembership::End { run, turn } => {
-                let run = TransportRun {
-                    incarnation,
-                    generation: run,
-                };
-                if let Some(session) = state.routes.get(&run).map(|route| route.session.clone()) {
-                    state.callbacks.end_turn(&session, run, turn);
+            MembershipOutcome::Retired(retired) => {
+                let route = state.routes.remove(&retired.run);
+                state.claims.retire(&retired.session, retired.run);
+                if let Some(lifecycle) = route.as_ref().and_then(|route| route.lifecycle.as_ref()) {
+                    lifecycle.mark_removed();
                 }
+                state.debug_check_run_keys();
+                route
             }
-            TurnMembership::Retire(generation) => {
-                let run = TransportRun {
-                    incarnation,
-                    generation,
-                };
-                if let Some(route) = state.routes.remove(&run) {
-                    state.callbacks.retire(&route.session, run);
-                    if let Some(lifecycle) = &route.lifecycle {
-                        lifecycle.mark_removed();
-                    }
-                    retired = Some(route);
-                }
-            }
-        }
+        };
         drop(state);
         if let Some(route) = retired.and_then(|route| route.lifecycle) {
             route.notify_removed();
@@ -451,22 +411,28 @@ impl<Frame> AcpTransport<Frame> {
         observation: ToolObservation,
     ) -> ToolOwnershipEffect {
         let mut state = self.state();
-        let Some(session) = state.routes.get(&run).map(|route| route.session.clone()) else {
+        let (Some(session), Some(membership)) = (
+            state.ledger.session_of(run).map(str::to_owned),
+            state.ledger.membership(run),
+        ) else {
             return ToolOwnershipEffect::None;
         };
-        state.callbacks.observe(&session, run, tool_id, observation)
+        state
+            .claims
+            .observe(&session, run, tool_id, observation, membership)
     }
 
     pub fn resolve_callback(&self, tool_id: &str, kind: CallbackKind) -> CallbackResolution {
-        self.state().callbacks.resolve(tool_id, kind)
+        let state = self.state();
+        state.claims.resolve(&state.ledger, tool_id, kind)
     }
 
     pub(crate) fn tool_in_current_turn(&self, run: TransportRun, tool: &str) -> bool {
         let state = self.state();
-        state.routes.get(&run).is_some_and(|route| {
+        state.ledger.session_of(run).is_some_and(|session| {
             state
-                .callbacks
-                .tool_in_current_turn(&route.session, run, tool)
+                .claims
+                .tool_in_current_turn(session, run, tool, state.ledger.current_turn(run))
         })
     }
 
@@ -491,45 +457,21 @@ impl<Frame> AcpTransport<Frame> {
             crate::handover_test_control::HandoverPausePoint::BeforeOffer,
             &authorization,
         );
-        let mut state = self.state();
-        let run = authorization_run(&authorization);
-        let route = state
-            .routes
-            .get(&run)
-            .ok_or(TransportOfferRefusal::RouteUnavailable)?;
-        if route.closing.is_some() {
-            return Err(TransportOfferRefusal::Closing);
-        }
-        if (authorization.target == AuthorizationTarget::NewTurn) != new_turn.is_some() {
-            return Err(TransportOfferRefusal::WorkDoesNotFitAuthorization);
-        }
-        let mut other_offer_stands = false;
-        for (key, slot) in &state.slot {
-            if authorization_run(key) != run || key.input_id != authorization.input_id {
-                continue;
-            }
-            if key.authorization_seq == authorization.authorization_seq {
-                return Err(TransportOfferRefusal::AuthorizationSequenceOnRecord);
-            }
-            other_offer_stands |= slot.evidence() == SlotEvidence::Offered;
-        }
-        if other_offer_stands {
-            return Err(TransportOfferRefusal::OtherAuthorizationOffered);
-        }
         #[cfg(all(debug_assertions, feature = "test-observation"))]
         let recorded_authorization = authorization.clone();
-        state.slot.insert(
-            authorization,
-            AuthorizationSlot::Offered { frame, new_turn },
-        );
+        let offer = {
+            let mut state = self.state();
+            state.ledger.offer(authorization, new_turn, frame)
+        };
+        offer.map_err(|RefusedOffer { refusal, frame }| {
+            drop(frame);
+            TransportOfferRefusal::from(refusal)
+        })?;
         #[cfg(all(debug_assertions, feature = "test-observation"))]
-        {
-            drop(state);
-            self.handover_test.reach(
-                crate::handover_test_control::HandoverPausePoint::AfterOffer,
-                &recorded_authorization,
-            );
-        }
+        self.handover_test.reach(
+            crate::handover_test_control::HandoverPausePoint::AfterOffer,
+            &recorded_authorization,
+        );
         Ok(())
     }
 
@@ -557,34 +499,14 @@ impl<Frame> AcpTransport<Frame> {
         still_requested: impl FnOnce() -> bool,
     ) -> Result<DispatchResult, HandOverRefusal> {
         let mut state = self.state();
-        let slot = state
-            .slot
-            .get(authorization)
-            .ok_or(HandOverRefusal::NoSuchOffer)?;
-        let new_turn = match slot {
-            AuthorizationSlot::Taken => {
-                return Ok(DispatchResult::AlreadyTaken(authorization.clone()));
-            }
-            AuthorizationSlot::Revoked => {
-                return Ok(DispatchResult::DefinitelyUnsent(authorization.clone()));
-            }
-            AuthorizationSlot::Offered { new_turn, .. } => *new_turn,
+        let ready = match state
+            .ledger
+            .check_hand_over(authorization)
+            .map_err(|NoSuchOffer| HandOverRefusal::NoSuchOffer)?
+        {
+            HandOverCheck::Settled(result) => return Ok(result),
+            HandOverCheck::Ready(ready) => ready,
         };
-        let run = authorization_run(authorization);
-        if state
-            .routes
-            .get(&run)
-            .is_none_or(|route| route.closing.is_some())
-        {
-            state.revoke_slot(authorization);
-            return Ok(DispatchResult::DefinitelyUnsent(authorization.clone()));
-        }
-        if !authorization.matches_route(run.generation, state.callbacks.current_turn(run))
-            || new_turn.is_some_and(|turn| !state.callbacks.can_take_new_turn(run, turn))
-        {
-            state.revoke_slot(authorization);
-            return Ok(DispatchResult::StaleTarget(authorization.clone()));
-        }
         let permit = self.ordered.try_reserve().map_err(|error| match error {
             mpsc::error::TrySendError::Full(_) => HandOverRefusal::WriterFull,
             mpsc::error::TrySendError::Closed(_) => HandOverRefusal::WriterStopped,
@@ -594,26 +516,21 @@ impl<Frame> AcpTransport<Frame> {
             crate::handover_test_control::HandoverPausePoint::BeforeQuestion,
             authorization,
         );
-        if !still_requested() {
-            state.revoke_slot(authorization);
-            return Ok(DispatchResult::DefinitelyUnsent(authorization.clone()));
-        }
+        let still_requested = still_requested();
         #[cfg(all(debug_assertions, feature = "test-observation"))]
-        self.handover_test.reach(
-            crate::handover_test_control::HandoverPausePoint::BeforePublication,
-            authorization,
-        );
-        let Some(AuthorizationSlot::Offered { frame, .. }) = state
-            .slot
-            .insert(authorization.clone(), AuthorizationSlot::Taken)
-        else {
-            return Err(HandOverRefusal::NoSuchOffer);
-        };
-        if let Some(turn) = new_turn {
-            state.callbacks.take_new_turn(run, turn);
+        if still_requested {
+            self.handover_test.reach(
+                crate::handover_test_control::HandoverPausePoint::BeforePublication,
+                authorization,
+            );
         }
-        permit.send(OrderedOutput { run, frame });
-        Ok(DispatchResult::Taken(authorization.clone()))
+        match ready.commit(still_requested) {
+            HandOverCommit::Send { run, frame } => {
+                permit.send(OrderedOutput { run, frame });
+                Ok(DispatchResult::Taken(authorization.clone()))
+            }
+            HandOverCommit::Unsent(result) => Ok(result),
+        }
     }
 
     pub fn revoke(
@@ -621,7 +538,8 @@ impl<Frame> AcpTransport<Frame> {
         authorization: &DispatchAuthorization,
     ) -> Result<DispatchResult, TransportRefusal> {
         self.state()
-            .revoke_slot(authorization)
+            .ledger
+            .revoke(authorization)
             .ok_or(TransportRefusal::AuthorizationMismatch)
     }
 
@@ -631,7 +549,7 @@ impl<Frame> AcpTransport<Frame> {
         &self,
         incarnation: OwnerIncarnation,
     ) -> Vec<(DispatchAuthorization, SlotEvidence)> {
-        Self::revoke_owner_slots(&mut self.state(), incarnation)
+        self.state().ledger.revoke_incarnation(incarnation)
     }
 
     /// Withdraw pending offers and answer each asked input using the same locked ledger.
@@ -640,77 +558,22 @@ impl<Frame> AcpTransport<Frame> {
         incarnation: OwnerIncarnation,
         asked_inputs: &BTreeSet<InputId>,
     ) -> OwnerEvidence {
-        let mut state = self.state();
-        let mut by_input = BTreeMap::<InputId, Vec<_>>::new();
-        for (authorization, evidence) in Self::revoke_owner_slots(&mut state, incarnation) {
-            if asked_inputs.contains(&authorization.input_id) {
-                by_input
-                    .entry(authorization.input_id.clone())
-                    .or_default()
-                    .push((authorization, evidence));
-            }
-        }
-        let answers = asked_inputs
-            .iter()
-            .map(|input| {
-                let answer = match by_input.remove(input) {
-                    None => OwnerInputEvidence::NeverOffered,
-                    Some(slots) if slots.iter().any(|(_, slot)| *slot == SlotEvidence::Taken) => {
-                        OwnerInputEvidence::Taken { slots }
-                    }
-                    Some(slots) if slots.iter().all(|(_, slot)| *slot == SlotEvidence::Revoked) => {
-                        OwnerInputEvidence::Withdrawn { slots }
-                    }
-                    Some(slots) => OwnerInputEvidence::NoEvidence { slots },
-                };
-                (input.clone(), answer)
-            })
-            .collect();
-        drop(state);
-        answers
-    }
-
-    fn revoke_owner_slots(
-        state: &mut TransportState<Frame>,
-        incarnation: OwnerIncarnation,
-    ) -> Vec<(DispatchAuthorization, SlotEvidence)> {
-        let TransportState {
-            slot, callbacks, ..
-        } = state;
-        slot.iter_mut()
-            .filter(|(key, _)| key.incarnation == incarnation)
-            .map(|(key, entry)| {
-                if let Some(turn) = entry.revoke() {
-                    callbacks.revoke_new_turn(authorization_run(key), turn);
-                }
-                (key.clone(), entry.evidence())
-            })
-            .collect()
+        self.state().ledger.give_up_owner(incarnation, asked_inputs)
     }
 
     pub(crate) fn runs_of(&self, incarnation: OwnerIncarnation) -> Vec<SessionGeneration> {
-        self.state()
-            .routes
-            .keys()
-            .filter_map(|run| (run.incarnation == incarnation).then_some(run.generation))
-            .collect()
+        self.state().ledger.runs_of(incarnation).collect()
     }
 
     /// Production retains slots across route retirement and until owner recovery.
     /// Removing one would make an earlier offer look never offered at hand-back.
     pub fn forget(&self, authorization: &DispatchAuthorization) {
-        self.state().slot.remove(authorization);
+        self.state().ledger.forget(authorization);
     }
 
     pub fn enqueue_request(&self, run: TransportRun, frame: Frame) -> Result<(), TransportRefusal> {
         let state = self.state();
-        let route = state
-            .routes
-            .get(&run)
-            .ok_or(TransportRefusal::RouteUnavailable)?;
-        if route.closing.is_some() {
-            return Err(TransportRefusal::Closing);
-        }
+        state.ledger.check_takes_requests(run)?;
         self.enqueue(run, frame)
     }
 
@@ -730,24 +593,14 @@ impl<Frame> AcpTransport<Frame> {
         frame: Frame,
     ) -> Result<(), TransportRefusal> {
         let mut state = self.state();
-        let route = state
-            .routes
-            .get_mut(&run)
-            .ok_or(TransportRefusal::RouteUnavailable)?;
-        if route.closing.is_some() {
-            return Err(TransportRefusal::Closing);
-        }
+        let close = state.ledger.begin_close(run)?;
         self.enqueue(run, frame)?;
-        route.closing = Some(attempt);
+        close.mark(attempt);
         Ok(())
     }
 
     pub fn reopen_route(&self, run: TransportRun, attempt: CloseAttempt) {
-        if let Some(route) = self.state().routes.get_mut(&run)
-            && route.closing == Some(attempt)
-        {
-            route.closing = None;
-        }
+        self.state().ledger.readmit(run, attempt);
     }
 
     fn enqueue(&self, run: TransportRun, frame: Frame) -> Result<(), TransportRefusal> {
@@ -764,20 +617,10 @@ fn writer_refusal<T>(error: mpsc::error::TrySendError<T>) -> TransportRefusal {
     }
 }
 
-impl<Frame> TransportState<Frame> {
-    fn revoke_slot(&mut self, key: &DispatchAuthorization) -> Option<DispatchResult> {
-        let slot = self.slot.get_mut(key)?;
-        if let Some(turn) = slot.revoke() {
-            self.callbacks.revoke_new_turn(authorization_run(key), turn);
-        }
-        Some(if matches!(slot, AuthorizationSlot::Taken) {
-            DispatchResult::AlreadyTaken(key.clone())
-        } else {
-            DispatchResult::Revoked(key.clone())
-        })
-    }
-}
-
 #[cfg(test)]
 #[path = "acp_transport_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "acp_transport_run_ledger_test.rs"]
+mod run_ledger_tests;

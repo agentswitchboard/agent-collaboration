@@ -503,7 +503,9 @@ fn generated_runs_and_writer_offers_match_a_separate_custody_model(case: hegel::
             9 | 10 => {
                 let include_turn = case.draw(gs::booleans());
                 let new_turn = include_turn.then_some(turn);
-                let expected = model.offer(run, &key, new_turn, frame);
+                let expected = model
+                    .offer(run, &key, new_turn, frame)
+                    .map_err(|refusal| RefusedOffer { refusal, frame });
                 assert_eq!(ledger.offer(key, new_turn, frame), expected);
             }
             step @ 11..=13 => {
