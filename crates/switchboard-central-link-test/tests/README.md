@@ -11,6 +11,11 @@ Central's real Axum router over Turmoil TCP. They inspect the simulator's queued
 TCP segments to delay or drop a selected WebSocket frame and model connections
 that reset or outlive their requests. The existing fixture supplies the signed
 enrollment and JWKS service.
+The receipt resend case drops the answer to a committed delivery and Seen batch,
+then checks replay, reply correlation and length, one handover, and final
+confirmation on the replacement connection.
+The reopen case drops the custody worker and driver while the receipt is owed
+and checks the same receipt after opening the persisted store and a fresh link.
 
 Registration cases also decode frames from the native Central socket's byte
 stream. They hold the acknowledgement independently of later heartbeat and

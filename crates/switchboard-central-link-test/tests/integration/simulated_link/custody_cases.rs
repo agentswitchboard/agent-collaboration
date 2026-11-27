@@ -14,6 +14,9 @@ mod handover_cases;
 #[path = "loss_cases.rs"]
 mod loss_cases;
 
+#[path = "receipt_resend_journey.rs"]
+mod receipt_resend_journey;
+
 #[path = "recovery_cases.rs"]
 mod recovery_cases;
 
