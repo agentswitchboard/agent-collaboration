@@ -12,7 +12,7 @@ use super::{
         decide_input, first_holder, fixture_with_owner, raise_and_commit, register, snapshot,
     },
     fixtures::{HOUR, key, person, provider, provider_stop, router_run, session, time},
-    native_approval_store::NativeApprovalStoreFixture,
+    native_approval_store::{ApprovalTransactionEvidence, NativeApprovalStoreFixture},
 };
 
 #[tokio::test]
@@ -321,7 +321,7 @@ async fn the_engine_diagnostic_includes_the_approval_owner_and_alarm_contributio
         "{comparison:?}"
     );
 }
-async fn assert_rollback_each_write<Reply>(
+pub(super) async fn assert_rollback_each_write<Reply>(
     fixture: &NativeApprovalStoreFixture,
     expected_writes: usize,
     apply: impl AsyncFn(
@@ -333,21 +333,57 @@ async fn assert_rollback_each_write<Reply>(
     )
         -> Result<fleet_approvals::PendingApprovalReply<Reply>, ApprovalApplyFailure>,
 ) -> super::native_approval_store::FixtureCommittedApply<Reply> {
+    assert_loan_rollback_each_write(fixture, expected_writes, async |ordinal| {
+        fixture.apply(ordinal, &apply).await
+    })
+    .await
+}
+
+pub(super) async fn assert_loan_rollback_each_write<Output>(
+    fixture: &NativeApprovalStoreFixture,
+    expected_writes: usize,
+    apply: impl AsyncFn(
+        Option<usize>,
+    ) -> (
+        Result<Output, ApprovalApplyFailure>,
+        ApprovalTransactionEvidence,
+    ),
+) -> Output {
     let before = snapshot(fixture).await;
+    let mut interrupted_writes = Vec::with_capacity(expected_writes);
     for ordinal in 1..=expected_writes {
-        let (failed, evidence) = fixture.apply(Some(ordinal), &apply).await;
-        assert!(matches!(
-            failed,
-            Err(ApprovalApplyFailure::Store(StoreFailure::Unavailable))
-        ));
+        let (failed, evidence) = apply(Some(ordinal)).await;
+        assert!(
+            matches!(
+                failed,
+                Err(ApprovalApplyFailure::Store(StoreFailure::Unavailable))
+            ),
+            "write {ordinal} must return the injected store failure"
+        );
         assert_eq!(evidence.sql_writes.len(), ordinal);
+        interrupted_writes.push(evidence.sql_writes);
         assert_eq!(
             snapshot(fixture).await,
             before,
             "rollback after write {ordinal}"
         );
     }
-    let (committed, evidence) = fixture.apply(None, apply).await;
-    assert_eq!(evidence.sql_writes.len(), expected_writes);
+    let (committed, evidence) = apply(None).await;
+    let write_set: Vec<_> = evidence
+        .sql_writes
+        .iter()
+        .map(|(statement, _)| {
+            statement
+                .split_whitespace()
+                .take(4)
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect();
+    assert_eq!(evidence.sql_writes.len(), expected_writes, "{write_set:?}");
+    for writes in interrupted_writes {
+        assert_eq!(writes, evidence.sql_writes[..writes.len()]);
+    }
+    println!("write set: {write_set:?}");
     committed.unwrap()
 }

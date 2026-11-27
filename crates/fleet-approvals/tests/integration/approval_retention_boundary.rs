@@ -189,7 +189,8 @@ async fn raise_with_one_erased_marker_cell_changed(
     reply.map(|committed| committed.reply)
 }
 
-async fn fixture_with_erased_marker() -> (NativeApprovalStoreFixture, ApprovalHolderScope, Raise) {
+pub(super) async fn fixture_with_erased_marker()
+-> (NativeApprovalStoreFixture, ApprovalHolderScope, Raise) {
     let (fixture, holder, requester) = fixture_with_owner().await;
     let request = provider(&key(&holder.run, 1), &requester, "Retained then erased");
     let (raised, _) = raise_and_commit(&fixture, &holder, &request).await;
