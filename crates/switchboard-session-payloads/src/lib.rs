@@ -1,6 +1,25 @@
-//! Private payloads for starting and querying a session load.
+//! Private payloads for session loads and the typed items a session carries.
 
+mod decimal_count;
+mod item_identifiers;
+mod money_reading;
 mod object_reader;
+mod session_item;
+mod tool_call;
+mod usage_reading;
+
+pub use decimal_count::{DecimalCount, DecimalTextError};
+pub use item_identifiers::{GroupId, ItemId, ItemIdentifierError, ItemOrder, TurnId};
+pub use money_reading::{MoneyAmount, MoneyAmountError, MoneyCurrency, MoneyCurrencyError};
+pub use session_item::{
+    AssistantBody, GroupPlace, Item, ItemBody, PlanEntry, PlanEntryPriority, PlanEntryState,
+    SessionBody, UserBody,
+};
+pub use tool_call::{
+    BoundedText, FileChange, FileChangeKind, FileDiff, FileLocation, LineRange, LineRangeError,
+    RawInput, SearchOver, ToolAction, ToolCall, ToolKind, ToolState,
+};
+pub use usage_reading::{UsageAmount, UsageMetric, UsageReading, UsageScope};
 
 use object_reader::deserialize_object;
 use serde::{Deserialize, Deserializer, Serialize};

@@ -1,3 +1,3 @@
-# Session load payload tests
+# Session payload tests
 
-`integration/main.rs` exercises the public Rust payload types with fixed literal JSON, shared identifier limits and structural refusal cases. The crate has no runtime or end-to-end target.
+The integration target checks the session load request and the typed session item. Its fixtures compare literal JSON with Rust values, exercise structural and numeric refusals, and inspect the derived item schema. The crate has no runtime or end-to-end target.
