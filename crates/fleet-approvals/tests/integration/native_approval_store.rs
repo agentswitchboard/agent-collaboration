@@ -69,7 +69,32 @@ pub struct NativeApprovalTransaction {
     organization_id: OrganizationId,
     transaction: Transaction<'static, Sqlite>,
     fail_after_write: Option<usize>,
+    erased_marker_read_fault: Option<ErasedMarkerReadFault>,
     evidence: ApprovalTransactionEvidence,
+}
+
+pub(super) struct ErasedMarkerReadFault {
+    pub column: &'static str,
+    pub replacement: String,
+}
+
+impl ErasedMarkerReadFault {
+    fn replace_cell(self, outcome: &mut ReadOutcome) {
+        let column = outcome
+            .columns
+            .iter()
+            .position(|name| name == self.column)
+            .expect("erased-marker projection must include the faulted column");
+        let [row] = outcome.rows.as_mut_slice() else {
+            panic!("erased-marker read fault requires exactly one stored marker");
+        };
+        let replacement = SqlValue::Text(self.replacement);
+        assert_ne!(
+            row[column], replacement,
+            "fault must change the stored value"
+        );
+        row[column] = replacement;
+    }
 }
 
 impl OrganizationTransaction for NativeApprovalTransaction {
@@ -114,7 +139,8 @@ impl ApprovalStoreTransaction for NativeApprovalTransaction {
         &mut self,
         statement: Statement,
     ) -> Result<ReadOutcome, StoreFailure> {
-        self.evidence.sql_reads.push(statement.sql);
+        let statement_text = statement.sql;
+        self.evidence.sql_reads.push(statement_text);
         let query = bind_statement(statement);
         let rows = query
             .fetch_all(&mut *self.transaction)
@@ -149,7 +175,13 @@ impl ApprovalStoreTransaction for NativeApprovalTransaction {
                     .collect()
             })
             .collect::<Result<Vec<Vec<_>>, _>>()?;
-        Ok(ReadOutcome { columns, rows })
+        let mut outcome = ReadOutcome { columns, rows };
+        if statement_text == include_str!("../../src/queries/read_erased_approval.sql")
+            && let Some(fault) = self.erased_marker_read_fault.take()
+        {
+            fault.replace_cell(&mut outcome);
+        }
+        Ok(outcome)
     }
 
     async fn execute_approval_statement(
@@ -345,7 +377,33 @@ impl NativeApprovalStoreFixture {
         ApprovalTransactionEvidence,
     ) {
         let (committed, evidence) = self.commit_pending(fail_after_write, run_command).await;
-        let result = committed.map(|(proof, (reply, holder_effects))| FixtureCommittedApply {
+        (committed.map(Self::fixture_reply), evidence)
+    }
+
+    pub(super) async fn apply_with_erased_marker_read_fault<Reply>(
+        &self,
+        fault: ErasedMarkerReadFault,
+        run_command: impl AsyncFnOnce(
+            &mut ApprovalApplyingStore<'_, NativeApprovalTransaction, StoredSessionFacts>,
+        )
+            -> Result<PendingApprovalReply<Reply>, ApprovalApplyFailure>,
+    ) -> (
+        Result<FixtureCommittedApply<Reply>, ApprovalApplyFailure>,
+        ApprovalTransactionEvidence,
+    ) {
+        let (committed, evidence) = self
+            .commit_pending_with_read_fault(None, Some(fault), run_command)
+            .await;
+        (committed.map(Self::fixture_reply), evidence)
+    }
+
+    fn fixture_reply<Reply>(
+        (proof, (reply, holder_effects)): (
+            ApprovalCommitProof,
+            (PendingApprovalReply<Reply>, PendingApprovalEffects),
+        ),
+    ) -> FixtureCommittedApply<Reply> {
+        FixtureCommittedApply {
             reply: reply.take_fixture_reply(&proof).unwrap(),
             ending_offers: holder_effects
                 .release(&proof)
@@ -359,8 +417,7 @@ impl NativeApprovalStoreFixture {
                     }
                 })
                 .collect(),
-        });
-        (result, evidence)
+        }
     }
 
     pub async fn commit_pending<Reply>(
@@ -380,10 +437,33 @@ impl NativeApprovalStoreFixture {
         >,
         ApprovalTransactionEvidence,
     ) {
+        self.commit_pending_with_read_fault(fail_after_write, None, run_command)
+            .await
+    }
+
+    async fn commit_pending_with_read_fault<Reply>(
+        &self,
+        fail_after_write: Option<usize>,
+        erased_marker_read_fault: Option<ErasedMarkerReadFault>,
+        run_command: impl AsyncFnOnce(
+            &mut ApprovalApplyingStore<'_, NativeApprovalTransaction, StoredSessionFacts>,
+        )
+            -> Result<PendingApprovalReply<Reply>, ApprovalApplyFailure>,
+    ) -> (
+        Result<
+            (
+                ApprovalCommitProof,
+                (PendingApprovalReply<Reply>, PendingApprovalEffects),
+            ),
+            ApprovalApplyFailure,
+        >,
+        ApprovalTransactionEvidence,
+    ) {
         let mut evidence = ApprovalTransactionEvidence::default();
         let committed = complete_approval_commit(NativeApprovalCommit {
             fixture: self,
             fail_after_write,
+            erased_marker_read_fault,
             run_command,
             evidence: &mut evidence,
         })
@@ -439,6 +519,7 @@ impl NativeApprovalStoreFixture {
 
             transaction: pool.begin().await.unwrap(),
             fail_after_write: None,
+            erased_marker_read_fault: None,
             evidence: ApprovalTransactionEvidence::default(),
         };
         let bounds = due_list_query(DueListKind::ApprovalExpiries, cutoff, cap).unwrap();
@@ -458,6 +539,7 @@ impl NativeApprovalStoreFixture {
             organization_id: fixture_organization(),
             transaction: pool.begin().await.unwrap(),
             fail_after_write: None,
+            erased_marker_read_fault: None,
             evidence: ApprovalTransactionEvidence::default(),
         };
         let times = fleet_engine::read_alarm_inputs(&mut transaction)
@@ -479,6 +561,7 @@ impl NativeApprovalStoreFixture {
 
             transaction: pool.begin().await.unwrap(),
             fail_after_write: None,
+            erased_marker_read_fault: None,
             evidence: ApprovalTransactionEvidence::default(),
         };
         let inputs = AlarmInputs {
@@ -526,6 +609,7 @@ impl NativeApprovalStoreFixture {
 
             transaction: pool.begin().await.unwrap(),
             fail_after_write: None,
+            erased_marker_read_fault: None,
             evidence: ApprovalTransactionEvidence::default(),
         };
         let bounds = due_list_query(DueListKind::ApprovalExpiries, cutoff, 1).unwrap();

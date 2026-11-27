@@ -1,11 +1,102 @@
-use approval_request_protocol::{PassOnReply, RaiseReply, RegisterRunReply, RunRefusal};
-use fleet_approvals::{AdmittedDecider, ApprovalDecisionReply, ApprovalHolderScope, ApprovalRun};
+use approval_request_protocol::{
+    PassOnReply, ProviderStopCause, RaiseReply, RegisterRunReply, RunRefusal, StopReply,
+    StopRequest,
+};
+use fleet_approvals::{
+    AdmittedDecider, ApprovalDecisionReply, ApprovalHolderAdmission, ApprovalHolderCommand,
+    ApprovalHolderReply, ApprovalHolderScope, ApprovalRun,
+};
+use fleet_identity_protocol::OrganizationId;
 
 use super::{
-    approval_store_cases::{decide_input, first_holder, raise_and_commit, register, snapshot},
+    approval_store_cases::{
+        decide_input, first_holder, fixture_with_owner, raise_and_commit, register, snapshot,
+    },
     fixtures::{enrollment, key, provider, router_run, session},
     native_approval_store::NativeApprovalStoreFixture,
 };
+
+#[tokio::test]
+async fn a_holder_from_another_organization_is_refused_before_writing() {
+    let (fixture, mut holder, requester) = fixture_with_owner().await;
+    holder.organization_id =
+        OrganizationId::try_from("019ac19f-aa00-7000-8000-00000000a176".to_owned()).unwrap();
+    fixture
+        .alter_fixture(
+            "UPDATE approval_router_runs SET organization_id='019ac19f-aa00-7000-8000-00000000a176'",
+        )
+        .await;
+    fixture.store_enrollment(&holder, "live").await;
+    let request = provider(&key(&holder.run, 1), &requester, "Foreign organization");
+    let before = snapshot(&fixture).await;
+
+    let (reply, evidence) = raise_and_commit(&fixture, &holder, &request).await;
+
+    assert_eq!(
+        reply,
+        RaiseReply::AuthorityRefused {
+            refusal: RunRefusal::RunNotRegistered {},
+        }
+    );
+    assert!(evidence.sql_writes.is_empty());
+    assert_eq!(snapshot(&fixture).await, before);
+}
+
+#[tokio::test]
+async fn a_registered_run_with_unavailable_enrollment_is_refused_before_writing() {
+    let (fixture, holder, requester) = fixture_with_owner().await;
+    fixture
+        .alter_fixture("DELETE FROM fixture_enrollments")
+        .await;
+    let request = provider(&key(&holder.run, 1), &requester, "Unavailable enrollment");
+    let before = snapshot(&fixture).await;
+
+    let (reply, evidence) = raise_and_commit(&fixture, &holder, &request).await;
+
+    assert_eq!(
+        reply,
+        RaiseReply::AuthorityRefused {
+            refusal: RunRefusal::RunNotRegistered {},
+        }
+    );
+    assert!(evidence.sql_writes.is_empty());
+    assert_eq!(snapshot(&fixture).await, before);
+}
+
+#[tokio::test]
+async fn a_stop_naming_a_different_run_is_refused_before_writing() {
+    let (fixture, holder, requester) = fixture_with_owner().await;
+    let request = provider(&key(&holder.run, 1), &requester, "Stop binding");
+    let (raised, _) = raise_and_commit(&fixture, &holder, &request).await;
+    assert!(matches!(raised, RaiseReply::Receipt { .. }));
+    let stop = StopRequest::Provider {
+        request_id: request.request_id().clone(),
+        router_run: router_run(0xa177),
+        contents_digest: request.contents_digest().unwrap(),
+        cause: ProviderStopCause::AskReplaced,
+    };
+    let before = snapshot(&fixture).await;
+
+    let (reply, evidence) = fixture
+        .apply(None, async |store| {
+            store
+                .apply_holder_command(
+                    &ApprovalHolderAdmission::for_fixture_scope(&holder),
+                    ApprovalHolderCommand::Stop(stop),
+                )
+                .await
+        })
+        .await;
+
+    assert_eq!(
+        reply.unwrap().reply,
+        ApprovalHolderReply::Stopped(StopReply::AuthorityRefused {
+            refusal: RunRefusal::RunRetired {},
+        })
+    );
+    assert!(evidence.sql_writes.is_empty());
+    assert_eq!(snapshot(&fixture).await, before);
+}
 
 #[tokio::test]
 async fn holder_admission_refuses_wrong_or_ended_scope_before_request_and_session_lookup() {
