@@ -1,0 +1,6 @@
+id: paused-time
+language: Rust
+rule:
+  any:
+    - { kind: attribute_item, regex: 'start_paused\s*=\s*true' }
+    - { kind: call_expression, regex: 'time::pause\(\)' }

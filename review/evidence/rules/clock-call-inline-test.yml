@@ -1,0 +1,23 @@
+id: clock-call-inline-test
+language: Rust
+ignores:
+  [
+    "**/*_test.rs",
+    "**/*_tests.rs",
+    "**/tests/**",
+    "**/*_tests/**",
+    "**/test_support/**",
+    "**/*test_support*",
+    "**/*-test-support/**",
+    "**/*-test-harness/**",
+  ]
+rule:
+  kind: call_expression
+  regex: '^[A-Za-z_][\w:]*(::now\(\)$|::sleep\(|^sleep\()'
+  inside:
+    stopBy: end
+    any:
+      - kind: function_item
+        follows: { kind: attribute_item, regex: '\btest\b' }
+      - kind: mod_item
+        follows: { kind: attribute_item, regex: 'cfg\(test\)' }

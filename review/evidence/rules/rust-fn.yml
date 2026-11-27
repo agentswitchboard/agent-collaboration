@@ -1,0 +1,4 @@
+id: rust-fn
+language: Rust
+rule:
+  kind: function_item

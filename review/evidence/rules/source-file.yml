@@ -1,0 +1,5 @@
+id: source-file
+language: Rust
+files: ["crates/codex-router-host/src/**/*.rs"]
+ignores: ["**/*_test.rs", "**/*_tests.rs", "**/*_tests/**", "**/test_support/**", "**/lib.rs"]
+rule: { kind: source_file }

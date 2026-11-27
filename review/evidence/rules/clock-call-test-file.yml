@@ -1,0 +1,16 @@
+id: clock-call-test-file
+language: Rust
+files:
+  [
+    "**/*_test.rs",
+    "**/*_tests.rs",
+    "**/tests/**",
+    "**/*_tests/**",
+    "**/test_support/**",
+    "**/*test_support*",
+    "**/*-test-support/**",
+    "**/*-test-harness/**",
+  ]
+rule:
+  kind: call_expression
+  regex: '^[A-Za-z_][\w:]*(::now\(\)$|::sleep\(|^sleep\()'

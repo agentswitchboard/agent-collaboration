@@ -1,0 +1,60 @@
+{
+  "rulebook": [
+    {
+      "markdown": "../REVIEW.md",
+      "rules": "rules/review.rules.json"
+    }
+  ],
+  "marker_prefix": "R",
+  "check": {
+    "files": ["crates/**/*.rs"]
+  },
+  "evidence": {
+    "ast_grep": "evidence/sgconfig.yml",
+    "kinds": {
+      "test_call_file": {
+        "rule": "clock-call-test-file",
+        "max_chars": 12000,
+        "fields": {
+          "call": { "from": "first_line" },
+          "function": { "from": "enclosing", "rule": "rust-fn", "text": "full" },
+          "paused": { "from": "same_file", "rule": "paused-time", "text": "first_line" }
+        }
+      },
+      "test_call_inline": {
+        "rule": "clock-call-inline-test",
+        "max_chars": 12000,
+        "fields": {
+          "call": { "from": "first_line" },
+          "function": { "from": "enclosing", "rule": "rust-fn", "text": "full" },
+          "paused": { "from": "same_file", "rule": "paused-time", "text": "first_line" }
+        }
+      },
+      "prod_call": {
+        "rule": "clock-call-prod",
+        "max_chars": 12000,
+        "fields": {
+          "call": { "from": "first_line" },
+          "function": { "from": "enclosing", "rule": "rust-fn", "text": "full" }
+        }
+      },
+      "rust_file": {
+        "rule": "source-file",
+        "max_chars": 16000,
+        "fields": {
+          "doc": { "from": "inside", "rule": "inner-doc" },
+          "items": { "from": "inside", "rule": "top-item" }
+        }
+      }
+    }
+  },
+  "decision_model": {
+    "model": "jev-latest"
+  },
+  "limits": {
+    "max_files": 20000,
+    "max_matches": 100000,
+    "max_model_requests": 2000,
+    "attempt_timeout_seconds": 120
+  }
+}
