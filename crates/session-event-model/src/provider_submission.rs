@@ -30,6 +30,12 @@ impl ProviderSubmission {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProviderTurnInput {
+    Prompt(ProviderSubmission),
+    Compact,
+}
+
 /// Retained prompt blocks and the original input used for history and admission.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PreparedPrompt {

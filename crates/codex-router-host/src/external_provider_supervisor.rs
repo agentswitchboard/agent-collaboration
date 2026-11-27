@@ -296,8 +296,8 @@ impl ExternalProviderSupervisor {
     pub(crate) fn owner_session_activity(
         &self,
         target: &SessionRef,
-    ) -> crate::ProviderSessionActivity {
-        use crate::ProviderSessionActivity;
+    ) -> provider_session_machines::ProviderSessionActivity {
+        use provider_session_machines::ProviderSessionActivity;
         use provider_session_machines::{
             session_lifecycle_machine::SessionLifecycle, session_turn_machine::SessionTurn,
         };

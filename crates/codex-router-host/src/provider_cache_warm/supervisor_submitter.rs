@@ -54,7 +54,7 @@ impl WarmPromptSubmitter for SupervisorWarmPromptSubmitter {
                 target,
                 requested_by: record.created_by,
                 approver: record.approver,
-                input: acp_client_runtime::ProviderTurnInput::Prompt(
+                input: session_event_model::ProviderTurnInput::Prompt(
                     session_event_model::ProviderSubmission::plain(vec![content]),
                 ),
                 busy: PromptBusyPolicy::RefuseBusy,
