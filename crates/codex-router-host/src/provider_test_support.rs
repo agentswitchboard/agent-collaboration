@@ -2,6 +2,9 @@
 
 #[path = "external_provider_runtime/owner_fixture_failures.rs"]
 pub(crate) mod acp_failures;
+#[cfg(test)]
+#[path = "external_provider_runtime/prompt_refusal_projection_test.rs"]
+mod prompt_refusal_tests;
 
 pub use crate::external_provider_runtime::acp_scripted_fixture::{
     AcpFixtureScript, launch_fixture_agent,

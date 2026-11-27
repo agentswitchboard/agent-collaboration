@@ -7,7 +7,7 @@ use provider_session_machines::harness_lifecycle::{
     ActivationRefusal, HarnessSessionId, InvalidRequestedSetting, OpeningFailure,
 };
 
-pub(super) fn assert_failure(
+pub(crate) fn assert_failure(
     failure: &ConversationOperationFailure,
     expected: (
         ConversationOperationFailureKind,

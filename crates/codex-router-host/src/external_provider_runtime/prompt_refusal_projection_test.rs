@@ -1,7 +1,7 @@
-use super::cause_tests::assert_failure;
-use super::{OperationFailureCause, runtime_failure};
 use crate::external_provider_runtime::prompt_refusal;
-use crate::external_provider_supervisor::{PromptRefusal, PromptSelectionRefusal};
+use crate::external_provider_supervisor::{
+    OperationFailureCause, PromptRefusal, PromptSelectionRefusal, assert_failure, runtime_failure,
+};
 use acp_client_runtime::{ExternalProviderRuntimeError, ProviderError};
 use collaboration_protocol::{
     ConversationOperationFailureKind, ConversationOperationFailureStage, OperationId,

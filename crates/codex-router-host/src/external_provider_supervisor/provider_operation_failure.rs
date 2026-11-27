@@ -442,5 +442,4 @@ mod tests;
 mod cause_tests;
 
 #[cfg(test)]
-#[path = "prompt_refusal_projection_test.rs"]
-mod prompt_refusal_tests;
+pub(crate) use cause_tests::assert_failure;

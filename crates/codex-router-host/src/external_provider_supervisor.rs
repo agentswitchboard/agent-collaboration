@@ -53,6 +53,8 @@ pub(crate) use provider_settings_control::snapshot_settings;
 mod supervisor_named_points;
 #[cfg(test)]
 mod supervisor_test_pauses;
+#[cfg(test)]
+pub(crate) use provider_operation_failure::assert_failure;
 #[cfg(not(test))]
 use provider_operation_failure::runtime_failure;
 #[cfg(test)]
