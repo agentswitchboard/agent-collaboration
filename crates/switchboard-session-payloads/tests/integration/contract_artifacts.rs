@@ -509,14 +509,28 @@ fn check_artifact(name: &str, expected: &Value) {
 }
 
 fn artifact_bytes(value: &Value) -> Vec<u8> {
-    let output = if let Some(entries) = value.as_array() {
+    let mut canonical = value.clone();
+    // Cargo can unify serde_json's insertion-order feature from another crate.
+    canonical.sort_all_objects();
+    let output = if let Some(entries) = canonical.as_array() {
         let rows = entries
             .iter()
             .map(|entry| serde_json::to_string(entry).unwrap())
             .collect::<Vec<_>>();
         format!("[\n{}\n]\n", rows.join(",\n"))
     } else {
-        format!("{}\n", serde_json::to_string_pretty(value).unwrap())
+        format!("{}\n", serde_json::to_string_pretty(&canonical).unwrap())
     };
     output.into_bytes()
+}
+
+#[test]
+fn contract_writer_sorts_nested_keys_independently_of_insertion_order() {
+    let ascending = json!({"a": [{"a": 1, "z": 2}, {"a": 3, "z": 4}], "z": 5});
+    let descending = json!({"z": 5, "a": [{"z": 2, "a": 1}, {"z": 4, "a": 3}]});
+    assert_eq!(artifact_bytes(&ascending), artifact_bytes(&descending));
+
+    let expected_rows = b"[\n{\"a\":[{\"a\":1,\"z\":2},{\"a\":3,\"z\":4}],\"z\":5},\ntrue\n]\n";
+    assert_eq!(artifact_bytes(&json!([ascending, true])), expected_rows);
+    assert_eq!(artifact_bytes(&json!([descending, true])), expected_rows);
 }
