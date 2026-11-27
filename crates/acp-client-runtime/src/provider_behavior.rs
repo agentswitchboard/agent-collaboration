@@ -3,6 +3,7 @@
 use session_event_model::{PromptContent, ProviderSubmission, SkillView, ToolCallStatus};
 use std::path::PathBuf;
 
+pub use session_event_model::ProviderTurnInput;
 pub use switchboard_harness_contracts::SessionWorkRoots;
 
 /// What a load or resume rebuilds of the setup a session was created with
@@ -98,12 +99,6 @@ pub enum StatedPermissionTarget {
 pub enum ProviderInitializationAuthentication {
     NotRequested,
     RequiredAgentMethod { method_id: &'static str },
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ProviderTurnInput {
-    Prompt(ProviderSubmission),
-    Compact,
 }
 
 /// Why a prompt wasn't dispatched. Each session refusal carries its one-line

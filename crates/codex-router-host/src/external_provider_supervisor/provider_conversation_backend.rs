@@ -20,8 +20,9 @@ use super::{
     runtime_failure, snapshot_failure, snapshot_from_record, unavailable_failure,
 };
 use crate::session_owner_door::OwnerCreateFailure;
-use provider_session_machines::harness_lifecycle::{
-    FastRequest, OpenSetup, RequestedProviderSettings,
+use provider_session_machines::{
+    InvalidSettingSessionDisposition,
+    harness_lifecycle::{FastRequest, OpenSetup, RequestedProviderSettings},
 };
 use std::path::PathBuf;
 
@@ -380,7 +381,7 @@ impl ProviderConversationBackend for ExternalProviderSupervisor {
                                         disposition,
                                     );
                                     match (target, disposition) {
-                                        (Some(target), acp_client_runtime::InvalidSettingSessionDisposition::RemainsCreated) => {
+                                        (Some(target), InvalidSettingSessionDisposition::RemainsCreated) => {
                                             ProviderOperationCompletion::FailureWithSession {
                                                 failure,
                                                 session_record: Box::new(provider_session_record(

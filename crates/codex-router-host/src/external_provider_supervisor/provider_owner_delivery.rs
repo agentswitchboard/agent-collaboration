@@ -257,10 +257,10 @@ impl ExternalProviderSupervisor {
             return Ok(InputAcceptance::Unsent { reason: None });
         }
         let preview = match &request.input {
-            acp_client_runtime::ProviderTurnInput::Prompt(prompt) => {
+            session_event_model::ProviderTurnInput::Prompt(prompt) => {
                 crate::provider_queue_operation_registry::queued_content_preview(&prompt.content)
             }
-            acp_client_runtime::ProviderTurnInput::Compact => String::new(),
+            session_event_model::ProviderTurnInput::Compact => String::new(),
         };
         let id = Uuid::parse_str(operation.as_str()).map_err(|_| {
             failure(

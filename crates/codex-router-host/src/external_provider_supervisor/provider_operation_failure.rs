@@ -8,6 +8,7 @@ use collaboration_protocol::{
     InvalidSettingSessionDisposition, NonEmptyText, OperationId, ProviderOperationEffect,
     SessionRef,
 };
+use provider_session_machines::InvalidSettingSessionDisposition as HarnessSettingDisposition;
 use provider_session_machines::session_owner::{ProviderWireFailure, ProviderWireFailureKind};
 
 const MAX_ADVERTISED_CHOICES: usize = 32;
@@ -36,15 +37,15 @@ pub(super) fn invalid_setting_failure(
     setting: provider_session_machines::ProviderSettingKind,
     value: String,
     advertised: Vec<String>,
-    disposition: acp_client_runtime::InvalidSettingSessionDisposition,
+    disposition: HarnessSettingDisposition,
 ) -> ConversationOperationFailure {
     let (session_status, disposition, fallback_message) = match disposition {
-        acp_client_runtime::InvalidSettingSessionDisposition::Closed => (
+        HarnessSettingDisposition::Closed => (
             "new Session was closed",
             InvalidSettingSessionDisposition::Closed,
             "invalid provider setting; see advertised values; new Session was closed",
         ),
-        acp_client_runtime::InvalidSettingSessionDisposition::RemainsCreated => (
+        HarnessSettingDisposition::RemainsCreated => (
             "new Session remains created and idle",
             InvalidSettingSessionDisposition::RemainsCreated,
             "invalid provider setting; see advertised values; new Session remains created and idle",
