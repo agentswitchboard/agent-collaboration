@@ -50,11 +50,6 @@ fn schema_advertises_only_objects_tagged_kind_and_readers_refuse_unknown_kinds()
     assert_tagged::<UserBody>(&["message"]);
     assert_tagged::<AssistantBody>(&["message", "thinking", "toolCall", "plan", "other"]);
     assert_tagged::<SessionBody>(&["notice", "settingChange", "usage", "other"]);
-    assert_tagged::<PlanEntryState>(&["pending", "inProgress", "completed"]);
-    assert_tagged::<PlanEntryPriority>(&["high", "medium", "low"]);
-    assert_tagged::<ToolKind>(&[
-        "read", "edit", "delete", "move", "search", "execute", "think", "fetch", "other",
-    ]);
     assert_tagged::<ToolAction>(&[
         "notReported",
         "shell",
@@ -65,7 +60,6 @@ fn schema_advertises_only_objects_tagged_kind_and_readers_refuse_unknown_kinds()
         "subAgent",
         "other",
     ]);
-    assert_tagged::<SearchOver>(&["fileNames", "fileContents", "web"]);
     assert_tagged::<FileChangeKind>(&["added", "changed", "removed", "moved"]);
     assert_tagged::<FileDiff>(&["texts", "unifiedPatch"]);
     assert_tagged::<RawInput>(&["notReported", "value", "tooLarge"]);
@@ -80,8 +74,28 @@ fn schema_advertises_only_objects_tagged_kind_and_readers_refuse_unknown_kinds()
         "cost",
         "other",
     ]);
-    assert_tagged::<UsageScope>(&["turn", "session"]);
     assert_tagged::<UsageAmount>(&["count", "money"]);
+}
+
+#[test]
+fn schema_advertises_exact_string_choices_for_fieldless_enums() {
+    assert_string_choices::<ToolKind>(&[
+        "read", "edit", "delete", "move", "search", "execute", "think", "fetch", "other",
+    ]);
+    assert_string_choices::<SearchOver>(&["fileNames", "fileContents", "web"]);
+    assert_string_choices::<PlanEntryState>(&["pending", "inProgress", "completed"]);
+    assert_string_choices::<PlanEntryPriority>(&["high", "medium", "low"]);
+    assert_string_choices::<UsageScope>(&["turn", "session"]);
+}
+
+fn assert_string_choices<T: JsonSchema>(choices: &[&str]) {
+    let shape = schema::<T>();
+    assert_eq!(
+        shape.get("type").and_then(Value::as_str),
+        Some("string"),
+        "{shape}"
+    );
+    assert_eq!(shape.get("enum"), Some(&json!(choices)), "{shape}");
 }
 
 fn branches(schema: &Value) -> &[Value] {

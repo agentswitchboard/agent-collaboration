@@ -2,7 +2,7 @@
 
 use crate::decimal_count::DecimalCount;
 use crate::money_reading::{MoneyAmount, MoneyCurrency};
-use crate::object_reader::{wire_enum, wire_object};
+use crate::object_reader::{wire_enum, wire_object, wire_string_enum};
 
 wire_object! {
     pub struct UsageReading {
@@ -25,7 +25,7 @@ wire_enum! {
     }
 }
 
-wire_enum! {
+wire_string_enum! {
     pub enum UsageScope {
         Turn,
         Session,

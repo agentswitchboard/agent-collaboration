@@ -82,7 +82,7 @@ fn assert_decimal_refused(invalid: &str, reason: &str) {
     serde_json::from_str::<Item>(item).unwrap();
     assert_refused::<Item>(&item.replace(r#""8""#, invalid), "order", reason);
 
-    let reading = r#"{"metric":{"kind":"inputTokens"},"scope":{"kind":"turn"},"amount":{"kind":"count","value":"8","capacity":"9"}}"#;
+    let reading = r#"{"metric":{"kind":"inputTokens"},"scope":"turn","amount":{"kind":"count","value":"8","capacity":"9"}}"#;
     serde_json::from_str::<UsageReading>(reading).unwrap();
     // Serde buffers an internally tagged object before reading its fields.
     // The path ends at amount, and only one of the two valid fields is varied.
@@ -90,7 +90,7 @@ fn assert_decimal_refused(invalid: &str, reason: &str) {
         assert_refused::<UsageReading>(&reading.replace(valid, invalid), "amount", reason);
     }
 
-    let call = r#"{"kind":{"kind":"other"},"action":{"kind":"other","input":{"kind":"tooLarge","bytes":"8"}},"state":{"kind":"pending"},"locations":[]}"#;
+    let call = r#"{"kind":"other","action":{"kind":"other","input":{"kind":"tooLarge","bytes":"8"}},"state":{"kind":"pending"},"locations":[]}"#;
     serde_json::from_str::<ToolCall>(call).unwrap();
     assert_refused::<ToolCall>(&call.replace(r#""8""#, invalid), "action", reason);
 }

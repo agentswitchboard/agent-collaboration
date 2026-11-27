@@ -4,7 +4,7 @@ use switchboard_session_payloads::{
 
 use super::{assert_refused, assert_wire};
 
-const VALID_MONEY: &str = r#"{"metric":{"kind":"cost"},"scope":{"kind":"session"},"amount":{"kind":"money","amount":"0.0400","currency":"USD"}}"#;
+const VALID_MONEY: &str = r#"{"metric":{"kind":"cost"},"scope":"session","amount":{"kind":"money","amount":"0.0400","currency":"USD"}}"#;
 
 #[test]
 fn money_round_trips_amount_and_currency_at_their_byte_limits() {

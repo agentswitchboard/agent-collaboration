@@ -26,15 +26,15 @@ fn file_read_keeps_optional_line_range() {
 fn search_identifies_each_place_and_fetch_keeps_the_url() {
     for (wire, over) in [
         (
-            r#"{"kind":"search","query":"router","over":{"kind":"fileNames"}}"#,
+            r#"{"kind":"search","query":"router","over":"fileNames"}"#,
             SearchOver::FileNames,
         ),
         (
-            r#"{"kind":"search","query":"router","over":{"kind":"fileContents"}}"#,
+            r#"{"kind":"search","query":"router","over":"fileContents"}"#,
             SearchOver::FileContents,
         ),
         (
-            r#"{"kind":"search","query":"router","over":{"kind":"web"}}"#,
+            r#"{"kind":"search","query":"router","over":"web"}"#,
             SearchOver::Web,
         ),
     ] {

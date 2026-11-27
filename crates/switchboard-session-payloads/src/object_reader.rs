@@ -89,4 +89,37 @@ macro_rules! wire_enum {
     };
 }
 
-pub(super) use {wire_enum, wire_object};
+// A fieldless enum accepts only a string. Serde's usual externally tagged
+// enum reader also permits a single-key map with a null value.
+macro_rules! wire_string_enum {
+    ($(#[$attribute:meta])* $vis:vis enum $name:ident {
+        $($variant:ident),* $(,)?
+    }) => {
+        $(#[$attribute])*
+        #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, schemars::JsonSchema)]
+        #[serde(rename_all = "camelCase")]
+        $vis enum $name {
+            $($variant,)*
+        }
+
+        impl<'de> serde::Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                #[derive(serde::Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                enum Wire {
+                    $($variant,)*
+                }
+
+                let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+                let wire = <Wire as serde::Deserialize>::deserialize(
+                    serde::de::value::StringDeserializer::<D::Error>::new(value),
+                )?;
+                Ok(match wire {
+                    $(Wire::$variant => Self::$variant,)*
+                })
+            }
+        }
+    };
+}
+
+pub(super) use {wire_enum, wire_object, wire_string_enum};

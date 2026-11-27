@@ -1,7 +1,7 @@
 //! The identity, stable place and typed body of a session item.
 
 use crate::item_identifiers::{GroupId, ItemId, ItemOrder, TurnId};
-use crate::object_reader::{wire_enum, wire_object};
+use crate::object_reader::{wire_enum, wire_object, wire_string_enum};
 use crate::tool_call::ToolCall;
 use crate::usage_reading::UsageReading;
 
@@ -75,7 +75,7 @@ wire_object! {
     }
 }
 
-wire_enum! {
+wire_string_enum! {
     pub enum PlanEntryState {
         Pending,
         InProgress,
@@ -83,7 +83,7 @@ wire_enum! {
     }
 }
 
-wire_enum! {
+wire_string_enum! {
     pub enum PlanEntryPriority {
         High,
         Medium,

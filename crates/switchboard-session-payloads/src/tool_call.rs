@@ -6,7 +6,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use workspace_ids::SessionRef;
 
 use crate::decimal_count::DecimalCount;
-use crate::object_reader::{deserialize_object, wire_enum, wire_object};
+use crate::object_reader::{deserialize_object, wire_enum, wire_object, wire_string_enum};
 
 wire_object! {
     pub struct ToolCall {
@@ -21,7 +21,7 @@ wire_object! {
     }
 }
 
-wire_enum! {
+wire_string_enum! {
     pub enum ToolKind {
         Read,
         Edit,
@@ -136,7 +136,7 @@ impl<'de> Deserialize<'de> for LineRange {
     }
 }
 
-wire_enum! {
+wire_string_enum! {
     pub enum SearchOver {
         FileNames,
         FileContents,

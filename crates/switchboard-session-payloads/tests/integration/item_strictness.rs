@@ -9,8 +9,9 @@ use switchboard_session_payloads::{
 
 use super::assert_refused;
 
-const VALID_CALL: &str = r#"{"kind":{"kind":"read"},"action":{"kind":"notReported"},"state":{"kind":"pending"},"locations":[]}"#;
-const TOOL_ITEM: &str = r#"{"id":"fixture","order":"0","body":{"kind":"assistant","group":{"id":"group","order":"0"},"body":{"kind":"toolCall","call":{"kind":{"kind":"read"},"action":{"kind":"notReported"},"state":{"kind":"pending"},"locations":[]}}}}"#;
+const VALID_CALL: &str =
+    r#"{"kind":"read","action":{"kind":"notReported"},"state":{"kind":"pending"},"locations":[]}"#;
+const TOOL_ITEM: &str = r#"{"id":"fixture","order":"0","body":{"kind":"assistant","group":{"id":"group","order":"0"},"body":{"kind":"toolCall","call":{"kind":"read","action":{"kind":"notReported"},"state":{"kind":"pending"},"locations":[]}}}}"#;
 
 #[test]
 fn user_and_session_reject_tool_calls_and_thinking() {
@@ -69,6 +70,42 @@ fn extra_fields_are_refused_at_all_item_and_tool_levels() {
 }
 
 #[test]
+fn fieldless_enums_refuse_unknown_strings_objects_and_numbers() {
+    assert_only_known_strings::<ToolCall>(VALID_CALL, r#""read""#, "kind");
+    assert_only_known_strings::<ToolCall>(
+        r#"{"kind":"search","action":{"kind":"search","query":"notes","over":"web"},"state":{"kind":"pending"},"locations":[]}"#,
+        r#""web""#,
+        "action",
+    );
+
+    let plan_entry = r#"{"text":"check","state":"pending","priority":"high"}"#;
+    assert_only_known_strings::<PlanEntry>(plan_entry, r#""pending""#, "state");
+    assert_only_known_strings::<PlanEntry>(plan_entry, r#""high""#, "priority");
+    assert_only_known_strings::<UsageReading>(
+        r#"{"metric":{"kind":"inputTokens"},"scope":"turn","amount":{"kind":"count","value":"1"}}"#,
+        r#""turn""#,
+        "scope",
+    );
+}
+
+fn assert_only_known_strings<T: DeserializeOwned + Debug>(valid: &str, choice: &str, path: &str) {
+    serde_json::from_str::<T>(valid).unwrap();
+    let tagged = format!(r#"{{"kind":{choice}}}"#);
+    let externally_tagged = format!(r#"{{{choice}:null}}"#);
+    for (invalid, reason) in [
+        (
+            r#""fixtureFutureChoice""#,
+            "unknown variant `fixtureFutureChoice`",
+        ),
+        (&tagged, "map, expected a string"),
+        (&externally_tagged, "map, expected a string"),
+        ("7", "integer `7`, expected a string"),
+    ] {
+        assert_refused::<T>(&valid.replace(choice, invalid), path, reason);
+    }
+}
+
+#[test]
 fn state_rejects_fields_owned_by_other_variants() {
     for (valid, extra, value) in [
         (
@@ -92,7 +129,7 @@ fn state_rejects_fields_owned_by_other_variants() {
 
 #[test]
 fn too_large_raw_input_refuses_a_value() {
-    let valid = r#"{"kind":{"kind":"other"},"action":{"kind":"other","input":{"kind":"tooLarge","bytes":"8192"}},"state":{"kind":"pending"},"locations":[]}"#;
+    let valid = r#"{"kind":"other","action":{"kind":"other","input":{"kind":"tooLarge","bytes":"8192"}},"state":{"kind":"pending"},"locations":[]}"#;
     serde_json::from_str::<ToolCall>(valid).unwrap();
     assert_refused::<ToolCall>(
         &valid.replace(r#""bytes":"8192""#, r#""bytes":"8192","value":null"#),
@@ -103,7 +140,7 @@ fn too_large_raw_input_refuses_a_value() {
 
 #[test]
 fn line_range_refuses_zero_start_and_zero_count() {
-    let positive = r#"{"kind":{"kind":"read"},"action":{"kind":"fileRead","path":"notes","lines":{"firstLine":1,"lineCount":2}},"state":{"kind":"pending"},"locations":[]}"#;
+    let positive = r#"{"kind":"read","action":{"kind":"fileRead","path":"notes","lines":{"firstLine":1,"lineCount":2}},"state":{"kind":"pending"},"locations":[]}"#;
     serde_json::from_str::<ToolCall>(positive).unwrap();
     assert_eq!(LineRange::new(0, 2), Err(LineRangeError::FirstLineZero));
     assert_eq!(LineRange::new(1, 0), Err(LineRangeError::LineCountZero));
@@ -149,12 +186,12 @@ fn nested_objects_reject_extra_keys_and_positional_arrays() {
         r#"["notes",{"kind":"changed"},null]"#,
     );
     assert_strict_object::<PlanEntry>(
-        r#"{"text":"check","state":{"kind":"pending"}}"#,
-        r#"["check",{"kind":"pending"},null]"#,
+        r#"{"text":"check","state":"pending"}"#,
+        r#"["check","pending",null]"#,
     );
     assert_strict_object::<UsageReading>(
-        r#"{"metric":{"kind":"inputTokens"},"scope":{"kind":"turn"},"amount":{"kind":"count","value":"1"}}"#,
-        r#"[{"kind":"inputTokens"},{"kind":"turn"},{"kind":"count","value":"1"}]"#,
+        r#"{"metric":{"kind":"inputTokens"},"scope":"turn","amount":{"kind":"count","value":"1"}}"#,
+        r#"[{"kind":"inputTokens"},"turn",{"kind":"count","value":"1"}]"#,
     );
     assert_strict_object::<GroupPlace>(r#"{"id":"group","order":"0"}"#, r#"["group","0"]"#);
     assert_strict_enum::<RawInput>(r#"{"kind":"value","value":null}"#, r#"["value",null]"#);
@@ -166,7 +203,7 @@ fn nested_objects_reject_extra_keys_and_positional_arrays() {
     assert_strict_enum::<ToolState>(r#"{"kind":"pending"}"#, r#"["pending"]"#);
     assert_strict_object::<Item>(
         TOOL_ITEM,
-        r#"["fixture",null,"0",{"kind":"assistant","group":{"id":"group","order":"0"},"body":{"kind":"toolCall","call":{"kind":{"kind":"read"},"action":{"kind":"notReported"},"state":{"kind":"pending"},"locations":[]}}}]"#,
+        r#"["fixture",null,"0",{"kind":"assistant","group":{"id":"group","order":"0"},"body":{"kind":"toolCall","call":{"kind":"read","action":{"kind":"notReported"},"state":{"kind":"pending"},"locations":[]}}}]"#,
     );
 }
 

@@ -44,7 +44,7 @@ fn call(kind: ToolKind, action: ToolAction, state: ToolState) -> ToolCall {
 #[test]
 fn completed_shell_keeps_command_folder_output_and_success() {
     assert_wire(
-        r#"{"sourceName":"exec","kind":{"kind":"execute"},"title":"Show directory","action":{"kind":"shell","command":"pwd","folder":"/work"},"state":{"kind":"completed","output":{"text":"/work","cut":false},"exitCode":0},"locations":[{"path":"src/lib.rs","line":5}]}"#,
+        r#"{"sourceName":"exec","kind":"execute","title":"Show directory","action":{"kind":"shell","command":"pwd","folder":"/work"},"state":{"kind":"completed","output":{"text":"/work","cut":false},"exitCode":0},"locations":[{"path":"src/lib.rs","line":5}]}"#,
         ToolCall {
             source_name: Some("exec".into()),
             title: Some("Show directory".into()),
@@ -94,7 +94,7 @@ fn file_changes_keep_reported_text_or_just_the_path() {
 #[test]
 fn unrecognized_tool_preserves_any_raw_json_or_a_size_report() {
     assert_wire(
-        r#"{"kind":{"kind":"other"},"action":{"kind":"other","input":{"kind":"value","value":{"providerOnly":[null,2]}}},"state":{"kind":"pending"},"locations":[]}"#,
+        r#"{"kind":"other","action":{"kind":"other","input":{"kind":"value","value":{"providerOnly":[null,2]}}},"state":{"kind":"pending"},"locations":[]}"#,
         call(
             ToolKind::Other,
             ToolAction::Other {
@@ -230,7 +230,7 @@ fn assistant_items_keep_their_group_and_a_tool_only_group_is_self_contained() {
         ],
     );
     assert_wire(
-        r#"{"id":"item-c","turn":"turn-a","order":"4","body":{"kind":"assistant","group":{"id":"group-c","order":"4"},"body":{"kind":"toolCall","call":{"kind":{"kind":"read"},"action":{"kind":"notReported"},"state":{"kind":"pending"},"locations":[]}}}}"#,
+        r#"{"id":"item-c","turn":"turn-a","order":"4","body":{"kind":"assistant","group":{"id":"group-c","order":"4"},"body":{"kind":"toolCall","call":{"kind":"read","action":{"kind":"notReported"},"state":{"kind":"pending"},"locations":[]}}}}"#,
         assistant(
             "item-c",
             4,
@@ -318,7 +318,7 @@ fn explicit_other_items_keep_identity_order_turn_and_group() {
 #[test]
 fn plan_keeps_entry_order_and_usage_keeps_reported_count_or_money() {
     assert_wire(
-        r#"{"kind":"plan","entries":[{"text":"read","state":{"kind":"completed"},"priority":{"kind":"high"}},{"text":"edit","state":{"kind":"inProgress"},"priority":{"kind":"medium"}},{"text":"check","state":{"kind":"pending"},"priority":{"kind":"low"}}]}"#,
+        r#"{"kind":"plan","entries":[{"text":"read","state":"completed","priority":"high"},{"text":"edit","state":"inProgress","priority":"medium"},{"text":"check","state":"pending","priority":"low"}]}"#,
         AssistantBody::Plan {
             entries: vec![
                 PlanEntry {
@@ -340,7 +340,7 @@ fn plan_keeps_entry_order_and_usage_keeps_reported_count_or_money() {
         },
     );
     assert_wire(
-        r#"{"text":"check","state":{"kind":"pending"}}"#,
+        r#"{"text":"check","state":"pending"}"#,
         PlanEntry {
             text: "check".into(),
             state: PlanEntryState::Pending,
@@ -348,7 +348,7 @@ fn plan_keeps_entry_order_and_usage_keeps_reported_count_or_money() {
         },
     );
     assert_wire(
-        r#"{"kind":"usage","reading":{"metric":{"kind":"contextUsed"},"scope":{"kind":"turn"},"amount":{"kind":"count","value":"9007199254740993","capacity":"18446744073709551615"}}}"#,
+        r#"{"kind":"usage","reading":{"metric":{"kind":"contextUsed"},"scope":"turn","amount":{"kind":"count","value":"9007199254740993","capacity":"18446744073709551615"}}}"#,
         SessionBody::Usage {
             reading: UsageReading {
                 metric: UsageMetric::ContextUsed,
@@ -361,7 +361,7 @@ fn plan_keeps_entry_order_and_usage_keeps_reported_count_or_money() {
         },
     );
     assert_wire(
-        r#"{"kind":"usage","reading":{"metric":{"kind":"cost"},"scope":{"kind":"session"},"amount":{"kind":"money","amount":"0.0400","currency":"USD"}}}"#,
+        r#"{"kind":"usage","reading":{"metric":{"kind":"cost"},"scope":"session","amount":{"kind":"money","amount":"0.0400","currency":"USD"}}}"#,
         SessionBody::Usage {
             reading: UsageReading {
                 metric: UsageMetric::Cost,
@@ -378,7 +378,7 @@ fn plan_keeps_entry_order_and_usage_keeps_reported_count_or_money() {
 #[test]
 fn other_tool_actions_keep_completed_and_failed_output() {
     assert_wire(
-        r#"{"kind":{"kind":"other"},"action":{"kind":"other","input":{"kind":"notReported"}},"state":{"kind":"completed","output":{"text":"result","cut":false}},"locations":[]}"#,
+        r#"{"kind":"other","action":{"kind":"other","input":{"kind":"notReported"}},"state":{"kind":"completed","output":{"text":"result","cut":false}},"locations":[]}"#,
         call(
             ToolKind::Other,
             ToolAction::Other {
@@ -391,7 +391,7 @@ fn other_tool_actions_keep_completed_and_failed_output() {
         ),
     );
     assert_wire(
-        r#"{"kind":{"kind":"other"},"action":{"kind":"other","input":{"kind":"notReported"}},"state":{"kind":"failed","output":{"text":"details","cut":false}},"locations":[]}"#,
+        r#"{"kind":"other","action":{"kind":"other","input":{"kind":"notReported"}},"state":{"kind":"failed","output":{"text":"details","cut":false}},"locations":[]}"#,
         call(
             ToolKind::Other,
             ToolAction::Other {
