@@ -7,6 +7,10 @@ use central_link_call_composition::{
     ApprovalTransactionFuture, CommittedApprovalApply, OrganizationApprovalTransactions,
     OrganizationLoan,
 };
+#[cfg(feature = "test-support")]
+use central_link_call_composition::{
+    ApprovalWriteLoan, ApprovalWriteProbe, ProbedApprovalExecutor,
+};
 use central_storage::{EngineAlarmDecider, ReadOutcome, Statement, StoreFailure};
 use fleet_identity_protocol::OrganizationId;
 use fleet_lent_transaction::CentralTransaction;
@@ -26,19 +30,26 @@ pub(super) struct WorkerApprovalTransactions {
     pub(super) decide_alarm: EngineAlarmDecider,
     #[cfg(feature = "test-support")]
     pub(super) fail_after_write: Arc<AtomicBool>,
+    #[cfg(feature = "test-support")]
+    pub(super) approval_write_probe: ApprovalWriteProbe,
 }
 
 pub(super) struct WorkerApprovalLoan<'connection> {
     transaction: &'connection DoTransaction,
     wrote: &'connection AtomicBool,
     clock: &'connection WorkspaceClock,
+    #[cfg(feature = "test-support")]
+    write_probe: Option<ApprovalWriteLoan>,
 }
 
 impl CentralTransaction for WorkerApprovalLoan<'_> {
     type Database = Do;
 
     fn executor(&mut self) -> impl Executor<'_, Database = Do> {
-        self.transaction
+        let executor = self.transaction;
+        #[cfg(feature = "test-support")]
+        let executor = ProbedApprovalExecutor::new(executor, self.write_probe.as_ref());
+        executor
     }
 
     fn rows_affected(result: <Do as Database>::QueryResult) -> u64 {
@@ -56,9 +67,15 @@ impl ApprovalStatementLoan for WorkerApprovalLoan<'_> {
     }
 
     async fn execute_lent(&mut self, statement: Statement) -> Result<u64, StoreFailure> {
+        #[cfg(feature = "test-support")]
+        let sql = statement.sql;
         let rows =
             statement_store::execute_lent_approval_statement(self.transaction, statement).await?;
         self.wrote.store(true, Ordering::Relaxed);
+        #[cfg(feature = "test-support")]
+        if let Some(probe) = &self.write_probe {
+            probe.after_statement(sql)?;
+        }
         Ok(rows)
     }
 }
@@ -83,6 +100,8 @@ impl OrganizationApprovalTransactions for WorkerApprovalTransactions {
         );
         #[cfg(feature = "test-support")]
         let fail_after_write = self.fail_after_write.clone();
+        #[cfg(feature = "test-support")]
+        let approval_write_probe = self.approval_write_probe.clone();
         let clock = self.clock.clone();
         self.connection
             .transaction(move |transaction| async move {
@@ -91,6 +110,8 @@ impl OrganizationApprovalTransactions for WorkerApprovalTransactions {
                     WorkerApprovalLoan {
                         transaction: &transaction,
                         wrote: &wrote,
+                        #[cfg(feature = "test-support")]
+                        write_probe: approval_write_probe.begin_loan(),
                         clock: &clock,
                     },
                     &organization,

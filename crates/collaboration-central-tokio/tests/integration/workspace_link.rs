@@ -2,6 +2,7 @@
 use collaboration_central_conformance::fixture_link_reader::read_fixture_frame;
 mod alarm_rearm;
 mod approval_calls;
+mod approval_dispatch_rollback;
 mod authority_races;
 mod batch_contract;
 mod batch_restore;
