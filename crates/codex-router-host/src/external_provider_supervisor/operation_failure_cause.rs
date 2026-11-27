@@ -1,11 +1,10 @@
 //! Keys for the supervisor’s public operation failure projection.
 
 use super::PromptRefusal;
-use acp_client_runtime::{
-    AppliedProviderSetting, FailedProviderSetting, InvalidSettingSessionDisposition,
-    NotAppliedProviderSetting, PermissionModeReport,
-};
+use acp_client_runtime::{AppliedProviderSetting, NotAppliedProviderSetting, PermissionModeReport};
+use provider_session_machines::InvalidSettingSessionDisposition;
 use provider_session_machines::{ProviderSettingKind, session_owner::ProviderWireFailure};
+use session_event_model::FailedProviderSetting;
 
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) enum OperationFailureCause {

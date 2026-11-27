@@ -120,7 +120,7 @@ pub(crate) fn provider_applied_setting(
 }
 
 pub(crate) fn provider_failed_setting(
-    setting: acp_client_runtime::FailedProviderSetting,
+    setting: session_event_model::FailedProviderSetting,
 ) -> FailedProviderSetting {
     FailedProviderSetting {
         setting: provider_setting_name(setting.kind),
@@ -198,10 +198,10 @@ pub(crate) const fn provider_mode_reason(
 }
 
 pub(crate) const fn provider_auto_realization(
-    realization: acp_client_runtime::AutoRealization,
+    realization: provider_session_machines::AutoRealization,
 ) -> collaboration_protocol::ProviderAutoRealization {
-    use acp_client_runtime::AutoRealization as Runtime;
     use collaboration_protocol::ProviderAutoRealization as Protocol;
+    use provider_session_machines::AutoRealization as Runtime;
     match realization {
         Runtime::ClassifierEscalates => Protocol::ClassifierEscalates,
         Runtime::AsksFirst => Protocol::AsksFirst,

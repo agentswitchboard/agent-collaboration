@@ -10,6 +10,12 @@ pub struct ProviderSubmission {
     pub selected: Vec<SelectedSkill>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProviderTurnInput {
+    Prompt(ProviderSubmission),
+    Compact,
+}
+
 impl ProviderSubmission {
     pub fn plain(content: Vec<PromptContent>) -> Self {
         Self {

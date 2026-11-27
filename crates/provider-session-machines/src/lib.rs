@@ -33,3 +33,8 @@ pub use provider_settings_catalog::{
     ProviderModeObservation, ProviderSettingsCatalog, ProviderSettingsCatalogRecord,
 };
 pub use session_generation::SessionGeneration;
+// The Host names these harness contracts through this crate.
+pub use switchboard_harness_contracts::{
+    AutoRealization, ExternalProviderCreatedSession, InvalidSettingSessionDisposition,
+    ProviderSessionActivity,
+};

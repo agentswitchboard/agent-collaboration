@@ -5,18 +5,7 @@
 //! refused with the accepted list. The plan is pure: the caller applies it
 //! against the agent and reports the requested and actual modes.
 
-pub use switchboard_harness_contracts::AUTO_PERMISSION_MODE;
-
-/// How an agent's auto mode treats an action outside its granted folders (R7).
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AutoRealization {
-    /// The agent's classifier decides; a denial must be raised as an approval.
-    ClassifierEscalates,
-    /// The agent asks before acting outside its grant.
-    AsksFirst,
-    /// The agent's behaviour outside its grant has not been established.
-    Unknown,
-}
+pub use switchboard_harness_contracts::{AUTO_PERMISSION_MODE, AutoRealization};
 
 /// An agent's own answer to "what does auto mean for you", declared by its
 /// `ProviderBehavior`.

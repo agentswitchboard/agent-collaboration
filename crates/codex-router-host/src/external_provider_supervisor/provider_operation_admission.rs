@@ -142,7 +142,8 @@ impl ExternalProviderSupervisor {
         let cell = self.inner.binding_uncertainty(binding).await?;
         let can_recover_close = request.kind.is_restore()
             || request.target.is_some_and(|target| {
-                self.owner_session_activity(target) != crate::ProviderSessionActivity::NotLoaded
+                self.owner_session_activity(target)
+                    != provider_session_machines::ProviderSessionActivity::NotLoaded
             });
         let unconfirmed_cancel = if request.kind == ProviderOperationKind::ConversationClose {
             request

@@ -98,6 +98,9 @@ mod transport_run;
 #[cfg(test)]
 extern crate self as acp_client_runtime;
 #[cfg(test)]
+#[path = "lib_test.rs"]
+mod public_type_exports_test;
+#[cfg(test)]
 #[path = "../tests/support/provider_behavior.rs"]
 mod test_behavior;
 

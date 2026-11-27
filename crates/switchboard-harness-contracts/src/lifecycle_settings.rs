@@ -11,6 +11,17 @@ use crate::{
 /// The Router's requested name for the harness's auto realization.
 pub const AUTO_PERMISSION_MODE: &str = "auto";
 
+/// How an agent's auto mode treats an action outside its granted folders (R7).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AutoRealization {
+    /// The agent's classifier decides; a denial must be raised as an approval.
+    ClassifierEscalates,
+    /// The agent asks before acting outside its grant.
+    AsksFirst,
+    /// The agent's behaviour outside its grant has not been established.
+    Unknown,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AcceptedRunSettings<Catalogue = ProviderSettingsCatalogRecord> {
     pub catalogue: Arc<Catalogue>,
@@ -80,6 +91,12 @@ pub struct InvalidRequestedSetting {
     pub advertised: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InvalidSettingSessionDisposition {
+    Closed,
+    RemainsCreated,
+}
+
 impl InvalidRequestedSetting {
     #[must_use]
     pub const fn valid_moves(&self) -> &'static [LifecycleMove] {
@@ -143,6 +160,14 @@ pub struct PermissionModeReport {
     pub requested: Option<String>,
     pub actual: Option<String>,
     pub reason: Option<PermissionModeReason>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExternalProviderCreatedSession {
+    pub provider_session_id: String,
+    pub effective_settings: EffectiveProviderSettings,
+    /// The requested and actual permission mode, read back from the agent (R3).
+    pub permission_mode: PermissionModeReport,
 }
 
 /// An exact restore setting application. The held opening owns its fallback and setter rules.

@@ -1,8 +1,10 @@
 //! Typed provider Session settings at the ACP client boundary.
 use provider_session_machines::{EffectiveProviderSettings, ProviderSettingKind};
 
+pub use session_event_model::FailedProviderSetting;
 pub use switchboard_harness_contracts::{
-    AppliedProviderSetting, FastRequest, NotAppliedProviderSetting, RequestedProviderSettings,
+    AppliedProviderSetting, FastRequest, InvalidSettingSessionDisposition,
+    NotAppliedProviderSetting, RequestedProviderSettings,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -18,14 +20,4 @@ pub struct ProviderSettingRequest {
     pub value: String,
     pub intent: session_event_model::SettingApplicationIntent,
     pub expected_model: Option<String>,
-}
-
-pub type FailedProviderSetting = switchboard_harness_contracts::FailedProviderSetting<
-    session_event_model::ProviderSettingFailureReason,
->;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum InvalidSettingSessionDisposition {
-    Closed,
-    RemainsCreated,
 }

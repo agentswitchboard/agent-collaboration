@@ -85,6 +85,9 @@ pub enum ProviderSettingFailureReason {
     Other(String),
 }
 
+pub type FailedProviderSetting =
+    switchboard_harness_contracts::FailedProviderSetting<ProviderSettingFailureReason>;
+
 impl ProviderSettingFailureReason {
     pub fn as_str(&self) -> &str {
         match self {
