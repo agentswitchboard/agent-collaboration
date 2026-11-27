@@ -1,5 +1,9 @@
 # Release Notes
 
+## 0.1.167
+
+- Published session and message schemas now state the Router's existing identifier rules. UUIDv7 identifiers use canonical lowercase hyphenated text. Provider session IDs contain 1 to 4,096 UTF-8 bytes without NUL.
+
 ## 0.1.166
 
 - If the Router loses the local reply for a pending restore, it reports “the provider did not confirm whether it restored the session”. An activation refusal now fails the operation before the session is published as live.
