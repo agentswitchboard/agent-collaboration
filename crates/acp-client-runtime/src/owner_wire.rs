@@ -35,8 +35,6 @@ use crate::owner_session_open::{
     OpenFrame, OpenReply, OpenRequest, OwnerSessionOpenReceipt, OwnerSessionOpenSetup,
 };
 use crate::owner_session_setting::{CorrelatedSetting, OwnerSettingWirePlan, SettingCorrelation};
-#[cfg(feature = "test-support")]
-use crate::session_owner_task::OwnerCompletion;
 use agent_client_protocol::schema::v1::CancelNotification;
 use agent_client_protocol::{Error, UntypedMessage};
 #[cfg(any(test, feature = "test-support"))]
@@ -63,6 +61,8 @@ use std::{
 use switchboard_harness_contracts::{
     HandOverRefusal, HarnessOwnerEvents, InputId, OwnerEvidence, ReservedWorkReply, SteerIdlePolicy,
 };
+#[cfg(feature = "test-support")]
+use switchboard_session_task::session_owner_task::OwnerCompletion;
 #[cfg(test)]
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;

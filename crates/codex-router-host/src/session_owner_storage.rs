@@ -5,7 +5,6 @@ use crate::session_store_lane::{
     SessionStoreTicket, SessionStoreWaitError, SessionStoreWrite,
 };
 use crate::{binding_dispatch_permit::UnknownRecovery, session_close_evidence::classify_close};
-use acp_client_runtime::session_owner_task::{OwnerCompletionPort, OwnerTaskError};
 use collaboration_protocol::{
     OperationId, ProviderOperationEffect, ProviderPromptStopReason, ProviderReconciliationState,
 };
@@ -26,6 +25,7 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 use switchboard_session_store::ProviderSessionRecord;
+use switchboard_session_task::session_owner_task::{OwnerCompletionPort, OwnerTaskError};
 use tokio::sync::watch;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 

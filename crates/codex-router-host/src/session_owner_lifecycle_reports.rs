@@ -1,8 +1,5 @@
 //! Address harness observations to the owner and its exact run.
 
-use acp_client_runtime::session_owner_task::{
-    OwnerCompletionPort, OwnerTaskError, SessionOwnerHandle,
-};
 use provider_session_machines::{
     SessionGeneration,
     harness_lifecycle::{
@@ -16,6 +13,9 @@ use provider_session_machines::{
 };
 use session_event_model::{ProviderAuthStatus, SessionEvent};
 use std::sync::Arc;
+use switchboard_session_task::session_owner_task::{
+    OwnerCompletionPort, OwnerTaskError, SessionOwnerHandle,
+};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 

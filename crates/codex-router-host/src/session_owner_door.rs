@@ -14,7 +14,6 @@ use crate::{
     session_owner_registry::{RegisteredOwner, SessionOwnerRegistry},
     session_owner_storage::SessionOwnerStorage,
 };
-use acp_client_runtime::session_owner_task::OwnerMailboxUnavailable;
 use collaboration_protocol::SessionRef;
 use provider_session_machines::{
     harness_lifecycle::{CatalogueFact, CatalogueRequest, ReservedReply},
@@ -33,6 +32,7 @@ use std::{
 };
 use switchboard_session_events::ProviderSessionEventHub;
 use switchboard_session_store::ProviderOperationStore;
+use switchboard_session_task::session_owner_task::OwnerMailboxUnavailable;
 use tokio::sync::oneshot;
 use tokio::sync::{Mutex as AsyncMutex, watch};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
@@ -433,7 +433,7 @@ impl SessionOwnerAddress {
     pub(crate) fn report_event(
         &self,
         event: OwnerEvent,
-    ) -> Result<(), acp_client_runtime::session_owner_task::OwnerTaskError> {
+    ) -> Result<(), switchboard_session_task::session_owner_task::OwnerTaskError> {
         let completion = self
             .owner
             .handle
@@ -752,7 +752,7 @@ impl SessionOwnerAddress {
     #[cfg(test)]
     pub(crate) fn hold_completion_capacity(
         &self,
-    ) -> Vec<acp_client_runtime::session_owner_task::OwnerCompletion> {
+    ) -> Vec<switchboard_session_task::session_owner_task::OwnerCompletion> {
         let port = self.owner.handle.completion_port();
         std::iter::from_fn(|| port.reserve(self.owner.address).ok()).collect()
     }

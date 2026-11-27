@@ -89,7 +89,6 @@ mod provider_settings_catalog_codec;
 mod provider_transport_diagnostics;
 mod provider_update_kind;
 mod session_event_sink;
-pub mod session_owner_task;
 mod session_start_folders;
 #[cfg(feature = "test-support")]
 pub mod sim_points;

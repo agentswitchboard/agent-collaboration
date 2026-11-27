@@ -79,7 +79,20 @@ pub(super) const HARNESS_SHARED_MECHANICS: (&str, &[&str]) = (
     "switchboard-harness-shared-mechanics",
     &[HARNESS_CONTRACTS.0, "state-machine-core"],
 );
-const HARNESS_LAYERS: [(&str, &[&str]); 2] = [HARNESS_CONTRACTS, HARNESS_SHARED_MECHANICS];
+pub(super) const SESSION_TASK: (&str, &[&str]) = (
+    "switchboard-session-task",
+    &[
+        "message-board",
+        "provider-session-machines",
+        "router-clock",
+        "session-event-model",
+        "state-machine-core",
+        HARNESS_CONTRACTS.0,
+        HARNESS_SHARED_MECHANICS.0,
+    ],
+);
+const HARNESS_LAYERS: [(&str, &[&str]); 3] =
+    [HARNESS_CONTRACTS, HARNESS_SHARED_MECHANICS, SESSION_TASK];
 pub(super) const SESSION_STORE: (&str, &[&str]) = (
     "switchboard-session-store",
     &["collaboration-protocol", "sqlite-storage-maintenance"],

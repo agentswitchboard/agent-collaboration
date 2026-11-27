@@ -5,9 +5,6 @@ use crate::{
     session_owner_execution::SessionOwnerExecution,
     session_owner_lifecycle_reports::{BoundSessionHarness, LifecycleObservationScope},
 };
-use acp_client_runtime::session_owner_task::{
-    OwnerCallerWakes, OwnerCompletion, OwnerCompletionPort, OwnerTaskError, SessionOwnerPorts,
-};
 use collaboration_protocol::{EndpointRef, OperationId, SessionId, SessionRef};
 use provider_session_machines::session_refusal_answers::effect_in_progress_answer;
 use provider_session_machines::{
@@ -26,6 +23,9 @@ use provider_session_machines::{
 };
 use session_event_model::ProviderSettingFailureReason;
 use std::sync::{Arc, Mutex};
+use switchboard_session_task::session_owner_task::{
+    OwnerCallerWakes, OwnerCompletion, OwnerCompletionPort, OwnerTaskError, SessionOwnerPorts,
+};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;

@@ -1,0 +1,25 @@
+[package]
+autotests = false
+name = "switchboard-session-task"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+provider-session-machines.workspace = true
+router-clock.workspace = true
+switchboard-harness-contracts.workspace = true
+switchboard-harness-shared-mechanics.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+
+[dev-dependencies]
+chrono.workspace = true
+router-clock = { workspace = true, features = ["test-support"] }
+session-event-model = { path = "../session-event-model", version = "0.1.40" }
+uuid.workspace = true
+
+[lints]
+workspace = true

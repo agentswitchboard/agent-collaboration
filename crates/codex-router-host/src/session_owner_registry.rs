@@ -4,7 +4,6 @@ use crate::binding_dispatch_permit::BindingUncertainty;
 use crate::session_store_lane::{
     MarkedInput, SessionStoreLane, SessionStoreLaneTask, SessionStoreOfferError, StoreLaneHandover,
 };
-use acp_client_runtime::session_owner_task::{SessionOwnerHandle, SessionOwnerTask};
 use collaboration_protocol::{OperationId, SessionRef};
 #[cfg(test)]
 use provider_session_machines::harness_lifecycle::SlotEvidence;
@@ -21,6 +20,7 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 use switchboard_session_store::ProviderOperationStore;
+use switchboard_session_task::session_owner_task::{SessionOwnerHandle, SessionOwnerTask};
 use tokio::sync::Mutex as AsyncMutex;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;

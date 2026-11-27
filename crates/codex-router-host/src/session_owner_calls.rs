@@ -2,7 +2,6 @@
 
 use crate::session_owner_delivery_evidence::OwnerDeliveryEvidence;
 use crate::session_owner_notice::NoticeWriterTake;
-use acp_client_runtime::session_owner_task::{OwnerCallerWakes, OwnerCompletion};
 use collaboration_protocol::ProviderIdentity;
 use provider_session_machines::{
     SessionGeneration,
@@ -18,6 +17,7 @@ use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex, MutexGuard},
 };
+use switchboard_session_task::session_owner_task::{OwnerCallerWakes, OwnerCompletion};
 use tokio::sync::{Notify, oneshot};
 use tokio_util::task::TaskTracker;
 use uuid::Uuid;

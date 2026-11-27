@@ -29,6 +29,7 @@ dependencies = [
  "state-machine-core",
  "switchboard-harness-contracts",
  "switchboard-harness-shared-mechanics",
+ "switchboard-session-task",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -1390,6 +1391,7 @@ dependencies = [
  "switchboard-message-system",
  "switchboard-session-events",
  "switchboard-session-store",
+ "switchboard-session-task",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -6327,6 +6329,22 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+]
+
+[[package]]
+name = "switchboard-session-task"
+version = "0.1.167"
+dependencies = [
+ "chrono",
+ "provider-session-machines",
+ "router-clock",
+ "session-event-model",
+ "switchboard-harness-contracts",
+ "switchboard-harness-shared-mechanics",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "uuid",
 ]
 
 [[package]]

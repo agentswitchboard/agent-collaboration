@@ -32,6 +32,7 @@ workspace = true
 router-clock.workspace = true
 state-machine-core.workspace = true
 provider-session-machines.workspace = true
+switchboard-session-task.workspace = true
 uuid.workspace = true
 nix = { workspace = true, features = ["event"] }
 sha2.workspace = true

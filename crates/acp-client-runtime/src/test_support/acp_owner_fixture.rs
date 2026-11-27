@@ -10,7 +10,6 @@ use crate::{
     ProviderSettingRequest, ProviderTurnInput, RequestedProviderSettings, SessionEventSink,
     SessionRestoreSetup, SessionWorkRoots,
     owner_session_open::{OwnerOpenedSession, OwnerSessionOpenSetup},
-    session_owner_task::{SessionOwnerHandle, SessionOwnerTask},
 };
 use provider_session_machines::{
     EffectiveProviderSettings, ProviderSettingsCatalog, SessionGeneration,
@@ -33,6 +32,7 @@ use std::{
     path::PathBuf,
     sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
+use switchboard_session_task::session_owner_task::{SessionOwnerHandle, SessionOwnerTask};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;

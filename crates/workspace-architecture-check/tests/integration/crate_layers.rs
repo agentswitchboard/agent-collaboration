@@ -299,6 +299,8 @@ fn fixture_metadata(
         ("session-store", "switchboard-session-store"),
         ("harness-contracts", "switchboard-harness-contracts"),
         ("harness-carrier", "switchboard-harness-shared-mechanics"),
+        ("session-task", "switchboard-session-task"),
+        ("acp-runtime", "acp-client-runtime"),
         ("deciding-code", "provider-session-machines"),
         ("session-events", "switchboard-session-events"),
         ("router-clock", "router-clock"),
@@ -374,6 +376,28 @@ fn approval_protocol_is_a_leaf_above_workspace_identity() {
 }
 
 #[test]
+fn session_task_rejects_acp_runtime_in_the_layer_graph() {
+    let graph = fixture_graph(
+        "session-task",
+        "acp-runtime",
+        vec![Some(DependencyKind::Normal)],
+    );
+    assert_eq!(
+        graph
+            .check_policy()
+            .expect_err("the session task cannot name an ACP runtime")
+            .to_string(),
+        "forbidden Normal dependency: switchboard-session-task -> acp-client-runtime",
+    );
+    assert_eq!(
+        workspace_boundaries::check_harness_layers(&graph)
+            .expect_err("the session task's closed harness row excludes ACP")
+            .to_string(),
+        "BD1: forbidden Normal dependency switchboard-session-task -> acp-client-runtime",
+    );
+}
+
+#[test]
 fn harness_contracts_reject_workspace_dependencies() {
     let contract = "switchboard-harness-contracts";
     let deciding_code = "provider-session-machines";
@@ -433,6 +457,14 @@ fn harness_contracts_reject_workspace_dependencies() {
                     source: None,
                     dependencies: Vec::new(),
                 },
+                CargoPackage {
+                    id: "session-task".to_owned(),
+                    name: "switchboard-session-task".to_owned(),
+                    manifest_path: PathBuf::from("/workspace/session-task/Cargo.toml"),
+                    package_features: Default::default(),
+                    source: None,
+                    dependencies: Vec::new(),
+                },
             ],
             workspace_members: [
                 "store",
@@ -440,6 +472,7 @@ fn harness_contracts_reject_workspace_dependencies() {
                 "harness",
                 "deciding-code",
                 "harness-carrier",
+                "session-task",
             ]
             .into_iter()
             .map(str::to_owned)
@@ -709,12 +742,17 @@ fn session_owner_policy_covers_inactive_optional_declarations() {
                     "manifest_path": "/workspace/harness-carrier/Cargo.toml"
                 },
                 {
+                    "id": "session-task",
+                    "name": "switchboard-session-task",
+                    "manifest_path": "/workspace/session-task/Cargo.toml"
+                },
+                {
                     "id": "clock",
                     "name": "router-clock",
                     "manifest_path": "/workspace/clock/Cargo.toml"
                 }
             ],
-            "workspace_members": ["store", "events", "harness", "harness-carrier", "clock"],
+            "workspace_members": ["store", "events", "harness", "harness-carrier", "session-task", "clock"],
             "resolve": {"nodes": [{"id": "store", "deps": resolved}]}
         }))
         .expect("default-feature Cargo metadata with the optional dependency inactive");

@@ -1,6 +1,5 @@
 //! Host custody of delivery evidence requested by an exact owner placement.
 
-use acp_client_runtime::session_owner_task::OwnerCompletion;
 use agent_automation::{RouteEffectEvidence, SubmissionEffect};
 use collaboration_contracts::AttemptEvidenceSink;
 use collaboration_protocol::{CodexGeneration, SessionRef};
@@ -9,6 +8,7 @@ use provider_session_machines::session_owner::{
 };
 use router_clock::RuntimeClock;
 use std::{sync::Arc, time::Duration};
+use switchboard_session_task::session_owner_task::OwnerCompletion;
 use tokio::sync::oneshot;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 

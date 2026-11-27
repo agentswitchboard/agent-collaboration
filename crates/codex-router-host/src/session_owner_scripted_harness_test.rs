@@ -7,9 +7,6 @@ use crate::{
     session_owner_storage::SessionOwnerStorage,
     session_store_lane::{SessionStoreLane, tests::StoreFixture},
 };
-use acp_client_runtime::session_owner_task::{
-    OwnerTaskError, SessionOwnerHandle, SessionOwnerTask,
-};
 use collaboration_contracts::SessionEventHub;
 use collaboration_protocol::{
     ConversationBindingIdentity, OperationId, ProviderIdentity, ProviderOperationKind, SessionId,
@@ -28,6 +25,9 @@ use session_event_model::{SessionEvent, SessionState, SkillView};
 use std::{num::NonZeroUsize, sync::Arc};
 use switchboard_session_events::ProviderSessionEventHub;
 use switchboard_session_store::ProviderOperationAdmission;
+use switchboard_session_task::session_owner_task::{
+    OwnerTaskError, SessionOwnerHandle, SessionOwnerTask,
+};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use uuid::Uuid;
 

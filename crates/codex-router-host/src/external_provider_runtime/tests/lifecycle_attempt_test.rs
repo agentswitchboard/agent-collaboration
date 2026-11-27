@@ -284,7 +284,6 @@ fn bind_fixture(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn acp_unsupported_restore_setter_refuses_before_reserving_a_full_completion_carrier() {
-    use acp_client_runtime::session_owner_task::{OwnerTaskError, SessionOwnerTask};
     use provider_session_machines::{
         ProviderSettingKind,
         harness_lifecycle::{
@@ -295,6 +294,7 @@ async fn acp_unsupported_restore_setter_refuses_before_reserving_a_full_completi
         session_setting_machine::{SettingApplication, SettingValueId},
     };
     use std::cell::Cell;
+    use switchboard_session_task::session_owner_task::{OwnerTaskError, SessionOwnerTask};
 
     let fixture = hub_runtime_with(&["fast-on-only"]).await;
     let tasks = TaskTracker::new();

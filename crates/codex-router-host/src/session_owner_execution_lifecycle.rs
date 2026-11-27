@@ -2,7 +2,6 @@
 
 use super::{OwnerRun, SessionOwnerExecution};
 use crate::session_owner_lifecycle_reports::LifecycleObservationScope;
-use acp_client_runtime::session_owner_task::{OwnerCompletionPort, OwnerTaskError};
 use provider_session_machines::{
     ProviderSettingsCatalog,
     harness_lifecycle::{
@@ -20,6 +19,7 @@ use provider_session_machines::{
     session_setting_machine::SettingValueId,
 };
 use std::{path::PathBuf, sync::Arc};
+use switchboard_session_task::session_owner_task::{OwnerCompletionPort, OwnerTaskError};
 use tokio_util::sync::CancellationToken;
 
 impl SessionOwnerExecution {

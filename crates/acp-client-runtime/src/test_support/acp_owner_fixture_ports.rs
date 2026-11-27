@@ -10,7 +10,6 @@ use crate::{
     owner_session_setting::OwnerSettingWirePlan,
     owner_session_stream::{OwnerStreamTarget, ReplayedSessionFacts},
     owner_wire::OwnerAcpWire,
-    session_owner_task::{OwnerCompletionPort, OwnerTaskError, SessionOwnerPorts},
 };
 use futures_util::FutureExt as _;
 use provider_session_machines::session_owner::{
@@ -35,6 +34,9 @@ use std::{
 use switchboard_harness_contracts::{
     CancelDrainStart, CancelDrainWait, CancelReservationRefusal, HarnessBinding, RefusedWorkMove,
     ReplyAdmission, ReservedWorkReply, SettingOffer, SteerIdlePolicy, WriterState,
+};
+use switchboard_session_task::session_owner_task::{
+    OwnerCompletionPort, OwnerTaskError, SessionOwnerPorts,
 };
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use uuid::Uuid;
@@ -528,7 +530,7 @@ impl<P: AcpRequestPayloads> SessionOwnerPorts for FixturePorts<P> {
         address: OwnerAddress,
         effect: OwnerEffect,
         completions: &OwnerCompletionPort,
-        _caller_wakes: &mut crate::session_owner_task::OwnerCallerWakes,
+        _caller_wakes: &mut switchboard_session_task::session_owner_task::OwnerCallerWakes,
     ) -> Result<Option<OwnerEvent>, OwnerTaskError> {
         match effect {
             OwnerEffect::RecordDeliveryEvidence(_) => Err(OwnerTaskError::ExecutorStopped),
