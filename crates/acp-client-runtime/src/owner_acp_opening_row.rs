@@ -10,14 +10,10 @@ mod reducer;
 #[path = "owner_acp_opening_row_test.rs"]
 mod tests;
 
-use super::policy::{OpeningEvent as Edge, OpeningPhase, OpeningPolicy};
 use super::{OpenSetup, RestoreOpening};
 use crate::{
-    RequestedProviderSettings,
-    acp_transport::{LifecycleRoute, ReadmitOutcome},
-    owner_opening_instance::{OpeningInstance, OpeningOffer},
-    owner_session_open::OwnerOpenedSession,
-    owner_session_setting::OwnerSettingWirePlan,
+    RequestedProviderSettings, acp_transport::ReadmitOutcome,
+    owner_session_open::OwnerOpenedSession, owner_session_setting::OwnerSettingWirePlan,
     owner_wire::OwnerAcpWire,
 };
 use provider_session_machines::{
@@ -31,6 +27,10 @@ use provider_session_machines::{
 };
 use session_event_model::{CapabilityReport, SessionSettings, SkillView};
 use state_machine_core::StateMachine;
+use switchboard_harness_shared_mechanics::opening::{
+    LifecycleRoute, OpeningEvent as Edge, OpeningInstance, OpeningOffer, OpeningPhase,
+    OpeningPolicy,
+};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 

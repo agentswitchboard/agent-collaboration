@@ -2,7 +2,6 @@
 
 use super::*;
 use crate::{
-    owner_opening_instance::OpeningInstance,
     owner_session_open::{OpenReceiptFailure, OwnerOpenConfiguration},
     owner_session_setting::tests::ConnectionCatalogueBehavior,
 };
@@ -15,6 +14,7 @@ use provider_session_machines::{
     session_setting_machine::SettingApplication,
 };
 use switchboard_harness_contracts::{ReservedReply, WorkReply};
+use switchboard_harness_shared_mechanics::opening::OpeningInstance;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -266,7 +266,7 @@ async fn writer_waits_for_a_taken_permit_to_enqueue_after_close() {
         .reserve_owned()
         .await
         .expect("writer granted its exact queue permit");
-    let claim = crate::owner_opening_instance::OpeningOffer::default();
+    let claim = switchboard_harness_shared_mechanics::opening::OpeningOffer::default();
     assert!(claim.take());
     let run = TransportRun {
         incarnation: OwnerIncarnation(Uuid::now_v7()),

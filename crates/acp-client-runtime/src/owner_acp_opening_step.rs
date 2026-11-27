@@ -16,10 +16,7 @@ use super::{
     RestoreMilestone, RestoreStart, RoutedRestore, RunResources, SetterPlan, SetterWrite,
     StateMachine, StepFault, StoppedReceipt,
 };
-use crate::{
-    owner_opening_instance::OpeningOffer, owner_session_open::OwnerOpenedSession,
-    owner_session_setting::OwnerSettingWirePlan,
-};
+use crate::{owner_session_open::OwnerOpenedSession, owner_session_setting::OwnerSettingWirePlan};
 use provider_session_machines::{
     ProviderSettingsCatalog,
     harness_lifecycle::{AcceptedRunSettings, CloseFact, LifecycleRefusal, SetupReport},
@@ -27,6 +24,7 @@ use provider_session_machines::{
 use session_event_model::{CapabilityReport, SessionSettings};
 use std::sync::Arc;
 use switchboard_harness_contracts::WorkOfferRefusal;
+use switchboard_harness_shared_mechanics::opening::{LifecycleRoute, OpeningOffer};
 
 type Step = Result<(Option<OpeningState>, Effect), (OpeningState, Command)>;
 
@@ -246,7 +244,7 @@ fn apply_edge(
             } = *request;
             let offer = OpeningOffer::default();
             let resources = RunResources {
-                route: crate::acp_transport::LifecycleRoute::new(super::super::transport_run(
+                route: LifecycleRoute::new(super::super::transport_run(
                     owner,
                     request.run.generation,
                 )),

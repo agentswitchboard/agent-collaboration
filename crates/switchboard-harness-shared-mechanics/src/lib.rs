@@ -1,5 +1,6 @@
 //! Shared runtime mechanics for harnesses and session controllers.
 
+pub mod opening;
 mod reply_carrier;
 pub mod run_ledger;
 

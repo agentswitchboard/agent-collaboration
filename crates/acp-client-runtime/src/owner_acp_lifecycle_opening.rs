@@ -8,8 +8,6 @@ mod close;
 mod create;
 #[path = "owner_acp_opening_observations.rs"]
 mod observations;
-#[path = "owner_acp_opening_policy.rs"]
-mod policy;
 #[path = "owner_acp_opening_restore.rs"]
 mod restore;
 #[path = "owner_acp_opening_row.rs"]
@@ -18,11 +16,7 @@ mod row;
 mod setter;
 
 use super::{lifecycle_transport_refusal, transport_run};
-use crate::{
-    ExternalProviderRuntimeError, RequestedProviderSettings,
-    owner_opening_instance::OpeningInstance, owner_wire::OwnerAcpWire,
-};
-use policy::OpeningPhase;
+use crate::{ExternalProviderRuntimeError, RequestedProviderSettings, owner_wire::OwnerAcpWire};
 use provider_session_machines::harness_lifecycle::{ActivationRefusal, ActivationSetup};
 use provider_session_machines::{
     SessionGeneration,
@@ -44,6 +38,7 @@ use std::{
     sync::{Arc, Mutex, MutexGuard, OnceLock},
 };
 use switchboard_harness_contracts::WriterState;
+use switchboard_harness_shared_mechanics::opening::{OpeningInstance, OpeningPhase};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use uuid::Uuid;
 
@@ -217,7 +212,7 @@ impl OpeningAttempts {
         opening: &OwnerOpenings,
         setup: ActivationSetup,
     ) -> Result<(OpeningInstance, SessionGeneration, Effect), ActivationRefusal> {
-        use policy::activation_refusal;
+        use switchboard_harness_shared_mechanics::opening::activation_refusal;
         if let Some(reason) = self.port_refusal {
             return Err(activation_refusal(reason));
         }

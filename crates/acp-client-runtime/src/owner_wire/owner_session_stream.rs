@@ -126,7 +126,7 @@ impl OwnerStreamTarget {
     }
 
     pub(crate) fn for_opening_route(
-        route: &crate::acp_transport::LifecycleRoute,
+        route: &switchboard_harness_shared_mechanics::opening::LifecycleRoute,
         wire: Arc<OwnerAcpWire>,
         retired: CancellationToken,
         events: SessionLifecyclePort,

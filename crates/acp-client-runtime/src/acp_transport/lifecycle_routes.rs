@@ -4,8 +4,9 @@ use super::{
     AcpRoute, AcpTransport, LifecycleRoute, OrderedOutput, TransportRefusal, TransportRun,
     writer_refusal,
 };
-use crate::{in_folder_allowance::InFolderGrant, owner_opening_instance::OpeningOffer};
+use crate::in_folder_allowance::InFolderGrant;
 use provider_session_machines::session_lifecycle_machine::CloseAttempt;
+use switchboard_harness_shared_mechanics::opening::OpeningOffer;
 use switchboard_harness_shared_mechanics::run_ledger::ReadmitOutcome as LedgerReadmitOutcome;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

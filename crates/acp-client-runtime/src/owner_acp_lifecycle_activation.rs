@@ -1,6 +1,5 @@
 //! Stage the exact reader, then authorize it only after its real handoff.
 
-use super::policy::activation_refusal;
 use super::row::{ReaderEnd, ReaderHandoff};
 use super::{
     Arc, Command, Effect, OpeningSlot, OwnerOpenings, RunRetirement, SessionLifecycleFact,
@@ -8,6 +7,7 @@ use super::{
 };
 use crate::owner_session_stream::OwnerStreamTarget;
 use provider_session_machines::harness_lifecycle::{ActivationRefusal, ActivationSetup};
+use switchboard_harness_shared_mechanics::opening::activation_refusal;
 
 impl OwnerOpenings {
     pub(in super::super) fn activate(

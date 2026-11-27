@@ -2,20 +2,20 @@
 
 //! Declared ACP opening transitions and the owner actions derived from them.
 
-use provider_session_machines::harness_lifecycle::{ActivationRefusal, LifecycleRefusal};
 use state_machine_core::{
     EventTag, RefusalTag, StateMachine, StateMachineResult, StateTag, Transition, TransitionError,
 };
-use switchboard_harness_contracts::{HeldOpeningKind, WriterState};
+use switchboard_harness_contracts::{
+    ActivationRefusal, HeldOpeningKind, LifecycleRefusal, WriterState,
+};
 
 macro_rules! tagged_enum {
     ($name:ident, $($variant:ident => $tag:literal),+ $(,)?) => {
         #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-        pub(super) enum $name { $($variant),+ }
+        pub enum $name { $($variant),+ }
 
         impl $name {
-            #[cfg(test)]
-            pub(super) const ALL: &'static [Self] = &[$(Self::$variant),+];
+            pub const ALL: &'static [Self] = &[$(Self::$variant),+];
 
             const fn tag(self) -> &'static str {
                 match self { $(Self::$variant => $tag),+ }
@@ -125,7 +125,7 @@ impl EventTag for OpeningEvent {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct WrongOpeningPhase;
+pub struct WrongOpeningPhase;
 
 impl RefusalTag for WrongOpeningPhase {
     fn refusal_tag(&self) -> &'static str {
@@ -133,7 +133,7 @@ impl RefusalTag for WrongOpeningPhase {
     }
 }
 
-pub(super) struct OpeningPolicy;
+pub struct OpeningPolicy;
 
 // The same declaration supplies the reducer and its inspection table.
 macro_rules! opening_transitions {
@@ -348,7 +348,7 @@ impl OpeningPhase {
 
     /// Project owner actions that the actual state machine admits. Wire,
     /// reader and provider facts do not appear as caller actions.
-    pub(super) fn refusal(self) -> LifecycleRefusal {
+    pub fn refusal(self) -> LifecycleRefusal {
         use OpeningEvent as Event;
         if self.accepts(Event::OpenCreate) {
             LifecycleRefusal::OpeningNotHeld
@@ -382,10 +382,10 @@ impl OpeningPhase {
 }
 
 #[cfg(test)]
-#[path = "owner_acp_opening_policy_test.rs"]
+#[path = "opening_policy_test.rs"]
 mod tests;
 
-pub(super) fn activation_refusal(refusal: LifecycleRefusal) -> ActivationRefusal {
+pub fn activation_refusal(refusal: LifecycleRefusal) -> ActivationRefusal {
     match refusal {
         LifecycleRefusal::Writer(WriterState::Stopped) => ActivationRefusal::WriterStopped,
         LifecycleRefusal::ConnectionRetired => ActivationRefusal::ConnectionRetired,

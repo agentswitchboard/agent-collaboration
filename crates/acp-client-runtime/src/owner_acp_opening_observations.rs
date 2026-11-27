@@ -4,7 +4,7 @@ use super::{
     Arc, Command, CreateAttempt, Effect, LifecycleRefusal, Mutex, OpeningAttempts, OpeningInstance,
     OpeningSlot, OwnerAcpWire, OwnerOpenings, SessionGeneration, WriterState, lock,
 };
-use crate::acp_transport::LifecycleRoute;
+use switchboard_harness_shared_mechanics::opening::LifecycleRoute;
 
 impl OwnerOpenings {
     pub(super) fn watch_writer(&self) {

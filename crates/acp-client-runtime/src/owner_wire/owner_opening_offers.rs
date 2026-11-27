@@ -2,8 +2,7 @@
 
 use super::{AcpFrame, OpenReply, OpenRequest, OwnerAcpWire, OwnerWireRefusal, ResponseKind};
 use crate::{
-    acp_transport::{LifecycleRoute, ReadmitOutcome, TransportRefusal, TransportRun},
-    owner_opening_instance::{OpeningInstance, OpeningOffer},
+    acp_transport::{ReadmitOutcome, TransportRefusal, TransportRun},
     owner_session_open::{LifecycleOpenReceipt, OwnerSessionOpenSetup},
 };
 use agent_client_protocol::{JsonRpcMessage as _, schema::v1::CloseSessionRequest};
@@ -12,6 +11,9 @@ use provider_session_machines::{
     harness_lifecycle::{CloseFact, LifecycleReply},
     session_lifecycle_machine::{CloseAttempt, LoadAttempt, RestoreVia},
     session_owner::{OwnerIncarnation, RunAttempt},
+};
+use switchboard_harness_shared_mechanics::opening::{
+    LifecycleRoute, OpeningInstance, OpeningOffer,
 };
 
 pub(crate) struct RestoreOffer<'a> {

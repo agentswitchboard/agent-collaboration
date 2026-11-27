@@ -12,7 +12,7 @@ use crate::{
 pub struct HarnessSessionId(pub String);
 
 /// The caller supplies the current create operation UUID before a generation exists.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
 pub struct CreateAttempt(pub uuid::Uuid);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
