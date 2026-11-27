@@ -123,9 +123,14 @@ impl<Frame> ReadyHandOver<'_, Frame> {
         let run = authorization_run(&authorization);
         // The checked slot cannot change while Ready borrows the ledger.
         let Some(slot @ OfferRecord::Offered { .. }) = ledger.offers.get_mut(&authorization) else {
+            debug_assert!(false, "a ready hand-over found its slot no longer offered");
             return HandOverCommit::Unsent(DispatchResult::DefinitelyUnsent(authorization));
         };
         let OfferRecord::Offered { frame, .. } = std::mem::replace(slot, OfferRecord::Taken) else {
+            debug_assert!(
+                false,
+                "taking a ready hand-over did not return its offered frame"
+            );
             return HandOverCommit::Unsent(DispatchResult::DefinitelyUnsent(authorization));
         };
         if let Some(membership) = taken_membership
