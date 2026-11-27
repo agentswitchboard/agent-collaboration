@@ -1,0 +1,130 @@
+use std::fmt::Debug;
+
+use schemars::JsonSchema;
+use serde::de::DeserializeOwned;
+use serde_json::{Value, json};
+use switchboard_session_payloads::{
+    AssistantBody, FileChangeKind, FileDiff, GroupPlace, Item, ItemBody, ItemOrder,
+    PlanEntryPriority, PlanEntryState, RawInput, SearchOver, SessionBody, ToolAction, ToolKind,
+    ToolState, UsageAmount, UsageMetric, UsageScope, UserBody,
+};
+
+use super::assert_refused;
+
+fn schema<T: JsonSchema>() -> Value {
+    serde_json::to_value(schemars::schema_for!(T)).unwrap()
+}
+
+#[test]
+fn schema_uses_strings_for_exact_positions_counts_and_money() {
+    assert_eq!(schema::<ItemOrder>()["type"], "string");
+    for item_shape in [schema::<Item>(), schema::<GroupPlace>()] {
+        let position = &item_shape["properties"]["order"];
+        let position_shape = position["$ref"]
+            .as_str()
+            .and_then(|reference| reference.strip_prefix('#'))
+            .map_or(position, |pointer| item_shape.pointer(pointer).unwrap());
+        assert_eq!(position_shape["type"], "string");
+    }
+
+    let usage = schema::<UsageAmount>();
+    let variants = branches(&usage);
+    let count = variant(variants, "count");
+    assert_eq!(count["properties"]["value"]["type"], "string");
+    assert_eq!(
+        count["properties"]["capacity"]["type"],
+        json!(["string", "null"])
+    );
+    assert_eq!(count["required"], json!(["kind", "value"]));
+    let money = variant(variants, "money");
+    assert_eq!(money["properties"]["amount"]["type"], "string");
+}
+
+#[test]
+fn schema_advertises_only_objects_tagged_kind_and_readers_refuse_unknown_kinds() {
+    assert_tagged::<ItemBody>(&["user", "assistant", "session"]);
+    assert_tagged::<UserBody>(&["message"]);
+    assert_tagged::<AssistantBody>(&["message", "thinking", "toolCall", "plan", "other"]);
+    assert_tagged::<SessionBody>(&["notice", "settingChange", "usage", "other"]);
+    assert_tagged::<PlanEntryState>(&["pending", "inProgress", "completed"]);
+    assert_tagged::<PlanEntryPriority>(&["high", "medium", "low"]);
+    assert_tagged::<ToolKind>(&[
+        "read", "edit", "delete", "move", "search", "execute", "think", "fetch", "other",
+    ]);
+    assert_tagged::<ToolAction>(&[
+        "notReported",
+        "shell",
+        "fileChange",
+        "fileRead",
+        "search",
+        "fetch",
+        "subAgent",
+        "other",
+    ]);
+    assert_tagged::<SearchOver>(&["fileNames", "fileContents", "web"]);
+    assert_tagged::<FileChangeKind>(&["added", "changed", "removed", "moved"]);
+    assert_tagged::<FileDiff>(&["texts", "unifiedPatch"]);
+    assert_tagged::<RawInput>(&["notReported", "value", "tooLarge"]);
+    assert_tagged::<ToolState>(&["pending", "running", "completed", "failed", "declined"]);
+    assert_tagged::<UsageMetric>(&[
+        "contextUsed",
+        "inputTokens",
+        "outputTokens",
+        "reasoningTokens",
+        "cacheReadTokens",
+        "cacheWriteTokens",
+        "cost",
+        "other",
+    ]);
+    assert_tagged::<UsageScope>(&["turn", "session"]);
+    assert_tagged::<UsageAmount>(&["count", "money"]);
+}
+
+fn branches(schema: &Value) -> &[Value] {
+    schema["oneOf"]
+        .as_array()
+        .or_else(|| schema["anyOf"].as_array())
+        .map_or_else(|| std::slice::from_ref(schema), Vec::as_slice)
+}
+
+fn variant<'shape>(branches: &'shape [Value], tag: &str) -> &'shape Value {
+    branches
+        .iter()
+        .find(|variant| {
+            variant
+                .pointer("/properties/kind/const")
+                .and_then(Value::as_str)
+                == Some(tag)
+        })
+        .unwrap()
+}
+
+fn assert_tagged<T: JsonSchema + DeserializeOwned + Debug>(expected_tags: &[&str]) {
+    let schema = schema::<T>();
+    let variants = branches(&schema);
+    assert_eq!(variants.len(), expected_tags.len(), "{schema}");
+    for tag in expected_tags {
+        let shape = variant(variants, tag);
+        assert_eq!(shape["type"], "object", "{shape}");
+        assert_eq!(
+            shape
+                .pointer("/properties/kind/type")
+                .and_then(Value::as_str),
+            Some("string"),
+            "{shape}"
+        );
+        assert_eq!(shape["additionalProperties"], false, "{shape}");
+        assert!(
+            shape["required"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("kind")),
+            "{shape}"
+        );
+    }
+    assert_refused::<T>(
+        r#"{"kind":"fixtureFutureKind"}"#,
+        "kind",
+        "unknown variant `fixtureFutureKind`",
+    );
+}

@@ -507,7 +507,7 @@ pub(super) fn check_declared_session_read_edges(
                 (DependencyKind::Normal, false, true) if owner == "switchboard-session-calls" => {
                     &["serde", "schemars", "thiserror"]
                 }
-                (DependencyKind::Normal, false, true) => &["serde", "schemars"],
+                (DependencyKind::Normal, false, true) => &["serde", "schemars", "serde_json"],
                 (DependencyKind::Dev, false, true) => allowed_session_read_dev_dependencies(owner),
                 _ => &[],
             };
