@@ -18,6 +18,7 @@ mod model_ledger;
 
 #[cfg(test)]
 mod approval_decision_log_cases;
+#[cfg(test)]
 mod approval_retention_boundary;
 #[cfg(test)]
 mod approval_store_atomicity;

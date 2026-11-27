@@ -16,6 +16,7 @@ pub struct FixtureCommittedApply<Reply> {
 pub(super) struct NativeApprovalCommit<'fixture, Command> {
     pub(super) fixture: &'fixture NativeApprovalStoreFixture,
     pub(super) fail_after_write: Option<usize>,
+    pub(super) erased_marker_read_fault: Option<ErasedMarkerReadFault>,
     pub(super) run_command: Command,
     pub(super) evidence: &'fixture mut ApprovalTransactionEvidence,
 }
@@ -51,6 +52,7 @@ where
 
                 transaction: pool.begin_with("BEGIN IMMEDIATE").await.unwrap(),
                 fail_after_write: self.fail_after_write,
+                erased_marker_read_fault: self.erased_marker_read_fault,
                 evidence: ApprovalTransactionEvidence::default(),
             };
 
@@ -64,6 +66,10 @@ where
             );
             let result = (self.run_command)(&mut store).await;
             let holder_effects = store.finish_effects();
+            assert!(
+                transaction.erased_marker_read_fault.is_none(),
+                "the applying command must reach the faulted erased-marker read"
+            );
             if result.is_ok() {
                 transaction.transaction.commit().await.unwrap();
             } else {

@@ -14,6 +14,10 @@ SELECT json_array('run', router_run_id, registration_order, registered_at, retir
                   organization_id, machine_id, enrollment_id, created_at)
 FROM approval_router_runs
 UNION ALL
+SELECT json_array('erased', approval_row_id, request_id, organization_id, router_run_id,
+                  ending_json, created_at, updated_at)
+FROM approval_erased_requests
+UNION ALL
 SELECT json_array('due', due_entry_id, work_kind, subject_key, occurrence_ms, effective_due_ms,
                   entry_role, base_due_ms, created_at, updated_at)
 FROM engine_due_entries
