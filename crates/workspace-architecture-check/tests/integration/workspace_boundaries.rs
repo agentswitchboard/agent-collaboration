@@ -77,7 +77,7 @@ const FLEET_TIMER_POLICY: &str = "fleet-timer-policy";
 pub(super) const HARNESS_CONTRACTS: (&str, &[&str]) = ("switchboard-harness-contracts", &[]);
 pub(super) const HARNESS_SHARED_MECHANICS: (&str, &[&str]) = (
     "switchboard-harness-shared-mechanics",
-    &[HARNESS_CONTRACTS.0],
+    &[HARNESS_CONTRACTS.0, "state-machine-core"],
 );
 const HARNESS_LAYERS: [(&str, &[&str]); 2] = [HARNESS_CONTRACTS, HARNESS_SHARED_MECHANICS];
 pub(super) const SESSION_STORE: (&str, &[&str]) = (

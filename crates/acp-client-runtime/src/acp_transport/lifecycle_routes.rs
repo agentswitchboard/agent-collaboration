@@ -1,11 +1,12 @@
 //! Install exact lifecycle routes and take their ordered writer offers.
 
 use super::{
-    AcpTransport, ConnectionRoute, LifecycleRoute, OrderedOutput, TransportRefusal, TransportRun,
+    AcpRoute, AcpTransport, LifecycleRoute, OrderedOutput, TransportRefusal, TransportRun,
     writer_refusal,
 };
 use crate::{in_folder_allowance::InFolderGrant, owner_opening_instance::OpeningOffer};
 use provider_session_machines::session_lifecycle_machine::CloseAttempt;
+use switchboard_harness_shared_mechanics::run_ledger::ReadmitOutcome as LedgerReadmitOutcome;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ReadmitOutcome {
@@ -15,6 +16,17 @@ pub(crate) enum ReadmitOutcome {
     DifferentMarker,
 }
 
+impl From<LedgerReadmitOutcome> for ReadmitOutcome {
+    fn from(outcome: LedgerReadmitOutcome) -> Self {
+        match outcome {
+            LedgerReadmitOutcome::Reopened => Self::Reopened,
+            LedgerReadmitOutcome::RouteLost => Self::RouteLost,
+            LedgerReadmitOutcome::MarkerAbsent => Self::MarkerAbsent,
+            LedgerReadmitOutcome::DifferentMarker => Self::DifferentMarker,
+        }
+    }
+}
+
 impl<Frame> AcpTransport<Frame> {
     pub(crate) fn activate_lifecycle_route(&self, route: &LifecycleRoute) -> bool {
         let mut state = self.state();
@@ -22,8 +34,8 @@ impl<Frame> AcpTransport<Frame> {
             && state
                 .routes
                 .get(&route.run)
-                .is_some_and(|current| current.names(route) && current.closing.is_none())
-            && state.callbacks.activate(route.run)
+                .is_some_and(|current| current.names(route))
+            && state.ledger.activate_run(route.run)
     }
 
     pub(crate) fn has_lifecycle_route(&self, route: &LifecycleRoute) -> bool {
@@ -49,7 +61,7 @@ impl<Frame> AcpTransport<Frame> {
         route: &LifecycleRoute,
         session: String,
     ) -> Result<bool, TransportRefusal> {
-        let previous = {
+        let (replaced, previous) = {
             let mut state = self.state();
             if route.is_removed()
                 || state.routes.get(&route.run).is_some_and(|current| {
@@ -61,17 +73,18 @@ impl<Frame> AcpTransport<Frame> {
             {
                 return Err(TransportRefusal::RouteUnavailable);
             }
-            let previous = state.routes.insert(
-                route.run,
-                ConnectionRoute::new(session, Some(route.clone())),
-            );
-            if let Some(previous) = &previous {
-                state.callbacks.retire(&previous.session, route.run);
+            let retired = state.ledger.replace_run(route.run, session);
+            if let Some(retired) = &retired {
+                state.claims.retire(&retired.session, retired.run);
             }
-            state.callbacks.open(route.run);
-            previous
+            state.claims.open(route.run);
+            let previous = state
+                .routes
+                .insert(route.run, AcpRoute::new(Some(route.clone())));
+            state.debug_check_run_keys();
+            debug_assert_eq!(previous.is_some(), retired.is_some());
+            (retired.is_some(), previous)
         };
-        let replaced = previous.is_some();
         if let Some(previous) = previous.and_then(|previous| previous.lifecycle) {
             previous.notify_removed();
         }
@@ -89,10 +102,11 @@ impl<Frame> AcpTransport<Frame> {
                 return false;
             }
             let retired = state.routes.remove(&route.run);
-            if let Some(retired) = &retired {
+            if let Some(record) = state.ledger.retire_run(route.run) {
                 route.mark_removed();
-                state.callbacks.retire(&retired.session, route.run);
+                state.claims.retire(&record.session, record.run);
             }
+            state.debug_check_run_keys();
             retired
         };
         route.notify_removed();
@@ -127,16 +141,14 @@ impl<Frame> AcpTransport<Frame> {
         frame: Frame,
     ) -> Result<(), TransportRefusal> {
         let mut state = self.state();
-        let current = state
+        state
             .routes
-            .get_mut(&route.run)
+            .get(&route.run)
             .filter(|current| !route.is_removed() && current.names(route))
             .ok_or(TransportRefusal::RouteUnavailable)?;
-        if current.closing.is_some() {
-            return Err(TransportRefusal::Closing);
-        }
+        let close = state.ledger.begin_close(route.run)?;
         self.enqueue_opening_claim(route.run, offer, frame)?;
-        current.closing = Some(attempt);
+        close.mark(attempt);
         Ok(())
     }
 
@@ -147,14 +159,12 @@ impl<Frame> AcpTransport<Frame> {
         frame: Frame,
     ) -> Result<(), TransportRefusal> {
         let state = self.state();
-        let current = state
+        state
             .routes
             .get(&route.run)
             .filter(|current| !route.is_removed() && current.names(route))
             .ok_or(TransportRefusal::RouteUnavailable)?;
-        if current.closing.is_some() {
-            return Err(TransportRefusal::Closing);
-        }
+        state.ledger.check_takes_requests(route.run)?;
         self.enqueue_opening_claim(route.run, claim, frame)
     }
 
@@ -164,26 +174,19 @@ impl<Frame> AcpTransport<Frame> {
         attempt: CloseAttempt,
     ) -> ReadmitOutcome {
         let mut state = self.state();
-        let Some(entry) = state
+        if !state
             .routes
-            .get_mut(&route.run)
-            .filter(|entry| !route.is_removed() && entry.names(route))
-        else {
+            .get(&route.run)
+            .is_some_and(|entry| !route.is_removed() && entry.names(route))
+        {
             return ReadmitOutcome::RouteLost;
-        };
-        match entry.closing {
-            Some(current) if current == attempt => {
-                entry.closing = None;
-                ReadmitOutcome::Reopened
-            }
-            Some(_) => ReadmitOutcome::DifferentMarker,
-            None => ReadmitOutcome::MarkerAbsent,
         }
+        state.ledger.readmit(route.run, attempt).into()
     }
 
     #[cfg(any(test, feature = "test-observation"))]
     pub(crate) fn closing_marker_for_test(&self, run: TransportRun) -> Option<CloseAttempt> {
-        self.state().routes.get(&run)?.closing
+        self.state().ledger.closing_marker(run)
     }
 
     #[cfg(feature = "test-observation")]
@@ -202,15 +205,13 @@ impl<Frame> AcpTransport<Frame> {
         replacement: CloseAttempt,
     ) -> bool {
         let mut state = self.state();
-        let Some(route) = state
-            .routes
-            .get_mut(&run)
-            .filter(|route| route.closing == Some(previous))
-        else {
+        if state.ledger.readmit(run, previous) != LedgerReadmitOutcome::Reopened {
             return false;
-        };
-        route.closing = Some(replacement);
-        true
+        }
+        state.ledger.begin_close(run).is_ok_and(|close| {
+            close.mark(replacement);
+            true
+        })
     }
 
     fn enqueue_opening_claim(

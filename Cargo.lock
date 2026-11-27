@@ -6127,6 +6127,7 @@ name = "switchboard-harness-shared-mechanics"
 version = "0.1.167"
 dependencies = [
  "hegeltest",
+ "state-machine-core",
  "switchboard-harness-contracts",
  "tokio",
  "tokio-util",
