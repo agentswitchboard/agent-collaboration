@@ -48,11 +48,11 @@ async fn a_known_unsent_lane_terminal_releases_its_receipt_fault_blocker() {
         .await
         .expect("the next prompt sends");
 
-    let (create_held, release_create) = host
-        .runtime_for(&rig.target.endpoint)
-        .unwrap()
-        .preparation_fixture
-        .pause_create();
+    let (create_held, release_create) =
+        crate::provider_test_support::fixture_runtime_for(&host, &rig.target.endpoint)
+            .unwrap()
+            .preparation_fixture
+            .pause_create();
     let create = OperationId::generate();
     host.create(create_request(&rig, create.clone()))
         .await

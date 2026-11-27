@@ -1,6 +1,6 @@
 //! Immediate settings actions use the durable Session inventory for authority.
 
-use provider_session_machines::ProviderSettingKind;
+use provider_session_machines::{ProviderSettingKind, harness_lifecycle::AUTO_PERMISSION_MODE};
 
 use super::ExternalProviderSupervisor;
 use crate::provider_operation_settlement::effective_settings;
@@ -132,7 +132,7 @@ pub(super) async fn apply(
     };
     if intent == session_event_model::SettingApplicationIntent::ExplicitChange
         && !(kind == provider_session_machines::ProviderSettingKind::Mode
-            && request.value == acp_client_runtime::AUTO_PERMISSION_MODE)
+            && request.value == AUTO_PERMISSION_MODE)
         && let Some(advertised) = owner
             .catalog()
             .await
@@ -385,7 +385,7 @@ fn result(
     }
 }
 
-pub(super) fn setting_outcome_unknown(
+pub(crate) fn setting_outcome_unknown(
     target: &SessionRef,
     setting: ProviderSettingKind,
     value: String,
@@ -403,7 +403,7 @@ pub(super) fn setting_outcome_unknown(
     }
 }
 
-fn failure(
+pub(crate) fn failure(
     kind: ProviderSettingsFailureKind,
     target: &SessionRef,
     message: &str,

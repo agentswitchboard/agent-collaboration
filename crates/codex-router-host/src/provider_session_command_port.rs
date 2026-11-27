@@ -385,15 +385,15 @@ impl SessionCommandPort for HostSessionCommandPort {
             let actor = provider_actor(&command.actor)?;
             let operation = OperationId::generate();
             #[cfg(test)]
-            if let Some(release) =
-                self.supervisor
-                    .runtime_for(&target.endpoint)
-                    .and_then(|runtime| {
-                        runtime
-                            .preparation_fixture
-                            .hold_exact_steer_admission(operation.clone(), placement)
-                    })
-            {
+            if let Some(release) = crate::provider_test_support::fixture_runtime_for(
+                &self.supervisor,
+                &target.endpoint,
+            )
+            .and_then(|runtime| {
+                runtime
+                    .preparation_fixture
+                    .hold_exact_steer_admission(operation.clone(), placement)
+            }) {
                 let _test_released = release.await;
             }
             let outcome = self
@@ -730,7 +730,7 @@ fn map_steer_failure(error: ProviderSteerContentsError) -> CommandFailure {
         ProviderSteerContentsError::Admission(error) => map_admission_failure(error),
         #[cfg(any(test, feature = "test-support"))]
         ProviderSteerContentsError::Runtime(error) => {
-            crate::external_provider_supervisor::owner_fixture_failures::map_runtime_failure(error)
+            crate::provider_test_support::acp_failures::map_runtime_failure(error)
         }
         ProviderSteerContentsError::Operation(error) => {
             CommandFailure::ProviderSteerOperation(error)

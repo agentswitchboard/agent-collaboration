@@ -165,7 +165,7 @@ pub(super) fn restore_operation_failure(
     result
 }
 
-pub(super) fn runtime_failure(
+pub(crate) fn runtime_failure(
     operation_id: OperationId,
     target: Option<SessionRef>,
     cause: OperationFailureCause,
@@ -440,3 +440,7 @@ mod tests;
 #[cfg(test)]
 #[path = "operation_failure_cause_test.rs"]
 mod cause_tests;
+
+#[cfg(test)]
+#[path = "prompt_refusal_projection_test.rs"]
+mod prompt_refusal_tests;

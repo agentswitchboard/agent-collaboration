@@ -1,20 +1,17 @@
 //! ACP-shaped failure projections used by the owner fixtures.
 
-use super::OperationFailureCause;
-#[cfg(test)]
-use super::failure;
-use super::provider_create_result::provider_create_failure;
 use crate::ExternalProviderRuntimeError;
+use crate::external_provider_supervisor::{OperationFailureCause, provider_create_failure};
 use crate::session_owner_door::{OwnerCreateFailure, OwnerCreateReport};
 use collaboration_contracts::CommandFailure;
 use provider_session_machines::harness_lifecycle::OpeningFailure;
 
 #[cfg(test)]
-use super::provider_operation_failure::runtime_failure;
-#[cfg(test)]
-use super::provider_settings_control::setting_outcome_unknown;
-#[cfg(test)]
 use crate::external_provider_runtime::prompt_refusal;
+#[cfg(test)]
+use crate::external_provider_supervisor::{
+    failure, runtime_failure, setting_outcome_unknown, settings_failure,
+};
 #[cfg(test)]
 use collaboration_protocol::{
     ConversationOperationFailure, ConversationOperationFailureKind,
@@ -310,23 +307,6 @@ fn plain_error(
         ),
     };
     settings_failure(kind, target, message)
-}
-
-#[cfg(test)]
-fn settings_failure(
-    kind: ProviderSettingsFailureKind,
-    target: &SessionRef,
-    message: &str,
-) -> ProviderSettingsFailure {
-    ProviderSettingsFailure {
-        kind,
-        stage: None,
-        target: Some(target.clone()),
-        message: message.into(),
-        setting: None,
-        value: None,
-        advertised: Vec::new(),
-    }
 }
 
 pub(crate) fn map_runtime_failure(error: ExternalProviderRuntimeError) -> CommandFailure {

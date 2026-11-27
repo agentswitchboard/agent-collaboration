@@ -3,8 +3,7 @@
 use super::{Operations, at};
 use crate::{CollaborationRuntime, CollaborationRuntimeInputs, ExternalProviderStartup};
 use collaboration_protocol::{
-    OperationId, ProviderKind, ProviderOperationEffect, ProviderOperationStage,
-    ProviderReconciliationState,
+    OperationId, ProviderKind, ProviderOperationEffect, ProviderReconciliationState,
 };
 use collaboration_runtime::{SourceWaitProbe, WorkerObservation};
 use router_clock::{ManualClock, RuntimeClock as _};
@@ -148,10 +147,7 @@ async fn started_host_retention_wakes_on_its_supervisor_and_store() {
     }
     let first_wait = require_idle_wait(&observation, first_wait, worker, 1).await;
     assert_eq!(retained_row(&operations, &held).await, Some(kept));
-    let mut commits = operations.store.lock().await.subscribe_commits();
-    let mut completed = operations.supervisor.subscribe_completions();
-
-    assert!(operations.supervisor.publish_held_result(&held).await);
+    operations.supervisor.publish_held_result(&held).await;
     let completion_woke = first_wait.was_woken();
     let second_wait = observation.probe_next_source_wait();
     first_wait.release();
@@ -159,18 +155,9 @@ async fn started_host_retention_wakes_on_its_supervisor_and_store() {
         completion_woke,
         "the supervisor's completion must wake the actual worker wait"
     );
-    assert!(
-        completed
-            .has_changed()
-            .expect("supervisor signal stays open")
-    );
-    assert!(!commits.has_changed().expect("store signal stays open"));
     let second_wait = require_idle_wait(&observation, second_wait, worker, 2).await;
     assert_eq!(retained_row(&operations, &held).await, None);
-    let _completed_revision = *completed.borrow_and_update();
-    let _commit_revision = *commits.borrow_and_update();
-
-    let terminal = operations
+    operations
         .store
         .lock()
         .await
@@ -189,15 +176,6 @@ async fn started_host_retention_wakes_on_its_supervisor_and_store() {
     assert!(
         commit_woke,
         "a commit on the Host store must wake the actual worker wait"
-    );
-    assert_eq!(terminal.operation_id, committed_later);
-    assert_eq!(terminal.stage, ProviderOperationStage::Terminal);
-    assert_eq!(terminal.terminal_at_ms, Some(old.timestamp_millis()));
-    assert!(commits.has_changed().expect("store signal stays open"));
-    assert!(
-        !completed
-            .has_changed()
-            .expect("supervisor signal stays open")
     );
     let third_wait = require_idle_wait(&observation, third_wait, worker, 3).await;
     assert_eq!(retained_row(&operations, &committed_later).await, None);

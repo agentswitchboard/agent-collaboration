@@ -253,3 +253,54 @@ async fn rejected_load_preserves_provider_code_without_creating_replacement() {
     );
     supervisor.shutdown().await.expect("shutdown");
 }
+
+#[test]
+fn coded_host_load_projection_preserves_the_attempted_result() {
+    use crate::external_provider_supervisor::coded_restore_failure_cases::{
+        CASES, CODE, REFERENCE,
+    };
+    use collaboration_protocol::DeliveryCorrelationId;
+    use provider_session_machines::session_owner::{ProviderWireFailure, RestorePhase};
+
+    for (wire, _, _, _, _, restore, rejected) in CASES {
+        let failure = ProviderWireFailure {
+            kind: wire,
+            code: CODE,
+            correlation_id: REFERENCE,
+        };
+        let outcome = coded_load_outcome(failure);
+        if let Some(session_not_found) = rejected {
+            let reference =
+                DeliveryCorrelationId::try_from(REFERENCE.to_string()).expect("valid reference");
+            let reason = if session_not_found {
+                ProviderSessionLoadRejection::SessionNotFound {
+                    code: CODE,
+                    correlation_id: reference,
+                }
+            } else {
+                ProviderSessionLoadRejection::ProviderRejected {
+                    code: CODE,
+                    correlation_id: reference,
+                }
+            };
+            assert_eq!(
+                outcome,
+                ProviderSessionLoadOutcome::Rejected {
+                    phase: RestorePhase::Attempted,
+                    reason
+                }
+            );
+        } else {
+            let wording = format!(
+                "{restore} (ACP code -32017; reference 01981f2b-d79c-7abc-8000-000000000001)"
+            );
+            assert_eq!(
+                outcome,
+                ProviderSessionLoadOutcome::Unavailable {
+                    phase: RestorePhase::Attempted,
+                    reason: wording
+                }
+            );
+        }
+    }
+}

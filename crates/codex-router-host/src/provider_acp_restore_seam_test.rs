@@ -122,8 +122,7 @@ async fn a_cold_auto_restore_timeout_finishes_the_input_without_holding_it() {
         "the loaded-only attempt reached ACP"
     );
 
-    let checkpoint = host
-        .runtime_for(&rig.target.endpoint)
+    let checkpoint = crate::provider_test_support::fixture_runtime_for(&host, &rig.target.endpoint)
         .expect("fixture runtime")
         .observe_provider_dispatch_for_fixture(
             acp_client_runtime::owner_wire::FixtureDispatchPoint::Restore,
@@ -224,7 +223,8 @@ async fn a_cold_auto_load_with_failed_host_preparation_settles_without_holding_i
     rig.seed_session().await;
     let (host, store) = rig.open_with_store("restored-in-auto").await;
     let host = Arc::new(host);
-    let runtime = host.runtime_for(&rig.target.endpoint).expect("runtime");
+    let runtime = crate::provider_test_support::fixture_runtime_for(&host, &rig.target.endpoint)
+        .expect("runtime");
     runtime.fault_restore_preparation();
     let route = delivery_route(&rig, host.clone(), store);
 
@@ -277,7 +277,9 @@ async fn cold_prompt_and_compact_keep_the_post_reply_restore_guidance() {
         rig.seed_session().await;
         let (host, store) = rig.open_with_store("restored-in-auto").await;
         let host = Arc::new(host);
-        let runtime = host.runtime_for(&rig.target.endpoint).expect("runtime");
+        let runtime =
+            crate::provider_test_support::fixture_runtime_for(&host, &rig.target.endpoint)
+                .expect("runtime");
         runtime.fault_restore_preparation();
         let route = delivery_route(&rig, host.clone(), store);
         let actor = rig.target.clone().into();
@@ -321,7 +323,9 @@ async fn a_failed_host_activation_retires_only_its_restore_and_never_sends_the_o
         rig.seed_session().await;
         let (host, store) = rig.open_with_store("restored-in-auto").await;
         let host = Arc::new(host);
-        let runtime = host.runtime_for(&rig.target.endpoint).expect("runtime");
+        let runtime =
+            crate::provider_test_support::fixture_runtime_for(&host, &rig.target.endpoint)
+                .expect("runtime");
         let route = delivery_route(&rig, host.clone(), store);
         let (reached, release) = runtime.pause_restore_preparation();
         let queued_accepted = tokio::sync::Notify::new();

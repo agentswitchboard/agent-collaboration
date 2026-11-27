@@ -333,11 +333,11 @@ async fn a_queued_head_waits_behind_a_wide_mark_then_sends_in_fifo_order() {
     rig.seed_session().await;
     let host = rig.open_host("restored-in-auto").await;
     rig.assert_loads(&host).await;
-    let (create_held, release_create) = host
-        .runtime_for(&rig.target.endpoint)
-        .unwrap()
-        .preparation_fixture
-        .pause_create();
+    let (create_held, release_create) =
+        crate::provider_test_support::fixture_runtime_for(&host, &rig.target.endpoint)
+            .unwrap()
+            .preparation_fixture
+            .pause_create();
     let create = OperationId::generate();
     host.create(create_request(&rig, create.clone()))
         .await

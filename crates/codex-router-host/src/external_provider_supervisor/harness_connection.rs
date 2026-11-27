@@ -67,11 +67,16 @@ pub enum ConnectionShutdown {
 }
 
 #[cfg(any(test, feature = "test-support"))]
+pub(crate) type FixtureOwnerDoorSlot =
+    Arc<std::sync::OnceLock<Arc<crate::session_owner_door::SessionOwnerDoor>>>;
+
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct HarnessConnectionTestSupport {
     pub(crate) hold_writer_capacity:
         Option<Arc<crate::session_owner_door::HoldProviderWriterCapacity>>,
     pub(crate) preparation_fixture:
         Arc<crate::session_owner_preparation_fixture::PreparationFixture>,
+    pub(crate) owner_door_slot: FixtureOwnerDoorSlot,
 }
 
 pub struct ExternalProviderBinding {
@@ -83,8 +88,6 @@ pub struct ExternalProviderBinding {
     pub(super) test_support: HarnessConnectionTestSupport,
     #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
     pub(super) work_observer: Arc<dyn crate::session_owner_work_observation::WorkObservationSink>,
-    #[cfg(test)]
-    pub(super) runtime: Arc<crate::ExternalProviderRuntime>,
 }
 
 impl ExternalProviderBinding {
@@ -96,7 +99,6 @@ impl ExternalProviderBinding {
         #[cfg(any(test, feature = "test-support"))] test_support: HarnessConnectionTestSupport,
         #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
         work_observer: Arc<dyn crate::session_owner_work_observation::WorkObservationSink>,
-        #[cfg(test)] runtime: Arc<crate::ExternalProviderRuntime>,
     ) -> Self {
         Self {
             identity,
@@ -107,8 +109,6 @@ impl ExternalProviderBinding {
             test_support,
             #[cfg(all(debug_assertions, unix, feature = "harness-work-observation"))]
             work_observer,
-            #[cfg(test)]
-            runtime,
         }
     }
 }

@@ -1,18 +1,13 @@
 use super::super::provider_create_result::{project_owner_create, provider_create_failure};
 use super::*;
-use crate::external_provider_runtime::prompt_refusal;
+use crate::external_provider_supervisor::coded_restore_failure_cases::{CASES, CODE, REFERENCE};
 use crate::session_owner_door::OwnerCreateFailure;
-use acp_client_runtime::{ExternalProviderRuntimeError, ProviderError};
 use provider_session_machines::ProviderSettingKind;
 use provider_session_machines::harness_lifecycle::{
     ActivationRefusal, HarnessSessionId, InvalidRequestedSetting, OpeningFailure,
 };
-use uuid::Uuid;
 
-const REFERENCE: Uuid = uuid::uuid!("01981f2b-d79c-7abc-8000-000000000001");
-const CODE: i64 = -32017;
-
-fn assert_failure(
+pub(super) fn assert_failure(
     failure: &ConversationOperationFailure,
     expected: (
         ConversationOperationFailureKind,
@@ -36,102 +31,10 @@ fn assert_failure(
 
 #[test]
 fn coded_projection_preserves_the_base_tuple_and_attempted_restore_wording() {
-    use crate::provider_acp_session_loading::{
-        ProviderSessionLoadOutcome, ProviderSessionLoadRejection, coded_load_outcome,
-    };
-    use ConversationOperationFailureKind as Kind;
-    use ConversationOperationFailureStage as Stage;
-    use ProviderOperationEffect as Effect;
-    use ProviderWireFailureKind as Wire;
-    use provider_session_machines::session_owner::RestorePhase;
     let target = super::super::tests::requester();
     let operation = OperationId::generate();
 
-    let cases = [
-        (
-            Wire::AuthenticationRequired,
-            Kind::AuthenticationRequired,
-            Stage::Binding,
-            Effect::None,
-            "provider authentication is required",
-            "the provider refused to restore this session, so check the provider before retrying",
-            Some(false),
-        ),
-        (
-            Wire::SessionNotFound,
-            Kind::ProviderSessionNotFound,
-            Stage::Binding,
-            Effect::None,
-            "the provider no longer knows this session, so start a new session with the same setup",
-            "the provider no longer knows this session, so start a new session with the same setup",
-            Some(true),
-        ),
-        (
-            Wire::ResourceNotFound,
-            Kind::NotFound,
-            Stage::Binding,
-            Effect::None,
-            "provider resource was not found",
-            "provider resource was not found, so check the provider before retrying",
-            None,
-        ),
-        (
-            Wire::UnsupportedMethod,
-            Kind::UnsupportedCapability,
-            Stage::Validation,
-            Effect::None,
-            "provider ACP method is unsupported",
-            "provider ACP method is unsupported, so check the provider's restore support before retrying",
-            None,
-        ),
-        (
-            Wire::InvalidParams,
-            Kind::InvalidRequest,
-            Stage::Validation,
-            Effect::None,
-            "provider ACP parameters are invalid",
-            "provider ACP parameters are invalid, so check the session setup before retrying",
-            None,
-        ),
-        (
-            Wire::RequestCancelled,
-            Kind::ProviderRejected,
-            Stage::Settlement,
-            Effect::Unknown,
-            "provider ACP request was cancelled",
-            "provider ACP request was cancelled, so retry the restore when ready",
-            None,
-        ),
-        (
-            Wire::Rejected,
-            Kind::ProviderRejected,
-            Stage::Settlement,
-            Effect::Unknown,
-            "provider rejected the operation after dispatch",
-            "the provider refused to restore this session, so check the provider before retrying",
-            Some(false),
-        ),
-        (
-            Wire::RestoreFailed,
-            Kind::OutcomeUnknown,
-            Stage::Settlement,
-            Effect::Unknown,
-            "the provider failed while restoring this session, so retry it",
-            "the provider failed while restoring this session, so retry it",
-            None,
-        ),
-        (
-            Wire::RestoreRefused,
-            Kind::ProviderRejected,
-            Stage::Settlement,
-            Effect::Unknown,
-            "the provider refused to restore this session, so check the provider before retrying",
-            "the provider refused to restore this session, so check the provider before retrying",
-            Some(false),
-        ),
-    ];
-
-    for (wire, kind, stage, effect, base, restore, rejected) in cases {
+    for (wire, kind, stage, effect, base, restore, rejected) in CASES {
         let failure = ProviderWireFailure {
             kind: wire,
             code: CODE,
@@ -144,150 +47,18 @@ fn coded_projection_preserves_the_base_tuple_and_attempted_restore_wording() {
         );
         assert_failure(&result, (kind, stage, effect, Some(CODE), &base));
 
-        let outcome = coded_load_outcome(failure);
-        let restore = if let Some(session_not_found) = rejected {
-            let reference =
-                DeliveryCorrelationId::try_from(REFERENCE.to_string()).expect("valid reference");
-            let reason = if session_not_found {
-                ProviderSessionLoadRejection::SessionNotFound {
-                    code: CODE,
-                    correlation_id: reference,
-                }
-            } else {
-                ProviderSessionLoadRejection::ProviderRejected {
-                    code: CODE,
-                    correlation_id: reference,
-                }
-            };
-            assert_eq!(
-                outcome,
-                ProviderSessionLoadOutcome::Rejected {
-                    phase: RestorePhase::Attempted,
-                    reason
-                }
-            );
+        let restore = if rejected.is_some() {
             format!(
                 "{restore} (provider code -32017; reference 01981f2b-d79c-7abc-8000-000000000001)"
             )
         } else {
-            let wording = format!(
-                "{restore} (ACP code -32017; reference 01981f2b-d79c-7abc-8000-000000000001)"
-            );
-            assert_eq!(
-                outcome,
-                ProviderSessionLoadOutcome::Unavailable {
-                    phase: RestorePhase::Attempted,
-                    reason: wording.clone()
-                }
-            );
-            wording
+            format!("{restore} (ACP code -32017; reference 01981f2b-d79c-7abc-8000-000000000001)")
         };
         let result = restore_operation_failure(operation.clone(), target.clone(), failure);
         assert_failure(&result, (kind, stage, effect, Some(CODE), &restore));
         assert_eq!(result.target, Some(target.clone()));
         assert_eq!(result.operation_id, Some(operation.clone()));
     }
-}
-
-#[test]
-fn prompt_refusal_is_classified_before_projection() {
-    use ConversationOperationFailureKind as Kind;
-    use ConversationOperationFailureStage as Stage;
-    use ProviderOperationEffect as Effect;
-    for (error, selection, kind, message) in [
-        (
-            ProviderError::InvalidSelection,
-            PromptSelectionRefusal::InvalidSelection,
-            Kind::InvalidRequest,
-            "invalid or stale skill selection",
-        ),
-        (
-            ProviderError::MalformedMetadata,
-            PromptSelectionRefusal::MalformedMetadata,
-            Kind::InvalidRequest,
-            "provider metadata is malformed",
-        ),
-        (
-            ProviderError::Unsupported,
-            PromptSelectionRefusal::Unsupported,
-            Kind::UnsupportedCapability,
-            "provider does not support this operation or input form",
-        ),
-        (
-            ProviderError::SourceUnavailable,
-            PromptSelectionRefusal::SourceUnavailable,
-            Kind::UnsupportedCapability,
-            "provider skill source is unavailable",
-        ),
-    ] {
-        let refusal = prompt_refusal(ExternalProviderRuntimeError::Behavior(error));
-        assert_eq!(
-            refusal,
-            PromptRefusal::Selection {
-                kind: selection,
-                message: message.to_owned()
-            }
-        );
-        let failure = runtime_failure(
-            OperationId::generate(),
-            None,
-            OperationFailureCause::PromptRefused(refusal),
-        );
-        assert_failure(
-            &failure,
-            (kind, Stage::Dispatch, Effect::None, None, message),
-        );
-    }
-
-    for (media, text) in [
-        ("image", "unsupportedContent{image}"),
-        ("audio", "unsupportedContent{audio}"),
-        ("embeddedResource", "unsupportedContent{embeddedResource}"),
-        ("other", "unsupportedContent{unknown}"),
-    ] {
-        let refusal = prompt_refusal(ExternalProviderRuntimeError::UnsupportedContent {
-            content_type: media,
-        });
-        assert_eq!(
-            refusal,
-            PromptRefusal::UnsupportedContent {
-                content_type: media
-            }
-        );
-        let failure = runtime_failure(
-            OperationId::generate(),
-            None,
-            OperationFailureCause::PromptRefused(refusal),
-        );
-        assert_failure(
-            &failure,
-            (
-                Kind::UnsupportedCapability,
-                Stage::Validation,
-                Effect::None,
-                None,
-                text,
-            ),
-        );
-    }
-
-    let refusal = prompt_refusal(ExternalProviderRuntimeError::TransportFailure);
-    assert_eq!(refusal, PromptRefusal::Unclassified);
-    let failure = runtime_failure(
-        OperationId::generate(),
-        None,
-        OperationFailureCause::PromptRefused(refusal),
-    );
-    assert_failure(
-        &failure,
-        (
-            Kind::OutcomeUnknown,
-            Stage::Settlement,
-            Effect::Unknown,
-            None,
-            "provider operation response was not available after dispatch",
-        ),
-    );
 }
 
 #[test]
@@ -387,7 +158,7 @@ fn create_invalid_setting_keeps_the_neutral_details_and_disposition() {
             value: "requested".to_owned(),
             advertised: vec!["advertised".to_owned()],
             provider_session_id: "fixture-session".to_owned(),
-            disposition: acp_client_runtime::InvalidSettingSessionDisposition::Closed,
+            disposition: provider_session_machines::InvalidSettingSessionDisposition::Closed,
         }
     );
 }
@@ -395,11 +166,13 @@ fn create_invalid_setting_keeps_the_neutral_details_and_disposition() {
 #[test]
 fn created_report_preserves_partial_settings_and_idle_invalid_setting_causes() {
     use crate::session_owner_door::OwnerCreateReport;
-    use acp_client_runtime::{
-        AppliedProviderSetting, FailedProviderSetting, InvalidSettingSessionDisposition,
-        NotAppliedProviderSetting, PermissionModeReport,
-    };
+    use provider_session_machines::InvalidSettingSessionDisposition;
     use provider_session_machines::harness_lifecycle::CreatedSettingsFailure;
+    use provider_session_machines::harness_lifecycle::PermissionModeReport;
+    use provider_session_machines::harness_lifecycle::{
+        AppliedProviderSetting, NotAppliedProviderSetting,
+    };
+    use session_event_model::FailedProviderSetting;
     use session_event_model::ProviderSettingFailureReason;
     let session = HarnessSessionId("fixture-session".to_owned());
     let permission_mode = PermissionModeReport {

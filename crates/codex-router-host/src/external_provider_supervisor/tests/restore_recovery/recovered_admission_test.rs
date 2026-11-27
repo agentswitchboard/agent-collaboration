@@ -18,7 +18,8 @@ async fn recovered_prompt_failure(taken: bool, recovery_first: bool) {
         .await;
     rig.assert_loads(&host).await;
     let old_owner = host.session_owner_for(&rig.target).expect("session owner");
-    let runtime = host.runtime_for(&rig.target.endpoint).expect("runtime");
+    let runtime = crate::provider_test_support::fixture_runtime_for(&host, &rig.target.endpoint)
+        .expect("runtime");
     let acknowledgement = runtime.preparation_fixture.pause_delivery_ack(taken);
     let (recovery_reached, release_recovery) = runtime.preparation_fixture.pause_recovery();
     // Saturation fails the owner when it tries to reserve the mark receipt,
@@ -314,7 +315,8 @@ async fn failed_owner_withdraws_an_offered_prompt_and_fences_both_old_writes() {
         .await;
     rig.assert_loads(&host).await;
     let previous = host.session_owner_for(&rig.target).expect("original owner");
-    let runtime = host.runtime_for(&rig.target.endpoint).expect("ACP runtime");
+    let runtime = crate::provider_test_support::fixture_runtime_for(&host, &rig.target.endpoint)
+        .expect("ACP runtime");
     let (recovery_reached, release_recovery) = runtime.preparation_fixture.pause_recovery();
     let acknowledgement = runtime.preparation_fixture.pause_delivery_ack(true);
     let operation = OperationId::generate();
@@ -480,7 +482,8 @@ async fn queued_receipt_after_owner_failure(replace_owner: bool) {
     };
     assert!(before.queue.is_empty());
 
-    let runtime = host.runtime_for(&rig.target.endpoint).expect("runtime");
+    let runtime = crate::provider_test_support::fixture_runtime_for(&host, &rig.target.endpoint)
+        .expect("runtime");
     let acknowledgement = runtime.preparation_fixture.pause_delivery_ack(false);
     let recovery = if replace_owner {
         Some(runtime.preparation_fixture.pause_recovery())
@@ -607,8 +610,7 @@ async fn real_create_result_wakes_with_the_adopted_owner_already_live() {
 
     let rig = RestoreRig::new();
     let host = rig.open_host("restored-in-auto").await;
-    let runtime = host
-        .runtime_for(&rig.target.endpoint)
+    let runtime = crate::provider_test_support::fixture_runtime_for(&host, &rig.target.endpoint)
         .expect("provider runtime");
     let (before_adoption, release_create) = runtime.preparation_fixture.pause_create();
     let door = host
