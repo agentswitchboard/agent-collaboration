@@ -4,9 +4,18 @@ use std::{fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 
+use crate::item_identifiers::CONTROL_FREE_TEXT_PATTERN;
+
+const MONEY_AMOUNT_MAX_BYTES: usize = 40;
+const MONEY_CURRENCY_MAX_BYTES: usize = 16;
+
 /// A reported nonnegative decimal amount with its original fractional precision.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "String", into = "String")]
+#[schemars(extend(
+    "pattern" = r"^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$(?![\s\S])",
+    "maxLength" = MONEY_AMOUNT_MAX_BYTES
+))]
 pub struct MoneyAmount(String);
 
 impl MoneyAmount {
@@ -67,7 +76,7 @@ fn check_amount(value: &str) -> Result<(), MoneyAmountError> {
     if value.is_empty() {
         return Err(MoneyAmountError::Empty);
     }
-    if value.len() > 40 {
+    if value.len() > MONEY_AMOUNT_MAX_BYTES {
         return Err(MoneyAmountError::TooLong);
     }
 
@@ -92,6 +101,12 @@ fn has_only_ascii_digits(value: &str) -> bool {
 /// The currency name supplied with a money amount.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "String", into = "String")]
+#[schemars(extend(
+    "minLength" = 1,
+    "maxLength" = MONEY_CURRENCY_MAX_BYTES,
+    "x-maxUtf8Bytes" = MONEY_CURRENCY_MAX_BYTES,
+    "pattern" = CONTROL_FREE_TEXT_PATTERN
+))]
 pub struct MoneyCurrency(String);
 
 impl MoneyCurrency {
@@ -148,7 +163,7 @@ fn check_currency(value: &str) -> Result<(), MoneyCurrencyError> {
     if value.is_empty() {
         return Err(MoneyCurrencyError::Empty);
     }
-    if value.len() > 16 {
+    if value.len() > MONEY_CURRENCY_MAX_BYTES {
         return Err(MoneyCurrencyError::TooLong);
     }
     if value.chars().any(char::is_control) {
