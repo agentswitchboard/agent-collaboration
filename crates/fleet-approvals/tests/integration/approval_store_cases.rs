@@ -582,7 +582,19 @@ async fn assert_corrupt_read(
 }
 
 pub(super) async fn snapshot(fixture: &NativeApprovalStoreFixture) -> Vec<String> {
-    fixture
+    let mut rows = fixture
         .inspect_rows(include_str!("../fixtures/approval_store_snapshot.sql"))
-        .await
+        .await;
+    // The shared Workerd snapshot already uses all five compound SELECT terms.
+    rows.extend(
+        fixture
+            .inspect_rows(
+                "SELECT json_array('erased', approval_row_id, request_id, organization_id, router_run_id,
+                                   ending_json, created_at, updated_at)
+                 FROM approval_erased_requests
+                 ORDER BY 1",
+            )
+            .await,
+    );
+    rows
 }
