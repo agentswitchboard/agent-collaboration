@@ -367,6 +367,149 @@ fn dial_retries_busy_and_lost_connections_but_holds_a_bad_address(case: hegel::T
     }
 }
 
+fn generated_timer_or_network_input(
+    case: &hegel::TestCase,
+    attempts: &(ConnectionAttempt, ConnectionAttempt),
+) -> Input {
+    let attempt = if case.draw(gs::booleans()) {
+        attempts.1.clone()
+    } else {
+        attempts.0.clone()
+    };
+    let now = at(case.draw(gs::integers::<u64>().max_value(1_000_000_000)));
+    let version = LeaseVersion(case.draw(gs::integers::<u64>().max_value(100)));
+    let correlation_id = identifier(case.draw(gs::integers::<u8>()));
+    match case.draw(gs::integers::<u8>().max_value(10)) {
+        0 => Input::Tick { now },
+        1 => Input::DialStarted {
+            attempt,
+            lease: LeaseWindow {
+                binding: 1,
+                version,
+                usable_until: now.after(Duration::from_secs(600)),
+            },
+            now,
+        },
+        2 => Input::DialFailed {
+            attempt,
+            reason: case.draw(gs::sampled_from(vec![
+                DialFailure::Unauthorized,
+                DialFailure::Busy,
+                DialFailure::InvalidAddress,
+                DialFailure::Transport,
+            ])),
+            now,
+        },
+        3 => Input::Welcome {
+            attempt,
+            machine_id: if case.draw(gs::booleans()) {
+                machine()
+            } else {
+                "01890f2e-7b4c-7cc0-98c4-000000000099".parse().unwrap()
+            },
+            deadline: now.after(Duration::from_secs(120)),
+            now,
+        },
+        4 => Input::SocketClosed {
+            attempt,
+            code: case.draw(gs::sampled_from(vec![
+                None,
+                Some(MachineLinkCloseCode::Expired),
+                Some(MachineLinkCloseCode::Revoked),
+                Some(MachineLinkCloseCode::Inactive),
+            ])),
+        },
+        5 => Input::RenewalLease {
+            attempt,
+            lease: LeaseWindow {
+                binding: 1,
+                version,
+                usable_until: now.after(Duration::from_secs(600)),
+            },
+            correlation_id,
+            now,
+        },
+        6 => Input::RenewalAccepted {
+            attempt,
+            correlation_id,
+            deadline: now.after(Duration::from_secs(180)),
+            now,
+        },
+        7 => Input::RenewalRefused {
+            attempt,
+            correlation_id,
+            reason: TokenRenewalRefusal::PresentedTokenExpired,
+            now,
+        },
+        8 => Input::RenewalUnavailable { attempt },
+        9 => Input::AddressChanged { attempt },
+        _ => Input::BindingAvailable(1),
+    }
+}
+
+#[hegel::test(test_cases = 200)]
+fn a_welcome_for_another_machine_never_dials_again_until_the_binding_changes(
+    case: hegel::TestCase,
+) {
+    let attempts = attempt_pair();
+    let (attempt, _) = attempts.clone();
+    let mut state = waiting();
+    dial(&mut state, &attempt, lease(1), 0);
+
+    let effects = apply(
+        &mut state,
+        Input::Welcome {
+            attempt: attempt.clone(),
+            machine_id: "01890f2e-7b4c-7cc0-98c4-000000000099".parse().unwrap(),
+            deadline: at(120),
+            now: at(0),
+        },
+    );
+
+    assert_eq!(effects, [Effect::BackOff { attempt }]);
+    let faulted = LinkStatus::Fault {
+        kind: LinkFault::WrongMachine,
+    };
+    let steps = case.draw(gs::integers::<u8>().max_value(40));
+    for step in 0..=steps {
+        assert_eq!(state.status(), faulted, "status after {step} inputs");
+        assert_eq!(state.next_deadline(), None, "no timer after {step} inputs");
+        assert_eq!(
+            state.dial_requirement(),
+            None,
+            "no dial after {step} inputs"
+        );
+        if step == steps {
+            break;
+        }
+        let input = generated_timer_or_network_input(&case, &attempts);
+        if let Ok((next, effects)) = Policy::transition(&state, input.clone()) {
+            assert!(
+                !effects
+                    .iter()
+                    .any(|effect| matches!(effect, Effect::NeedLease { .. })),
+                "{input:?} asked for a lease"
+            );
+            state = next;
+        }
+    }
+    // Discovery returning the same address must not redial with the same credential.
+    assert_eq!(
+        Policy::transition(&state, Input::AddressCorrected),
+        Err(TransitionError::Stale)
+    );
+    assert_eq!(state.status(), faulted);
+    assert_eq!(state.dial_requirement(), None);
+    assert_eq!(
+        apply(&mut state, Input::BindingAvailable(2)),
+        [Effect::NeedLease {
+            binding: 2,
+            newer_than: None
+        }]
+    );
+    assert_eq!(state.dial_requirement(), Some(None));
+}
+
 #[test]
 fn expired_close_refreshes_and_renewal_refusal_keeps_the_confirmed_deadline() {
     let (attempt, second) = attempt_pair();
@@ -389,19 +532,6 @@ fn expired_close_refreshes_and_renewal_refusal_keeps_the_confirmed_deadline() {
         ]
     );
     dial(&mut state, &second, lease(5), 1);
-    let other_machine = "01890f2e-7b4c-7cc0-98c4-000000000099".parse().unwrap();
-    assert_eq!(
-        Policy::transition(
-            &state,
-            Input::Welcome {
-                attempt: second.clone(),
-                machine_id: other_machine,
-                deadline: at(120),
-                now: at(1)
-            }
-        ),
-        Err(TransitionError::Domain(super::LinkRefusal::WrongMachine))
-    );
     apply(
         &mut state,
         Input::Welcome {

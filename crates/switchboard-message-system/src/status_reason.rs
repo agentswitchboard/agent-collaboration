@@ -31,6 +31,7 @@ pub enum MessageSystemReason {
     DiscoveryUnavailable,
     FreshCredentialRefused,
     LeaseSourceFault,
+    CredentialBelongsToAnotherMachine,
     EnrollmentEndingPending,
     EnrollmentDenied,
     DeviceCodeExpired,
@@ -85,6 +86,7 @@ impl MessageSystemReason {
             LinkFault::MalformedAddress => Self::MalformedAddress,
             LinkFault::FreshCredentialRefused => Self::FreshCredentialRefused,
             LinkFault::LeaseSource => Self::LeaseSourceFault,
+            LinkFault::WrongMachine => Self::CredentialBelongsToAnotherMachine,
         }
     }
 

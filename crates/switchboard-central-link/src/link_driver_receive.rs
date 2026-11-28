@@ -1,8 +1,8 @@
 //! Incoming link frames and the socket control writes they require.
 
 use central_link_client::{
-    AdmittedConnection, ClientEvent, ConnectionAttempt, WelcomeClockAnchor,
-    link_frame_write_deadline,
+    AdmittedConnection, AttemptOutcome, ClientError, ClientEvent, ConnectionAttempt,
+    WelcomeClockAnchor, link_frame_write_deadline,
 };
 use central_link_protocol::{
     CentralCallReply, CorrelationId, DataFrame, FrameDirection, HandledMacCalls, LinkCallRefusal,
@@ -11,6 +11,7 @@ use central_link_protocol::{
 use futures_util::Sink;
 use router_clock::ClockInstant;
 use tokio_tungstenite::tungstenite::{Error as WebSocketError, Message};
+use workspace_ids::MachineId;
 
 use super::{BindingDriver, Control, Interrupted, bounded_wire_text};
 use crate::{
@@ -18,7 +19,7 @@ use crate::{
     admitted_lane_socket::{AdmittedSocketLane, EventPermit},
     lane_writer::{FrameWrite, SendFence, write_fenced_frame},
     lease_source::LeaseSource,
-    link_policy::LinkInput,
+    link_policy::{LinkInput, LinkStatus},
     wire_write_fence::{LinkConnector, WireWriteFence},
 };
 
@@ -192,8 +193,12 @@ where
                 results,
             },
             other => {
-                let Ok(event) = self.client.receive(attempt, other) else {
-                    return SocketReceive::Close;
+                let event = match self.client.receive(attempt, other) {
+                    Ok(event) => event,
+                    Err(ClientError::WelcomeForAnotherMachine { actual, .. }) => {
+                        return self.refuse_welcome_for_another_machine(attempt, actual);
+                    }
+                    Err(_) => return SocketReceive::Close,
                 };
                 return self.receive_event(
                     attempt,
@@ -219,6 +224,30 @@ where
         SocketReceive::Continue
     }
 
+    /// Hand the policy the machine Central named. The policy faults without a
+    /// retry time and the client parks on that fault, so neither redials with
+    /// a credential whose every dial displaces the other machine's link.
+    fn refuse_welcome_for_another_machine(
+        &mut self,
+        attempt: &ConnectionAttempt,
+        machine_id: MachineId,
+    ) -> SocketReceive {
+        let now = self.clock.monotonic_now();
+        // Central granted this Router no authority on this connection.
+        let _ = self.apply(LinkInput::Welcome {
+            attempt: attempt.clone(),
+            machine_id,
+            deadline: now,
+            now,
+        });
+        if let LinkStatus::Fault { kind } = self.state.status() {
+            let _ = self
+                .client
+                .finish_attempt(attempt, AttemptOutcome::Fault { kind });
+        }
+        SocketReceive::Close
+    }
+
     fn receive_event(
         &mut self,
         attempt: &ConnectionAttempt,
@@ -240,6 +269,7 @@ where
                 let accepted = self
                     .apply(LinkInput::Welcome {
                         attempt: attempt.clone(),
+                        // The client returns Welcomed only when Central named this machine.
                         machine_id: self.machine_id.clone(),
                         deadline: started.after(lifetime),
                         now,

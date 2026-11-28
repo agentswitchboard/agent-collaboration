@@ -26,6 +26,8 @@ mod control_write;
 
 #[path = "registration_write_test.rs"]
 mod registration_write;
+#[path = "welcome_identity_test.rs"]
+mod welcome_identity;
 #[path = "write_cancellation_test.rs"]
 mod write_cancellation;
 

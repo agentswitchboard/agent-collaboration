@@ -1,0 +1,246 @@
+//! A Welcome naming another machine ends dialing, even when late, until a new
+//! binding; a late Welcome for this machine closes and retries.
+
+use std::time::Duration;
+
+use central_link_client::{ClientAction, LinkClient, LinkFault, LinkStatus as ClientLinkStatus};
+use central_link_protocol::{DataFrame, LinkFrame};
+use futures_util::FutureExt;
+use hyper_util::client::legacy::connect::HttpConnector;
+use router_clock::RuntimeClock;
+use tokio::sync::watch;
+use workspace_ids::MachineId;
+
+use super::{
+    Control, DriverSettings, HeartbeatFixture, Interrupted, NoLeaseSource, WelcomedDriver,
+    elapsed_tick,
+};
+use crate::{
+    AddressError, DialAddress,
+    admitted_lane_socket::AdmittedSocketLane,
+    link_driver::{BindingDriver, receive::SocketReceive},
+    link_lane::link_lane_channel,
+    link_policy::{LeaseVersion, LeaseWindow, LinkInput, LinkState, LinkStatus},
+    run_registration::RunRegistration,
+    wire_write_fence::{WireWriteFence, default_http_connector},
+};
+
+const OTHER_MACHINE: &str = "01890f2e-7b4c-7cc0-98c4-000000000099";
+
+fn dialing_driver(
+    fixture: &HeartbeatFixture,
+) -> (
+    WelcomedDriver<'_, NoLeaseSource>,
+    central_link_client::ConnectionAttempt,
+) {
+    let mut client = LinkClient::new(fixture.machine.clone(), fixture.clock.clone());
+    let Some(ClientAction::Connect { attempt }) = client.poll_time() else {
+        panic!("first connection should be due");
+    };
+    client.dial_started(&attempt).unwrap();
+    let mut driver = BindingDriver {
+        lease_source: &NoLeaseSource,
+        make_connector: &(default_http_connector as fn() -> HttpConnector),
+        clock: fixture.clock.clone(),
+        status: &fixture.status,
+        address: Err(AddressError::InvalidLocation),
+        machine_id: fixture.machine.clone(),
+        state: LinkState::new(fixture.machine.clone()),
+        registration: RunRegistration::new(1, client.mint_router_run().unwrap()),
+        client,
+        lease_retry_at: None,
+    };
+    assert!(driver.apply(LinkInput::BindingAvailable(1)).is_some());
+    assert!(
+        driver
+            .apply(LinkInput::DialStarted {
+                attempt: attempt.clone(),
+                lease: LeaseWindow {
+                    binding: 1,
+                    version: LeaseVersion(1),
+                    usable_until: elapsed_tick(200),
+                },
+                now: elapsed_tick(0),
+            })
+            .is_some()
+    );
+    (driver, attempt)
+}
+
+fn welcome_naming(fixture: &HeartbeatFixture, machine_id: MachineId) -> LinkFrame {
+    LinkFrame::Data(DataFrame::Welcome {
+        machine_id,
+        central_time: fixture.clock.utc_now(),
+        effective_expires_at: "2030-01-01T00:05:00Z".parse().unwrap(),
+    })
+}
+
+/// Receive one frame, then close the carrier the way the socket loop does on `Close`.
+fn receive_then_close(
+    driver: &mut WelcomedDriver<'_, NoLeaseSource>,
+    attempt: &central_link_client::ConnectionAttempt,
+    frame: LinkFrame,
+) {
+    let (_user, owner) = link_lane_channel();
+    let write_fence = WireWriteFence::new(driver.clock.clone());
+    let mut lane = AdmittedSocketLane::new(&owner, &write_fence);
+    let received = driver.receive_frame(attempt, frame, elapsed_tick(0), None, &mut lane, None);
+    assert!(matches!(received, SocketReceive::Close));
+    driver.close(attempt, None);
+}
+
+#[test]
+fn a_welcome_for_another_machine_stays_parked_through_an_address_correction() {
+    let fixture = HeartbeatFixture::new();
+    let (mut driver, attempt) = dialing_driver(&fixture);
+
+    receive_then_close(
+        &mut driver,
+        &attempt,
+        welcome_naming(&fixture, OTHER_MACHINE.parse().unwrap()),
+    );
+
+    let faulted = LinkStatus::Fault {
+        kind: LinkFault::WrongMachine,
+    };
+    assert_eq!(driver.state.status(), faulted);
+    assert_eq!(*fixture.status.borrow(), faulted);
+    assert_eq!(
+        driver.client.status(),
+        ClientLinkStatus::Fault {
+            kind: LinkFault::WrongMachine
+        }
+    );
+    fixture
+        .clock
+        .advance(Duration::from_secs(7 * 24 * 60 * 60))
+        .unwrap();
+    assert_eq!(driver.client.poll_time(), None);
+    assert_eq!(driver.client.next_deadline(), None);
+    assert_eq!(driver.state.next_deadline(), None);
+    assert_eq!(driver.state.dial_requirement(), None);
+
+    // Discovery returning an address is refused exactly where `run_binding`
+    // applies it, so it never reaches `retry_after_fault`.
+    assert!(driver.apply(LinkInput::AddressCorrected).is_none());
+    assert_eq!(driver.state.status(), faulted);
+    assert_eq!(*fixture.status.borrow(), faulted);
+    assert_eq!(driver.state.next_deadline(), None);
+    assert_eq!(driver.state.dial_requirement(), None);
+    assert_eq!(driver.client.poll_time(), None);
+    assert_eq!(driver.client.next_deadline(), None);
+
+    // `run_bindings` gives a new binding a fresh driver and client; the parked
+    // policy also accepts it and asks for exactly one lease.
+    let effects = driver.apply(LinkInput::BindingAvailable(2)).unwrap();
+    assert_eq!(effects.len(), 1);
+    assert_eq!(driver.state.dial_requirement(), Some(None));
+}
+
+#[test]
+fn a_late_welcome_for_another_machine_is_still_a_final_fault_with_no_retry() {
+    let fixture = HeartbeatFixture::new();
+    let (mut driver, attempt) = dialing_driver(&fixture);
+    fixture.clock.advance(Duration::from_secs(10)).unwrap();
+
+    receive_then_close(
+        &mut driver,
+        &attempt,
+        welcome_naming(&fixture, OTHER_MACHINE.parse().unwrap()),
+    );
+
+    let faulted = LinkStatus::Fault {
+        kind: LinkFault::WrongMachine,
+    };
+    assert_eq!(driver.state.status(), faulted);
+    assert_eq!(*fixture.status.borrow(), faulted);
+    assert_eq!(
+        driver.client.status(),
+        ClientLinkStatus::Fault {
+            kind: LinkFault::WrongMachine
+        }
+    );
+    assert_eq!(driver.state.next_deadline(), None);
+    assert_eq!(driver.state.dial_requirement(), None);
+    assert_eq!(driver.client.next_deadline(), None);
+    assert_eq!(driver.client.poll_time(), None);
+}
+
+#[test]
+fn a_late_welcome_for_this_machine_closes_and_retries() {
+    let fixture = HeartbeatFixture::new();
+    let (mut driver, attempt) = dialing_driver(&fixture);
+    fixture.clock.advance(Duration::from_secs(10)).unwrap();
+
+    receive_then_close(
+        &mut driver,
+        &attempt,
+        welcome_naming(&fixture, fixture.machine.clone()),
+    );
+
+    assert_eq!(driver.state.status(), LinkStatus::Connecting);
+    assert_eq!(driver.state.dial_requirement(), Some(None));
+    assert_eq!(driver.client.status(), ClientLinkStatus::Connecting);
+    assert_eq!(
+        driver.client.next_deadline(),
+        Some(fixture.clock.monotonic_now().after(Duration::from_secs(1)))
+    );
+}
+
+#[test]
+fn a_discovery_flap_while_parked_for_another_machine_ends_on_the_wrong_machine_fault() {
+    let fixture = HeartbeatFixture::new();
+    let (mut driver, attempt) = dialing_driver(&fixture);
+    receive_then_close(
+        &mut driver,
+        &attempt,
+        welcome_naming(&fixture, OTHER_MACHINE.parse().unwrap()),
+    );
+    let faulted = LinkStatus::Fault {
+        kind: LinkFault::WrongMachine,
+    };
+    assert_eq!(*fixture.status.borrow(), faulted);
+
+    let address = DialAddress::secure("wss://central.example/link").unwrap();
+    driver.address = Ok(address.clone());
+    let located = DriverSettings {
+        binding: Some(1),
+        address: Ok(address),
+    };
+    let (settings_sender, mut settings) = watch::channel(located.clone());
+    let (shutdown_sender, mut shutdown) = watch::channel(false);
+    let mut control = Control {
+        settings: &mut settings,
+        shutdown: &mut shutdown,
+        observed: located.clone(),
+    };
+    let (_lane, mut lane_owner) = link_lane_channel();
+    let mut status = fixture.status.subscribe();
+    status.mark_unchanged();
+
+    let mut binding_run = Box::pin(driver.run_binding(1, &mut control, &mut lane_owner));
+    assert!(binding_run.as_mut().now_or_never().is_none());
+    assert!(!status.has_changed().unwrap());
+
+    settings_sender.send_replace(DriverSettings {
+        binding: Some(1),
+        address: Err(AddressError::DiscoveryPending),
+    });
+    assert!(binding_run.as_mut().now_or_never().is_none());
+    assert_eq!(*status.borrow_and_update(), LinkStatus::DiscoveryPending);
+
+    settings_sender.send_replace(located);
+    assert!(binding_run.as_mut().now_or_never().is_none());
+    assert_eq!(*status.borrow_and_update(), faulted);
+
+    shutdown_sender.send_replace(true);
+    assert!(matches!(
+        binding_run.as_mut().now_or_never(),
+        Some((Interrupted::Stopped, false))
+    ));
+    drop(binding_run);
+    // A lease request would have replaced this fault with a lease-source fault.
+    assert_eq!(driver.state.status(), faulted);
+    assert_eq!(driver.state.dial_requirement(), None);
+    assert_eq!(driver.client.poll_time(), None);
+}

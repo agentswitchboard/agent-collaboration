@@ -270,7 +270,6 @@ pub enum LinkEffect<Binding> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LinkRefusal {
     UnusableLease,
-    WrongMachine,
 }
 
 type PolicyError = TransitionError<LinkRefusal>;
@@ -320,7 +319,6 @@ impl RefusalTag for LinkRefusal {
     fn refusal_tag(&self) -> &'static str {
         match self {
             Self::UnusableLease => "unusable_lease",
-            Self::WrongMachine => "wrong_machine",
         }
     }
 }
@@ -534,15 +532,24 @@ impl<Binding: Clone + Eq> StateMachine for LinkPolicy<Binding> {
                     return Err(TransitionError::Stale);
                 }
                 if state.machine_id != machine_id {
-                    return Err(TransitionError::Domain(LinkRefusal::WrongMachine));
+                    // Central admitted this credential as another machine. Every
+                    // further dial would displace that machine's link, so no timer
+                    // rearms this fault; only a new binding does.
+                    effects.push(LinkEffect::BackOff { attempt });
+                    next.phase = LinkPhase::Fault {
+                        binding: lease.binding.clone(),
+                        kind: LinkFault::WrongMachine,
+                        retry_at: None,
+                    };
+                } else {
+                    next.phase = LinkPhase::Welcomed {
+                        attempt,
+                        lease: lease.clone(),
+                        deadline,
+                        renewal: renewal_schedule(now, deadline),
+                    };
+                    next.time_elapsed(now, &mut effects);
                 }
-                next.phase = LinkPhase::Welcomed {
-                    attempt,
-                    lease: lease.clone(),
-                    deadline,
-                    renewal: renewal_schedule(now, deadline),
-                };
-                next.time_elapsed(now, &mut effects);
             }
             LinkInput::Tick { now } => next.time_elapsed(now, &mut effects),
             LinkInput::RenewalLease {
@@ -746,6 +753,7 @@ const LINK_TRANSITIONS: &[Transition] = &[
     transition("dialing", "dial_failed", "fault"),
     transition("dialing", "welcome", "welcomed"),
     transition("dialing", "welcome", "waiting"),
+    transition("dialing", "welcome", "fault"),
     transition("not_enrolled", "tick", "not_enrolled"),
     transition("waiting", "tick", "waiting"),
     transition("dialing", "tick", "dialing"),

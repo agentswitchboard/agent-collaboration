@@ -79,6 +79,9 @@ fn link_status_reason(reason: MessageSystemReason) -> &'static str {
         Reason::DiscoveryUnavailable => "central address discovery is temporarily unavailable",
         Reason::FreshCredentialRefused => "central refused the refreshed credential",
         Reason::LeaseSourceFault => "the enrollment lease could not be obtained",
+        Reason::CredentialBelongsToAnotherMachine => {
+            "this Mac holds a credential that belongs to another machine"
+        }
         Reason::EnrollmentEndingPending => "waiting for the stored ending",
         Reason::EnrollmentDenied => ending_reason(EnrollmentEnd::Denied),
         Reason::DeviceCodeExpired => ending_reason(EnrollmentEnd::Expired),
