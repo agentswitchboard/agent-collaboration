@@ -6,6 +6,10 @@ pub use collaboration_application::{CollaborationApplication, ResultByteBudget};
 mod application_fixture;
 #[cfg(any(test, feature = "test-support"))]
 pub use application_fixture::ApplicationFixture;
+#[cfg(any(test, feature = "test-support"))]
+mod central_tool_fake;
+#[cfg(any(test, feature = "test-support"))]
+pub use central_tool_fake::{FakeCentralToolPort, ScriptedCentralOutcome};
 pub use codex_acp_adapter::ConversationOperationRecorder;
 pub use codex_acp_adapter::{ACP_SCHEMA_DIGEST, NativeStoredSessions};
 pub use collaboration_protocol::{DeliveryClientReceipt, DeliveryReceipt};

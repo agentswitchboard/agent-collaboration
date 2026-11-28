@@ -6,11 +6,13 @@
 //! these methods and encode what comes back; no operation logic lives in a transport.
 //!
 //! Each family owns only the capabilities its constructor receives.
-//! [`CollaborationApplication`] shares conversation, session, message and
+//! [`CollaborationApplication`] shares conversation, session, message, link tool and
 //! provider observation operations with its callers.
 //! (`provider_observation_operations`). Heavier paging logic stays in the crate's domain modules
 //! (`codex_session_inventory`, `provider_session_inventory`).
 mod conversation_operations;
+pub mod link_answers;
+pub mod link_tool_operations;
 pub mod message_operations;
 mod observation_call_driver;
 mod observation_call_machine;
@@ -40,6 +42,7 @@ pub(crate) use session_operations::{
 };
 
 use collaboration_contracts::RouterIdentity;
+use link_tool_operations::LinkToolOperations;
 use message_operations::MessageOperations;
 
 /// Constructed operation families serving one Router installation and run.
@@ -50,6 +53,7 @@ pub struct CollaborationApplication {
     observation: std::sync::Arc<ObservationOperations>,
     sessions: std::sync::Arc<SessionOperations>,
     messages: MessageOperations,
+    link_tools: LinkToolOperations,
 }
 impl CollaborationApplication {
     #[must_use]
@@ -65,6 +69,7 @@ impl CollaborationApplication {
             observation: std::sync::Arc::new(observation),
             sessions: std::sync::Arc::new(sessions),
             messages: MessageOperations::default(),
+            link_tools: LinkToolOperations::default(),
         }
     }
     #[must_use]
@@ -76,6 +81,16 @@ impl CollaborationApplication {
     #[must_use]
     pub fn messages(&self) -> &MessageOperations {
         &self.messages
+    }
+    #[must_use]
+    pub fn with_link_tools(mut self, link_tools: LinkToolOperations) -> Self {
+        self.link_tools = link_tools;
+        self
+    }
+
+    #[must_use]
+    pub fn link_tools(&self) -> &LinkToolOperations {
+        &self.link_tools
     }
     #[must_use]
     pub fn service_id(&self) -> &collaboration_protocol::UuidIdentity {

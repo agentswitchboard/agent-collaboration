@@ -213,7 +213,7 @@ fn answered_message(reply: ReplyPayload) -> Result<MessageId, MessageToolRefusal
     }
 }
 
-fn front_refusal(reason: FrontRefusal) -> MessageFrontRefusal {
+pub(crate) fn front_refusal(reason: FrontRefusal) -> MessageFrontRefusal {
     match reason {
         FrontRefusal::CouldNotStart => MessageFrontRefusal::CouldNotStart,
         FrontRefusal::AwaitingFirstRead => MessageFrontRefusal::AwaitingFirstRead,

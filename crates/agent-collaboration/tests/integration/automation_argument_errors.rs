@@ -77,7 +77,9 @@ fn retired_command_groups_answer_not_available_in_json_and_never_reach_the_picke
 fn retired_command_groups_and_their_help_refuse_in_plain_output() {
     let service = tempfile::tempdir().expect("empty service directory");
     for [group, leaf] in RETIRED_GROUP_COMMANDS {
-        for arguments in [[group, leaf], [group, "--help"]] {
+        // `thread --help` is the live `thread show` command's help; its retired leaves still refuse.
+        let group_help = (group != "thread").then_some([group, "--help"]);
+        for arguments in std::iter::once([group, leaf]).chain(group_help) {
             let output = std::process::Command::new(env!("CARGO_BIN_EXE_agent-collaboration"))
                 .args(arguments)
                 .arg("--service-directory")
@@ -201,7 +203,7 @@ fn top_level_help_no_longer_lists_retired_command_groups() {
     assert!(output.status.success());
     let help = String::from_utf8_lossy(&output.stdout);
     for [group, leaf] in RETIRED_GROUP_COMMANDS {
-        let retired = if group == "message" {
+        let retired = if group == "message" || group == "thread" {
             format!("  {group} {leaf}")
         } else {
             format!("  {group} ")
@@ -214,6 +216,50 @@ fn top_level_help_no_longer_lists_retired_command_groups() {
     assert!(help.contains("  conversation operation show|wait|reconcile"));
     assert!(help.contains("  message send "));
     assert!(help.contains("  message status "));
+    assert!(help.contains("  thread show "));
+}
+
+#[test]
+fn thread_help_and_bare_thread_print_the_thread_help_listing_show() {
+    let run = |arguments: &[&str]| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_agent-collaboration"))
+            .args(arguments)
+            .output()
+            .expect("CLI executes")
+    };
+
+    let help = run(&["thread", "--help"]);
+    let bare = run(&["thread"]);
+
+    assert_eq!(help.status.code(), Some(0));
+    let help_text = String::from_utf8_lossy(&help.stdout);
+    assert!(
+        help_text.contains("agent-collaboration thread"),
+        "{help_text}"
+    );
+    assert!(
+        help_text
+            .lines()
+            .any(|line| line.trim_start().starts_with("show ")),
+        "thread help lists show: {help_text}"
+    );
+    assert!(
+        !help_text.contains("not available in this build"),
+        "{help_text}"
+    );
+    // With no subcommand clap prints the same help as a usage error, on stderr.
+    assert_eq!(bare.status.code(), Some(2));
+    let bare_text = String::from_utf8_lossy(&bare.stderr);
+    assert!(
+        bare_text
+            .lines()
+            .any(|line| line.trim_start().starts_with("show ")),
+        "bare thread lists show: {bare_text}"
+    );
+    assert!(
+        !bare_text.contains("not available in this build"),
+        "{bare_text}"
+    );
 }
 
 #[test]

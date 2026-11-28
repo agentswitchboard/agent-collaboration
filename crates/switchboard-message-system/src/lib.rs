@@ -1,5 +1,6 @@
 //! Supervision and composition for one Router's message system.
 
+mod central_tool_port;
 mod central_work_port;
 mod interpreter;
 mod machine;

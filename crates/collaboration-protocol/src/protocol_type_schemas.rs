@@ -21,6 +21,7 @@ pub fn protocol_type_schemas() -> Result<BTreeMap<String, Value>, serde_json::Er
     add_type::<MessageToolResult<MessageSendOutcome>>(&mut schemas)?;
     add_type::<MessageToolResult<MessageWriteStatus>>(&mut schemas)?;
     add_type::<MessageToolResult<MessageInboxPage>>(&mut schemas)?;
+    add_type::<crate::link_tool_result::LinkToolOutput>(&mut schemas)?;
     add_type::<crate::NativeObservationRecord>(&mut schemas)?;
     add_type::<crate::ConversationRecord>(&mut schemas)?;
     add_type::<crate::PermissionDiagnostic>(&mut schemas)?;

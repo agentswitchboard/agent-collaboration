@@ -7,6 +7,7 @@ use super::{
     SchemaDigest, SocketAddr, create_private_socket_directory, io, load_installation_peer,
     load_service_identity, new_service_uuid,
 };
+use collaboration_service::collaboration_application::link_tool_operations::LinkToolOperations;
 use collaboration_service::collaboration_application::message_operations::MessageOperations;
 use std::sync::Arc;
 use switchboard_message_custody::recipient_sessions::{
@@ -461,7 +462,7 @@ impl CollaborationRuntime {
                 router_proxy_endpoint,
             },
         )?;
-        let (message_system, message_tools) = match message_roots {
+        let (message_system, message_tools, link_tools) = match message_roots {
             Some(startup) => {
                 let custody_events = Arc::new(HostCustodyEvents);
                 let recipient_directory = Arc::new(CombinedRecipientSessionDirectory::new(
@@ -511,12 +512,23 @@ impl CollaborationRuntime {
                 );
                 (
                     Some(system),
-                    MessageOperations::new(admission, Arc::new(front), worker_clock.clone()),
+                    MessageOperations::new(
+                        admission.clone(),
+                        Arc::new(front.clone()),
+                        worker_clock.clone(),
+                    ),
+                    LinkToolOperations::new(admission, Arc::new(front)),
                 )
             }
-            None => (None, MessageOperations::default()),
+            None => (
+                None,
+                MessageOperations::default(),
+                LinkToolOperations::default(),
+            ),
         };
-        let application = application.with_messages(message_tools);
+        let application = application
+            .with_messages(message_tools)
+            .with_link_tools(link_tools);
         let shutdown = CancellationToken::new();
         let collaboration_api =
             collaboration_api.serve(&collaboration_mcp::CollaborationApiConfig {

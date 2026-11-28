@@ -6,10 +6,12 @@
 use crate::api_connection::{
     ApiConnection, DEFAULT_CALL_TIMEOUT, ToolAnswer, rejection_from_tool_failure,
 };
+use collaboration_protocol::link_tool_result::LinkToolOutput;
 use collaboration_protocol::message_tools::{
     MessageInboxArguments, MessageInboxPage, MessageSendArguments, MessageSendOutcome,
     MessageStatusArguments, MessageToolResult, MessageWriteStatus,
 };
+use collaboration_protocol::workspace_tools::ThreadShowArguments;
 use collaboration_protocol::{
     EndpointInventory, MachineLabel, SERVICE_MANIFEST_VERSION, SchemaDigest, ServiceManifest,
     UuidIdentity,
@@ -132,6 +134,27 @@ impl CollaborationClient {
         arguments: MessageInboxArguments,
     ) -> Result<MessageToolResult<MessageInboxPage>, ClientError> {
         self.message_call("message_inbox", &arguments).await
+    }
+
+    /// Reads one thread from Central; a refusal arrives as the same typed output.
+    pub async fn thread_show(
+        &self,
+        arguments: ThreadShowArguments,
+    ) -> Result<LinkToolOutput, ClientError> {
+        let arguments = serde_json::to_value(arguments)
+            .map_err(|_| ClientError::InvalidRequest("invalid thread_show arguments"))?;
+        match self
+            .connection
+            .answer_with_timeout("thread_show", arguments, DEFAULT_CALL_TIMEOUT)
+            .await?
+        {
+            ToolAnswer::Success(value) => serde_json::from_value(value)
+                .map_err(|_| ClientError::Protocol("invalid thread_show result")),
+            ToolAnswer::Failure(value) => {
+                <LinkToolOutput as serde::Deserialize>::deserialize(&value)
+                    .map_err(|_| rejection_from_tool_failure(value))
+            }
+        }
     }
 
     async fn message_call<Args: Serialize, Outcome: DeserializeOwned>(

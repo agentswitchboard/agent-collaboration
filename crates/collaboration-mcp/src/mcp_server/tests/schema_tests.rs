@@ -238,7 +238,7 @@ fn advertised_tool_schemas_validate_available_success_and_every_error_sample() {
         .into_iter()
         .filter_map(|tool| tool.output_schema.map(|schema| (tool.name, schema)))
         .collect::<std::collections::BTreeMap<_, _>>();
-    assert_eq!(advertised.len(), 24);
+    assert_eq!(advertised.len(), 25);
 
     let provider_endpoint = serde_json::json!({
         "serviceId":"00000000-0000-4000-8000-000000000001","endpointId":"claude-local"
@@ -278,6 +278,15 @@ fn advertised_tool_schemas_validate_available_success_and_every_error_sample() {
             "message_status",
             serde_json::json!({"kind":"returned","value":{"kind":"refused",
                 "reason":{"kind":"centralMail","value":{"kind":"notSession"}}}}),
+        ),
+        (
+            "thread_show",
+            serde_json::json!({"result":{"state":"answered","reply":{"kind":"workspace","reply":{
+                "result":{"kind":"notFound","answer":{
+                    "workspaceId":"019a0000-0000-7000-8000-000000000011",
+                    "item":{"kind":"thread","id":"019a0000-0000-7000-8000-000000000012"}
+                }},"actors":[]
+            }}},"text":"Not found: Central has no such item in workspace 019a0000-0000-7000-8000-000000000011. Check the workspaceId and the item's ID, then try again."}),
         ),
         (
             "conversation_create",
@@ -538,7 +547,7 @@ async fn real_tools_list_reports_input_and_output_bytes_separately() {
         output_bytes += serde_json::to_vec(&tool["outputSchema"]).unwrap().len();
         jsonschema::validator_for(&tool["inputSchema"]).expect("all local references resolve");
     }
-    assert_eq!(tools.len(), 24);
+    assert_eq!(tools.len(), 25);
     println!(
         "tools={} input_bytes={input_bytes} output_bytes={output_bytes}",
         tools.len()
