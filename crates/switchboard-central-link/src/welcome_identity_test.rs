@@ -5,13 +5,18 @@ use std::time::Duration;
 
 use central_link_client::{ClientAction, LinkClient, LinkFault, LinkStatus as ClientLinkStatus};
 use central_link_protocol::{DataFrame, LinkFrame};
+use futures_util::FutureExt;
 use hyper_util::client::legacy::connect::HttpConnector;
 use router_clock::RuntimeClock;
+use tokio::sync::watch;
 use workspace_ids::MachineId;
 
-use super::{HeartbeatFixture, NoLeaseSource, WelcomedDriver, elapsed_tick};
+use super::{
+    Control, DriverSettings, HeartbeatFixture, Interrupted, NoLeaseSource, WelcomedDriver,
+    elapsed_tick,
+};
 use crate::{
-    AddressError,
+    AddressError, DialAddress,
     admitted_lane_socket::AdmittedSocketLane,
     link_driver::{BindingDriver, receive::SocketReceive},
     link_lane::link_lane_channel,
@@ -180,4 +185,62 @@ fn a_late_welcome_for_this_machine_closes_and_retries() {
         driver.client.next_deadline(),
         Some(fixture.clock.monotonic_now().after(Duration::from_secs(1)))
     );
+}
+
+#[test]
+fn a_discovery_flap_while_parked_for_another_machine_ends_on_the_wrong_machine_fault() {
+    let fixture = HeartbeatFixture::new();
+    let (mut driver, attempt) = dialing_driver(&fixture);
+    receive_then_close(
+        &mut driver,
+        &attempt,
+        welcome_naming(&fixture, OTHER_MACHINE.parse().unwrap()),
+    );
+    let faulted = LinkStatus::Fault {
+        kind: LinkFault::WrongMachine,
+    };
+    assert_eq!(*fixture.status.borrow(), faulted);
+
+    let address = DialAddress::secure("wss://central.example/link").unwrap();
+    driver.address = Ok(address.clone());
+    let located = DriverSettings {
+        binding: Some(1),
+        address: Ok(address),
+    };
+    let (settings_sender, mut settings) = watch::channel(located.clone());
+    let (shutdown_sender, mut shutdown) = watch::channel(false);
+    let mut control = Control {
+        settings: &mut settings,
+        shutdown: &mut shutdown,
+        observed: located.clone(),
+    };
+    let (_lane, mut lane_owner) = link_lane_channel();
+    let mut status = fixture.status.subscribe();
+    status.mark_unchanged();
+
+    let mut binding_run = Box::pin(driver.run_binding(1, &mut control, &mut lane_owner));
+    assert!(binding_run.as_mut().now_or_never().is_none());
+    assert!(!status.has_changed().unwrap());
+
+    settings_sender.send_replace(DriverSettings {
+        binding: Some(1),
+        address: Err(AddressError::DiscoveryPending),
+    });
+    assert!(binding_run.as_mut().now_or_never().is_none());
+    assert_eq!(*status.borrow_and_update(), LinkStatus::DiscoveryPending);
+
+    settings_sender.send_replace(located);
+    assert!(binding_run.as_mut().now_or_never().is_none());
+    assert_eq!(*status.borrow_and_update(), faulted);
+
+    shutdown_sender.send_replace(true);
+    assert!(matches!(
+        binding_run.as_mut().now_or_never(),
+        Some((Interrupted::Stopped, false))
+    ));
+    drop(binding_run);
+    // A lease request would have replaced this fault with a lease-source fault.
+    assert_eq!(driver.state.status(), faulted);
+    assert_eq!(driver.state.dial_requirement(), None);
+    assert_eq!(driver.client.poll_time(), None);
 }
