@@ -1,6 +1,5 @@
 //! Public contracts for workspace tools that read from Central.
 
-pub use central_link_protocol::ReplyPayload;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 pub use workspace_ids::SessionId;
@@ -29,7 +28,7 @@ pub struct ThreadShowOutput {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "state", rename_all = "camelCase", deny_unknown_fields)]
 pub enum ThreadShowResult {
-    Answered { reply: Box<ReplyPayload> },
+    Answered { reply: Box<WorkspaceReply> },
     ReadAnswerLost,
     Refused { code: ThreadShowRefusal },
 }
@@ -80,7 +79,7 @@ impl ThreadShowOutput {
         };
         Self {
             result: ThreadShowResult::Answered {
-                reply: Box::new(ReplyPayload::Workspace(reply)),
+                reply: Box::new(reply),
             },
             text,
         }
@@ -91,9 +90,9 @@ impl ThreadShowOutput {
         let text = match &code {
             ThreadShowRefusal::CentralUnavailable => "Central unavailable. Nothing was sent. Check the link or read again.".into(),
             ThreadShowRefusal::RemovedInput { field } => match field {
-                RemovedThreadShowField::IncludeRedacted => "R1 removed includeRedacted. Redaction deletes the text. Omit this field.",
-                RemovedThreadShowField::ProjectQualifier => "R1 removed the project qualifier. Use workspaceId and threadId alone.",
-                RemovedThreadShowField::ProtocolVersion => "R1 removed protocolVersion. The link versions itself. Omit this field.",
+                RemovedThreadShowField::IncludeRedacted => "includeRedacted is no longer accepted. Redaction deletes the text, so there is nothing to include. Omit this field.",
+                RemovedThreadShowField::ProjectQualifier => "The project qualifier (projectId or project) is no longer accepted. Identify the thread with workspaceId and threadId.",
+                RemovedThreadShowField::ProtocolVersion => "protocolVersion is no longer accepted. The link selects its version. Omit this field.",
             }.into(),
             ThreadShowRefusal::InvalidArguments => "Invalid thread_show arguments. Provide callerSessionId, workspaceId, and threadId as listed in the tool schema.".into(),
             ThreadShowRefusal::Router { reason } => format!("Refused by the Router. {reason} Check the current session and link, then read again."),

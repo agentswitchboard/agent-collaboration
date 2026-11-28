@@ -53,11 +53,13 @@ fn thread_show_keeps_generated_targets_and_classifies_each_read_answer(case: heg
         WorkspaceResult::Refused(RefusalReason::WorkspaceNotAllowed),
         WorkspaceResult::CentralUnavailable,
     ] {
-        let reply = ReplyPayload::Workspace(WorkspaceReply {
+        let reply = WorkspaceReply {
             result,
             actors: vec![],
-        });
-        let shown = ThreadShowOutput::from(thread_show_answer(Submission::Answered(reply.clone())));
+        };
+        let shown = ThreadShowOutput::from(thread_show_answer(Submission::Answered(
+            ReplyPayload::Workspace(reply.clone()),
+        )));
         assert_eq!(
             shown.result,
             ThreadShowResult::Answered {

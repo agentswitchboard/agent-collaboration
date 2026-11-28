@@ -190,7 +190,7 @@ async fn thread_show_round_trips_central_answers_and_refuses_removed_inputs() {
         assert_eq!(
             result.structured_content,
             Some(json!({
-                "result":{"state":"answered","reply":{"kind":"workspace","reply":reply}},"text":text
+                "result":{"state":"answered","reply":reply},"text":text
             }))
         );
         assert_eq!(
@@ -225,22 +225,22 @@ async fn thread_show_round_trips_central_answers_and_refuses_removed_inputs() {
         (
             "includeRedacted",
             "includeRedacted",
-            "R1 removed includeRedacted. Redaction deletes the text. Omit this field.",
+            "includeRedacted is no longer accepted. Redaction deletes the text, so there is nothing to include. Omit this field.",
         ),
         (
             "projectId",
             "projectQualifier",
-            "R1 removed the project qualifier. Use workspaceId and threadId alone.",
+            "The project qualifier (projectId or project) is no longer accepted. Identify the thread with workspaceId and threadId.",
         ),
         (
             "project",
             "projectQualifier",
-            "R1 removed the project qualifier. Use workspaceId and threadId alone.",
+            "The project qualifier (projectId or project) is no longer accepted. Identify the thread with workspaceId and threadId.",
         ),
         (
             "protocolVersion",
             "protocolVersion",
-            "R1 removed protocolVersion. The link versions itself. Omit this field.",
+            "protocolVersion is no longer accepted. The link selects its version. Omit this field.",
         ),
     ] {
         let mut invalid = args.clone();
@@ -255,6 +255,15 @@ async fn thread_show_round_trips_central_answers_and_refuses_removed_inputs() {
             Some(json!({
                 "result":{"state":"refused","code":{"kind":"removedInput","field":field}},"text":text
             }))
+        );
+        assert_eq!(
+            result
+                .content
+                .first()
+                .and_then(ContentBlock::as_text)
+                .unwrap()
+                .text,
+            text
         );
     }
     for input in ["callerSessionId", "workspaceId", "threadId"] {

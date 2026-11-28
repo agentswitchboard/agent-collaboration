@@ -238,7 +238,7 @@ fn advertised_tool_schemas_validate_available_success_and_every_error_sample() {
         .into_iter()
         .filter_map(|tool| tool.output_schema.map(|schema| (tool.name, schema)))
         .collect::<std::collections::BTreeMap<_, _>>();
-    assert_eq!(advertised.len(), 24);
+    assert_eq!(advertised.len(), 25);
 
     let provider_endpoint = serde_json::json!({
         "serviceId":"00000000-0000-4000-8000-000000000001","endpointId":"claude-local"
@@ -278,6 +278,15 @@ fn advertised_tool_schemas_validate_available_success_and_every_error_sample() {
             "message_status",
             serde_json::json!({"kind":"returned","value":{"kind":"refused",
                 "reason":{"kind":"centralMail","value":{"kind":"notSession"}}}}),
+        ),
+        (
+            "thread_show",
+            serde_json::json!({"result":{"state":"answered","reply":{
+                "result":{"kind":"notFound","answer":{
+                    "workspaceId":"019a0000-0000-7000-8000-000000000011",
+                    "item":{"kind":"thread","id":"019a0000-0000-7000-8000-000000000012"}
+                }},"actors":[]
+            }},"text":"Thread not found. Check workspaceId and threadId before reading again."}),
         ),
         (
             "conversation_create",

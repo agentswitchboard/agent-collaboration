@@ -1891,7 +1891,6 @@ version = "0.1.167"
 dependencies = [
  "agent-automation",
  "base64 0.22.1",
- "central-link-protocol",
  "chrono",
  "collaboration-mail-protocol",
  "fleet-identity-protocol",
