@@ -323,6 +323,11 @@ async fn compiled_enrollment_status_reads_the_host_reply_and_keeps_stored_facts(
             MessageSystemReason::MalformedAddress,
             "link fault: the central address is invalid",
         ),
+        (
+            Status::Fault,
+            MessageSystemReason::CredentialBelongsToAnotherMachine,
+            "link fault: this Mac holds a credential that belongs to another machine",
+        ),
     ] {
         let output = compiled_status_with_host_reply(home.path(), &host, status, reason)
             .await

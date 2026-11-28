@@ -1,5 +1,9 @@
 # Release Notes
 
+## 0.1.168
+
+- If central admits this Mac's credential as another machine, the Router stops dialing with it and `codex-router` enrollment status reads “link fault: this Mac holds a credential that belongs to another machine”. It dials again only after the Mac is enrolled anew. Before, it redialed every 30 seconds without limit.
+
 ## 0.1.167
 
 - Published session and message schemas now state the Router's existing identifier rules. UUIDv7 identifiers use canonical lowercase hyphenated text. Provider session IDs contain 1 to 4,096 UTF-8 bytes without NUL.

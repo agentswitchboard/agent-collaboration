@@ -292,11 +292,14 @@ where
                 return (interruption, false);
             }
             let next_address = control.observed.address.clone();
-            if next_address != self.address
-                && next_address.is_ok()
-                && self.apply(LinkInput::AddressCorrected).is_some()
-            {
-                self.client.retry_after_fault();
+            if next_address != self.address && next_address.is_ok() {
+                if self.apply(LinkInput::AddressCorrected).is_some() {
+                    self.client.retry_after_fault();
+                } else {
+                    // A returning address that does not re-arm the policy must
+                    // not leave the discovery status above in place of its phase.
+                    self.publish_status();
+                }
             }
             self.address = next_address;
         }

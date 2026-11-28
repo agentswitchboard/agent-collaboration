@@ -46,6 +46,7 @@ struct LinkOracle {
     minimum_next_version: Option<u64>,
     rejected_once: bool,
     fault_rearm: Option<u64>,
+    wrong_machine: bool,
     confirmed_until: Option<u64>,
     request_renewal_at: Option<u64>,
     awaiting_lease: bool,
@@ -64,6 +65,10 @@ impl LinkOracle {
     fn status(&self) -> LinkStatus {
         if let Some(cause) = self.final_cause {
             LinkStatus::EnrollmentEnded { cause }
+        } else if self.wrong_machine {
+            LinkStatus::Fault {
+                kind: LinkFault::WrongMachine,
+            }
         } else if self.fault_rearm.is_some() {
             LinkStatus::Fault {
                 kind: LinkFault::FreshCredentialRefused,
@@ -132,7 +137,8 @@ impl LinkOracle {
             } if self.binding == Some(binding)
                 && current.is_none()
                 && self.final_cause.is_none()
-                && self.fault_rearm.is_none() =>
+                && self.fault_rearm.is_none()
+                && !self.wrong_machine =>
             {
                 if self
                     .minimum_next_version
@@ -162,10 +168,13 @@ impl LinkOracle {
                 attempt,
                 correct_machine,
             } if current == Some(attempt) && self.confirmed_until.is_none() => {
-                if !correct_machine {
-                    return Err(TransitionError::Domain(LinkRefusal::WrongMachine));
+                if correct_machine {
+                    self.confirm_window(self.elapsed + 120);
+                } else {
+                    self.clear_socket();
+                    self.wrong_machine = true;
+                    effects.push(back_off(attempt));
                 }
-                self.confirm_window(self.elapsed + 120);
             }
             OrderEvent::Tick(amount) => {
                 self.elapsed += amount;

@@ -1,3 +1,5 @@
+use workspace_ids::MachineId;
+
 #[derive(Debug, thiserror::Error, Eq, PartialEq)]
 pub enum ClientError {
     #[error("a receipt frame is already pending on this connection")]
@@ -13,8 +15,14 @@ pub enum ClientError {
     StaleConnection,
     #[error("request does not follow the write request-id policy")]
     InvalidRequest,
-    #[error("Welcome is unexpected or names another machine")]
+    #[error("Welcome is late or unexpected")]
     InvalidWelcome,
+    /// Central admitted the presented credential as another machine.
+    #[error("Welcome names machine {actual}, not this Router's machine {expected}")]
+    WelcomeForAnotherMachine {
+        expected: MachineId,
+        actual: MachineId,
+    },
     #[error("unexpected frame for the Router client")]
     UnexpectedFrame,
     #[error("correlation id is already in flight")]

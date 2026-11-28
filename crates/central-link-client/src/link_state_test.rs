@@ -349,7 +349,10 @@ fn wrong_machine_welcome_is_refused_and_read_disconnect_has_no_durable_retry_id(
     });
     assert_eq!(
         client.receive(&attempt, wrong),
-        Err(ClientError::InvalidWelcome)
+        Err(ClientError::WelcomeForAnotherMachine {
+            expected: client.machine.clone(),
+            actual: "01890f2e-7b4c-7cc0-98c4-000000000099".parse().unwrap(),
+        })
     );
     assert_eq!(client.status(), LinkStatus::Connecting);
     let welcome = LinkFrame::Data(DataFrame::Welcome {
@@ -463,8 +466,55 @@ fn a_reconnect_whose_welcome_names_another_installation_is_invalid() {
 
     let refused = client.receive(&attempt, other);
 
-    assert_eq!(refused, Err(ClientError::InvalidWelcome));
+    assert_eq!(
+        refused,
+        Err(ClientError::WelcomeForAnotherMachine {
+            expected: client.machine.clone(),
+            actual: "01890f2e-7b4c-7cc0-98c4-0000000000bb".parse().unwrap(),
+        })
+    );
     assert_eq!(client.status(), LinkStatus::Connecting);
+}
+
+#[test]
+fn a_late_welcome_retries_for_this_machine_but_is_final_for_another() {
+    let (mut client, clock) = fixture();
+    let Some(ClientAction::Connect { attempt }) = client.poll_time() else {
+        panic!("connect action required")
+    };
+    client.dial_started(&attempt).unwrap();
+    clock.advance(Duration::from_secs(10)).unwrap();
+    let welcome_naming = |machine_id: MachineId| {
+        LinkFrame::Data(DataFrame::Welcome {
+            machine_id,
+            central_time: clock.utc_now(),
+            effective_expires_at: workspace_model::Timestamp::from_timestamp(
+                clock.utc_now().timestamp() + 600,
+                0,
+            )
+            .unwrap(),
+        })
+    };
+
+    let other_machine: MachineId = "01890f2e-7b4c-7cc0-98c4-0000000000bb".parse().unwrap();
+
+    let other = client.receive(&attempt, welcome_naming(other_machine.clone()));
+    let own = client.receive(&attempt, welcome_naming(client.machine.clone()));
+
+    assert_eq!(
+        other,
+        Err(ClientError::WelcomeForAnotherMachine {
+            expected: client.machine.clone(),
+            actual: other_machine,
+        })
+    );
+    assert_eq!(own, Err(ClientError::InvalidWelcome));
+    client.closed(&attempt).unwrap();
+    assert_eq!(client.status(), LinkStatus::Connecting);
+    assert_eq!(
+        client.next_deadline(),
+        Some(clock.monotonic_now().after(Duration::from_secs(1)))
+    );
 }
 
 #[test]
