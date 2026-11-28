@@ -1,5 +1,10 @@
 # Release Notes
 
+## 0.1.169
+
+- An agent can read a thread from Central again: the `thread_show` tool and `agent-collaboration thread show --workspace-id <id> <thread-id>`. Plain output states the thread's title, state, IDs, creator and the caller's own standing; `--json` prints the typed result. Only Central's answer to a found thread is a success; a refusal, a thread that is not found, an unreachable Central and a lost answer exit 3 and say what state the request is in and what to do next.
+- `agent-collaboration thread --help` lists `show`. The other `thread` commands remain unavailable in this build.
+
 ## 0.1.168
 
 - If central admits this Mac's credential as another machine, the Router stops dialing with it and `codex-router` enrollment status reads “link fault: this Mac holds a credential that belongs to another machine”. It dials again only after the Mac is enrolled anew. Before, it redialed every 30 seconds without limit.
