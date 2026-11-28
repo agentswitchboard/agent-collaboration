@@ -41,6 +41,7 @@ use self::{
 pub(super) mod central_receive;
 mod custody_cases;
 mod mac_capabilities;
+mod machine_identity_case;
 mod packet_flight;
 mod registration_cases;
 mod registration_preface;
@@ -588,6 +589,19 @@ fn run_link_case_with_trace<Case, Running>(
     Case: FnOnce(SimulatedLink) -> Running + 'static,
     Running: Future<Output = ()> + 'static,
 {
+    run_native_central_case(network, trace, |clock, network, fixture| async move {
+        case(SimulatedLink::start(clock, network, fixture).await).await;
+    });
+}
+
+fn run_native_central_case<Case, Running>(
+    network: PacketFlight,
+    trace: Option<SocketFrameTrace>,
+    case: Case,
+) where
+    Case: FnOnce(Arc<ManualClock>, PacketFlight, Arc<MachineLinkFixture>) -> Running + 'static,
+    Running: Future<Output = ()> + 'static,
+{
     let clock = Arc::new(ManualClock::new("2030-03-17T17:46:40Z".parse().unwrap()));
     let mut simulation = turmoil::Builder::new()
         .enable_tokio_io()
@@ -614,7 +628,7 @@ fn run_link_case_with_trace<Case, Running>(
         let network = network.clone();
         async move {
             let fixture = central.wait_for(Option::is_some).await?.clone().unwrap();
-            case(SimulatedLink::start(clock, network, fixture).await).await;
+            case(clock, network, fixture).await;
             stop.send_replace(true);
             let _ = central_closed.wait_for(|closed| *closed).await?;
             Ok(())

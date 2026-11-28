@@ -1,5 +1,6 @@
 use central_link_client::ReadyLinkLane;
-use central_link_protocol::LinkRequestBatch;
+use central_link_protocol::{DeliveryMessage, DirectOfferBody, LinkRequestBatch};
+use central_storage::SqlValue;
 use fleet_runtime::PausePoint;
 use router_clock::RuntimeClock;
 use switchboard_machine_core_store::OutboxCancellation;
@@ -254,6 +255,155 @@ fn a_disconnect_mid_receipts_keeps_both_decisions_and_only_reoffers_the_unrecord
                 MessageStatus::Delivered { .. }
             ));
         }
+        case.close().await;
+    });
+}
+
+#[test]
+fn sends_submitted_during_a_two_minute_partition_arrive_once_after_network_repair() {
+    run_link_case(|link| async move {
+        let mut case = NetworkCustody::start(link).await;
+        let original = case.link.network.seen(0, FrameKind::Welcome).await;
+        let LinkFrame::Data(DataFrame::Welcome {
+            effective_expires_at: original_lease_until,
+            ..
+        }) = original.frame
+        else {
+            panic!("expected the original Welcome");
+        };
+        let cut_at = case.link.clock.monotonic_now();
+        let heal_at = cut_at + Duration::from_secs(120);
+        let during_cut = case.link.network.frames().len();
+        turmoil::partition(MAC, CENTRAL);
+        case.link.reset_socket().await;
+        assert!(case.link.lane.watch_registered().borrow().is_none());
+
+        let first = case.enqueue(1).await;
+        let retry = case.link.next_retry().await;
+        assert!(retry < heal_at, "the driver must retry during the outage");
+        case.link.start_retry(retry);
+        case.link.require_isolated_dial_failure().await;
+        let second = case.enqueue(2).await;
+        assert_ne!(first.id, second.id);
+
+        let mut retry = case.link.next_retry().await;
+        while retry < heal_at {
+            case.link.start_retry(retry);
+            case.link.require_isolated_dial_failure().await;
+            retry = case.link.next_retry().await;
+        }
+        case.advance_to(heal_at);
+        assert_eq!(case.link.clock.monotonic_now(), heal_at);
+        assert!(case.link.lane.watch_registered().borrow().is_none());
+        assert!(case.central_queued_messages().await.is_empty());
+        for receipt in [&first, &second] {
+            assert!(matches!(
+                case.status(receipt.id.clone()).await,
+                CustodyRequestStatus::InOutbox { .. }
+            ));
+        }
+        assert!(
+            case.link
+                .network
+                .frames()
+                .iter()
+                .skip(during_cut)
+                .all(|frame| {
+                    !matches!(
+                        frame.kind,
+                        FrameKind::Welcome | FrameKind::Batch | FrameKind::Offer
+                    )
+                })
+        );
+        let before_repair = case.link.network.frames().len();
+        turmoil::repair(MAC, CENTRAL);
+        // PacketFlight needs to observe the new socket's individual frames.
+        turmoil::hold(MAC, CENTRAL);
+        case.link.start_retry(retry);
+        assert_eq!(case.link.dial_results.recv().await, Some(true));
+        case.link.read_replacement().await;
+        let replacement = case
+            .link
+            .network
+            .seen(before_repair, FrameKind::Welcome)
+            .await;
+        assert_ne!(replacement.connection_port, original.connection_port);
+        assert!(
+            matches!(replacement.frame, LinkFrame::Data(DataFrame::Welcome {
+            effective_expires_at, ..
+        }) if effective_expires_at == original_lease_until),
+            "the replacement must still use the original lease"
+        );
+        case.link
+            .lane
+            .watch_registered()
+            .wait_for(Option::is_some)
+            .await
+            .unwrap();
+
+        case.advance_to_next_mark().await;
+        let report = case.next_write_report().await;
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        assert_eq!(report.answered.len(), 2, "both offline sends must settle");
+
+        let mut delivered = Vec::new();
+        for (receipt, body) in [
+            (&first, "simulated custody 1"),
+            (&second, "simulated custody 2"),
+        ] {
+            let answer = report
+                .answered
+                .iter()
+                .find(|answer| answer.request == receipt.id)
+                .unwrap();
+            let super::ReplyPayload::Mail(super::CentralMailResult::Done(
+                super::CentralMailAnswer::Queued { message_id },
+            )) = &answer.reply
+            else {
+                panic!("offline send must be queued, got {:?}", answer.reply);
+            };
+            let offer = case
+                .link
+                .network
+                .seen_matching(
+                    before_repair,
+                    |frame| frame.kind == FrameKind::Offer && offered_message(frame) == message_id,
+                    0,
+                )
+                .await;
+            assert_eq!(offer.connection_port, replacement.connection_port);
+            let LinkFrame::Data(DataFrame::Deliver { message, .. }) = &offer.frame else {
+                panic!("expected a direct delivery offer");
+            };
+            let DeliveryMessage::Direct(message) = message.as_ref() else {
+                panic!("expected a direct delivery message");
+            };
+            let DirectOfferBody::Direct { body: text, .. } = &message.body;
+            assert_eq!(text.as_str(), body);
+            assert_eq!(message.target, case.session);
+            case.wait_for_kept(message_id).await;
+            assert_eq!(
+                case.direct_message_rows(&receipt.id).await,
+                [vec![SqlValue::Text(message_id.to_string())]]
+            );
+            delivered.push(message_id.clone());
+        }
+        let [first_delivered, second_delivered] = delivered.as_slice() else {
+            panic!("exactly two offline sends must receive delivery offers");
+        };
+        assert_ne!(first_delivered, second_delivered);
+        case.advance_to_next_mark().await;
+        case.wait_for_confirmation(&[ReceiptResult::Recorded, ReceiptResult::Recorded])
+            .await;
+        for message in &delivered {
+            assert!(matches!(
+                case.central_status(message).await,
+                MessageStatus::Delivered { .. }
+            ));
+            assert_eq!(super::offers_for(&case, message).len(), 1);
+        }
+        assert!(case.link.clock.utc_now() < original_lease_until);
+        assert!(case.link.clock.monotonic_now() < cut_at + Duration::from_secs(15 * 60));
         case.close().await;
     });
 }
