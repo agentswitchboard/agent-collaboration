@@ -34,6 +34,8 @@ pub enum LinkFault {
     MalformedAddress,
     FreshCredentialRefused,
     LeaseSource,
+    /// Central welcomed the credential as another machine; it belongs to that machine.
+    WrongMachine,
 }
 
 /// The socket owner's disposition of the current connection attempt.
@@ -428,9 +430,14 @@ impl LinkClient {
         }) = &frame
         {
             if !matches!(self.state, ConnectionState::AwaitingWelcome { expires_at, .. } if self.clock.monotonic_now() < expires_at)
-                || machine_id != &self.machine
             {
                 return Err(ClientError::InvalidWelcome);
+            }
+            if machine_id != &self.machine {
+                return Err(ClientError::WelcomeForAnotherMachine {
+                    expected: self.machine.clone(),
+                    actual: machine_id.clone(),
+                });
             }
             self.state = ConnectionState::Welcomed {
                 readiness: Readiness::WaitingForRegistration,
