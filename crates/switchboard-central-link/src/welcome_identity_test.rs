@@ -1,4 +1,5 @@
-//! A Welcome naming another machine ends dialing; a late Welcome closes and retries.
+//! A Welcome naming another machine ends dialing, even when late, until a new
+//! binding; a late Welcome for this machine closes and retries.
 
 use std::time::Duration;
 
@@ -84,7 +85,7 @@ fn receive_then_close(
 }
 
 #[test]
-fn a_welcome_for_another_machine_parks_both_policies_until_the_address_changes() {
+fn a_welcome_for_another_machine_stays_parked_through_an_address_correction() {
     let fixture = HeartbeatFixture::new();
     let (mut driver, attempt) = dialing_driver(&fixture);
 
@@ -114,13 +115,50 @@ fn a_welcome_for_another_machine_parks_both_policies_until_the_address_changes()
     assert_eq!(driver.state.next_deadline(), None);
     assert_eq!(driver.state.dial_requirement(), None);
 
-    // A changed address is applied exactly as `run_binding` applies it.
-    assert!(driver.apply(LinkInput::AddressCorrected).is_some());
-    assert!(driver.client.retry_after_fault());
-    assert!(matches!(
-        driver.client.poll_time(),
-        Some(ClientAction::Connect { .. })
-    ));
+    // Discovery returning an address is refused exactly where `run_binding`
+    // applies it, so it never reaches `retry_after_fault`.
+    assert!(driver.apply(LinkInput::AddressCorrected).is_none());
+    assert_eq!(driver.state.status(), faulted);
+    assert_eq!(*fixture.status.borrow(), faulted);
+    assert_eq!(driver.state.next_deadline(), None);
+    assert_eq!(driver.state.dial_requirement(), None);
+    assert_eq!(driver.client.poll_time(), None);
+    assert_eq!(driver.client.next_deadline(), None);
+
+    // `run_bindings` gives a new binding a fresh driver and client; the parked
+    // policy also accepts it and asks for exactly one lease.
+    let effects = driver.apply(LinkInput::BindingAvailable(2)).unwrap();
+    assert_eq!(effects.len(), 1);
+    assert_eq!(driver.state.dial_requirement(), Some(None));
+}
+
+#[test]
+fn a_late_welcome_for_another_machine_is_still_a_final_fault_with_no_retry() {
+    let fixture = HeartbeatFixture::new();
+    let (mut driver, attempt) = dialing_driver(&fixture);
+    fixture.clock.advance(Duration::from_secs(10)).unwrap();
+
+    receive_then_close(
+        &mut driver,
+        &attempt,
+        welcome_naming(&fixture, OTHER_MACHINE.parse().unwrap()),
+    );
+
+    let faulted = LinkStatus::Fault {
+        kind: LinkFault::WrongMachine,
+    };
+    assert_eq!(driver.state.status(), faulted);
+    assert_eq!(*fixture.status.borrow(), faulted);
+    assert_eq!(
+        driver.client.status(),
+        ClientLinkStatus::Fault {
+            kind: LinkFault::WrongMachine
+        }
+    );
+    assert_eq!(driver.state.next_deadline(), None);
+    assert_eq!(driver.state.dial_requirement(), None);
+    assert_eq!(driver.client.next_deadline(), None);
+    assert_eq!(driver.client.poll_time(), None);
 }
 
 #[test]

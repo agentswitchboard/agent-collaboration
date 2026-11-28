@@ -534,7 +534,7 @@ impl<Binding: Clone + Eq> StateMachine for LinkPolicy<Binding> {
                 if state.machine_id != machine_id {
                     // Central admitted this credential as another machine. Every
                     // further dial would displace that machine's link, so no timer
-                    // rearms this fault; only a new binding or address does.
+                    // rearms this fault; only a new binding does.
                     effects.push(LinkEffect::BackOff { attempt });
                     next.phase = LinkPhase::Fault {
                         binding: lease.binding.clone(),
@@ -707,7 +707,7 @@ impl<Binding: Clone + Eq> StateMachine for LinkPolicy<Binding> {
             LinkInput::AddressCorrected => {
                 let LinkPhase::Fault {
                     binding,
-                    kind: LinkFault::MalformedAddress | LinkFault::WrongMachine,
+                    kind: LinkFault::MalformedAddress,
                     ..
                 } = &state.phase
                 else {

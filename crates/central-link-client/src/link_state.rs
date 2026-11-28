@@ -429,15 +429,20 @@ impl LinkClient {
             effective_expires_at,
         }) = &frame
         {
-            if !matches!(self.state, ConnectionState::AwaitingWelcome { expires_at, .. } if self.clock.monotonic_now() < expires_at)
-            {
+            let ConnectionState::AwaitingWelcome { expires_at, .. } = &self.state else {
                 return Err(ClientError::InvalidWelcome);
-            }
+            };
+            let welcome_deadline_passed = self.clock.monotonic_now() >= *expires_at;
+            // Identity before lateness: another machine's Welcome is final even
+            // when late, because every redial with that token displaces it.
             if machine_id != &self.machine {
                 return Err(ClientError::WelcomeForAnotherMachine {
                     expected: self.machine.clone(),
                     actual: machine_id.clone(),
                 });
+            }
+            if welcome_deadline_passed {
+                return Err(ClientError::InvalidWelcome);
             }
             self.state = ConnectionState::Welcomed {
                 readiness: Readiness::WaitingForRegistration,

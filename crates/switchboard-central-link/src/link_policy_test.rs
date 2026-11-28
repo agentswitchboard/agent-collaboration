@@ -448,7 +448,7 @@ fn generated_timer_or_network_input(
 }
 
 #[hegel::test(test_cases = 200)]
-fn a_welcome_for_another_machine_never_dials_again_until_the_binding_or_address_changes(
+fn a_welcome_for_another_machine_never_dials_again_until_the_binding_changes(
     case: hegel::TestCase,
 ) {
     let attempts = attempt_pair();
@@ -493,15 +493,17 @@ fn a_welcome_for_another_machine_never_dials_again_until_the_binding_or_address_
             state = next;
         }
     }
-    let (recovery, binding) = if case.draw(gs::booleans()) {
-        (Input::BindingAvailable(2), 2)
-    } else {
-        (Input::AddressCorrected, 1)
-    };
+    // Discovery returning the same address must not redial with the same credential.
     assert_eq!(
-        apply(&mut state, recovery),
+        Policy::transition(&state, Input::AddressCorrected),
+        Err(TransitionError::Stale)
+    );
+    assert_eq!(state.status(), faulted);
+    assert_eq!(state.dial_requirement(), None);
+    assert_eq!(
+        apply(&mut state, Input::BindingAvailable(2)),
         [Effect::NeedLease {
-            binding,
+            binding: 2,
             newer_than: None
         }]
     );
