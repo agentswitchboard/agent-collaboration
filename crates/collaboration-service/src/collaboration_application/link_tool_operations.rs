@@ -51,6 +51,11 @@ impl LinkToolOperations {
         let Some(services) = self.0.as_deref() else {
             return refused(LinkRefusal::CentralUnavailable);
         };
+        // The Router's readiness comes first: a Router that is not enrolled or not ready cannot
+        // judge the caller, so it must not answer "unknown caller".
+        if let Err(code) = services.central.check_available() {
+            return refused(code);
+        }
         let caller = match services.admission.admit(Some(caller)).await {
             Ok(caller) => caller,
             Err(refusal) => return refused(admission_refusal(refusal)),

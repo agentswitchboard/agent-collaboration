@@ -22,7 +22,11 @@ use crate::{
 const REFUSED_EXIT: i32 = 3;
 
 #[derive(Parser)]
-#[command(name = "agent-collaboration thread")]
+#[command(
+    name = "agent-collaboration thread",
+    bin_name = "agent-collaboration thread",
+    arg_required_else_help = true
+)]
 struct ThreadArguments {
     #[command(subcommand)]
     operation: ThreadCommand,
@@ -45,10 +49,14 @@ struct ShowArguments {
     thread_id: ThreadId,
 }
 
-/// Whether the CLI arguments name a thread command this build carries.
+/// Whether the CLI arguments name a thread command this build carries: `thread show`, or the
+/// group's own help (`thread`, `thread --help`), which lists `thread show`. Every other
+/// `thread` subcommand stays retired.
 pub fn is_thread_command(arguments: &[OsString]) -> bool {
     arguments.first().is_some_and(|group| group == "thread")
-        && arguments.get(1).is_some_and(|verb| verb == "show")
+        && arguments
+            .get(1)
+            .is_none_or(|verb| verb == "show" || verb == "--help" || verb == "-h")
 }
 
 /// Runs `thread show` through the collaboration API socket and returns the exit code.

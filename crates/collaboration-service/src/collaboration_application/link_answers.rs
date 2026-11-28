@@ -3,7 +3,8 @@
 //! Every non-success answer names the state and a valid next step (R10). Each match is
 //! exhaustive, so a new Central or Router variant fails to compile until it is worded here.
 use collaboration_protocol::central_tool_port::{
-    CentralMailResult, ReplyPayload, WorkspaceReply, WorkspaceResult,
+    CentralMailResult, ItemView, MemberRole, NotificationSetting, ReplyPayload, Thread,
+    ThreadReaderView, ThreadState, WorkspaceAnswer, WorkspaceReply, WorkspaceResult,
 };
 use collaboration_protocol::link_tool_result::{
     InvalidRequestReason, LinkRefusal, LinkToolOutput, LinkToolResult, MessageCallerRefusal,
@@ -44,9 +45,11 @@ pub fn link_tool_output(result: LinkToolResult) -> LinkToolOutput {
 fn link_tool_text(result: &LinkToolResult) -> String {
     match result {
         LinkToolResult::Answered { reply } => match reply {
-            ReplyPayload::Workspace(WorkspaceReply { result, .. }) => {
-                workspace_result_wording(result).map_or_else(done, |wording| wording.sentence())
-            }
+            ReplyPayload::Workspace(WorkspaceReply { result, .. }) => match result {
+                WorkspaceResult::Done(answer) => workspace_answer_text(answer),
+                undecided => workspace_result_wording(undecided)
+                    .map_or_else(done, |wording| wording.sentence()),
+            },
             ReplyPayload::Mail(result) => {
                 mail_result_wording(result).map_or_else(done, |wording| wording.sentence())
             }
@@ -74,6 +77,79 @@ fn link_tool_text(result: &LinkToolResult) -> String {
 
 fn done() -> String {
     "Central answered.".into()
+}
+
+/// The text of a done workspace answer. Every variant is listed, so a new one fails to compile
+/// until it is worded; answers whose tools have not landed keep the generic line.
+fn workspace_answer_text(answer: &WorkspaceAnswer) -> String {
+    match answer {
+        WorkspaceAnswer::Item { item } => item_view_text(item),
+        WorkspaceAnswer::MessageStatus { .. }
+        | WorkspaceAnswer::WorkspaceCreated { .. }
+        | WorkspaceAnswer::WorkspaceUpdated { .. }
+        | WorkspaceAnswer::Created { .. }
+        | WorkspaceAnswer::Updated { .. }
+        | WorkspaceAnswer::Removed { .. }
+        | WorkspaceAnswer::Unchanged { .. }
+        | WorkspaceAnswer::Page { .. }
+        | WorkspaceAnswer::References { .. }
+        | WorkspaceAnswer::Links { .. }
+        | WorkspaceAnswer::Inbox { .. }
+        | WorkspaceAnswer::Marked { .. } => done(),
+    }
+}
+
+fn item_view_text(item: &ItemView) -> String {
+    match item {
+        ItemView::Thread { thread, me } => thread_text(thread, me.as_ref()),
+        ItemView::Workspace(_)
+        | ItemView::Area(_)
+        | ItemView::Project(_)
+        | ItemView::Initiative(_)
+        | ItemView::Deliverable { .. }
+        | ItemView::Issue(_)
+        | ItemView::ThreadMember(_)
+        | ItemView::ProjectRole(_)
+        | ItemView::DeliverableRole(_)
+        | ItemView::Post(_)
+        | ItemView::WorkLogEntry(_)
+        | ItemView::BacklogItem(_)
+        | ItemView::Reference(_)
+        | ItemView::Link(_)
+        | ItemView::Removed { .. } => done(),
+    }
+}
+
+/// One line per fact: the thread, then the caller's own standing when Central reports one.
+fn thread_text(thread: &Thread, me: Option<&ThreadReaderView>) -> String {
+    let state = match thread.state {
+        ThreadState::Open => "open",
+        ThreadState::Resolved => "resolved",
+    };
+    let mut lines = vec![
+        format!("Thread: {}", thread.title.as_str()),
+        format!("State: {state}"),
+        format!("Thread ID: {}", thread.thread_id),
+        format!("Area ID: {}", thread.area_id),
+        format!("Created by: {}", thread.creator),
+    ];
+    if let Some(me) = me {
+        let role = match me.role {
+            MemberRole::Participant => "participant",
+            MemberRole::Observer => "observer",
+        };
+        let notifications = match me.notifications {
+            NotificationSetting::On => "on",
+            NotificationSetting::Off => "off",
+        };
+        lines.push(format!("Your role: {role}"));
+        lines.push(format!("Your notifications: {notifications}"));
+        lines.push(me.read_through.map_or_else(
+            || "You have not read this thread yet".to_owned(),
+            |position| format!("You have read through change {}", position.get()),
+        ));
+    }
+    lines.join("\n")
 }
 
 /// The wording of a Central workspace answer; a done answer needs none.

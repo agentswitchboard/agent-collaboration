@@ -22,6 +22,8 @@ use crate::api_test_harness::{ServedApi, api_config, test_identity};
 const MACHINE: &str = "019a0000-0000-7000-8000-000000000061";
 const WORKSPACE: &str = "019a0000-0000-7000-8000-000000000062";
 const THREAD: &str = "019a0000-0000-7000-8000-000000000063";
+/// The text a shown thread reads as, one fact per line.
+const SHOWN_THREAD: &str = "Thread: A stored topic\nState: open\nThread ID: 019a0000-0000-7000-8000-000000000063\nArea ID: 019a0000-0000-7000-8000-000000000064\nCreated by: 019a0000-0000-7000-8000-000000000065";
 
 struct OneKnownSession;
 
@@ -137,11 +139,9 @@ async fn thread_show_is_a_success_only_for_central_s_done_answer() {
     assert_ne!(done.is_error, Some(true), "{done:?}");
     assert_eq!(
         done.structured_content,
-        Some(
-            json!({"result":{"state":"answered","reply":reply(&found)},"text":"Central answered."})
-        )
+        Some(json!({"result":{"state":"answered","reply":reply(&found)},"text":SHOWN_THREAD}))
     );
-    assert_eq!(text_of(&done), "Central answered.");
+    assert_eq!(text_of(&done), SHOWN_THREAD);
     for ((expected, _), error) in failing.iter().zip(errors) {
         assert_eq!(error.is_error, Some(true), "{expected}");
         let structured = error.structured_content.clone().unwrap();

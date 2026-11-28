@@ -170,7 +170,12 @@ fn thread_show_submits_one_show_of_the_generated_thread_and_returns_central_s_an
     assert_eq!(output.result, expected_result(answer));
     assert_eq!(output.result.succeeded(), success, "{output:?}");
     if success {
-        assert_eq!(output.text, "Central answered.");
+        assert!(
+            output
+                .text
+                .starts_with("Thread: A stored topic\nState: open\n"),
+            "{output:?}"
+        );
     } else {
         assert!(output.text.len() > "Central answered.".len(), "{output:?}");
     }
@@ -210,4 +215,53 @@ async fn a_caller_this_mac_cannot_admit_reaches_no_port_and_an_unwired_router_se
         }
     );
     assert!(port.submitted().is_empty());
+}
+
+/// Counts every caller lookup, so a test can show admission was never consulted.
+#[derive(Default)]
+struct CountingSessions(std::sync::atomic::AtomicUsize);
+
+impl MessageSessionDirectory for CountingSessions {
+    fn lookup<'lookup>(
+        &'lookup self,
+        _session_id: &'lookup SessionId,
+    ) -> Pin<Box<dyn Future<Output = MessageSessionPresence> + Send + 'lookup>> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(ready(MessageSessionPresence::UnknownSession))
+    }
+}
+
+#[tokio::test]
+async fn a_router_that_is_not_ready_says_so_before_judging_the_caller() {
+    // Arrange
+    let not_ready = LinkRefusal::RouterNotReady {
+        state: MessageFrontRefusal::NotEnrolled,
+    };
+    let port = Arc::new(FakeCentralToolPort::not_ready(not_ready.clone()));
+    let sessions = Arc::new(CountingSessions::default());
+    let operations = LinkToolOperations::new(
+        Arc::new(V0MessageAdmission::new(
+            MACHINE.parse().unwrap(),
+            sessions.clone(),
+        )),
+        port.clone(),
+    );
+
+    // Act
+    let output = operations
+        .show_thread(ThreadShowArguments {
+            caller_session_id: "someone-else".parse().unwrap(),
+            workspace_id: "019a0000-0000-7000-8000-000000000054".parse().unwrap(),
+            thread_id: "019a0000-0000-7000-8000-000000000055".parse().unwrap(),
+        })
+        .await;
+
+    // Assert
+    assert_eq!(output.result, LinkToolResult::Refused { code: not_ready });
+    assert!(port.submitted().is_empty(), "nothing is submitted");
+    assert_eq!(
+        sessions.0.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "admission is not consulted"
+    );
 }

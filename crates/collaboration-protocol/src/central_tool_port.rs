@@ -8,7 +8,8 @@ use std::{future::Future, pin::Pin};
 pub use central_link_protocol::ReplyPayload;
 pub use workspace_ids::{AdmittedLocalSession, RequestId};
 pub use workspace_model::{
-    ItemRef, RefusalReason, Timestamp, WorkspaceOperation, WorkspaceReply, WorkspaceRequest,
+    ItemRef, ItemView, MemberRole, NotificationSetting, RefusalReason, Thread, ThreadReaderView,
+    ThreadState, Timestamp, WorkspaceAnswer, WorkspaceOperation, WorkspaceReply, WorkspaceRequest,
     WorkspaceResult,
     central_mail::{
         CentralMailRefusal, CentralMailRequest, CentralMailResult, SendMessageRequest,
@@ -52,6 +53,10 @@ pub type CentralToolFuture<'call> =
 
 /// Submits one request for an admitted local session; the only way a tool reaches Central.
 pub trait CentralToolPort: Send + Sync {
+    /// Whether the link can take a request now; checked before the caller is admitted, so a
+    /// Router that is not enrolled or not ready says so instead of judging the caller.
+    fn check_available(&self) -> Result<(), LinkRefusal>;
+
     fn submit<'call>(
         &'call self,
         caller: &'call AdmittedLocalSession,

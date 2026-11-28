@@ -17,6 +17,8 @@ pub type ScriptedCentralOutcome = Result<CentralSubmission, LinkRefusal>;
 /// Records each submission with its admitted caller and replays scripted outcomes in order.
 #[derive(Default)]
 pub struct FakeCentralToolPort {
+    /// The readiness refusal this port reports; `None` means the link takes requests.
+    not_ready: Option<LinkRefusal>,
     submitted: Mutex<Vec<(SessionRef, CentralToolPayload)>>,
     outcomes: Mutex<VecDeque<ScriptedCentralOutcome>>,
 }
@@ -24,8 +26,17 @@ pub struct FakeCentralToolPort {
 impl FakeCentralToolPort {
     pub fn answering(outcomes: impl IntoIterator<Item = ScriptedCentralOutcome>) -> Self {
         Self {
+            not_ready: None,
             submitted: Mutex::default(),
             outcomes: Mutex::new(outcomes.into_iter().collect()),
+        }
+    }
+
+    /// A port whose link is not ready: `check_available` reports `refusal`.
+    pub fn not_ready(refusal: LinkRefusal) -> Self {
+        Self {
+            not_ready: Some(refusal),
+            ..Self::default()
         }
     }
 
@@ -47,6 +58,10 @@ impl FakeCentralToolPort {
 }
 
 impl CentralToolPort for FakeCentralToolPort {
+    fn check_available(&self) -> Result<(), LinkRefusal> {
+        self.not_ready.clone().map_or(Ok(()), Err)
+    }
+
     #[expect(
         clippy::panic,
         reason = "a test must script an outcome for every submission it causes"

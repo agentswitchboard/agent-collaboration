@@ -125,7 +125,16 @@ async fn cli_thread_show_prints_the_tool_s_output_and_exits_non_zero_unless_cent
     .await;
 
     // Assert
-    assert_eq!(text, (Some(0), b"Central answered.\n".to_vec()));
+    assert_eq!(text.0, Some(0));
+    assert_eq!(
+        String::from_utf8(text.1).unwrap(),
+        format!(
+            "Thread: A stored topic\nState: open\nThread ID: {THREAD}\nArea ID: \
+             019a0000-0000-7000-8000-000000000084\nCreated by: \
+             019a0000-0000-7000-8000-000000000085\n"
+        ),
+        "plain mode prints the thread's title, state and ids"
+    );
     assert_eq!(done.0, Some(0));
     let schemas = collaboration_client::protocol::protocol_type_schemas().unwrap();
     let done: Value = serde_json::from_slice(&done.1).unwrap();
@@ -134,7 +143,12 @@ async fn cli_thread_show_prints_the_tool_s_output_and_exits_non_zero_unless_cent
         "{done}"
     );
     assert_eq!(done["result"]["state"], "answered");
-    assert_eq!(done["text"], "Central answered.");
+    assert!(
+        done["text"]
+            .as_str()
+            .is_some_and(|text| text.starts_with("Thread: A stored topic\nState: open\n")),
+        "{done}"
+    );
 
     assert_eq!(refused.0, Some(3));
     let refused: LinkToolOutput = serde_json::from_slice(&refused.1).unwrap();

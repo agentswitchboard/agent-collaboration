@@ -8,21 +8,26 @@ use collaboration_protocol::central_tool_port::{
     CentralToolPort, Timestamp,
 };
 use collaboration_protocol::link_tool_result::{InvalidRequestReason, LinkRefusal};
-use switchboard_message_custody::custody_submission::{
-    Submission, SubmissionPayload, SubmitRefusal,
+use switchboard_message_custody::{
+    custody_submission::{Submission, SubmissionPayload, SubmitRefusal},
+    custody_task::CustodyTaskHandle,
 };
 use workspace_model::Caller;
 
 use crate::{FrontRefusal, MessageFront, message_tool_port::front_refusal};
 
 impl CentralToolPort for MessageFront {
+    fn check_available(&self) -> Result<(), LinkRefusal> {
+        self.ready_custody().map(drop)
+    }
+
     fn submit<'call>(
         &'call self,
         caller: &'call AdmittedLocalSession,
         payload: CentralToolPayload,
     ) -> CentralToolFuture<'call> {
         Box::pin(async move {
-            let custody = self.custody().map_err(router_not_ready)?;
+            let custody = self.ready_custody()?;
             let admission = custody.reserve().await.map_err(|_| self.link_stopped())?;
             let submission = admission
                 .submit(
@@ -33,9 +38,9 @@ impl CentralToolPort for MessageFront {
                 .await;
             match central_submission(submission) {
                 Err(LinkRefusal::OutboxUnavailable) => Err(self
-                    .custody()
+                    .ready_custody()
                     .err()
-                    .map_or(LinkRefusal::OutboxUnavailable, router_not_ready)),
+                    .unwrap_or(LinkRefusal::OutboxUnavailable)),
                 answer => answer,
             }
         })
@@ -43,9 +48,17 @@ impl CentralToolPort for MessageFront {
 }
 
 impl MessageFront {
+    /// The current generation's custody, or the Router's readiness refusal: the one check
+    /// behind both `check_available` and every submission.
+    fn ready_custody(&self) -> Result<CustodyTaskHandle, LinkRefusal> {
+        self.custody().map_err(router_not_ready)
+    }
+
     /// The generation's refusal when custody stopped between reservation attempts.
     fn link_stopped(&self) -> LinkRefusal {
-        router_not_ready(self.custody().err().unwrap_or(FrontRefusal::ShuttingDown))
+        self.ready_custody()
+            .err()
+            .unwrap_or_else(|| router_not_ready(FrontRefusal::ShuttingDown))
     }
 }
 

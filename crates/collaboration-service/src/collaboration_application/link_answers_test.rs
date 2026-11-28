@@ -238,3 +238,54 @@ fn every_router_refusal_and_lost_answer_names_its_state_and_a_next_step() {
         );
     }
 }
+
+fn thread_show_answer(me: Value) -> LinkToolResult {
+    LinkToolResult::Answered {
+        reply: decode(
+            json!({"kind":"workspace","reply":{"actors":[],"result":{"kind":"done","answer":{
+            "kind":"item","item":{"kind":"thread","item":{
+                "thread":{"threadId":ID,"areaId":OTHER_ID,"title":"Release checklist",
+                    "creator":"019a0000-0000-7000-8000-000000000043","state":"resolved"},
+                "me":me}}}}}}),
+        ),
+    }
+}
+
+#[test]
+fn a_shown_thread_is_stated_one_fact_per_line_with_the_caller_s_standing_when_reported() {
+    // Arrange
+    let thread_lines = [
+        "Thread: Release checklist".to_owned(),
+        "State: resolved".to_owned(),
+        format!("Thread ID: {ID}"),
+        format!("Area ID: {OTHER_ID}"),
+        "Created by: 019a0000-0000-7000-8000-000000000043".to_owned(),
+    ];
+    let member = json!({"role":"observer","notifications":"off","readThrough":7});
+    let unread_member = json!({"role":"participant","notifications":"on","readThrough":null});
+
+    // Act
+    let without_me = link_tool_output(thread_show_answer(Value::Null));
+    let with_me = link_tool_output(thread_show_answer(member));
+    let unread = link_tool_output(thread_show_answer(unread_member));
+
+    // Assert
+    assert_eq!(without_me.text, thread_lines.join("\n"));
+    assert_eq!(
+        with_me.text,
+        [
+            thread_lines.join("\n"),
+            "Your role: observer".into(),
+            "Your notifications: off".into(),
+            "You have read through change 7".into(),
+        ]
+        .join("\n")
+    );
+    assert!(
+        unread.text.ends_with(
+            "Your role: participant\nYour notifications: on\nYou have not read this thread yet"
+        ),
+        "{unread:?}"
+    );
+    assert!(with_me.result.succeeded() && without_me.result.succeeded());
+}
