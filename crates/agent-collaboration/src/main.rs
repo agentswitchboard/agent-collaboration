@@ -19,6 +19,9 @@ fn main() {
     if agent_collaboration::is_message_command(&arguments) {
         std::process::exit(agent_collaboration::run_message_command(arguments));
     }
+    if agent_collaboration::is_thread_command(&arguments) {
+        std::process::exit(agent_collaboration::run_thread_command(arguments));
+    }
     if let Some(exit) = agent_collaboration::refuse_retired_command_group(&arguments) {
         std::process::exit(exit);
     }

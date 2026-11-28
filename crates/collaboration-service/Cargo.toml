@@ -42,6 +42,7 @@ tracing.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+hegel = { package = "hegeltest", version = "=0.52.6", features = ["static-engine"] }
 switchboard-session-events.workspace = true
 router-clock = { workspace = true, features = ["test-support"] }
 codex-acp-adapter = { path = "../codex-acp-adapter", version = "0.1.14", features = ["test-support"] }

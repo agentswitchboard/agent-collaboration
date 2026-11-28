@@ -32,6 +32,7 @@ pub fn command_help() -> String {
         "  events listen --endpoint ID --session ID --attach [--timeout-seconds 60]\n  events observe --endpoint ID --session ID --attach [--timeout-seconds 60] [--max-events 256] [--max-bytes 262144] [--after-sequence N --epoch N]\n",
     );
     help.push_str(collaboration_client::protocol::message_tools::MESSAGE_CLI_HELP);
+    help.push_str(collaboration_client::protocol::workspace_tools::THREAD_CLI_HELP);
     help
 }
 
@@ -44,6 +45,8 @@ pub fn session_command_help() -> String {
 mod current_session_identity;
 mod message_commands;
 pub use message_commands::{is_message_command, run_message_command};
+mod thread_commands;
+pub use thread_commands::{is_thread_command, run_thread_command};
 mod endpoint_commands;
 mod permission_diagnostic_reporting;
 pub use endpoint_commands::run_endpoint_command;

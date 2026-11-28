@@ -281,12 +281,12 @@ fn advertised_tool_schemas_validate_available_success_and_every_error_sample() {
         ),
         (
             "thread_show",
-            serde_json::json!({"result":{"state":"answered","reply":{
+            serde_json::json!({"result":{"state":"answered","reply":{"kind":"workspace","reply":{
                 "result":{"kind":"notFound","answer":{
                     "workspaceId":"019a0000-0000-7000-8000-000000000011",
                     "item":{"kind":"thread","id":"019a0000-0000-7000-8000-000000000012"}
                 }},"actors":[]
-            }},"text":"Thread not found. Check workspaceId and threadId before reading again."}),
+            }}},"text":"Not found: Central has no such item in workspace 019a0000-0000-7000-8000-000000000011. Check the workspaceId and the item's ID, then try again."}),
         ),
         (
             "conversation_create",

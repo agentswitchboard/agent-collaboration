@@ -27,5 +27,6 @@ mod provider_session_list_cli;
 mod provider_source_actions;
 mod served_command_groups;
 mod served_message_commands;
+mod served_thread_commands;
 mod skill_cli_contract;
 mod whoami_machine_identity;

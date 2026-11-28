@@ -157,13 +157,6 @@ pub trait MessageUnitPort: Send + Sync {
         caller: &'call AdmittedLocalSession,
         read: MessageInboxRead,
     ) -> MessageOperationFuture<'call, MessageInboxPage>;
-
-    fn show_thread<'call>(
-        &'call self,
-        caller: &'call AdmittedLocalSession,
-        workspace_id: workspace_model::WorkspaceId,
-        thread_id: workspace_model::ThreadId,
-    ) -> MessageOperationFuture<'call, workspace_model::WorkspaceReply>;
 }
 
 /// A retained refusal reported by the outbox or the Central request log.

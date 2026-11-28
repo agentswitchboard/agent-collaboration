@@ -107,10 +107,6 @@ impl MessageOperations {
         self.0.as_deref().ok_or(MessageToolRefusal::NoMessageLink)
     }
 
-    pub(super) fn unit(&self) -> Result<&dyn MessageUnitPort, MessageToolRefusal> {
-        Ok(self.bindings()?.unit.as_ref())
-    }
-
     /// Checks the v0 transport report before either message operation can reach the outbox.
     pub async fn admit_caller(
         &self,

@@ -201,7 +201,7 @@ fn top_level_help_no_longer_lists_retired_command_groups() {
     assert!(output.status.success());
     let help = String::from_utf8_lossy(&output.stdout);
     for [group, leaf] in RETIRED_GROUP_COMMANDS {
-        let retired = if group == "message" {
+        let retired = if group == "message" || group == "thread" {
             format!("  {group} {leaf}")
         } else {
             format!("  {group} ")
@@ -214,6 +214,7 @@ fn top_level_help_no_longer_lists_retired_command_groups() {
     assert!(help.contains("  conversation operation show|wait|reconcile"));
     assert!(help.contains("  message send "));
     assert!(help.contains("  message status "));
+    assert!(help.contains("  thread show "));
 }
 
 #[test]

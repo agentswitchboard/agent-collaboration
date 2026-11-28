@@ -12,7 +12,6 @@ use collaboration_client::protocol::message_tools::{
     MessageToolRefusal, MessageToolResult, MessageUnitPort, MessageWriteStatus, RequestId,
     SessionId,
 };
-use collaboration_client::protocol::workspace_tools::{ThreadId, WorkspaceId, WorkspaceReply};
 use collaboration_mcp::test_support::ServedCollaborationApi;
 use collaboration_service::{
     ApplicationFixture,
@@ -42,15 +41,6 @@ impl MessageSessionDirectory for CliFixture {
 }
 
 impl MessageUnitPort for CliFixture {
-    fn show_thread<'call>(
-        &'call self,
-        _: &'call AdmittedLocalSession,
-        _: WorkspaceId,
-        _: ThreadId,
-    ) -> MessageOperationFuture<'call, WorkspaceReply> {
-        Box::pin(ready(Err(MessageToolRefusal::UnexpectedReply)))
-    }
-
     fn read_inbox<'call>(
         &'call self,
         caller: &'call AdmittedLocalSession,
