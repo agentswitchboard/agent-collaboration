@@ -538,7 +538,7 @@ async fn real_tools_list_reports_input_and_output_bytes_separately() {
         output_bytes += serde_json::to_vec(&tool["outputSchema"]).unwrap().len();
         jsonschema::validator_for(&tool["inputSchema"]).expect("all local references resolve");
     }
-    assert_eq!(tools.len(), 24);
+    assert_eq!(tools.len(), 25);
     println!(
         "tools={} input_bytes={input_bytes} output_bytes={output_bytes}",
         tools.len()

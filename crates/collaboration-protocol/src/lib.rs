@@ -1,6 +1,7 @@
 //! Public communication contracts without process, storage or transport ownership.
 mod cli_output_contract;
 pub mod message_tools;
+pub mod workspace_tools;
 pub use cli_output_contract::{
     ConversationRecord, ConversationTerminalReason, EffortChange, FiniteCommandRecord,
     NativeObservationRecord, ObservationCloseReason,

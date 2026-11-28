@@ -20,6 +20,7 @@ pub use observation_call_driver::test_support as observation_test_support;
 mod provider_observation_operations;
 mod session_native_control;
 mod session_operations;
+mod workspace_operations;
 pub use crate::inventory_failures::{
     NativeSessionFailure, NativeSessionFailureKind, NativeSessionStage, ProviderInventoryFailure,
     ProviderInventoryFailureKind,
@@ -38,6 +39,7 @@ pub use session_operations::{
 pub(crate) use session_operations::{
     classify_native_call_failure, rename_method_unsupported, valid_session_rename_name,
 };
+pub use workspace_operations::WorkspaceOperations;
 
 use collaboration_contracts::RouterIdentity;
 use message_operations::MessageOperations;
@@ -76,6 +78,10 @@ impl CollaborationApplication {
     #[must_use]
     pub fn messages(&self) -> &MessageOperations {
         &self.messages
+    }
+    #[must_use]
+    pub fn workspace(&self) -> WorkspaceOperations<'_> {
+        WorkspaceOperations::new(&self.messages)
     }
     #[must_use]
     pub fn service_id(&self) -> &collaboration_protocol::UuidIdentity {

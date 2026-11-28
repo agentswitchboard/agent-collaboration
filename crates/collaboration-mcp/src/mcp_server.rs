@@ -52,6 +52,7 @@ mod result_converters;
 mod schema_binding;
 mod session_tools;
 mod tool_output_contract;
+mod workspace_tools;
 use application_tool_results::{
     application_result, call_abandoned_at_shutdown, caller_cancelled, operation_failure_result,
     success_result, typed_failure_result,
@@ -90,7 +91,8 @@ impl ToolSurface {
         let mut router = CollaborationMcpServer::session_tool_router()
             + CollaborationMcpServer::provider_control_tool_router()
             + CollaborationMcpServer::carrier_tool_router()
-            + CollaborationMcpServer::message_tool_router();
+            + CollaborationMcpServer::message_tool_router()
+            + CollaborationMcpServer::workspace_tool_router();
         register_conversation_operation_tools(&mut router);
         let tools = resolve_tool_schemas(
             &router,

@@ -28,7 +28,7 @@ fn retired_cancel_tools_and_cli_commands_are_absent() {
     assert!(tools.iter().any(|tool| tool.name == "conversation_cancel"));
 }
 
-const RETIRED_BOARD_TOOLS: [&str; 96] = [
+const RETIRED_BOARD_TOOLS: [&str; 95] = [
     "request_effects",
     "workstream_create",
     "workstream_rename",
@@ -105,7 +105,6 @@ const RETIRED_BOARD_TOOLS: [&str; 96] = [
     "thread_post",
     "post_show",
     "post_list",
-    "thread_show",
     "thread_resolve",
     "thread_unresolve",
     "thread_watch",
@@ -126,6 +125,35 @@ const RETIRED_BOARD_TOOLS: [&str; 96] = [
     "inbox_workspaces",
     "thread_wait",
 ];
+
+#[test]
+fn thread_show_advertises_only_the_current_read_inputs() {
+    let tools = CollaborationMcpServer::catalog_only().resolved_tools();
+    let tool = tools
+        .iter()
+        .find(|tool| tool.name == "thread_show")
+        .expect("thread_show catalog entry");
+    let required = tool
+        .input_schema
+        .get("required")
+        .and_then(serde_json::Value::as_array)
+        .expect("required inputs");
+    let properties = tool
+        .input_schema
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
+        .expect("input properties");
+    assert_eq!(required.len(), 3);
+    assert_eq!(properties.len(), 3);
+    for name in ["callerSessionId", "workspaceId", "threadId"] {
+        assert!(required.iter().any(|field| field.as_str() == Some(name)));
+        assert!(properties.contains_key(name));
+    }
+    assert_eq!(
+        tool.input_schema.get("additionalProperties"),
+        Some(&serde_json::Value::Bool(false))
+    );
+}
 
 /// The local wake and schedule tools this build no longer carries.
 const RETIRED_WAKE_AND_SCHEDULE_TOOLS: [&str; 36] = [
@@ -248,17 +276,18 @@ async fn a_retired_tool_gets_the_ordinary_unknown_tool_answer() {
 fn catalog_has_complete_unique_tools_with_resolvable_schemas() {
     let server = CollaborationMcpServer::catalog_only();
     let tools = server.resolved_tools();
-    assert_eq!(tools.len(), 24);
+    assert_eq!(tools.len(), 25);
     let mut names = tools
         .iter()
         .map(|tool| tool.name.as_ref())
         .collect::<Vec<_>>();
     names.sort_unstable();
     names.dedup();
-    assert_eq!(names.len(), 24);
+    assert_eq!(names.len(), 25);
     assert!(names.contains(&"message_send"));
     assert!(names.contains(&"message_status"));
     assert!(names.contains(&"message_inbox"));
+    assert!(names.contains(&"thread_show"));
     assert!(names.contains(&"conversation_resume"));
     assert!(names.contains(&"installation_show"));
     assert!(names.contains(&"conversation_close"));

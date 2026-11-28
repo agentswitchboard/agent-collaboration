@@ -17,7 +17,7 @@ use switchboard_message_custody::{
     inbox_read::{InboxReadError, RecipientInboxRead},
 };
 use workspace_model::{
-    Caller,
+    Caller, ItemRef, ThreadId, WorkspaceId, WorkspaceOperation, WorkspaceReply, WorkspaceRequest,
     central_mail::{CentralMailAnswer, CentralMailResult, MessageDelivery, SendMessageRequest},
 };
 
@@ -26,6 +26,26 @@ use crate::{FrontRefusal, MessageFront};
 impl MessageUnitPort for MessageFront {
     fn check_available(&self) -> Result<(), MessageToolRefusal> {
         self.outbox_and_inbox().map(drop)
+    }
+
+    fn show_thread<'call>(
+        &'call self,
+        caller: &'call AdmittedLocalSession,
+        workspace_id: WorkspaceId,
+        thread_id: ThreadId,
+    ) -> MessageOperationFuture<'call, WorkspaceReply> {
+        Box::pin(async move {
+            let handle = self.outbox_and_inbox()?;
+            let admission = handle.reserve().await.map_err(|_| self.stopped_tool())?;
+            let result = admission
+                .submit(
+                    Caller::Session(caller.address().clone()),
+                    thread_show_submission(workspace_id, thread_id),
+                )
+                .resolve()
+                .await;
+            thread_show_answer(result)
+        })
     }
 
     fn read_inbox<'call>(
@@ -162,6 +182,31 @@ impl MessageUnitPort for MessageFront {
         })
     }
 }
+
+fn thread_show_submission(workspace_id: WorkspaceId, thread_id: ThreadId) -> SubmissionPayload {
+    SubmissionPayload::Workspace(WorkspaceRequest {
+        request_id: None,
+        workspace_id: Some(workspace_id),
+        operation: WorkspaceOperation::Show {
+            item: ItemRef::Thread(thread_id),
+        },
+    })
+}
+
+fn thread_show_answer(result: Submission) -> Result<WorkspaceReply, MessageToolRefusal> {
+    match result {
+        Submission::Answered(ReplyPayload::Workspace(reply)) => Ok(reply),
+        Submission::ReadAnswerLost => Err(MessageToolRefusal::ReadAnswerLost),
+        Submission::Refused(reason) => Err(MessageToolRefusal::Submission(submit_refusal(reason))),
+        Submission::Answered(ReplyPayload::Mail(_))
+        | Submission::InOutbox(_)
+        | Submission::Uncertain { .. } => Err(MessageToolRefusal::UnexpectedReply),
+    }
+}
+
+#[cfg(test)]
+#[path = "message_tool_port_test.rs"]
+mod tests;
 
 impl MessageFront {
     fn inbox_error(&self, error: InboxReadError) -> MessageToolRefusal {

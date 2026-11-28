@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     future::{Future, ready},
     pin::Pin,
     sync::{Arc, Mutex},
@@ -7,8 +8,9 @@ use std::{
 use collaboration_protocol::message_tools::{
     AdmittedLocalSession, DirectMessageWrite, MachineId, MessageCallerRefusal,
     MessageDeliveryObservation, MessageInboxAcknowledgment, MessageInboxRead,
-    MessageOperationFuture, MessageUnitPort, Timestamp,
+    MessageOperationFuture, MessageSubmitRefusal, MessageUnitPort, Timestamp,
 };
+use collaboration_protocol::workspace_tools::{ThreadId, WorkspaceId, WorkspaceReply};
 use collaboration_service::collaboration_application::message_operations::{
     MessageOperations, MessageSessionDirectory, MessageSessionPresence, V0MessageAdmission,
 };
@@ -37,9 +39,25 @@ type FixtureWrite = (SessionRef, RequestId, SessionRef, PostText);
 #[derive(Default)]
 struct FixtureMessageUnit {
     last: Mutex<Option<FixtureWrite>>,
+    thread_reads: Mutex<Vec<(SessionRef, WorkspaceId, ThreadId)>>,
+    thread_answers: Mutex<VecDeque<Result<WorkspaceReply, MessageToolRefusal>>>,
 }
 
 impl MessageUnitPort for FixtureMessageUnit {
+    fn show_thread<'call>(
+        &'call self,
+        caller: &'call AdmittedLocalSession,
+        workspace_id: WorkspaceId,
+        thread_id: ThreadId,
+    ) -> MessageOperationFuture<'call, WorkspaceReply> {
+        self.thread_reads
+            .lock()
+            .unwrap()
+            .push((caller.address().clone(), workspace_id, thread_id));
+        let reply = self.thread_answers.lock().unwrap().pop_front().unwrap();
+        Box::pin(ready(reply))
+    }
+
     fn read_inbox<'call>(
         &'call self,
         caller: &'call AdmittedLocalSession,
@@ -96,6 +114,187 @@ impl MessageUnitPort for FixtureMessageUnit {
             MessageWriteStatus::NotFound
         })))
     }
+}
+
+#[tokio::test]
+async fn thread_show_round_trips_central_answers_and_refuses_removed_inputs() {
+    let directory = tempfile::tempdir().unwrap();
+    let machine_id: MachineId = "019a0000-0000-7000-8000-000000000001".parse().unwrap();
+    let workspace_id: WorkspaceId = "019a0000-0000-7000-8000-000000000011".parse().unwrap();
+    let thread_id: ThreadId = "019a0000-0000-7000-8000-000000000012".parse().unwrap();
+    let args =
+        json!({"callerSessionId":"sender", "workspaceId":workspace_id, "threadId":thread_id});
+    let found = json!({
+        "result":{"kind":"done","answer":{"kind":"item","item":{"kind":"thread","item":{
+            "thread":{"threadId":thread_id,"areaId":"019a0000-0000-7000-8000-000000000013",
+                "title":"A stored topic","creator":"019a0000-0000-7000-8000-000000000014","state":"open"},
+            "me":null
+        }}}},
+        "actors":[{"actorIdentityId":"019a0000-0000-7000-8000-000000000014",
+            "identity":{"kind":"agentSession","session":{"machineId":machine_id,"sessionId":"sender"}}}]
+    });
+    let not_found = json!({"result":{"kind":"notFound","answer":{
+        "workspaceId":workspace_id,"item":{"kind":"thread","id":thread_id}
+    }},"actors":[]});
+    let refused =
+        json!({"result":{"kind":"refused","answer":{"kind":"workspaceNotAllowed"}},"actors":[]});
+    let central_unavailable = json!({"result":{"kind":"centralUnavailable"},"actors":[]});
+    let cases = [
+        (found, "Thread found."),
+        (
+            not_found,
+            "Thread not found. Check workspaceId and threadId before reading again.",
+        ),
+        (
+            refused,
+            "Refused by Central. workspace is not allowed. Check that this Mac is allowed to read the workspace.",
+        ),
+        (
+            central_unavailable,
+            "Central answered that it is unavailable. Reading again is safe.",
+        ),
+    ];
+    let unit = Arc::new(FixtureMessageUnit {
+        thread_answers: Mutex::new(
+            cases
+                .iter()
+                .map(|(reply, _)| Ok(serde_json::from_value(reply.clone()).unwrap()))
+                .chain([
+                    Err(MessageToolRefusal::Submission(
+                        MessageSubmitRefusal::CentralUnavailable,
+                    )),
+                    Err(MessageToolRefusal::ReadAnswerLost),
+                ])
+                .collect(),
+        ),
+        ..FixtureMessageUnit::default()
+    });
+    let messages = MessageOperations::new(
+        Arc::new(V0MessageAdmission::new(
+            machine_id.clone(),
+            Arc::new(FixtureDirectory),
+        )),
+        unit.clone(),
+        Arc::new(router_clock::ManualClock::new(
+            "2026-11-23T02:00:00Z".parse().unwrap(),
+        )),
+    );
+    let served = ServedApi::tcp(&api_config(
+        test_identity().build().with_messages(messages),
+        directory.path(),
+    ))
+    .await;
+
+    for (reply, text) in cases {
+        let result = served.call_tool("thread_show", args.clone()).await;
+        assert_eq!(
+            result.structured_content,
+            Some(json!({
+                "result":{"state":"answered","reply":{"kind":"workspace","reply":reply}},"text":text
+            }))
+        );
+        assert_eq!(
+            result
+                .content
+                .first()
+                .and_then(ContentBlock::as_text)
+                .unwrap()
+                .text,
+            text
+        );
+    }
+    for (result_shape, text) in [
+        (
+            json!({"state":"refused","code":{"kind":"centralUnavailable"}}),
+            "Central unavailable. Nothing was sent. Check the link or read again.",
+        ),
+        (
+            json!({"state":"readAnswerLost"}),
+            "Read failed because its answer was lost. Reading again is safe.",
+        ),
+    ] {
+        let result = served.call_tool("thread_show", args.clone()).await;
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(
+            result.structured_content,
+            Some(json!({"result":result_shape,"text":text}))
+        );
+    }
+
+    for (input, field, text) in [
+        (
+            "includeRedacted",
+            "includeRedacted",
+            "R1 removed includeRedacted. Redaction deletes the text. Omit this field.",
+        ),
+        (
+            "projectId",
+            "projectQualifier",
+            "R1 removed the project qualifier. Use workspaceId and threadId alone.",
+        ),
+        (
+            "project",
+            "projectQualifier",
+            "R1 removed the project qualifier. Use workspaceId and threadId alone.",
+        ),
+        (
+            "protocolVersion",
+            "protocolVersion",
+            "R1 removed protocolVersion. The link versions itself. Omit this field.",
+        ),
+    ] {
+        let mut invalid = args.clone();
+        invalid
+            .as_object_mut()
+            .unwrap()
+            .insert(input.to_owned(), Value::Null);
+        let result = served.call_tool("thread_show", invalid).await;
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(
+            result.structured_content,
+            Some(json!({
+                "result":{"state":"refused","code":{"kind":"removedInput","field":field}},"text":text
+            }))
+        );
+    }
+    for input in ["callerSessionId", "workspaceId", "threadId"] {
+        let mut missing = args.clone();
+        missing.as_object_mut().unwrap().remove(input);
+        let result = served.call_tool("thread_show", missing).await;
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(
+            result
+                .structured_content
+                .unwrap()
+                .pointer("/result/code/kind"),
+            Some(&json!("invalidArguments"))
+        );
+    }
+    let mut unknown = args;
+    unknown
+        .as_object_mut()
+        .unwrap()
+        .insert("callerSessionId".into(), json!("unknown"));
+    let result = served.call_tool("thread_show", unknown).await;
+    assert_eq!(
+        result
+            .structured_content
+            .unwrap()
+            .pointer("/result/code/reason/reason"),
+        Some(&json!("unknownSession"))
+    );
+
+    let caller = SessionRef {
+        machine_id,
+        session_id: "sender".parse().unwrap(),
+    };
+    assert_eq!(
+        *unit.thread_reads.lock().unwrap(),
+        vec![(caller, workspace_id, thread_id); 6]
+    );
+    assert!(unit.thread_answers.lock().unwrap().is_empty());
+    assert!(unit.last.lock().unwrap().is_none());
+    served.stop().await;
 }
 
 #[tokio::test]

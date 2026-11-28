@@ -30,6 +30,16 @@ struct HeldUnit {
 }
 
 impl MessageUnitPort for HeldUnit {
+    fn show_thread<'call>(
+        &'call self,
+        _: &'call AdmittedLocalSession,
+        _: collaboration_protocol::workspace_tools::WorkspaceId,
+        _: collaboration_protocol::workspace_tools::ThreadId,
+    ) -> MessageOperationFuture<'call, collaboration_protocol::workspace_tools::WorkspaceReply>
+    {
+        Box::pin(std::future::ready(Err(MessageToolRefusal::UnexpectedReply)))
+    }
+
     fn read_inbox<'call>(
         &'call self,
         _: &'call AdmittedLocalSession,
